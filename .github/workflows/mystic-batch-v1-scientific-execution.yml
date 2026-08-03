@@ -1,0 +1,248 @@
+name: MYSTIC batch v1 scientific execution
+run-name: MYSTIC batch v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        description: Exact one-purpose authorization commit SHA
+        required: true
+        type: string
+      manifest_path:
+        description: Exact repository-relative scientific manifest path
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mystic-batch-v1-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.scientific.json
+  ADAPTER: experiments/mystic-batch-v1/scientific_adapter.py
+  EXECUTION_WORKFLOW: .github/workflows/mystic-batch-v1-scientific-execution.yml
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      case_count: ${{ steps.plan.outputs.case_count }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Verify exact one-purpose manifest authorization
+        run: >-
+          python experiments/mystic-batch-v1/execution_guard.py
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --manifest "${{ inputs.manifest_path }}"
+          --adapter "$ADAPTER"
+          --workflow "$EXECUTION_WORKFLOW"
+          --runtime-lock "$RUNTIME_LOCK"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate one-shot marker before syntax or solver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python experiments/mystic-batch-v1/duplicate_run_audit.py
+          --repository "${{ github.repository }}"
+          --workflow mystic-batch-v1-scientific-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact matrix plan
+        id: plan
+        run: >-
+          python experiments/mystic-batch-v1/scientific_plan.py
+          --manifest "${{ inputs.manifest_path }}"
+          --guard-report preflight/authorization-guard.json
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mystic-batch-v1-scientific
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-preflight
+          path: preflight
+      - name: Recompute runtime identity after cache restore
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -d "$DATA_DIR"
+          test -s "$ATMOSPHERE"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute exactly one isolated case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/scientific_case_executor.py \
+            --manifest "${{ inputs.manifest_path }}" \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root case-output \
+            --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs:
+      - preflight
+      - cases
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mystic-batch-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact planned case set
+        run: >-
+          python experiments/mystic-batch-v1/scientific_aggregate.py
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-scientific-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs:
+      - preflight
+      - cases
+      - aggregate
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mystic-batch-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-scientific-aggregate
+          path: aggregate-output
+      - name: Independently audit case set, accounting, hashes, and statistics
+        run: >-
+          python experiments/mystic-batch-v1/scientific_audit.py
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-scientific-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90

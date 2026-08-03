@@ -1,0 +1,97 @@
+name: MYSTIC batch v1 scientific execution contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-scientific-execution.yml"
+      - ".github/workflows/mystic-batch-v1-scientific-execution-contract.yml"
+      - "experiments/mystic-batch-v1/execution_guard.py"
+      - "experiments/mystic-batch-v1/duplicate_run_audit.py"
+      - "experiments/mystic-batch-v1/scientific_plan.py"
+      - "experiments/mystic-batch-v1/scientific_case_executor.py"
+      - "experiments/mystic-batch-v1/scientific_aggregate.py"
+      - "experiments/mystic-batch-v1/scientific_audit.py"
+      - "experiments/mystic-batch-v1/authorization.scientific.json"
+      - "tests/test_mystic_batch_v1_scientific_execution.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-scientific-execution.yml"
+      - ".github/workflows/mystic-batch-v1-scientific-execution-contract.yml"
+      - "experiments/mystic-batch-v1/execution_guard.py"
+      - "experiments/mystic-batch-v1/duplicate_run_audit.py"
+      - "experiments/mystic-batch-v1/scientific_plan.py"
+      - "experiments/mystic-batch-v1/scientific_case_executor.py"
+      - "experiments/mystic-batch-v1/scientific_aggregate.py"
+      - "experiments/mystic-batch-v1/scientific_audit.py"
+      - "experiments/mystic-batch-v1/authorization.scientific.json"
+      - "tests/test_mystic_batch_v1_scientific_execution.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run execution guard, one-shot, executor, aggregate, and audit tests
+        run: python -m unittest -v tests/test_mystic_batch_v1_scientific_execution.py
+      - name: Compile execution package
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/execution_guard.py
+          experiments/mystic-batch-v1/duplicate_run_audit.py
+          experiments/mystic-batch-v1/scientific_plan.py
+          experiments/mystic-batch-v1/scientific_case_executor.py
+          experiments/mystic-batch-v1/scientific_aggregate.py
+          experiments/mystic-batch-v1/scientific_audit.py
+      - name: Prove active authorization remains disabled
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          auth = json.loads(Path("experiments/mystic-batch-v1/authorization.scientific.json").read_text())
+          required = {
+              "authorized": False,
+              "scientificExecution": False,
+              "authorizationOrdinal": 0,
+              "consumed": False,
+              "exactAuthorizationParentCommit": None,
+              "exactAuthorizationCommit": None,
+          }
+          stale = {key: (auth.get(key), expected) for key, expected in required.items() if auth.get(key) != expected}
+          if stale:
+              raise SystemExit(f"active scientific authorization is not disabled: {stale}")
+          PY
+      - name: Prove execution workflow is manual, matrix-isolated, and non-retrying
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path(".github/workflows/mystic-batch-v1-scientific-execution.yml").read_text()
+          required = (
+              "workflow_dispatch:",
+              "fail-fast: false",
+              "cancel-in-progress: false",
+              "duplicate_run_audit.py",
+              "execution_guard.py",
+              "runtime_probe.py",
+              "scientific_case_executor.py",
+              "scientific_aggregate.py",
+              "scientific_audit.py",
+          )
+          missing = [token for token in required if token not in text]
+          if missing:
+              raise SystemExit(f"execution workflow contract tokens missing: {missing}")
+          forbidden = ("schedule:", "repository_dispatch:", "push:\n", "pull_request:\n")
+          present = [token for token in forbidden if token in text]
+          if present:
+              raise SystemExit(f"execution workflow has forbidden automatic trigger: {present}")
+          PY

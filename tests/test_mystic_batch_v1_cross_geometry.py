@@ -23,6 +23,7 @@ def load_module(name: str, path: Path):
 validator = load_module("cross_geometry_validate", PACKAGE / "cross_geometry_validate.py")
 adapter = load_module("cross_geometry_adapter", PACKAGE / "cross_geometry_adapter.py")
 analyzer = load_module("cross_geometry_analysis", PACKAGE / "cross_geometry_analysis.py")
+stage_two = load_module("cross_geometry_stage_two", PACKAGE / "cross_geometry_stage_two.py")
 
 
 class CrossGeometryProposalTests(unittest.TestCase):
@@ -94,7 +95,7 @@ class CrossGeometryProposalTests(unittest.TestCase):
                 "status": "COMPLETED",
                 "selectedPhotopicContributionCdM2": value,
                 "selectedNodeRadiance": [value] * 15,
-                "selectedNodeStdRadiance": [value * (0.15 if noisy else 0.02)] * 15
+                "selectedNodeStdRadiance": [value * (0.15 if noisy else 0.02)] * 15,
             })
         return {"records": records}
 
@@ -115,6 +116,43 @@ class CrossGeometryProposalTests(unittest.TestCase):
         records.write_text(json.dumps(self._synthetic_records(disagree=True)))
         result = analyzer.analyze(self.manifest, self.contract, records)
         self.assertEqual(result["classificationCounts"]["SCREENING_DISCREPANCY"], 6)
+
+    def test_stage_two_uses_fresh_blocks_only_for_flagged_geometries(self) -> None:
+        records = self.root / "records.json"
+        payload = self._synthetic_records()
+        for record in payload["records"]:
+            if record["caseId"].startswith("cg-g01-") and record["caseId"].endswith("b2"):
+                record["selectedPhotopicContributionCdM2"] *= 1.5
+                record["selectedNodeRadiance"] = [value * 1.5 for value in record["selectedNodeRadiance"]]
+                record["selectedNodeStdRadiance"] = [value * 0.15 for value in record["selectedNodeRadiance"]]
+        records.write_text(json.dumps(payload))
+        analysis_path = self.root / "analysis.json"
+        analysis_path.write_text(json.dumps(analyzer.analyze(self.manifest, self.contract, records)))
+        proposal = stage_two.build(self.manifest, analysis_path)
+        self.assertEqual(proposal["selectedGeometryIds"], ["g01-reference-bridge"])
+        self.assertEqual(len(proposal["cases"]), 4)
+        self.assertEqual({case["block"] for case in proposal["cases"]}, {3, 4})
+        pilot_seeds = {case["seed"] for case in json.loads(self.manifest.read_text())["cases"]}
+        self.assertFalse(pilot_seeds.intersection(case["seed"] for case in proposal["cases"]))
+
+    def test_stage_two_refuses_structural_failure(self) -> None:
+        records = self.root / "records.json"
+        payload = self._synthetic_records()
+        payload["records"][0]["status"] = "FAILED"
+        records.write_text(json.dumps(payload))
+        analysis_path = self.root / "analysis.json"
+        analysis_path.write_text(json.dumps(analyzer.analyze(self.manifest, self.contract, records)))
+        with self.assertRaises(stage_two.StageTwoRefusal):
+            stage_two.build(self.manifest, analysis_path)
+
+    def test_stage_two_skips_when_all_geometries_agree(self) -> None:
+        records = self.root / "records.json"
+        records.write_text(json.dumps(self._synthetic_records()))
+        analysis_path = self.root / "analysis.json"
+        analysis_path.write_text(json.dumps(analyzer.analyze(self.manifest, self.contract, records)))
+        proposal = stage_two.build(self.manifest, analysis_path)
+        self.assertEqual(proposal["status"], "NO_EXPANSION_RECOMMENDED")
+        self.assertEqual(proposal["cases"], [])
 
 
 if __name__ == "__main__":

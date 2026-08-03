@@ -60,10 +60,31 @@ def aggregate(plan_path: Path, cases_root: Path, output_dir: Path) -> tuple[dict
             "manifestRawSha256": plan["manifestRawSha256"],
             "scientificDiagnostic": True,
             "successDoesNotAuthorizeProduction": True,
+            "adapterRawSha256": plan["scientificAdapterRawSha256"],
         }
         stale = {key: (record.get(key), value) for key, value in required.items() if record.get(key) != value}
         if stale:
             structural_failures.append({"code": "case-invariant", "caseId": case_id, "detail": stale})
+        if record.get("syntaxCheckCount") != 1 or record.get("solverExecutionCount") != 1:
+            structural_failures.append({
+                "code": "execution-count",
+                "caseId": case_id,
+                "syntax": record.get("syntaxCheckCount"),
+                "solver": record.get("solverExecutionCount"),
+            })
+        syntax = record.get("syntax")
+        solver = record.get("solver")
+        if record.get("status") == "COMPLETED":
+            if not isinstance(syntax, dict) or syntax.get("timedOut") is not False or syntax.get("exitCode") != 0:
+                structural_failures.append({"code": "syntax-status", "caseId": case_id, "detail": syntax})
+            if not isinstance(solver, dict) or solver.get("timedOut") is not False or solver.get("exitCode") != 0:
+                structural_failures.append({"code": "solver-status", "caseId": case_id, "detail": solver})
+            value = record.get("selectedPhotopicContributionCdM2")
+            hashes = (record.get("inputResolvedSha256"), record.get("radianceOutputSha256"), record.get("stdOutputSha256"), record.get("runtimeReportRawSha256"))
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                structural_failures.append({"code": "photopic-value", "caseId": case_id, "detail": value})
+            if any(not isinstance(item, str) or len(item) != 64 for item in hashes):
+                structural_failures.append({"code": "output-hash", "caseId": case_id})
         records[case_id] = record
         index.append({"caseId": case_id, "path": str(path), "caseResultSha256": raw_sha256(path)})
 
@@ -115,6 +136,10 @@ def aggregate(plan_path: Path, cases_root: Path, output_dir: Path) -> tuple[dict
         "syntaxCheckCount": syntax_count,
         "solverExecutionCount": solver_count,
         "configuredMcPhotonsSum": plan["configuredMcPhotonsSum"],
+        "completedConfiguredMcPhotonsSum": sum(int(record.get("photonHistories", 0)) for record in completed),
+        "scientificAdapterRawSha256": plan["scientificAdapterRawSha256"],
+        "runtimeLockRawSha256": plan["runtimeLockRawSha256"],
+        "executionWorkflowRawSha256": plan["executionWorkflowRawSha256"],
         "statistics": statistics_block,
         "structuralFailures": structural_failures,
         "failedCases": [{"caseId": record.get("caseId"), "failure": record.get("failure")} for record in failed],

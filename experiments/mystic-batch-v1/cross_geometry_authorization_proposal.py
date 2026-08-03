@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 STAGE_ID = "cross-geometry-pilot-v1"
-AUTHORIZATION_ORDINAL = 2
+AUTHORIZATION_ORDINAL = 3
 EXECUTION_KEY = f"cross-geometry-pilot-v1:screening:{AUTHORIZATION_ORDINAL}"
 PACKAGE = Path("experiments/mystic-batch-v1")
 PATHS = {

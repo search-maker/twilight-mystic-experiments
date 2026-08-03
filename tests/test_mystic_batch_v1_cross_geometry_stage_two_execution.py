@@ -116,6 +116,7 @@ class StageTwoExecutionContractTests(unittest.TestCase):
 
         def record(manifest, case, value):
             return {
+                "status": "COMPLETED",
                 "caseId": case["caseId"], "groupId": case["groupId"], "method": case["method"],
                 "block": case["block"], "selectedPhotopicContributionCdM2": value,
                 "selectedNodeRadiance": [value] * 15, "selectedNodeStdRadiance": [value * 0.01] * 15,

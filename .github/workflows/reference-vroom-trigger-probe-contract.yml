@@ -1,0 +1,103 @@
+name: Reference VROOM trigger probe contract
+
+on:
+  pull_request:
+    paths:
+      - evidence/reference-vroom-v1-no-run-2.json
+      - .github/workflows/reference-vroom-trigger-probe.yml
+      - .github/workflows/reference-vroom-trigger-probe-contract.yml
+  push:
+    branches: [main]
+    paths:
+      - evidence/reference-vroom-v1-no-run-2.json
+      - .github/workflows/reference-vroom-trigger-probe.yml
+      - .github/workflows/reference-vroom-trigger-probe-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  trigger-probe-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Verify non-scientific trigger diagnosis boundary
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('experiments/reference-vroom-v1')
+          evidence_path = Path('evidence/reference-vroom-v1-no-run-2.json')
+          probe_path = Path('.github/workflows/reference-vroom-trigger-probe.yml')
+          evidence = json.loads(evidence_path.read_text())
+          auth = json.loads((root / 'authorization.json').read_text())
+          probe = probe_path.read_text()
+          probe_lower = probe.lower()
+
+          assert evidence['schemaVersion'] == 1
+          assert evidence['stageId'] == 'reference-vroom-v1'
+          assert evidence['status'] == 'NO_RUN_CREATED'
+          assert evidence['authorizationOrdinal'] == 2
+          assert evidence['authorization']['branch'] == 'authorization/reference-vroom-v1'
+          assert evidence['authorization']['commit'] == '335a32800206ea1dd92aa5082ea163f6845913c2'
+          assert evidence['authorization']['parentCommit'] == 'ea7a8e2828603ad0db7c71d06e5439b70afa2269'
+          assert evidence['authorization']['supersedesNoRunAuthorizationCommit'] == '0a528d53e115e894517e1e7740f60b234b9591c1'
+          assert evidence['authorization']['replacementAuthorizationOrdinal'] == 1
+          assert evidence['authorization']['changedPaths'] == ['experiments/reference-vroom-v1/authorization.json']
+          assert evidence['matchingWorkflowRunFound'] is False
+          assert evidence['syntaxCheckCount'] == 0
+          assert evidence['solverExecutionCount'] == 0
+          assert evidence['artifactCreated'] is False
+          assert evidence['scientificDesignChanged'] is False
+          assert evidence['classification'] is None
+          assert evidence['furtherAuthorizationAllowed'] is False
+          assert evidence['requiredNextStep'] == 'NON_SCIENTIFIC_TRIGGER_DIAGNOSIS'
+
+          assert auth['authorized'] is False
+          assert auth['runMystic'] is False
+          assert auth['runUvspec'] is False
+
+          assert 'probe/reference-vroom-trigger-v1' in probe
+          assert 'probes/reference-vroom-trigger-v1.txt' in probe
+          assert ('$' + '{{ github.event_name }}') in probe
+          assert ('$' + '{{ github.ref }}') in probe
+          assert ('$' + '{{ github.ref_name }}') in probe
+          assert ('$' + '{{ github.sha }}') in probe
+          assert 'uses:' not in probe
+          forbidden = ('uvspec', 'mystic', 'libradtran', 'micromamba', 'conda', 'runner.py', 'allow-execution')
+          offenders = [term for term in forbidden if term in probe_lower]
+          assert not offenders, offenders
+
+          expected = {
+              root / 'runner.py': '462fad44ad9924a95dcc92544564467678d792afaacb26acf0264c25171f2af1',
+              root / 'audit.py': 'e12d7bef82fd4f725736fa7183f76993b73a98ace6271959729ff65c15784c10',
+              root / 'preregistration.json': '8fd87715eed5d192df2b7fe0718d4e94c1a2e8ad1a75f23fbf9d7a4522cfb5b6',
+              root / 'contract.json': 'b562b89a3cc0e867395829ac6a5201ca57d4e4325fb55da5e0050399a847e7c1',
+              root / 'frozen-comparators.zlib.b64': '7678ae3f6a9a0199f3ab31556cdbd1ade579dae23e9a21915ae08a8cc59cfcfb',
+              root / 'wavelength-grid.dat': '2f2fb3c9bf0002bdbe7d97f36e100f4334a40ac8fcfd7e5d6a98306de2cead23',
+              root / 'authorization-template.json': '6e15ff7723369d30bb0188bfb3ca1643fcc12c98182daf9dd25e01a52fac7ff9',
+              Path('.github/workflows/reference-vroom-execution.yml'): 'c3493a855e9dfb97309b941dfec0988bbae71240f07a893856ff872a1400ef74',
+          }
+          actual = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in expected}
+          mismatches = {
+              str(path): {'actual': actual[str(path)], 'expected': digest}
+              for path, digest in expected.items()
+              if actual[str(path)] != digest
+          }
+          assert not mismatches, mismatches
+
+          dispatch_offenders = []
+          for path in Path('.github/workflows').glob('reference-vroom-*.yml'):
+              for number, line in enumerate(path.read_text().splitlines(), 1):
+                  if line.lstrip().startswith('workflow_dispatch:'):
+                      dispatch_offenders.append(f'{path}:{number}')
+          assert not dispatch_offenders, dispatch_offenders
+
+          print('Reference VROOM trigger probe contract: PASS')
+          PY

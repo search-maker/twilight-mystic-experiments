@@ -1,0 +1,139 @@
+name: Reference VROOM v2 authorization proposal contract
+
+on:
+  pull_request:
+    paths:
+      - "experiments/reference-vroom-v2/authorization-proposal.json"
+      - ".github/workflows/reference-vroom-v2-authorization-proposal-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Verify exact proposal without scientific authorization
+        shell: python
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          root = Path('.')
+          v2 = root / 'experiments/reference-vroom-v2'
+          proposal_path = v2 / 'authorization-proposal.json'
+          active_path = v2 / 'authorization.json'
+          workflow_path = root / '.github/workflows/reference-vroom-v2-authorization-proposal-contract.yml'
+
+          active = json.loads(active_path.read_text())
+          assert active == {
+              'schemaVersion': 1,
+              'stageId': 'reference-vroom-v2',
+              'authorized': False,
+              'runMystic': False,
+              'runUvspec': False,
+              'scientificDiagnostic': False,
+              'successDoesNotAuthorizeProduction': True,
+              'executionKey': 'reference-vroom-v2',
+              'exactAuthorizationParentCommit': None,
+              'exactAuthorizationCommit': None,
+              'authorizationOrdinal': 0,
+              'consumed': False,
+              'note': 'Preparation only. This file does not authorize a dispatch or any scientific execution.',
+          }
+
+          bundle = json.loads(proposal_path.read_text())
+          assert bundle['schemaVersion'] == 1
+          assert bundle['stageId'] == 'reference-vroom-v2'
+          assert bundle['status'] == 'PROPOSAL_ONLY_NOT_AUTHORIZATION'
+          assert bundle['sourceMainCommit'] == 'd61af3c24868faa9f4b7a57e48aa0297eb6ee802'
+          assert bundle['sourceCiRunId'] == 30838661148
+          assert bundle['sourceCiJobId'] == 91770038693
+          assert bundle['exactAuthorizationParentCommitResolution'] == 'UNRESOLVED_UNTIL_FUTURE_ONE_PURPOSE_AUTHORIZATION_BRANCH_PREFLIGHT'
+
+          exact_output = subprocess.check_output(
+              ['python', 'experiments/reference-vroom-v2/runner_adapter.py', '--print-proposal'],
+              text=True,
+          )
+          exact_proposal = json.loads(exact_output)
+          assert bundle['runnerProposal'] == exact_proposal
+          assert exact_proposal['stageId'] == 'reference-vroom-v2'
+          assert exact_proposal['authorizationRequired'] is True
+          assert exact_proposal['executionAuthorizedByProposal'] is False
+
+          duplicate_output = subprocess.check_output(
+              ['python', 'experiments/reference-vroom-v2/duplicate_run_audit.py', '--self-test'],
+              text=True,
+          )
+          duplicate = json.loads(duplicate_output)
+          assert duplicate['stageId'] == 'reference-vroom-v2'
+          assert duplicate['status'] == 'PASS'
+          assert duplicate['result']['matchingPriorRunCount'] == 0
+          assert duplicate['result']['boundary'] == 'duplicate audit completed before syntax check or solver execution'
+
+          proposed = bundle['proposedAuthorization']
+          assert proposed['schemaVersion'] == 1
+          assert proposed['stageId'] == 'reference-vroom-v2'
+          assert proposed['authorized'] is True
+          assert proposed['runMystic'] is True
+          assert proposed['runUvspec'] is True
+          assert proposed['scientificDiagnostic'] is True
+          assert proposed['successDoesNotAuthorizeProduction'] is True
+          assert proposed['executionKey'] == 'reference-vroom-v2'
+          assert proposed['authorizationOrdinal'] == 1
+          assert proposed['consumed'] is False
+          assert proposed['exactAuthorizationParentCommit'] is None
+          assert proposed['exactAuthorizationCommit'] is None
+
+          hashes = exact_proposal['expectedHashes']
+          for key, value in hashes.items():
+              assert proposed.get(key) == value, (key, proposed.get(key), value)
+          assert hashes['maximumSolverExecutionCount'] == 6
+          assert hashes['maximumSyntaxCheckCount'] == 6
+          assert hashes['maximumConfiguredMcPhotonsSum'] == 960000000
+          assert hashes['maximumAuthorizedRunnerMinutes'] == 90
+          assert hashes['perCaseTimeoutSeconds'] == 1200
+
+          expected_proposed_keys = {
+              'schemaVersion', 'stageId', 'authorized', 'runMystic', 'runUvspec',
+              'scientificDiagnostic', 'successDoesNotAuthorizeProduction',
+              'executionKey', 'exactAuthorizationParentCommit',
+              'exactAuthorizationCommit', 'authorizationOrdinal', 'consumed',
+              'note', *hashes.keys(),
+          }
+          assert set(proposed) == expected_proposed_keys
+
+          base = os.environ['BASE_REF']
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-only', f'origin/{base}...HEAD'],
+              text=True,
+          ).splitlines()
+          expected_changed = sorted([
+              '.github/workflows/reference-vroom-v2-authorization-proposal-contract.yml',
+              'experiments/reference-vroom-v2/authorization-proposal.json',
+          ])
+          assert sorted(changed) == expected_changed, changed
+
+          workflow = workflow_path.read_text()
+          trigger_header = workflow.split('jobs:', 1)[0]
+          assert trigger_header.count('pull_request:') == 1
+          assert 'workflow_dispatch:' not in trigger_header
+          assert '\n  push:' not in trigger_header
+          for marker in ('--allow-' + 'execution', 'setup-' + 'micromamba', 'rte_' + 'solver', 'mc_' + 'photons'):
+              assert marker not in workflow, marker
+          assert "['python', 'experiments/reference-vroom-v2/runner_adapter.py', '--print-proposal']" in workflow
+          assert "['python', 'experiments/reference-vroom-v2/duplicate_run_audit.py', '--self-test']" in workflow
+
+          print('Reference VROOM v2 authorization proposal contract: PASS')

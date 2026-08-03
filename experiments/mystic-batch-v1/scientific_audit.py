@@ -61,13 +61,24 @@ def audit(plan_path: Path, cases_root: Path, aggregate_dir: Path, output_path: P
             "seed": expected["seed"],
             "photonHistories": expected["photonHistories"],
             "manifestRawSha256": plan["manifestRawSha256"],
+            "adapterRawSha256": plan["scientificAdapterRawSha256"],
         }.items():
             if record.get(key) != expected_value:
                 failures.append({"code": "case-invariant", "caseId": case_id, "field": key, "actual": record.get(key), "expected": expected_value})
         if record.get("syntaxCheckCount") != 1:
             failures.append({"code": "syntax-count", "caseId": case_id, "actual": record.get("syntaxCheckCount")})
-        if record.get("status") == "COMPLETED" and record.get("solverExecutionCount") != 1:
+        if record.get("solverExecutionCount") != 1:
             failures.append({"code": "solver-count", "caseId": case_id, "actual": record.get("solverExecutionCount")})
+        if record.get("status") == "COMPLETED":
+            syntax = record.get("syntax")
+            solver = record.get("solver")
+            if not isinstance(syntax, dict) or syntax.get("timedOut") is not False or syntax.get("exitCode") != 0:
+                failures.append({"code": "syntax-status", "caseId": case_id, "detail": syntax})
+            if not isinstance(solver, dict) or solver.get("timedOut") is not False or solver.get("exitCode") != 0:
+                failures.append({"code": "solver-status", "caseId": case_id, "detail": solver})
+            hashes = (record.get("inputResolvedSha256"), record.get("radianceOutputSha256"), record.get("stdOutputSha256"), record.get("runtimeReportRawSha256"))
+            if any(not isinstance(item, str) or len(item) != 64 for item in hashes):
+                failures.append({"code": "output-hash", "caseId": case_id})
 
     missing = sorted(set(planned) - set(records))
     if missing:
@@ -83,6 +94,10 @@ def audit(plan_path: Path, cases_root: Path, aggregate_dir: Path, output_path: P
         failures.append({"code": "summary-case-count"})
     if summary.get("manifestRawSha256") != plan.get("manifestRawSha256"):
         failures.append({"code": "summary-manifest-hash"})
+    if summary.get("syntaxCheckCount") != len(planned) or summary.get("solverExecutionCount") != len(planned):
+        failures.append({"code": "summary-execution-counts", "syntax": summary.get("syntaxCheckCount"), "solver": summary.get("solverExecutionCount")})
+    if summary.get("completedConfiguredMcPhotonsSum") != plan.get("configuredMcPhotonsSum"):
+        failures.append({"code": "summary-photon-accounting"})
 
     if complete:
         mean = statistics.fmean(values)

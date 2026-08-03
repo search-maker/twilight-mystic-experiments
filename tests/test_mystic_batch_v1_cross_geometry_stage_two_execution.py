@@ -54,7 +54,7 @@ class StageTwoExecutionContractTests(unittest.TestCase):
             (data / "atmmod").mkdir(parents=True)
             (repo / "experiments/reference-vroom-v1").mkdir(parents=True)
             (data / "solar_flux/atlas_plus_modtran").write_text("solar\n")
-            (data / "atmod/afglus.dat").write_text("atmosphere\n")
+            (data / "atmmod/afglus.dat").write_text("atmosphere\n")
             (repo / "experiments/reference-vroom-v1/wavelength-grid.dat").write_text("380\n470\n780\n")
             runtime = root / "runtime.json"
             runtime.write_text(json.dumps({
@@ -62,7 +62,7 @@ class StageTwoExecutionContractTests(unittest.TestCase):
                 "stageId": "mystic-batch-v1",
                 "scientificSolverExecuted": False,
                 "syntaxCheckExecuted": False,
-                **{ey: proposal["runtime"][key] for key in (
+                **{key: proposal["runtime"][key] for key in (
                     "uvspecSha256", "uvspecHelpSha256", "libRadtranDataTreeSha256",
                     "atmosphereSha256", "runtimeLockRawSha256",
                 )},

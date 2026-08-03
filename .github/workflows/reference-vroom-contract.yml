@@ -1,0 +1,127 @@
+name: Reference VROOM preregistration contract
+
+on:
+  pull_request:
+    paths:
+      - "experiments/reference-vroom-v1/**"
+      - ".github/workflows/reference-vroom-*.yml"
+      - "evidence/run-30777018904.json"
+  push:
+    branches: [main]
+    paths:
+      - "experiments/reference-vroom-v1/**"
+      - ".github/workflows/reference-vroom-*.yml"
+      - "evidence/run-30777018904.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reference-vroom-preregistration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preregistration-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Validate frozen preregistration and disabled authorization
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import zlib
+          from pathlib import Path
+
+          root = Path('experiments/reference-vroom-v1')
+          required = [
+              root / 'preregistration.json',
+              root / 'contract.json',
+              root / 'authorization.json',
+              root / 'authorization-template.json',
+              root / 'wavelength-grid.dat',
+              root / 'frozen-comparators.zlib.b64',
+              root / 'runner.py',
+              root / 'audit.py',
+          ]
+          missing = [str(path) for path in required if not path.is_file()]
+          assert not missing, missing
+
+          prereg = json.loads((root / 'preregistration.json').read_text())
+          auth = json.loads((root / 'authorization.json').read_text())
+          template = json.loads((root / 'authorization-template.json').read_text())
+          contract = json.loads((root / 'contract.json').read_text())
+          comparators = json.loads(zlib.decompress(base64.b64decode((root / 'frozen-comparators.zlib.b64').read_bytes())))
+          grid = [int(x) for x in (root / 'wavelength-grid.dat').read_text().split()]
+
+          assert prereg['schemaVersion'] == 1
+          assert prereg['stageId'] == 'reference-vroom-v1'
+          assert prereg['frozenSourceEvidence'] == {
+              'workflowRunId': 30777018904,
+              'artifactId': 8843259287,
+              'artifactSha256': '462b000f3e7fedebf400c016e9484ff04b64224cd35dcba31f2079a3cd7527d3',
+              'classification': 'INCONCLUSIVE',
+          }
+          design = prereg['design']
+          assert design['method'] == 'conventional-reference-only'
+          assert design['vroom'] == 'on'
+          assert design['caseCount'] == 6
+          assert design['seeds'] == [77301, 77302, 77303, 77304, 77305, 77306]
+          assert design['mcPhotonsPerCase'] == 160000000
+          assert design['maximumConfiguredMcPhotonsSum'] == 960000000
+          assert design['wavelengthDomainNm'] == [380, 780]
+          assert grid[0] == 380 and grid[-1] == 780
+          assert set(design['diagnosticNodesNm']).issubset(grid)
+          assert auth == template
+          assert auth['authorized'] is False
+          assert auth['runMystic'] is False
+          assert auth['runUvspec'] is False
+          assert contract['classificationOrder'] == prereg['analysisPlan']['decisionOrder']
+          assert comparators['source']['workflowRunId'] == 30777018904
+          assert comparators['source']['artifactId'] == 8843259287
+          assert comparators['source']['artifactSha256'] == '462b000f3e7fedebf400c016e9484ff04b64224cd35dcba31f2079a3cd7527d3'
+          assert len(comparators['alisCases']) == 6
+          assert len(comparators['referenceVroomOffCases']) == 6
+          print('Reference VROOM preregistration contract: PASS')
+          PY
+      - name: Compile runner and independent audit
+        run: python -m py_compile experiments/reference-vroom-v1/runner.py experiments/reference-vroom-v1/audit.py
+      - name: Validate runner proposal and VROOM-only resolved input
+        run: |
+          python experiments/reference-vroom-v1/runner.py --print-proposal > proposal.json
+          cat proposal.json
+          python - <<'PY'
+          import json
+          proposal = json.load(open('proposal.json'))
+          assert proposal['stageId'] == 'reference-vroom-v1'
+          assert len(proposal['cases']) == 6
+          assert [case['seed'] for case in proposal['cases']] == [77301, 77302, 77303, 77304, 77305, 77306]
+          assert proposal['expectedHashes']['maximumSolverExecutionCount'] == 6
+          assert proposal['expectedHashes']['maximumSyntaxCheckCount'] == 6
+          assert proposal['expectedHashes']['maximumConfiguredMcPhotonsSum'] == 960000000
+          resolved = proposal['resolvedInputAssertions']
+          assert resolved['containsMcVroomOn'] is True
+          assert resolved['containsMcVroomOff'] is False
+          assert resolved['containsSpectralImportanceSampling'] is False
+          print('Reference VROOM runner proposal: PASS')
+          PY
+      - name: Run independent audit self-test
+        run: python experiments/reference-vroom-v1/audit.py --self-test
+      - name: Confirm no manual scientific dispatch exists
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          offenders = []
+          for path in Path('.github/workflows').glob('reference-vroom-*.yml'):
+              for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+                  if line.lstrip().startswith('workflow_dispatch:'):
+                      offenders.append(f'{path}:{line_number}')
+          if offenders:
+              raise SystemExit('manual scientific dispatch found: ' + ', '.join(offenders))
+          print('No manual scientific dispatch exists: PASS')
+          PY

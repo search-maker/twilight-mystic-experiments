@@ -1,0 +1,84 @@
+name: MYSTIC cross-geometry artifact post-processing
+run-name: Cross geometry postprocess | source-run=${{ inputs.source_run_id }} | auth=${{ inputs.source_authorization_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact completed scientific workflow run ID containing the preserved 24 case artifacts
+        required: true
+        type: string
+      source_authorization_ref:
+        description: Exact one-purpose authorization commit used by the source run
+        required: true
+        type: string
+      expected_execution_key:
+        description: Exact source execution key
+        required: true
+        type: string
+      expected_authorization_ordinal:
+        description: Exact source authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cross-geometry-postprocess-${{ inputs.source_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  postprocess:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out artifact-recovery implementation
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Check out exact source authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_authorization_ref }}
+          fetch-depth: 2
+          path: source-repo
+      - name: Download exact source preflight artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-preflight
+          path: source-artifacts/preflight
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all exact source case artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-pilot-v1-case-*
+          path: source-artifacts/cases
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Recover plan bindings and run aggregate, audit, and screening
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_postprocess.py
+          --source-repository-root source-repo
+          --source-run-id "${{ inputs.source_run_id }}"
+          --source-authorization-ref "${{ inputs.source_authorization_ref }}"
+          --expected-execution-key "${{ inputs.expected_execution_key }}"
+          --expected-authorization-ordinal "${{ inputs.expected_authorization_ordinal }}"
+          --source-plan source-artifacts/preflight/plan.json
+          --guard-report source-artifacts/preflight/authorization-guard.json
+          --duplicate-report source-artifacts/preflight/duplicate-run-audit.json
+          --cases-root source-artifacts/cases
+          --output-dir postprocess-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-postprocess-${{ inputs.source_run_id }}
+          path: postprocess-output
+          if-no-files-found: warn
+          retention-days: 90

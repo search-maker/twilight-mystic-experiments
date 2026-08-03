@@ -21,15 +21,15 @@ proposal = load_module()
 
 
 class CrossGeometryAuthorizationAttemptTests(unittest.TestCase):
-    def test_failed_first_preflight_is_not_reused(self) -> None:
-        self.assertEqual(proposal.AUTHORIZATION_ORDINAL, 2)
+    def test_completed_ordinal_two_is_not_reused(self) -> None:
+        self.assertEqual(proposal.AUTHORIZATION_ORDINAL, 3)
         self.assertEqual(
             proposal.EXECUTION_KEY,
-            "cross-geometry-pilot-v1:screening:2",
+            "cross-geometry-pilot-v1:screening:3",
         )
         self.assertNotEqual(
             proposal.EXECUTION_KEY,
-            "cross-geometry-pilot-v1:screening:1",
+            "cross-geometry-pilot-v1:screening:2",
         )
 
 

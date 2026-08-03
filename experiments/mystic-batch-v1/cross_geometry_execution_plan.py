@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 STAGE_ID = "cross-geometry-pilot-v1"
 GENERIC_STAGE_ID = "mystic-batch-v1"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PlanRefusal(RuntimeError):
@@ -28,6 +30,32 @@ def compact(value: Any) -> str:
 
 def dump(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+
+
+def _binding_source(proposal_path: Path, guard: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    authorization_path = proposal_path.parent / "authorization.cross-geometry.json"
+    if not authorization_path.is_file():
+        return guard, False
+    authorization = load(authorization_path)
+    expected = {
+        "authorized": True,
+        "scientificExecution": True,
+        "scientificDiagnostic": True,
+        "batchId": guard.get("batchId"),
+        "executionKey": guard.get("executionKey"),
+        "authorizationOrdinal": guard.get("authorizationOrdinal"),
+    }
+    stale = {key: (authorization.get(key), value) for key, value in expected.items() if authorization.get(key) != value}
+    if stale:
+        raise PlanRefusal(f"active authorization and guard do not match: {stale}")
+    return authorization, True
+
+
+def _require_hash(source: dict[str, Any], field: str) -> str:
+    value = source.get(field)
+    if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+        raise PlanRefusal(f"missing or invalid hash binding: {field}")
+    return value
 
 
 def build_plan(proposal_path: Path, guard_report_path: Path) -> dict[str, Any]:
@@ -56,6 +84,18 @@ def build_plan(proposal_path: Path, guard_report_path: Path) -> dict[str, Any]:
             for case in ordered
         ]
     }
+    bindings, strict_bindings = _binding_source(proposal_path, guard)
+    compatibility_bindings: dict[str, str] = {}
+    for output_field, source_field in {
+        "scientificAdapterRawSha256": "executionAdapterRawSha256",
+        "runtimeLockRawSha256": "runtimeLockRawSha256",
+        "executionWorkflowRawSha256": "executionWorkflowRawSha256",
+    }.items():
+        value = bindings.get(source_field)
+        if strict_bindings:
+            compatibility_bindings[output_field] = _require_hash(bindings, source_field)
+        elif isinstance(value, str) and SHA256_RE.fullmatch(value):
+            compatibility_bindings[output_field] = value
     return {
         "schemaVersion": 1,
         "stageId": GENERIC_STAGE_ID,
@@ -69,6 +109,7 @@ def build_plan(proposal_path: Path, guard_report_path: Path) -> dict[str, Any]:
         "authorizationRef": guard["authorizationRef"],
         "authorizationOrdinal": guard["authorizationOrdinal"],
         "executionKey": guard["executionKey"],
+        **compatibility_bindings,
         "caseCount": len(ordered),
         "maximumParallel": limits["maximumParallel"],
         "perCaseTimeoutSeconds": limits["perCaseTimeoutSeconds"],

@@ -1,10 +1,10 @@
-name: Reference VROOM v2 preparation contract
+name: Reference VROOM v2 execution package contract
 
 on:
   pull_request:
     paths:
-      - experiments/reference-vroom-v2/**
-      - .github/workflows/reference-vroom-*.yml
+      - "experiments/reference-vroom-v2/**"
+      - ".github/workflows/reference-vroom-*.yml"
 
 permissions:
   contents: read
@@ -17,8 +17,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
 
-      - name: Verify preparation is non-scientific and non-duplicative
+      - name: Verify frozen package and disabled authorization
         shell: python
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -30,38 +33,40 @@ jobs:
           from pathlib import Path
 
           root = Path('.')
-          prereg_path = root / 'experiments/reference-vroom-v2/preregistration.json'
-          auth_path = root / 'experiments/reference-vroom-v2/authorization.json'
-          gate_path = root / '.github/workflows/reference-vroom-v2-execution.yml'
-          v1_contract_path = root / '.github/workflows/reference-vroom-contract.yml'
-
-          prereg = json.loads(prereg_path.read_text())
-          auth = json.loads(auth_path.read_text())
+          v2 = root / 'experiments/reference-vroom-v2'
+          prereg = json.loads((v2 / 'preregistration.json').read_text())
+          auth = json.loads((v2 / 'authorization.json').read_text())
 
           assert prereg['stageId'] == 'reference-vroom-v2'
           assert prereg['status'] == 'PREREGISTERED_NOT_AUTHORIZED'
           assert prereg['scientificDesignChanged'] is False
           assert prereg['productionBehaviorChanged'] is False
-          assert prereg['transportContract']['event'] == 'workflow_dispatch'
-          assert prereg['transportContract']['requiredExecutionKey'] == 'reference-vroom-v2'
-          assert prereg['transportContract']['maximumDispatchesThatMayReachSolver'] == 1
-          assert prereg['transportContract']['requiredRunAttempt'] == 1
-          assert prereg['transportContract']['rerunAllowed'] is False
-          assert prereg['transportContract']['resumeAllowed'] is False
-          assert prereg['transportContract']['authorizationReuseAllowed'] is False
-          assert prereg['transportContract']['duplicateMustRefuseBeforeSyntaxOrSolver'] is True
-          assert prereg['transportContract']['authorizationCurrentlyEnabled'] is False
+          transport = prereg['transportContract']
+          assert transport['event'] == 'workflow_dispatch'
+          assert transport['requiredExecutionKey'] == 'reference-vroom-v2'
+          assert transport['maximumDispatchesThatMayReachSolver'] == 1
+          assert transport['requiredRunAttempt'] == 1
+          assert transport['rerunAllowed'] is False
+          assert transport['resumeAllowed'] is False
+          assert transport['authorizationReuseAllowed'] is False
+          assert transport['duplicateMustRefuseBeforeSyntaxOrSolver'] is True
+          assert transport['authorizationCurrentlyEnabled'] is False
 
-          assert auth['stageId'] == 'reference-vroom-v2'
-          assert auth['executionKey'] == 'reference-vroom-v2'
-          assert auth['authorized'] is False
-          assert auth['runMystic'] is False
-          assert auth['runUvspec'] is False
-          assert auth['scientificDiagnostic'] is False
-          assert auth['authorizationOrdinal'] == 0
-          assert auth['consumed'] is False
-          assert auth['exactAuthorizationParentCommit'] is None
-          assert auth['exactAuthorizationCommit'] is None
+          assert auth == {
+              'schemaVersion': 1,
+              'stageId': 'reference-vroom-v2',
+              'authorized': False,
+              'runMystic': False,
+              'runUvspec': False,
+              'scientificDiagnostic': False,
+              'successDoesNotAuthorizeProduction': True,
+              'executionKey': 'reference-vroom-v2',
+              'exactAuthorizationParentCommit': None,
+              'exactAuthorizationCommit': None,
+              'authorizationOrdinal': 0,
+              'consumed': False,
+              'note': 'Preparation only. This file does not authorize a dispatch or any scientific execution.',
+          }
 
           expected_hashes = {
               'experiments/reference-vroom-v1/runner.py': '462fad44ad9924a95dcc92544564467678d792afaacb26acf0264c25171f2af1',
@@ -77,33 +82,66 @@ jobs:
               actual = hashlib.sha256((root / path).read_bytes()).hexdigest()
               assert actual == expected, (path, actual, expected)
 
-          v1_auth = json.loads((root / 'experiments/reference-vroom-v1/authorization.json').read_text())
-          assert v1_auth['authorized'] is False
-          assert v1_auth['runMystic'] is False
-          assert v1_auth['runUvspec'] is False
-
-          gate = gate_path.read_text()
-          assert 'workflow_dispatch:' in gate
-          assert 'cancel-in-progress: false' in gate
-          assert 'GITHUB_RUN_ATTEMPT' in gate
-          assert 'authorization is disabled' in gate
-          assert 'reviewed scientific runner and duplicate-run audit are not installed yet' in gate
-          assert 'REFUSED_BEFORE_SCIENTIFIC_EXECUTION' in gate
-          forbidden = ['rte_solver', 'mc_photons', 'libRadtran', 'uvspec', 'mc_randomseed', '--allow-execution', 'micromamba']
-          for token in forbidden:
-              assert token not in gate, token
-
-          v1_contract = v1_contract_path.read_text()
-          required_v1_contract_tokens = [
-              'Confirm no unreviewed manual scientific dispatch exists',
-              "allowed_gate = Path('.github/workflows/reference-vroom-v2-execution.yml')",
-              'exactly-one-reviewed-v2-gate-required',
-              'authorization-enabled',
-              'scientific-command',
-              'Only the reviewed non-scientific v2 dispatch gate exists: PASS',
+          required = [
+              v2 / 'runner_adapter.py',
+              v2 / 'duplicate_run_audit.py',
+              root / '.github/workflows/reference-vroom-v2-execution.yml',
           ]
-          for token in required_v1_contract_tokens:
-              assert token in v1_contract, token
+          assert all(path.is_file() for path in required)
+
+          gate = (root / '.github/workflows/reference-vroom-v2-execution.yml').read_text()
+          assert gate.count('workflow_dispatch:') == 1
+          assert '\n  push:' not in gate
+          required_gate_tokens = [
+              'name: Reference VROOM v2 one-shot execution',
+              'run-name: Reference VROOM v2 | key=',
+              'cancel-in-progress: false',
+              'GITHUB_RUN_ATTEMPT',
+              'REFUSED_BEFORE_SYNTAX_OR_SOLVER',
+              'id: authorization-guard',
+              'id: duplicate-run-audit',
+              'id: verify-package',
+              'mamba-org/setup-micromamba@v2',
+              'id: runtime-identity',
+              'id: scientific-run',
+              'experiments/reference-vroom-v2/runner_adapter.py',
+              'experiments/reference-vroom-v2/duplicate_run_audit.py',
+              '--allow-execution',
+          ]
+          for token in required_gate_tokens:
+              assert token in gate, token
+          positions = [
+              gate.index('id: authorization-guard'),
+              gate.index('id: duplicate-run-audit'),
+              gate.index('id: verify-package'),
+              gate.index('mamba-org/setup-micromamba@v2'),
+              gate.index('id: runtime-identity'),
+              gate.index('id: scientific-run'),
+          ]
+          assert positions == sorted(positions), positions
+
+          adapter = (v2 / 'runner_adapter.py').read_text()
+          for token in [
+              'V1_RUNNER',
+              'importlib.util.spec_from_file_location',
+              'verify_authorization_v2',
+              'authorizationOrdinal',
+              "changed != [AUTHORIZATION_PATH]",
+              'package_hashes',
+              'module.main()',
+          ]:
+              assert token in adapter, token
+
+          duplicate = (v2 / 'duplicate_run_audit.py').read_text()
+          for token in [
+              'actions/workflows',
+              'event=workflow_dispatch',
+              'display_title',
+              'run_attempt',
+              'prior workflow run already used this one-shot marker',
+              'REFUSED_BEFORE_SYNTAX_OR_SOLVER',
+          ]:
+              assert token in duplicate, token
 
           base = os.environ['BASE_REF']
           changed = subprocess.check_output(
@@ -114,9 +152,48 @@ jobs:
               '.github/workflows/reference-vroom-contract.yml',
               '.github/workflows/reference-vroom-v2-contract.yml',
               '.github/workflows/reference-vroom-v2-execution.yml',
-              'experiments/reference-vroom-v2/authorization.json',
-              'experiments/reference-vroom-v2/preregistration.json',
+              'experiments/reference-vroom-v2/duplicate_run_audit.py',
+              'experiments/reference-vroom-v2/runner_adapter.py',
           ])
           assert sorted(changed) == expected_changed, changed
+          print('Reference VROOM v2 frozen package and disabled authorization: PASS')
 
-          print('reference-vroom-v2 preparation contract passed')
+      - name: Compile adapter and duplicate audit
+        run: >-
+          python -m py_compile
+          experiments/reference-vroom-v2/runner_adapter.py
+          experiments/reference-vroom-v2/duplicate_run_audit.py
+
+      - name: Prove duplicate refusal boundary
+        run: python experiments/reference-vroom-v2/duplicate_run_audit.py --self-test
+
+      - name: Validate exact frozen runner proposal
+        run: |
+          python experiments/reference-vroom-v2/runner_adapter.py --print-proposal > proposal.json
+          cat proposal.json
+          python - <<'PY'
+          import json
+          proposal = json.load(open('proposal.json'))
+          assert proposal['stageId'] == 'reference-vroom-v2'
+          assert proposal['authorizationRequired'] is True
+          assert proposal['executionAuthorizedByProposal'] is False
+          assert len(proposal['cases']) == 6
+          assert [case['seed'] for case in proposal['cases']] == [77301, 77302, 77303, 77304, 77305, 77306]
+          assert all(case['photonHistories'] == 160000000 for case in proposal['cases'])
+          hashes = proposal['expectedHashes']
+          assert hashes['exactSourceRunnerSha256'] == '462fad44ad9924a95dcc92544564467678d792afaacb26acf0264c25171f2af1'
+          assert hashes['exactSourceCaseSetPayloadSha256'] == '89fe386f3e65f31d02025d9ecda02d97737dd82e13d224aefccec5c64ca0f101'
+          assert hashes['maximumSolverExecutionCount'] == 6
+          assert hashes['maximumSyntaxCheckCount'] == 6
+          assert hashes['maximumConfiguredMcPhotonsSum'] == 960000000
+          assert hashes['maximumAuthorizedRunnerMinutes'] == 90
+          assert hashes['perCaseTimeoutSeconds'] == 1200
+          assert hashes['purpose'] == 'reference-vroom-v2'
+          assert hashes['executionKey'] == 'reference-vroom-v2'
+          assert proposal['resolvedInputAssertions'] == {
+              'containsMcVroomOn': True,
+              'containsMcVroomOff': False,
+              'containsSpectralImportanceSampling': False,
+          }
+          print('Reference VROOM v2 runner proposal: PASS')
+          PY

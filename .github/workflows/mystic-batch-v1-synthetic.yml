@@ -1,0 +1,189 @@
+name: MYSTIC batch v1 synthetic contract
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-synthetic.yml"
+      - "experiments/mystic-batch-v1/**"
+      - "tests/test_mystic_batch_v1.py"
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-synthetic.yml"
+      - "experiments/mystic-batch-v1/**"
+      - "tests/test_mystic_batch_v1.py"
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST: experiments/mystic-batch-v1/manifest.synthetic.json
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.json
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run synthetic package tests
+        run: python -m unittest -v tests/test_mystic_batch_v1.py
+      - name: Prove workflow contains no scientific executable
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          paths = [
+              Path(".github/workflows/mystic-batch-v1-synthetic.yml"),
+              *Path("experiments/mystic-batch-v1").glob("*.py"),
+          ]
+          forbidden = ("command -v " + "uvspec", "subprocess" + ".run", "subprocess" + ".popen", "os" + ".system", "rte_" + "solver mystic", "mc_" + "photons ", "mc_" + "vroom ")
+          for path in paths:
+              text = path.read_text().lower()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"forbidden scientific token {token!r} in {path}")
+          PY
+
+  plan:
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      manifest_sha256: ${{ steps.plan.outputs.manifest_sha256 }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      case_count: ${{ steps.plan.outputs.case_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Freeze exact synthetic plan
+        id: plan
+        run: >-
+          python experiments/mystic-batch-v1/plan.py
+          --manifest "$MANIFEST"
+          --authorization "$AUTHORIZATION"
+          --output plan/plan.json
+          --github-output "$GITHUB_OUTPUT"
+          --allow-synthetic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mystic-batch-v1-plan
+          path: plan
+          if-no-files-found: error
+          retention-days: 30
+
+  cases:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-plan
+          path: plan
+      - name: Run isolated synthetic case
+        run: >-
+          python experiments/mystic-batch-v1/synthetic_case_runner.py
+          --plan plan/plan.json
+          --case-id "${{ matrix.case_id }}"
+          --output-root case-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-case-${{ matrix.case_id }}
+          path: case-output
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    needs:
+      - plan
+      - cases
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-plan
+          path: plan
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mystic-batch-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact case set
+        run: >-
+          python experiments/mystic-batch-v1/aggregate.py
+          --plan plan/plan.json
+          --cases-root case-artifacts
+          --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 30
+
+  audit:
+    needs:
+      - plan
+      - cases
+      - aggregate
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-plan
+          path: plan
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mystic-batch-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: mystic-batch-v1-aggregate
+          path: aggregate-output
+      - name: Independently audit plan, cases, hashes, and statistics
+        run: >-
+          python experiments/mystic-batch-v1/audit.py
+          --plan plan/plan.json
+          --cases-root case-artifacts
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-batch-v1-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 30

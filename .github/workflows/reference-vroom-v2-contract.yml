@@ -1,0 +1,107 @@
+name: Reference VROOM v2 preparation contract
+
+on:
+  pull_request:
+    paths:
+      - experiments/reference-vroom-v2/**
+      - .github/workflows/reference-vroom-v2-*.yml
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify preparation is non-scientific and non-duplicative
+        shell: python
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          root = Path('.')
+          prereg_path = root / 'experiments/reference-vroom-v2/preregistration.json'
+          auth_path = root / 'experiments/reference-vroom-v2/authorization.json'
+          gate_path = root / '.github/workflows/reference-vroom-v2-execution.yml'
+
+          prereg = json.loads(prereg_path.read_text())
+          auth = json.loads(auth_path.read_text())
+
+          assert prereg['stageId'] == 'reference-vroom-v2'
+          assert prereg['status'] == 'PREREGISTERED_NOT_AUTHORIZED'
+          assert prereg['scientificDesignChanged'] is False
+          assert prereg['productionBehaviorChanged'] is False
+          assert prereg['transportContract']['event'] == 'workflow_dispatch'
+          assert prereg['transportContract']['requiredExecutionKey'] == 'reference-vroom-v2'
+          assert prereg['transportContract']['maximumDispatchesThatMayReachSolver'] == 1
+          assert prereg['transportContract']['requiredRunAttempt'] == 1
+          assert prereg['transportContract']['rerunAllowed'] is False
+          assert prereg['transportContract']['resumeAllowed'] is False
+          assert prereg['transportContract']['authorizationReuseAllowed'] is False
+          assert prereg['transportContract']['duplicateMustRefuseBeforeSyntaxOrSolver'] is True
+          assert prereg['transportContract']['authorizationCurrentlyEnabled'] is False
+
+          assert auth['stageId'] == 'reference-vroom-v2'
+          assert auth['executionKey'] == 'reference-vroom-v2'
+          assert auth['authorized'] is False
+          assert auth['runMystic'] is False
+          assert auth['runUvspec'] is False
+          assert auth['scientificDiagnostic'] is False
+          assert auth['authorizationOrdinal'] == 0
+          assert auth['consumed'] is False
+          assert auth['exactAuthorizationParentCommit'] is None
+          assert auth['exactAuthorizationCommit'] is None
+
+          expected_hashes = {
+              'experiments/reference-vroom-v1/runner.py': '462fad44ad9924a95dcc92544564467678d792afaacb26acf0264c25171f2af1',
+              'experiments/reference-vroom-v1/audit.py': 'e12d7bef82fd4f725736fa7183f76993b73a98ace6271959729ff65c15784c10',
+              'experiments/reference-vroom-v1/preregistration.json': '8fd87715eed5d192df2b7fe0718d4e94c1a2e8ad1a75f23fbf9d7a4522cfb5b6',
+              'experiments/reference-vroom-v1/contract.json': 'b562b89a3cc0e867395829ac6a5201ca57d4e4325fb55da5e0050399a847e7c1',
+              'experiments/reference-vroom-v1/frozen-comparators.zlib.b64': '7678ae3f6a9a0199f3ab31556cdbd1ade579dae23e9a21915ae08a8cc59cfcfb',
+              'experiments/reference-vroom-v1/wavelength-grid.dat': '2f2fb3c9bf0002bdbe7d97f36e100f4334a40ac8fcfd7e5d6a98306de2cead23',
+              'experiments/reference-vroom-v1/authorization-template.json': '6e15ff7723369d30bb0188bfb3ca1643fcc12c98182daf9dd25e01a52fac7ff9',
+              '.github/workflows/reference-vroom-execution.yml': 'c3493a855e9dfb97309b941dfec0988bbae71240f07a893856ff872a1400ef74',
+          }
+          for path, expected in expected_hashes.items():
+              actual = hashlib.sha256((root / path).read_bytes()).hexdigest()
+              assert actual == expected, (path, actual, expected)
+
+          v1_auth = json.loads((root / 'experiments/reference-vroom-v1/authorization.json').read_text())
+          assert v1_auth['authorized'] is False
+          assert v1_auth['runMystic'] is False
+          assert v1_auth['runUvspec'] is False
+
+          gate = gate_path.read_text()
+          assert 'workflow_dispatch:' in gate
+          assert 'cancel-in-progress: false' in gate
+          assert 'GITHUB_RUN_ATTEMPT' in gate
+          assert 'authorization is disabled' in gate
+          assert 'reviewed scientific runner and duplicate-run audit are not installed yet' in gate
+          forbidden = ['rte_solver', 'mc_photons', 'libRadtran', 'uvspec', 'mc_randomseed']
+          for token in forbidden:
+              assert token not in gate, token
+
+          base = os.environ['BASE_REF']
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-only', f'origin/{base}...HEAD'],
+              text=True,
+          ).splitlines()
+          expected_changed = sorted([
+              '.github/workflows/reference-vroom-v2-contract.yml',
+              '.github/workflows/reference-vroom-v2-execution.yml',
+              'experiments/reference-vroom-v2/authorization.json',
+              'experiments/reference-vroom-v2/preregistration.json',
+          ])
+          assert sorted(changed) == expected_changed, changed
+
+          print('reference-vroom-v2 preparation contract passed')

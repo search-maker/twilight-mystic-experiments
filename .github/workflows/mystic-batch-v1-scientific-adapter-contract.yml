@@ -1,0 +1,188 @@
+name: MYSTIC batch v1 scientific adapter contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-scientific-adapter-contract.yml"
+      - "experiments/mystic-batch-v1/scientific_adapter.py"
+      - "experiments/mystic-batch-v1/runtime_probe.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+      - "experiments/mystic-batch-v1/authorization.scientific-template.json"
+      - "tests/test_mystic_batch_v1_scientific_adapter.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-scientific-adapter-contract.yml"
+      - "experiments/mystic-batch-v1/scientific_adapter.py"
+      - "experiments/mystic-batch-v1/runtime_probe.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+      - "experiments/mystic-batch-v1/authorization.scientific-template.json"
+      - "tests/test_mystic_batch_v1_scientific_adapter.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run scientific-adapter refusal and rendering tests
+        run: python -m unittest -v tests/test_mystic_batch_v1_scientific_adapter.py
+      - name: Compile adapter package
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/scientific_adapter.py
+          experiments/mystic-batch-v1/runtime_probe.py
+      - name: Prove this workflow has no syntax-check or solver command
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/mystic-batch-v1-scientific-adapter-contract.yml").read_text().lower()
+          forbidden = (
+              "uvspec " + "-c",
+              "--allow-" + "execution",
+              "scientific-" + "run",
+              "solver execution " + "once",
+          )
+          for token in forbidden:
+              if token in workflow:
+                  raise SystemExit(f"forbidden execution token in contract workflow: {token!r}")
+
+          adapter = Path("experiments/mystic-batch-v1/scientific_adapter.py").read_text().lower()
+          if "import subprocess" in adapter or "os.system" in adapter:
+              raise SystemExit("scientific adapter may render inputs but may not execute processes in this stage")
+          PY
+      - name: Prove scientific authorization template remains disabled
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          auth = json.loads(Path("experiments/mystic-batch-v1/authorization.scientific-template.json").read_text())
+          required = {
+              "authorized": False,
+              "scientificExecution": False,
+              "authorizationOrdinal": 0,
+              "consumed": False,
+          }
+          stale = {key: (auth.get(key), value) for key, value in required.items() if auth.get(key) != value}
+          if stale:
+              raise SystemExit(f"scientific authorization template is not disabled: {stale}")
+          PY
+
+  runtime-identity-and-input-preparation:
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mystic-batch-v1-runtime-probe
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Capture exact runtime identity without syntax check or solver
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -d "$DATA_DIR"
+          test -s "$ATMOSPHERE"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-probe/runtime-report.json
+      - name: Build an ephemeral manifest bound to the captured runtime
+        shell: bash -el {0}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("runtime-probe/runtime-report.json").read_text())
+          manifest = {
+              "schemaVersion": 1,
+              "stageId": "mystic-batch-v1",
+              "batchId": "runtime-probe-reference-input-v1",
+              "mode": "scientific",
+              "scientificExecution": True,
+              "adapterId": "mystic-spectral-radiance-v1",
+              "runtime": {
+                  "kind": "micromamba-lock",
+                  "containerImageDigest": None,
+                  "exactPackageSpec": "rubin-libradtran=2.0.6=py312pl5321he9373c2_1",
+                  "uvspecSha256": report["uvspecSha256"],
+                  "uvspecHelpSha256": report["uvspecHelpSha256"],
+                  "libRadtranDataTreeSha256": report["libRadtranDataTreeSha256"],
+                  "atmosphereSha256": report["atmosphereSha256"],
+                  "runtimeLockRawSha256": report["runtimeLockRawSha256"],
+              },
+              "limits": {
+                  "maximumCases": 1,
+                  "maximumParallel": 1,
+                  "maximumConfiguredMcPhotonsSum": 160000000,
+                  "perCaseTimeoutSeconds": 1200,
+              },
+              "frozenInputs": {
+                  "wavelengthDomainNm": [380, 780],
+                  "diagnosticNodesNm": [470, 480, 490, 500, 510, 520, 530, 540, 560, 580, 590, 600, 610, 640, 660],
+                  "molecularAbsorption": "crs",
+                  "mcSpherical": "1D",
+                  "mcVroom": "on",
+                  "aod550": 0.15,
+                  "albedo": 0.15,
+                  "dataPaths": {
+                      "solarFlux": {"root": "libRadtranData", "path": "solar_flux/atlas_plus_modtran"},
+                      "wavelengthGrid": {"root": "repository", "path": "experiments/reference-vroom-v1/wavelength-grid.dat"},
+                      "atmosphere": {"root": "libRadtranData", "path": "atmmod/afglus.dat"},
+                  },
+              },
+              "cases": [{
+                  "ordinal": 1,
+                  "caseId": "runtime-probe-seed-77301",
+                  "seed": 77301,
+                  "photonHistories": 160000000,
+                  "parameters": {
+                      "sunDepressionDeg": 12.0,
+                      "targetAltitudeDeg": 10.0,
+                      "relativeAzimuthDeg": 120.0,
+                      "observerElevationM": 0.0,
+                  },
+              }],
+          }
+          Path("runtime-probe/manifest.runtime-probe.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Prepare and hash exact uvspec input without executing it
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/scientific_adapter.py \
+            --manifest runtime-probe/manifest.runtime-probe.json \
+            --runtime-report runtime-probe/runtime-report.json \
+            --case-id runtime-probe-seed-77301 \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --output-dir runtime-probe/prepared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mystic-batch-v1-runtime-identity-and-prepared-input
+          path: runtime-probe
+          if-no-files-found: error
+          retention-days: 90

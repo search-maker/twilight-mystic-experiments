@@ -111,17 +111,57 @@ jobs:
           PY
       - name: Run independent audit self-test
         run: python experiments/reference-vroom-v1/audit.py --self-test
-      - name: Confirm no manual scientific dispatch exists
+      - name: Confirm no unreviewed manual scientific dispatch exists
         run: |
           python - <<'PY'
+          import json
           from pathlib import Path
 
+          allowed_gate = Path('.github/workflows/reference-vroom-v2-execution.yml')
           offenders = []
+          dispatches = []
+
           for path in Path('.github/workflows').glob('reference-vroom-*.yml'):
-              for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+              text = path.read_text()
+              for line_number, line in enumerate(text.splitlines(), start=1):
                   if line.lstrip().startswith('workflow_dispatch:'):
-                      offenders.append(f'{path}:{line_number}')
+                      dispatches.append((path, line_number, text))
+
+          for path, line_number, text in dispatches:
+              if path != allowed_gate:
+                  offenders.append(f'{path}:{line_number}')
+                  continue
+
+              required = [
+                  'name: Reference VROOM v2 one-shot gate',
+                  'cancel-in-progress: false',
+                  'GITHUB_RUN_ATTEMPT',
+                  'authorization is disabled',
+                  'reviewed scientific runner and duplicate-run audit are not installed yet',
+                  'REFUSED_BEFORE_SCIENTIFIC_EXECUTION',
+              ]
+              forbidden = [
+                  'rte_solver',
+                  'mc_photons',
+                  'mc_randomseed',
+                  'uvspec',
+                  'libRadtran',
+                  '--allow-execution',
+                  'micromamba',
+              ]
+              if any(token not in text for token in required):
+                  offenders.append(f'{path}:{line_number}:missing-guard')
+              if any(token in text for token in forbidden):
+                  offenders.append(f'{path}:{line_number}:scientific-command')
+
+              auth = json.loads(Path('experiments/reference-vroom-v2/authorization.json').read_text())
+              if any(auth.get(key) is not False for key in ('authorized', 'runMystic', 'runUvspec', 'scientificDiagnostic')):
+                  offenders.append(f'{path}:{line_number}:authorization-enabled')
+
+          if len(dispatches) != 1 or dispatches[0][0] != allowed_gate:
+              offenders.append(f'exactly-one-reviewed-v2-gate-required:{[(str(p), n) for p, n, _ in dispatches]}')
+
           if offenders:
-              raise SystemExit('manual scientific dispatch found: ' + ', '.join(offenders))
-          print('No manual scientific dispatch exists: PASS')
+              raise SystemExit('unreviewed manual scientific dispatch found: ' + ', '.join(offenders))
+          print('Only the reviewed non-scientific v2 dispatch gate exists: PASS')
           PY

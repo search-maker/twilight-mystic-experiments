@@ -1,0 +1,89 @@
+name: MYSTIC cross-geometry pilot proposal contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-proposal-contract.yml"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json"
+      - "experiments/mystic-batch-v1/cross-geometry-contract.json"
+      - "experiments/mystic-batch-v1/authorization.cross-geometry-template.json"
+      - "experiments/mystic-batch-v1/cross_geometry_adapter.py"
+      - "experiments/mystic-batch-v1/cross_geometry_validate.py"
+      - "experiments/mystic-batch-v1/cross_geometry_analysis.py"
+      - "tests/test_mystic_batch_v1_cross_geometry.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-proposal-contract.yml"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json"
+      - "experiments/mystic-batch-v1/cross-geometry-contract.json"
+      - "experiments/mystic-batch-v1/authorization.cross-geometry-template.json"
+      - "experiments/mystic-batch-v1/cross_geometry_adapter.py"
+      - "experiments/mystic-batch-v1/cross_geometry_validate.py"
+      - "experiments/mystic-batch-v1/cross_geometry_analysis.py"
+      - "tests/test_mystic_batch_v1_cross_geometry.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run proposal, renderer, and screening-analysis tests
+        run: python -m unittest -v tests/test_mystic_batch_v1_cross_geometry.py
+      - name: Validate exact disabled proposal
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_validate.py
+          --manifest experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+          --contract experiments/mystic-batch-v1/cross-geometry-contract.json
+          --authorization experiments/mystic-batch-v1/authorization.cross-geometry-template.json
+          --adapter experiments/mystic-batch-v1/cross_geometry_adapter.py
+          --output proposal-validation/proposal-report.json
+      - name: Compile proposal package
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/cross_geometry_adapter.py
+          experiments/mystic-batch-v1/cross_geometry_validate.py
+          experiments/mystic-batch-v1/cross_geometry_analysis.py
+      - name: Prove proposal cannot execute uvspec or MYSTIC
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/mystic-batch-v1-cross-geometry-proposal-contract.yml").read_text().lower()
+          header = workflow.split("jobs:", 1)[0]
+          forbidden_triggers = ("workflow_dispatch:", "schedule:", "repository_dispatch:")
+          present = [token for token in forbidden_triggers if token in header]
+          if present:
+              raise SystemExit(f"proposal has execution trigger: {present}")
+
+          files = [
+              Path("experiments/mystic-batch-v1/cross_geometry_adapter.py"),
+              Path("experiments/mystic-batch-v1/cross_geometry_validate.py"),
+              Path("experiments/mystic-batch-v1/cross_geometry_analysis.py")
+          ]
+          forbidden_code = ("import subprocess", "os.system", "popen(", "urlopen(", "requests.")
+          for path in files:
+              text = path.read_text().lower()
+              found = [token for token in forbidden_code if token in text]
+              if found:
+                  raise SystemExit(f"execution or network primitive in {path}: {found}")
+
+          import json
+          auth = json.loads(Path("experiments/mystic-batch-v1/authorization.cross-geometry-template.json").read_text())
+          if auth["authorized"] is not False or auth["scientificExecution"] is not False or auth["authorizationOrdinal"] != 0:
+              raise SystemExit("cross-geometry authorization template is not disabled")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mystic-cross-geometry-pilot-proposal-validation
+          path: proposal-validation
+          if-no-files-found: error
+          retention-days: 90

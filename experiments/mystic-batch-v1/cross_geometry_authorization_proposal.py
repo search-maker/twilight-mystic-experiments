@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 STAGE_ID = "cross-geometry-pilot-v1"
-EXECUTION_KEY = "cross-geometry-pilot-v1:screening:1"
+AUTHORIZATION_ORDINAL = 2
+EXECUTION_KEY = f"cross-geometry-pilot-v1:screening:{AUTHORIZATION_ORDINAL}"
 PACKAGE = Path("experiments/mystic-batch-v1")
 PATHS = {
     "authorization": PACKAGE / "authorization.cross-geometry.json",
@@ -128,7 +129,7 @@ def build_proposal(repository_root: Path) -> dict[str, Any]:
         "auditRawSha256": raw_sha256(absolute["audit"]),
         "exactAuthorizationParentCommit": source_commit,
         "exactAuthorizationCommit": None,
-        "authorizationOrdinal": 1,
+        "authorizationOrdinal": AUTHORIZATION_ORDINAL,
         "consumed": False,
         "note": "Proposal only. A future one-purpose commit may replace only authorization.cross-geometry.json with this object; a separate reviewed workflow_dispatch is still required.",
     }

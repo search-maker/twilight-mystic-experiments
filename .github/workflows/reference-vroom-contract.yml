@@ -32,14 +32,30 @@ jobs:
       - name: Validate frozen preregistration and disabled authorization
         run: |
           python - <<'PY'
+          import base64
           import json
+          import zlib
           from pathlib import Path
 
           root = Path('experiments/reference-vroom-v1')
+          required = [
+              root / 'preregistration.json',
+              root / 'contract.json',
+              root / 'authorization.json',
+              root / 'authorization-template.json',
+              root / 'wavelength-grid.dat',
+              root / 'frozen-comparators.zlib.b64',
+              root / 'runner.py',
+              root / 'audit.py',
+          ]
+          missing = [str(path) for path in required if not path.is_file()]
+          assert not missing, missing
+
           prereg = json.loads((root / 'preregistration.json').read_text())
           auth = json.loads((root / 'authorization.json').read_text())
           template = json.loads((root / 'authorization-template.json').read_text())
           contract = json.loads((root / 'contract.json').read_text())
+          comparators = json.loads(zlib.decompress(base64.b64decode((root / 'frozen-comparators.zlib.b64').read_bytes())))
           grid = [int(x) for x in (root / 'wavelength-grid.dat').read_text().split()]
 
           assert prereg['schemaVersion'] == 1
@@ -65,8 +81,35 @@ jobs:
           assert auth['runMystic'] is False
           assert auth['runUvspec'] is False
           assert contract['classificationOrder'] == prereg['analysisPlan']['decisionOrder']
+          assert comparators['source']['workflowRunId'] == 30777018904
+          assert comparators['source']['artifactId'] == 8843259287
+          assert comparators['source']['artifactSha256'] == '462b000f3e7fedebf400c016e9484ff04b64224cd35dcba31f2079a3cd7527d3'
+          assert len(comparators['alisCases']) == 6
+          assert len(comparators['referenceVroomOffCases']) == 6
           print('Reference VROOM preregistration contract: PASS')
           PY
+      - name: Compile runner and independent audit
+        run: python -m py_compile experiments/reference-vroom-v1/runner.py experiments/reference-vroom-v1/audit.py
+      - name: Validate runner proposal and VROOM-only resolved input
+        run: |
+          python experiments/reference-vroom-v1/runner.py --print-proposal > proposal.json
+          python - <<'PY'
+          import json
+          proposal = json.load(open('proposal.json'))
+          assert proposal['stageId'] == 'reference-vroom-v1'
+          assert len(proposal['cases']) == 6
+          assert [case['seed'] for case in proposal['cases']] == [77301, 77302, 77303, 77304, 77305, 77306]
+          assert proposal['expectedHashes']['maximumSolverExecutionCount'] == 6
+          assert proposal['expectedHashes']['maximumSyntaxCheckCount'] == 6
+          assert proposal['expectedHashes']['maximumConfiguredMcPhotonsSum'] == 960000000
+          resolved = proposal['resolvedInputAssertions']
+          assert resolved['containsMcVroomOn'] is True
+          assert resolved['containsMcVroomOff'] is False
+          assert resolved['containsSpectralImportanceSampling'] is False
+          print('Reference VROOM runner proposal: PASS')
+          PY
+      - name: Run independent audit self-test
+        run: python experiments/reference-vroom-v1/audit.py --self-test
       - name: Confirm no manual scientific dispatch exists
         run: |
           python - <<'PY'

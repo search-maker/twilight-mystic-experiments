@@ -1,0 +1,142 @@
+        fraction - improvement["baselinePhotopicWeightFractionWithinFactorTwo"] >= improvement["minimumAbsolutePhotopicWeightFractionGain"]
+        or high_distance <= baseline_distance * improvement["maximumLogRatioDistanceFractionOfBaseline"]
+    )
+    if methods["alis"]["status"] == "STABLE" and methods["reference"]["status"] == "STABLE" and agreement:
+        classification = "BOTH_CONVERGE_AND_AGREE"
+    elif methods["alis"]["status"] == "STABLE" and methods["reference"]["status"] == "STABLE":
+        classification = "PERSISTENT_METHOD_DISCREPANCY"
+    elif methods["alis"]["status"] == "STABLE" and methods["reference"]["status"] == "SHIFTED" and materially_improved:
+        classification = "REFERENCE_UNDERCONVERGED"
+    elif methods["reference"]["status"] == "STABLE" and methods["alis"]["status"] == "SHIFTED" and materially_improved:
+        classification = "ALIS_UNDERCONVERGED"
+    else:
+        classification = "INCONCLUSIVE"
+    return {
+        "classification": classification,
+        "methods": methods,
+        "crossMethod": {
+            "alis": alis_stats,
+            "reference": reference_stats,
+            "meanRatioAlisToReference": ratio,
+            "bootstrapRatioCi90": confidence_interval,
+            "referencePhotopicWeightFractionNodeRatioWithinFactorTwo": fraction,
+            "nodeMeanRatiosAlisToReference": node_ratios,
+            "agreementPassed": agreement,
+            "materiallyImprovedFromFailedBaseline": materially_improved,
+            "logRatioDistance": high_distance,
+            "failedBaselineLogRatioDistance": baseline_distance,
+        },
+    }
+
+
+def render_input(case: dict[str, Any], data_dir: Path, atmosphere: Path, case_dir: Path, grid: Path) -> str:
+    lines = [
+        f"data_files_path {data_dir}",
+        f"atmosphere_file {atmosphere}",
+        f"source solar {data_dir / 'solar_flux/atlas_plus_modtran'}",
+        "mol_abs_param crs",
+    ]
+    if case["method"] == "reference":
+        lines.append(f"wavelength_grid_file {grid}")
+    lines.extend(
+        [
+            "wavelength 380 780",
+            "sza 102.000000",
+            "phi0 0.00",
+            "rte_solver mystic",
+            "mc_spherical 1D",
+            f"mc_photons {case['photonHistories']}",
+            "mc_vroom off",
+            "mc_std",
+            f"mc_randomseed {case['seed']}",
+            f"mc_basename {case_dir / 'mc'}",
+        ]
+    )
+    if case["method"] == "alis":
+        lines.append("mc_spectral_is 405.0")
+    lines.extend(
+        [
+            "albedo 0.15",
+            "aerosol_default",
+            "aerosol_set_tau_at_wvl 550 0.150000",
+            "zout 0",
+            "umu -0.17364818",
+            "phi 120.00",
+            "quiet",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def run_process(command: list[str], text: str, cwd: Path, timeout: int) -> dict[str, Any]:
+    start = time.monotonic()
+    try:
+        process = subprocess.run(command, input=text, text=True, capture_output=True, cwd=cwd, timeout=timeout, env=os.environ.copy())
+        return {
+            "exitCode": process.returncode,
+            "timedOut": False,
+            "elapsedSeconds": time.monotonic() - start,
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+        }
+    except subprocess.TimeoutExpired as exc:
+        def decode(value: Any) -> str:
+            return value.decode(errors="replace") if isinstance(value, bytes) else (value or "")
+
+        return {
+            "exitCode": None,
+            "timedOut": True,
+            "elapsedSeconds": time.monotonic() - start,
+            "stdout": decode(exc.stdout),
+            "stderr": decode(exc.stderr),
+        }
+
+
+def write_result(output: Path, result: dict[str, Any], auth: dict[str, Any]) -> None:
+    analysis_path = output / "analysis-result.json"
+    analysis_path.write_text(dump_json(result), encoding="utf-8")
+    run_manifest = {
+        "schemaVersion": 1,
+        "stageId": STAGE_ID,
+        "authorizationCommit": current_commit(),
+        "authorizationParentCommit": auth.get("exactAuthorizationParentCommit"),
+        "authorization": {field: auth.get(field) for field in AUTH_FIELDS},
+        "solverExecutionCount": result["solverExecutionCount"],
+        "syntaxCheckCount": result["syntaxCheckCount"],
+        "attemptedConfiguredMcPhotonsSum": result["attemptedConfiguredMcPhotonsSum"],
+        "completedConfiguredMcPhotonsSum": result["completedConfiguredMcPhotonsSum"],
+        "classification": result["classification"],
+        "resultSha256": raw_hash(analysis_path),
+    }
+    (output / "run-manifest.json").write_text(dump_json(run_manifest), encoding="utf-8")
+
+
+def execute(args: argparse.Namespace) -> tuple[dict[str, Any], bool]:
+    manifest, contract, baseline = load_frozen()
+    auth = load_json(AUTH_PATH)
+    verify_authorization(auth)
+    if not args.allow_execution:
+        raise Refusal("execution-flag", "explicit --allow-execution is required")
+    output = Path(args.output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    uvspec = Path(args.uvspec).resolve()
+    data_dir = Path(args.data_dir).resolve()
+    atmosphere = Path(args.atmosphere).resolve()
+    for path, label in ((uvspec, "uvspec"), (data_dir, "data directory"), (atmosphere, "atmosphere"), (GRID_PATH, "wavelength grid")):
+        if not path.exists():
+            raise Refusal("missing-runtime-path", f"missing {label}", str(path))
+    records: list[dict[str, Any]] = []
+    syntax_checks = 0
+    solver_executions = 0
+    attempted_photons = 0
+    start = time.monotonic()
+    structural_failure: dict[str, Any] | None = None
+    for case in cases_from_manifest(manifest):
+        try:
+            if solver_executions >= MAX_SOLVER_EXECUTIONS or syntax_checks >= MAX_SYNTAX_CHECKS:
+                raise Refusal("execution-ceiling", "execution count ceiling exceeded")
+            if time.monotonic() - start > MAX_RUNNER_MINUTES * 60:
+                raise Refusal("runner-time", "runner wall-time ceiling exceeded")
+            case_dir = output / case["caseId"]
+            case_dir.mkdir()
+            input_text = render_input(case, data_dir, atmosphere, case_dir, GRID_PATH)

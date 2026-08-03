@@ -1,0 +1,110 @@
+            "wavelengthGridFile": "experiment/wavelength-grid.dat",
+            "seeds": [77201, 77202, 77203, 77204, 77205, 77206],
+        },
+    }
+    if manifest.get("methods") != expected_methods:
+        raise Refusal("manifest-methods", "methods, fresh seeds, or photon counts changed")
+    policy = manifest.get("executionPolicy")
+    expected_policy = {
+        "automaticRetry": False,
+        "resumable": False,
+        "automaticExpansion": False,
+        "maximumSolverExecutions": MAX_SOLVER_EXECUTIONS,
+        "maximumSyntaxChecks": MAX_SYNTAX_CHECKS,
+        "maximumConfiguredMcPhotonsSum": MAX_CONFIGURED_PHOTONS,
+        "perCaseTimeoutSeconds": PER_CASE_TIMEOUT_SECONDS,
+        "maximumRunnerMinutes": MAX_RUNNER_MINUTES,
+        "requiredGitHubRunAttempt": 1,
+        "requiredGitHubEvent": "push",
+        "requiredAuthorizationBranch": AUTH_BRANCH,
+    }
+    if policy != expected_policy:
+        raise Refusal("manifest-policy", "execution policy changed", policy)
+    grid = parse_grid(grid_path)
+    if [grid[0], grid[-1]] != WAVELENGTH_RANGE:
+        raise Refusal(
+            "grid-domain-mismatch",
+            "custom reference grid and requested wavelength interval must have identical endpoints",
+            {"gridEndpointsNm": [grid[0], grid[-1]], "requestedRangeNm": WAVELENGTH_RANGE},
+        )
+    if not set(SELECTED_NODES).issubset(grid):
+        raise Refusal("grid-selected-nodes", "custom reference grid omits diagnostic nodes", sorted(set(SELECTED_NODES) - set(grid)))
+    if not WAVELENGTH_RANGE[0] <= manifest["methods"]["alis"]["spectralImportanceSamplingNm"] <= WAVELENGTH_RANGE[1]:
+        raise Refusal("alis-importance-domain", "ALIS importance-sampling wavelength lies outside requested domain")
+    cases = cases_from_manifest(manifest)
+    if len(cases) != 12 or len({case["caseId"] for case in cases}) != 12:
+        raise Refusal("manifest-cases", "case set is not exactly 12 unique cases")
+    if sum(case["photonHistories"] for case in cases) != MAX_CONFIGURED_PHOTONS:
+        raise Refusal("manifest-photons", "configured photon sum changed")
+
+
+def validate_contract(contract: dict[str, Any]) -> None:
+    if contract.get("schemaVersion") != 1 or contract.get("stageId") != STAGE_ID:
+        raise Refusal("contract-stage", "contract identity changed")
+    if contract.get("scientificDiagnostic") is not True or contract.get("successDoesNotAuthorizeProduction") is not True:
+        raise Refusal("contract-scope", "scientific boundary changed")
+    if contract.get("bootstrap") != {"resamples": 20000, "seed": 20260802, "confidenceLevel": 0.90}:
+        raise Refusal("contract-bootstrap", "bootstrap contract changed")
+    expected_internal = {
+        "integratedMeanRatioClosedInterval": [0.5, 2.0],
+        "bootstrapIntervalMustOverlap": True,
+        "minimumBaselinePhotopicWeightFractionWithNodeRatioInsideInterval": 0.80,
+        "maximumHighHistoryCvToBaselineCvRatio": 1.0,
+        "materialShiftIntegratedMeanRatioOutsideClosedInterval": [0.5, 2.0],
+        "materialShiftPhotopicWeightFractionBelow": 0.70,
+    }
+    expected_cross = {
+        "integratedMeanRatioClosedInterval": [0.5, 2.0],
+        "bootstrapIntervalMustBeContained": True,
+        "minimumReferencePhotopicWeightFractionWithNodeRatioInsideInterval": 0.90,
+    }
+    expected_improvement = {
+        "baselineMeanRatioAlisToReference": 0.754638011250263,
+        "baselinePhotopicWeightFractionWithinFactorTwo": 0.479171014851686,
+        "minimumAbsolutePhotopicWeightFractionGain": 0.20,
+        "maximumLogRatioDistanceFractionOfBaseline": 0.50,
+    }
+    if contract.get("internalStability") != expected_internal:
+        raise Refusal("contract-internal", "internal-stability gates changed")
+    if contract.get("crossMethodAgreement") != expected_cross:
+        raise Refusal("contract-cross", "cross-method gates changed")
+    if contract.get("materialImprovementFromFailedBaseline") != expected_improvement:
+        raise Refusal("contract-improvement", "baseline-improvement gates changed")
+    expected_order = [
+        "STRUCTURAL_OR_EXECUTION_FAILURE",
+        "BOTH_CONVERGE_AND_AGREE",
+        "PERSISTENT_METHOD_DISCREPANCY",
+        "REFERENCE_UNDERCONVERGED",
+        "ALIS_UNDERCONVERGED",
+        "INCONCLUSIVE",
+    ]
+    if contract.get("classificationOrder") != expected_order:
+        raise Refusal("contract-order", "classification order changed")
+
+
+def validate_baseline(baseline: dict[str, Any]) -> None:
+    expected_source = {
+        "id": 30766486220,
+        "headSha": "4883a8ed19f3305b8488a1da6031faf2e26d101c",
+        "artifactId": 8839457827,
+        "artifactSha256": "b688a7b0383609b99a4d9e0be7b86fe4975135ecadbb81d827a885b37e020e23",
+        "classification": "ALIS_BIAS_PREFLIGHT_FAIL",
+    }
+    if baseline.get("schemaVersion") != 1 or baseline.get("stageId") != STAGE_ID:
+        raise Refusal("baseline-stage", "baseline identity changed")
+    if baseline.get("sourceRun") != expected_source:
+        raise Refusal("baseline-source", "baseline provenance changed")
+    if baseline.get("selectedNodesNm") != SELECTED_NODES or baseline.get("cie1924Vlambda") != CIE_V:
+        raise Refusal("baseline-nodes", "baseline diagnostic nodes or CIE weights changed")
+    cases = baseline.get("cases")
+    if not isinstance(cases, list) or len(cases) != 12:
+        raise Refusal("baseline-cases", "baseline must contain 12 cases")
+    expected_pairs = {(method, seed) for method, seeds in (("alis", range(76701, 76707)), ("reference", range(76801, 76807))) for seed in seeds}
+    actual_pairs = {(case.get("method"), case.get("seed")) for case in cases if isinstance(case, dict)}
+    if actual_pairs != expected_pairs:
+        raise Refusal("baseline-seeds", "baseline case identities changed")
+    for case in cases:
+        values = case.get("selectedNodeRadiance")
+        luminance = case.get("selectedPhotopicContributionCdM2")
+        if not isinstance(values, list) or len(values) != len(SELECTED_NODES):
+            raise Refusal("baseline-radiance", "baseline spectral vector has wrong length", case.get("seed"))

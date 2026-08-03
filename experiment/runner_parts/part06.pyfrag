@@ -1,0 +1,131 @@
+            (case_dir / "input-resolved.txt").write_text(input_text, encoding="utf-8")
+            syntax_checks += 1
+            syntax = run_process([str(uvspec), "-c"], input_text, case_dir, 60)
+            for stream in ("stdout", "stderr"):
+                (case_dir / f"syntax-{stream}.txt").write_text(syntax[stream], encoding="utf-8")
+            (case_dir / "syntax-timing.json").write_text(dump_json({key: value for key, value in syntax.items() if key not in ("stdout", "stderr")}), encoding="utf-8")
+            if syntax["timedOut"] or syntax["exitCode"] != 0:
+                raise Refusal("syntax-failure", "uvspec syntax validation failed", {"caseId": case["caseId"], **syntax})
+            solver_executions += 1
+            attempted_photons += case["photonHistories"]
+            solver = run_process([str(uvspec)], input_text, case_dir, PER_CASE_TIMEOUT_SECONDS)
+            for stream in ("stdout", "stderr"):
+                (case_dir / f"solver-{stream}.txt").write_text(solver[stream], encoding="utf-8")
+            (case_dir / "solver-timing.json").write_text(dump_json({key: value for key, value in solver.items() if key not in ("stdout", "stderr")}), encoding="utf-8")
+            if solver["timedOut"] or solver["exitCode"] != 0:
+                raise Refusal("solver-failure", "uvspec solver execution failed", {"caseId": case["caseId"], **solver})
+            spectrum_path = case_dir / "mc.rad.spc"
+            values = parse_selected_spectrum(spectrum_path)
+            records.append(
+                {
+                    **case,
+                    "selectedNodeRadiance": values,
+                    "selectedPhotopicContributionCdM2": selected_contribution(values),
+                    "elapsedSeconds": solver["elapsedSeconds"],
+                    "outputSha256": raw_hash(spectrum_path),
+                }
+            )
+        except Refusal as exc:
+            structural_failure = exc.as_dict()
+            structural_failure["caseId"] = case["caseId"]
+            break
+    completed_photons = sum(record["photonHistories"] for record in records)
+    if structural_failure is None and len(records) == 12:
+        analysis = analyze(records, baseline, contract)
+        result = {
+            "schemaVersion": 1,
+            "stageId": STAGE_ID,
+            "status": "COMPLETED",
+            "classification": analysis["classification"],
+            "successDoesNotAuthorizeProduction": True,
+            "solverExecutionCount": solver_executions,
+            "syntaxCheckCount": syntax_checks,
+            "attemptedConfiguredMcPhotonsSum": attempted_photons,
+            "completedConfiguredMcPhotonsSum": completed_photons,
+            "photonAccounting": "sum of configured mc_photons for attempted and completed cases; conventional reference applies mc_photons separately at each selected wavelength",
+            "structuralFailure": None,
+            "manifestRawSha256": raw_hash(MANIFEST_PATH),
+            "contractRawSha256": raw_hash(CONTRACT_PATH),
+            "baselineRawSha256": raw_hash(BASELINE_PATH),
+            "authorizationConsumed": True,
+            "cases": records,
+            "analysis": analysis,
+        }
+        success = True
+    else:
+        if structural_failure is None:
+            structural_failure = Refusal("incomplete-case-set", "runner ended without 12 completed cases").as_dict()
+        result = {
+            "schemaVersion": 1,
+            "stageId": STAGE_ID,
+            "status": "FAILED",
+            "classification": "STRUCTURAL_OR_EXECUTION_FAILURE",
+            "successDoesNotAuthorizeProduction": True,
+            "solverExecutionCount": solver_executions,
+            "syntaxCheckCount": syntax_checks,
+            "attemptedConfiguredMcPhotonsSum": attempted_photons,
+            "completedConfiguredMcPhotonsSum": completed_photons,
+            "photonAccounting": "sum of configured mc_photons for attempted and completed cases; no 12-case scientific classification is available",
+            "structuralFailure": structural_failure,
+            "manifestRawSha256": raw_hash(MANIFEST_PATH),
+            "contractRawSha256": raw_hash(CONTRACT_PATH),
+            "baselineRawSha256": raw_hash(BASELINE_PATH),
+            "authorizationConsumed": True,
+            "cases": records,
+            "analysis": None,
+        }
+        success = False
+    write_result(output, result, auth)
+    total_bytes = sum(path.stat().st_size for path in output.rglob("*") if path.is_file())
+    if total_bytes > MAX_ARTIFACT_BYTES:
+        raise Refusal("artifact-size", "artifact exceeds maximum size", total_bytes)
+    return result, success
+
+
+def proposal() -> dict[str, Any]:
+    manifest, contract, baseline = load_frozen()
+    return {
+        "stageId": STAGE_ID,
+        "runnerId": RUNNER_ID,
+        "authorizationRequired": True,
+        "executionAuthorizedByProposal": False,
+        "requiredAuthorizationBranch": AUTH_BRANCH,
+        "cases": cases_from_manifest(manifest),
+        "expectedHashes": expected_hashes(),
+        "classificationOrder": contract["classificationOrder"],
+        "baselineSourceRun": baseline["sourceRun"],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--print-proposal", action="store_true")
+    parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--allow-execution", action="store_true")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--uvspec")
+    parser.add_argument("--data-dir")
+    parser.add_argument("--atmosphere")
+    args = parser.parse_args()
+    try:
+        if args.print_proposal:
+            print(dump_json(proposal()), end="")
+            return 0
+        if args.verify_only:
+            load_frozen()
+            verify_authorization(load_json(AUTH_PATH))
+            print(dump_json({"status": "AUTHORIZED", "purpose": STAGE_ID}), end="")
+            return 0
+        for field in ("output_dir", "uvspec", "data_dir", "atmosphere"):
+            if not getattr(args, field):
+                raise Refusal("missing-argument", f"missing --{field.replace('_', '-')}")
+        result, success = execute(args)
+        print(dump_json({"status": result["status"], "classification": result["classification"]}), end="")
+        return 0 if success else 2
+    except Refusal as exc:
+        print(dump_json(exc.as_dict()), end="", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

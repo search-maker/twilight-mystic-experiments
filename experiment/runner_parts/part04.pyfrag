@@ -1,0 +1,111 @@
+        "sampleStdCdM2": standard_deviation,
+        "coefficientOfVariation": standard_deviation / mean if mean > 0 else math.inf,
+    }
+
+
+def bootstrap_ratio(numerator: list[float], denominator: list[float], *, seed: int, resamples: int, confidence: float) -> list[float]:
+    rng = random.Random(seed)
+    ratios: list[float] = []
+    for _ in range(resamples):
+        numerator_mean = statistics.fmean(rng.choice(numerator) for _ in numerator)
+        denominator_mean = statistics.fmean(rng.choice(denominator) for _ in denominator)
+        if denominator_mean <= 0:
+            raise Refusal("zero-bootstrap-denominator", "bootstrap denominator is nonpositive")
+        ratios.append(numerator_mean / denominator_mean)
+    ratios.sort()
+    alpha = (1 - confidence) / 2
+    lower_index = max(0, min(len(ratios) - 1, math.floor(alpha * len(ratios))))
+    upper_index = max(0, min(len(ratios) - 1, math.ceil((1 - alpha) * len(ratios)) - 1))
+    return [ratios[lower_index], ratios[upper_index]]
+
+
+def node_means(records: list[dict[str, Any]]) -> list[float]:
+    return [statistics.fmean(record["selectedNodeRadiance"][index] for record in records) for index in range(len(SELECTED_NODES))]
+
+
+def weighted_fraction(numerator: list[float], denominator: list[float], interval: list[float]) -> tuple[float, list[float]]:
+    ratios: list[float] = []
+    weights: list[float] = []
+    for numerator_value, denominator_value, cie_weight in zip(numerator, denominator, CIE_V):
+        if denominator_value == 0:
+            ratio = math.inf if numerator_value > 0 else 1.0
+        else:
+            ratio = numerator_value / denominator_value
+        ratios.append(ratio)
+        weights.append(denominator_value * cie_weight)
+    total = sum(weights)
+    if total <= 0:
+        raise Refusal("zero-photopic-weight", "denominator photopic weight is nonpositive")
+    fraction = sum(weight for weight, ratio in zip(weights, ratios) if interval[0] <= ratio <= interval[1]) / total
+    return fraction, ratios
+
+
+def method_diagnostic(method: str, high: list[dict[str, Any]], baseline: list[dict[str, Any]], contract: dict[str, Any]) -> dict[str, Any]:
+    high_luminance = [record["selectedPhotopicContributionCdM2"] for record in high]
+    baseline_luminance = [record["selectedPhotopicContributionCdM2"] for record in baseline]
+    high_stats = stats(high_luminance)
+    baseline_stats = stats(baseline_luminance)
+    ratio = high_stats["meanCdM2"] / baseline_stats["meanCdM2"]
+    confidence_interval = bootstrap_ratio(
+        high_luminance,
+        baseline_luminance,
+        seed=contract["bootstrap"]["seed"] + (0 if method == "alis" else 1),
+        resamples=contract["bootstrap"]["resamples"],
+        confidence=contract["bootstrap"]["confidenceLevel"],
+    )
+    interval = contract["internalStability"]["integratedMeanRatioClosedInterval"]
+    fraction, node_ratios = weighted_fraction(node_means(high), node_means(baseline), interval)
+    cv_ratio = high_stats["coefficientOfVariation"] / baseline_stats["coefficientOfVariation"]
+    stable = (
+        interval[0] <= ratio <= interval[1]
+        and confidence_interval[1] >= interval[0]
+        and confidence_interval[0] <= interval[1]
+        and fraction >= contract["internalStability"]["minimumBaselinePhotopicWeightFractionWithNodeRatioInsideInterval"]
+        and cv_ratio <= contract["internalStability"]["maximumHighHistoryCvToBaselineCvRatio"]
+    )
+    shifted = not interval[0] <= ratio <= interval[1] or fraction < contract["internalStability"]["materialShiftPhotopicWeightFractionBelow"]
+    status = "STABLE" if stable else ("SHIFTED" if shifted else "UNRESOLVED")
+    return {
+        "status": status,
+        "highHistory": high_stats,
+        "baseline": baseline_stats,
+        "highToBaselineMeanRatio": ratio,
+        "bootstrapRatioCi90": confidence_interval,
+        "baselinePhotopicWeightFractionNodeRatioWithinFactorTwo": fraction,
+        "nodeMeanRatiosHighToBaseline": node_ratios,
+        "highCvToBaselineCvRatio": cv_ratio,
+    }
+
+
+def analyze(records: list[dict[str, Any]], baseline: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
+    if len(records) != 12:
+        raise Refusal("analysis-count", "analysis requires exactly 12 fresh records")
+    high = {method: [record for record in records if record["method"] == method] for method in ("alis", "reference")}
+    low = {method: [record for record in baseline["cases"] if record["method"] == method] for method in ("alis", "reference")}
+    if any(len(high[method]) != 6 or len(low[method]) != 6 for method in high):
+        raise Refusal("analysis-seeds", "analysis requires exactly six records per method")
+    methods = {method: method_diagnostic(method, high[method], low[method], contract) for method in ("alis", "reference")}
+    alis_luminance = [record["selectedPhotopicContributionCdM2"] for record in high["alis"]]
+    reference_luminance = [record["selectedPhotopicContributionCdM2"] for record in high["reference"]]
+    alis_stats = stats(alis_luminance)
+    reference_stats = stats(reference_luminance)
+    ratio = alis_stats["meanCdM2"] / reference_stats["meanCdM2"]
+    confidence_interval = bootstrap_ratio(
+        alis_luminance,
+        reference_luminance,
+        seed=contract["bootstrap"]["seed"] + 2,
+        resamples=contract["bootstrap"]["resamples"],
+        confidence=contract["bootstrap"]["confidenceLevel"],
+    )
+    interval = contract["crossMethodAgreement"]["integratedMeanRatioClosedInterval"]
+    fraction, node_ratios = weighted_fraction(node_means(high["alis"]), node_means(high["reference"]), interval)
+    agreement = (
+        interval[0] <= ratio <= interval[1]
+        and interval[0] <= confidence_interval[0]
+        and confidence_interval[1] <= interval[1]
+        and fraction >= contract["crossMethodAgreement"]["minimumReferencePhotopicWeightFractionWithNodeRatioInsideInterval"]
+    )
+    improvement = contract["materialImprovementFromFailedBaseline"]
+    baseline_distance = abs(math.log(improvement["baselineMeanRatioAlisToReference"]))
+    high_distance = abs(math.log(ratio))
+    materially_improved = (

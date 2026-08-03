@@ -1,0 +1,105 @@
+name: Corrected spectral convergence execution
+
+on:
+  push:
+    branches:
+      - authorization/corrected-spectral-convergence-v1
+    paths:
+      - experiment/authorization.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corrected-spectral-convergence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  exact-authorization-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Require exact one-purpose first-attempt authorization
+        run: python experiment/runner.py --verify-only
+
+  run-corrected-convergence:
+    needs: exact-authorization-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 155
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: corrected-convergence-runtime
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      - name: Bind exact libRadtran paths and freeze runtime report
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          LIBRADTRAN_DATA="$CONDA_PREFIX/share/libRadtran/data"
+          export UVSPEC LIBRADTRAN_DATA
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$LIBRADTRAN_DATA" >> "$GITHUB_ENV"
+          mkdir -p runtime-report/derived-atmospheres
+          source_atmosphere="$LIBRADTRAN_DATA/atmmod/afglus.dat"
+          target_atmosphere="runtime-report/derived-atmospheres/afglus-site-0000m.dat"
+          test -s "$source_atmosphere"
+          cp "$source_atmosphere" "$target_atmosphere"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          atmosphere = Path("runtime-report/derived-atmospheres/afglus-site-0000m.dat")
+          report = {
+              "schemaVersion": 1,
+              "python": subprocess.check_output(["python", "--version"], text=True, stderr=subprocess.STDOUT).strip(),
+              "uvspec": os.environ["UVSPEC"],
+              "uvspecHelpSha256": hashlib.sha256(subprocess.check_output([os.environ["UVSPEC"], "-h"], stderr=subprocess.STDOUT)).hexdigest(),
+              "libRadtranData": os.environ["LIBRADTRAN_DATA"],
+              "atmosphere": str(atmosphere),
+              "atmosphereSha256": hashlib.sha256(atmosphere.read_bytes()).hexdigest(),
+              "observerElevationM": 0,
+              "boundary": "runtime identity only; no scientific result",
+          }
+          Path("runtime-report/environment-report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run preregistered diagnostic exactly once
+        id: scientific-run
+        shell: bash -el {0}
+        run: >-
+          python experiment/runner.py
+          --uvspec "$UVSPEC"
+          --data-dir "$LIBRADTRAN_DATA"
+          --atmosphere runtime-report/derived-atmospheres/afglus-site-0000m.dat
+          --output-dir corrected-spectral-convergence-output
+          --allow-execution
+      - name: Preserve exact artifact even on structural failure
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corrected-spectral-convergence-run
+          path: |
+            corrected-spectral-convergence-output
+            runtime-report
+          if-no-files-found: error
+          retention-days: 90

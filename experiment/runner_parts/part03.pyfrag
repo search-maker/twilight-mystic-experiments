@@ -1,0 +1,128 @@
+        if any(not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0 for value in values):
+            raise Refusal("baseline-radiance", "baseline spectral vector is invalid", case.get("seed"))
+        if not isinstance(luminance, (int, float)) or not math.isfinite(float(luminance)) or luminance <= 0:
+            raise Refusal("baseline-luminance", "baseline photopic contribution is invalid", case.get("seed"))
+
+
+def load_frozen() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    manifest = load_json(MANIFEST_PATH)
+    contract = load_json(CONTRACT_PATH)
+    baseline = load_json(BASELINE_PATH)
+    validate_manifest(manifest)
+    validate_contract(contract)
+    validate_baseline(baseline)
+    return manifest, contract, baseline
+
+
+def expected_hashes() -> dict[str, Any]:
+    manifest, _, _ = load_frozen()
+    return {
+        "exactRunnerSha256": runner_bundle_hash(),
+        "exactAuditSha256": raw_hash(AUDIT_PATH),
+        "exactCaseManifestRawSha256": raw_hash(MANIFEST_PATH),
+        "exactCaseSetPayloadSha256": payload_hash(cases_from_manifest(manifest)),
+        "exactAnalysisContractRawSha256": raw_hash(CONTRACT_PATH),
+        "exactBaselineRawSha256": raw_hash(BASELINE_PATH),
+        "exactWavelengthGridRawSha256": raw_hash(GRID_PATH),
+        "exactAuthorizationTemplateRawSha256": raw_hash(AUTH_TEMPLATE_PATH),
+        "exactExecutionWorkflowSha256": raw_hash(EXECUTION_WORKFLOW_PATH),
+        "maximumSolverExecutionCount": MAX_SOLVER_EXECUTIONS,
+        "maximumSyntaxCheckCount": MAX_SYNTAX_CHECKS,
+        "maximumConfiguredMcPhotonsSum": MAX_CONFIGURED_PHOTONS,
+        "maximumAuthorizedRunnerMinutes": MAX_RUNNER_MINUTES,
+        "perCaseTimeoutSeconds": PER_CASE_TIMEOUT_SECONDS,
+        "purpose": STAGE_ID,
+    }
+
+
+AUTH_FIELDS = (
+    "exactAuthorizationParentCommit",
+    "exactRunnerSha256",
+    "exactAuditSha256",
+    "exactCaseManifestRawSha256",
+    "exactCaseSetPayloadSha256",
+    "exactAnalysisContractRawSha256",
+    "exactBaselineRawSha256",
+    "exactWavelengthGridRawSha256",
+    "exactAuthorizationTemplateRawSha256",
+    "exactExecutionWorkflowSha256",
+    "maximumSolverExecutionCount",
+    "maximumSyntaxCheckCount",
+    "maximumConfiguredMcPhotonsSum",
+    "maximumAuthorizedRunnerMinutes",
+    "perCaseTimeoutSeconds",
+    "purpose",
+)
+
+
+def verify_github_one_shot_context() -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise Refusal("github-context", "scientific execution is permitted only inside GitHub Actions")
+    if os.environ.get("GITHUB_EVENT_NAME") != "push":
+        raise Refusal("github-event", "scientific execution requires a push event")
+    if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+        raise Refusal("github-rerun", "workflow reruns are forbidden")
+    if os.environ.get("GITHUB_REF_NAME") != AUTH_BRANCH:
+        raise Refusal("github-branch", "scientific execution requires the exact authorization branch", os.environ.get("GITHUB_REF_NAME"))
+
+
+def verify_authorization(auth: dict[str, Any], *, require_github_context: bool = True) -> None:
+    if auth.get("schemaVersion") != 1:
+        raise Refusal("authorization-schema", "authorization schema changed")
+    if auth.get("authorized") is not True or auth.get("runMystic") is not True or auth.get("runUvspec") is not True:
+        raise Refusal("authorization-false", "scientific execution is not authorized")
+    if auth.get("scientificDiagnostic") is not True or auth.get("successDoesNotAuthorizeProduction") is not True:
+        raise Refusal("authorization-scope", "authorization scientific boundary is missing")
+    for field in AUTH_FIELDS:
+        if auth.get(field) in (None, ""):
+            raise Refusal("authorization-field", "authorization field is empty", field)
+    if require_github_context:
+        verify_github_one_shot_context()
+    parent = auth["exactAuthorizationParentCommit"]
+    actual_parent = current_commit("HEAD^")
+    if parent != actual_parent:
+        raise Refusal("authorization-parent", "authorization parent does not match HEAD^", {"authorized": parent, "actual": actual_parent})
+    if changed_files(parent) != ["experiment/authorization.json"]:
+        raise Refusal("authorization-purpose", "authorization commit changed files other than authorization.json", changed_files(parent))
+    fresh = expected_hashes()
+    mismatches = {field: {"authorized": auth.get(field), "fresh": fresh.get(field)} for field in AUTH_FIELDS if field != "exactAuthorizationParentCommit" and auth.get(field) != fresh.get(field)}
+    if mismatches:
+        raise Refusal("authorization-hash", "authorization hashes or ceilings are stale", mismatches)
+
+
+def selected_contribution(values: list[float]) -> float:
+    return 683.002 * 10.0 * sum((value / 1000.0) * weight for value, weight in zip(values, CIE_V))
+
+
+def parse_selected_spectrum(path: Path) -> list[float]:
+    found: dict[int, float] = {}
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = raw.split()
+        if len(parts) < 2:
+            continue
+        try:
+            wavelength = float(parts[0])
+            value = float(parts[-1])
+        except ValueError:
+            continue
+        if not math.isfinite(value) or value < 0:
+            raise Refusal("invalid-radiance", "spectral output contains invalid radiance", raw)
+        for node in SELECTED_NODES:
+            if abs(wavelength - node) <= 1e-7:
+                if node in found:
+                    raise Refusal("duplicate-node", "spectral output repeats a diagnostic node", node)
+                found[node] = value
+    if sorted(found) != SELECTED_NODES:
+        raise Refusal("missing-nodes", "spectral output does not contain all diagnostic nodes", {"found": sorted(found)})
+    values = [found[node] for node in SELECTED_NODES]
+    if not any(value > 0 for value in values):
+        raise Refusal("all-zero-radiance", "all selected spectral radiances are zero")
+    return values
+
+
+def stats(values: list[float]) -> dict[str, Any]:
+    mean = statistics.fmean(values)
+    standard_deviation = statistics.stdev(values)
+    return {
+        "valuesCdM2": values,
+        "meanCdM2": mean,

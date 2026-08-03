@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import random
+import statistics
+import subprocess
+import sys
+import time
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+EXP = ROOT / "experiment"
+RUNNER_PART_DIR = EXP / "runner_parts"
+RUNNER_PART_PATHS = [RUNNER_PART_DIR / f"part{index:02d}.pyfrag" for index in range(1, 7)]
+
+
+def runner_bundle_hash() -> str:
+    digest = hashlib.sha256()
+    for path in [Path(__file__).resolve(), *RUNNER_PART_PATHS]:
+        payload = path.read_bytes()
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+MANIFEST_PATH = EXP / "manifest.json"
+CONTRACT_PATH = EXP / "contract.json"
+BASELINE_PATH = EXP / "baseline.json"
+GRID_PATH = EXP / "wavelength-grid.dat"
+AUTH_PATH = EXP / "authorization.json"
+AUTH_TEMPLATE_PATH = EXP / "authorization-template.json"
+AUDIT_PATH = EXP / "audit.py"
+EXECUTION_WORKFLOW_PATH = ROOT / ".github/workflows/execution.yml"
+STAGE_ID = "corrected-weak-twilight-alis-spectral-convergence-v1"
+RUNNER_ID = "corrected-spectral-convergence-runner-v1"
+AUTH_BRANCH = "authorization/corrected-spectral-convergence-v1"
+SELECTED_NODES = [470, 480, 490, 500, 510, 520, 530, 540, 560, 580, 590, 600, 610, 640, 660]
+CIE_V = [0.09098, 0.13902, 0.20802, 0.323, 0.503, 0.71, 0.862, 0.954, 0.995, 0.87, 0.757, 0.631, 0.503, 0.175, 0.061]
+WAVELENGTH_RANGE = [380, 780]
+MAX_SOLVER_EXECUTIONS = 12
+MAX_SYNTAX_CHECKS = 12
+MAX_CONFIGURED_PHOTONS = 1_200_000_000
+MAX_RUNNER_MINUTES = 150
+PER_CASE_TIMEOUT_SECONDS = 1800
+MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
+
+
+class Refusal(RuntimeError):
+    def __init__(self, code: str, reason: str, detail: Any = None):
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+        self.detail = detail
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": "REFUSED",
+            "classification": "STRUCTURAL_OR_EXECUTION_FAILURE",
+            "code": self.code,
+            "reason": self.reason,
+            "detail": self.detail,
+        }
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise Refusal("json-object", f"{path} is not a JSON object")
+    return value
+
+
+def dump_json(value: Any) -> str:
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
+
+
+def raw_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def payload_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def git_output(*args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+
+
+def current_commit(ref: str = "HEAD") -> str:
+    return git_output("rev-parse", ref)
+
+
+def changed_files(parent: str, head: str = "HEAD") -> list[str]:
+    text = git_output("diff", "--name-only", parent, head)
+    return [line for line in text.splitlines() if line]
+
+
+def parse_grid(path: Path = GRID_PATH) -> list[int]:
+    values: list[int] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        text = raw.strip()
+        if not text or text.startswith("#"):
+            continue
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise Refusal("grid-format", "wavelength grid contains non-numeric text", {"line": line_number, "text": text}) from exc
+        if not value.is_integer():
+            raise Refusal("grid-format", "wavelength grid must use integer-nanometre nodes", {"line": line_number, "value": value})
+        values.append(int(value))
+    if not values:
+        raise Refusal("grid-empty", "wavelength grid is empty")
+    if values != sorted(values) or len(values) != len(set(values)):
+        raise Refusal("grid-order", "wavelength grid must be strictly increasing and unique", values)
+    return values
+
+
+def cases_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    ordinal = 0
+    for method in ("alis", "reference"):
+        config = manifest["methods"][method]
+        for seed in config["seeds"]:
+            ordinal += 1
+            cases.append(
+                {
+                    "ordinal": ordinal,
+                    "caseId": f"corrected-convergence-{method}-{seed}",
+                    "method": method,
+                    "seed": seed,
+                    "photonHistories": config["photonHistories"],
+                }
+            )
+    return cases
+
+
+def validate_manifest(manifest: dict[str, Any], grid_path: Path = GRID_PATH) -> None:
+    if manifest.get("schemaVersion") != 1 or manifest.get("stageId") != STAGE_ID:
+        raise Refusal("manifest-stage", "manifest identity changed")
+    expected_geometry = {
+        "sunDepressionDeg": 12.0,
+        "szaDeg": 102.0,
+        "targetAltitudeDeg": 10.0,
+        "relativeAzimuthDeg": 120.0,
+        "aod550": 0.15,
+        "observerElevationM": 0,
+    }
+    if manifest.get("geometry") != expected_geometry:
+        raise Refusal("manifest-geometry", "geometry changed", manifest.get("geometry"))
+    if manifest.get("wavelengthRangeNm") != WAVELENGTH_RANGE:
+        raise Refusal("manifest-domain", "requested wavelength domain changed", manifest.get("wavelengthRangeNm"))
+    if manifest.get("selectedNodesNm") != SELECTED_NODES:
+        raise Refusal("manifest-nodes", "selected diagnostic nodes changed")
+    expected_methods = {
+        "alis": {
+            "photonHistories": 40_000_000,
+            "molAbsParam": "crs",
+            "spectralImportanceSamplingNm": 405.0,
+            "wavelengthGridFile": None,
+            "seeds": [77101, 77102, 77103, 77104, 77105, 77106],
+        },
+        "reference": {
+            "photonHistories": 160_000_000,
+            "molAbsParam": "crs",
+            "spectralImportanceSamplingNm": None,

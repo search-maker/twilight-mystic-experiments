@@ -1,0 +1,58 @@
+name: Twilight surrogate v1 synthetic contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-v1-contract.yml"
+      - "experiments/twilight-surrogate-v1/**"
+      - "tests/test_twilight_surrogate_v1.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/twilight-surrogate-v1-contract.yml"
+      - "experiments/twilight-surrogate-v1/**"
+      - "tests/test_twilight_surrogate_v1.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run surrogate contract tests
+        run: PYTHONPATH=experiments/twilight-surrogate-v1 python -m unittest -v tests/test_twilight_surrogate_v1.py
+      - name: Generate synthetic splits and run withheld harness
+        run: |
+          python experiments/twilight-surrogate-v1/synthetic_data.py --output-dir surrogate-artifact/data
+          python experiments/twilight-surrogate-v1/run_harness.py \
+            --data-dir surrogate-artifact/data \
+            --output-dir surrogate-artifact/report
+      - name: Prove artifact is explicitly synthetic-only
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path("surrogate-artifact/data/manifest.json").read_text())
+          report = json.loads(Path("surrogate-artifact/report/harness-report.json").read_text())
+          assert manifest["syntheticOnly"] is True
+          assert report["syntheticOnly"] is True
+          assert report["gates"]["passed"] is True
+          assert report["withheld"]["count"] > 0
+          forbidden = ("MYSTIC_REFERENCE_VALID", "PRODUCTION_READY", "OBSERVATIONALLY_VALIDATED")
+          text = Path("surrogate-artifact/report/harness-report.json").read_text()
+          for token in forbidden:
+              assert token not in text
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twilight-surrogate-v1-synthetic-harness
+          path: surrogate-artifact
+          if-no-files-found: error
+          retention-days: 30

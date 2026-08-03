@@ -168,6 +168,9 @@ class ScientificExecutionTests(unittest.TestCase):
             "authorizationRef": "b" * 40,
             "authorizationOrdinal": 1,
             "executionKey": "key-1",
+            "runtimeLockRawSha256": "c" * 64,
+            "scientificAdapterRawSha256": "d" * 64,
+            "executionWorkflowRawSha256": "e" * 64,
         }
         manifest_path.write_text(json.dumps(manifest))
         guard_path.write_text(json.dumps(guard))
@@ -294,6 +297,9 @@ class ScientificExecutionTests(unittest.TestCase):
             "manifestRawSha256": "a" * 64,
             "authorizationRef": "b" * 40,
             "configuredMcPhotonsSum": 200,
+            "runtimeLockRawSha256": "c" * 64,
+            "scientificAdapterRawSha256": "d" * 64,
+            "executionWorkflowRawSha256": "e" * 64,
             "cases": [
                 {"ordinal": 1, "caseId": "case-1", "seed": 1, "photonHistories": 100},
                 {"ordinal": 2, "caseId": "case-2", "seed": 2, "photonHistories": 100},
@@ -314,8 +320,15 @@ class ScientificExecutionTests(unittest.TestCase):
                 "seed": case["seed"],
                 "photonHistories": case["photonHistories"],
                 "manifestRawSha256": plan["manifestRawSha256"],
+                "adapterRawSha256": plan["scientificAdapterRawSha256"],
+                "runtimeReportRawSha256": "f" * 64,
+                "inputResolvedSha256": "1" * 64,
+                "radianceOutputSha256": "2" * 64,
+                "stdOutputSha256": "3" * 64,
                 "syntaxCheckCount": 1,
                 "solverExecutionCount": 1,
+                "syntax": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 1.0},
+                "solver": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 2.0},
                 "selectedPhotopicContributionCdM2": value,
                 "failure": None,
             }
@@ -326,6 +339,53 @@ class ScientificExecutionTests(unittest.TestCase):
         report, passed = audit_module.audit(plan_path, cases_root, aggregate_dir, self.root / "audit.json")
         self.assertTrue(passed)
         self.assertEqual(report["status"], "PASSED")
+
+    def test_aggregate_refuses_completed_case_with_wrong_counts(self) -> None:
+        plan_path = self.root / "plan-bad.json"
+        cases_root = self.root / "cases-bad"
+        aggregate_dir = self.root / "aggregate-bad"
+        plan = {
+            "stageId": "mystic-batch-v1",
+            "scientificExecution": True,
+            "batchId": "bad-counts-v1",
+            "manifestRawSha256": "a" * 64,
+            "authorizationRef": "b" * 40,
+            "configuredMcPhotonsSum": 100,
+            "runtimeLockRawSha256": "c" * 64,
+            "scientificAdapterRawSha256": "d" * 64,
+            "executionWorkflowRawSha256": "e" * 64,
+            "cases": [{"ordinal": 1, "caseId": "case-1", "seed": 1, "photonHistories": 100}],
+        }
+        plan_path.write_text(json.dumps(plan))
+        case_dir = cases_root / "case-1"
+        case_dir.mkdir(parents=True)
+        result = {
+            "stageId": "mystic-batch-v1",
+            "status": "COMPLETED",
+            "scientificDiagnostic": True,
+            "successDoesNotAuthorizeProduction": True,
+            "batchId": plan["batchId"],
+            "caseId": "case-1",
+            "ordinal": 1,
+            "seed": 1,
+            "photonHistories": 100,
+            "manifestRawSha256": plan["manifestRawSha256"],
+            "adapterRawSha256": plan["scientificAdapterRawSha256"],
+            "runtimeReportRawSha256": "f" * 64,
+            "inputResolvedSha256": "1" * 64,
+            "radianceOutputSha256": "2" * 64,
+            "stdOutputSha256": "3" * 64,
+            "syntaxCheckCount": 0,
+            "solverExecutionCount": 1,
+            "syntax": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 1.0},
+            "solver": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 2.0},
+            "selectedPhotopicContributionCdM2": 10.0,
+            "failure": None,
+        }
+        (case_dir / "case-result.json").write_text(json.dumps(result))
+        summary, complete = aggregate_module.aggregate(plan_path, cases_root, aggregate_dir)
+        self.assertFalse(complete)
+        self.assertEqual(summary["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
 
 
 if __name__ == "__main__":

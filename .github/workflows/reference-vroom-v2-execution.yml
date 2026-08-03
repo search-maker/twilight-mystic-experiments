@@ -1,0 +1,71 @@
+name: Reference VROOM v2 one-shot gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        description: Exact authorization commit SHA to inspect
+        required: true
+        type: string
+      execution_key:
+        description: Frozen one-shot execution key
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_EXECUTION_KEY: reference-vroom-v2
+
+concurrency:
+  group: reference-vroom-v2-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+jobs:
+  guard-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact authorization ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+
+      - name: Refuse unless a later reviewed execution package is installed
+        shell: python
+        env:
+          INPUT_EXECUTION_KEY: ${{ inputs.execution_key }}
+          INPUT_AUTHORIZATION_REF: ${{ inputs.authorization_ref }}
+        run: |
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          def refuse(reason: str) -> None:
+              raise SystemExit(f"REFUSED_BEFORE_SCIENTIFIC_EXECUTION: {reason}")
+
+          if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+              refuse("wrong event")
+          if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+              refuse("run attempt is not one")
+          if os.environ.get("INPUT_EXECUTION_KEY") != os.environ.get("EXPECTED_EXECUTION_KEY"):
+              refuse("wrong execution key")
+
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          requested = os.environ.get("INPUT_AUTHORIZATION_REF", "")
+          if requested != head:
+              refuse("authorization ref is not the checked-out exact commit")
+
+          path = Path("experiments/reference-vroom-v2/authorization.json")
+          authorization = json.loads(path.read_text())
+          if authorization.get("stageId") != "reference-vroom-v2":
+              refuse("wrong stage")
+          if authorization.get("executionKey") != "reference-vroom-v2":
+              refuse("wrong authorization execution key")
+          if not authorization.get("authorized"):
+              refuse("authorization is disabled")
+
+          refuse("reviewed scientific runner and duplicate-run audit are not installed yet")

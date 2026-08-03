@@ -1,0 +1,310 @@
+name: MYSTIC cross-geometry pilot v1 scientific execution
+run-name: Cross geometry pilot v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        description: Exact one-purpose authorization commit SHA
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cross-geometry-pilot-v1-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.cross-geometry.json
+  PROPOSAL: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+  CONTRACT: experiments/mystic-batch-v1/cross-geometry-contract.json
+  PROPOSAL_TEMPLATE: experiments/mystic-batch-v1/authorization.cross-geometry-template.json
+  PROPOSAL_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+  PROPOSAL_VALIDATOR: experiments/mystic-batch-v1/cross_geometry_validate.py
+  EXECUTION_ADAPTER: experiments/mystic-batch-v1/cross_geometry_execution_adapter.py
+  EXECUTION_WORKFLOW: .github/workflows/mystic-batch-v1-cross-geometry-execution.yml
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  PLAN: experiments/mystic-batch-v1/cross_geometry_execution_plan.py
+  ANALYSIS_DRIVER: experiments/mystic-batch-v1/cross_geometry_execution_analysis_driver.py
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      case_count: ${{ steps.plan.outputs.case_count }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Verify one-purpose cross-geometry authorization
+        run: >-
+          python "$GITHUB_WORKSPACE/experiments/mystic-batch-v1/cross_geometry_execution_guard.py"
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --proposal "$PROPOSAL"
+          --contract "$CONTRACT"
+          --proposal-template "$PROPOSAL_TEMPLATE"
+          --proposal-adapter "$PROPOSAL_ADAPTER"
+          --proposal-validator "$PROPOSAL_VALIDATOR"
+          --execution-adapter "$EXECUTION_ADAPTER"
+          --execution-workflow "$EXECUTION_WORKFLOW"
+          --runtime-lock "$RUNTIME_LOCK"
+          --plan "$PLAN"
+          --analysis-driver "$ANALYSIS_DRIVER"
+          --executor "$EXECUTOR"
+          --aggregate "$AGGREGATE"
+          --audit "$AUDIT"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate one-shot marker before syntax or solver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python experiments/mystic-batch-v1/duplicate_run_audit.py
+          --repository "${{ github.repository }}"
+          --workflow mystic-batch-v1-cross-geometry-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact 24-case matrix plan
+        id: plan
+        run: >-
+          python "$PLAN"
+          --proposal "$PROPOSAL"
+          --guard-report preflight/authorization-guard.json
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: cross-geometry-pilot-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-preflight
+          path: preflight
+      - name: Recompute runtime identity after cache restore
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -d "$DATA_DIR"
+          test -s "$ATMOSPHERE"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute exactly one isolated cross-geometry case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" \
+            --manifest "$PROPOSAL" \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$EXECUTION_ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root case-output \
+            --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs:
+      - preflight
+      - cases
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-pilot-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact case set
+        run: >-
+          python "$AGGREGATE"
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs:
+      - preflight
+      - cases
+      - aggregate
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-pilot-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-aggregate
+          path: aggregate-output
+      - name: Independently audit plan, cases, hashes, counts, and statistics
+        run: >-
+          python "$AUDIT"
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  screening:
+    needs:
+      - preflight
+      - cases
+      - aggregate
+      - audit
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-pilot-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-aggregate
+          path: aggregate-output
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-pilot-v1-audit
+          path: audit-output
+      - name: Run frozen cross-geometry screening analysis
+        run: >-
+          python "$ANALYSIS_DRIVER"
+          --proposal "$PROPOSAL"
+          --contract "$CONTRACT"
+          --cases-root case-artifacts
+          --generic-summary aggregate-output/batch-summary.json
+          --generic-audit audit-output/audit-report.json
+          --output-dir screening-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-pilot-v1-screening
+          path: screening-output
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,96 @@
+name: MYSTIC batch v1 execution contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-execution.yml"
+      - ".github/workflows/mystic-batch-v1-execution-contract.yml"
+      - "experiments/mystic-batch-v1/scientific_plan.py"
+      - "experiments/mystic-batch-v1/duplicate_batch_audit.py"
+      - "experiments/mystic-batch-v1/scientific_case_runner.py"
+      - "experiments/mystic-batch-v1/scientific_aggregate.py"
+      - "experiments/mystic-batch-v1/scientific_audit.py"
+      - "experiments/mystic-batch-v1/authorization.scientific.json"
+      - "tests/test_mystic_batch_v1_execution.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-execution.yml"
+      - ".github/workflows/mystic-batch-v1-execution-contract.yml"
+      - "experiments/mystic-batch-v1/scientific_plan.py"
+      - "experiments/mystic-batch-v1/duplicate_batch_audit.py"
+      - "experiments/mystic-batch-v1/scientific_case_runner.py"
+      - "experiments/mystic-batch-v1/scientific_aggregate.py"
+      - "experiments/mystic-batch-v1/scientific_audit.py"
+      - "experiments/mystic-batch-v1/authorization.scientific.json"
+      - "tests/test_mystic_batch_v1_execution.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run execution refusal and fake-solver tests
+        run: python -m unittest -v tests/test_mystic_batch_v1_execution.py
+      - name: Compile execution package
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/scientific_plan.py
+          experiments/mystic-batch-v1/duplicate_batch_audit.py
+          experiments/mystic-batch-v1/scientific_case_runner.py
+          experiments/mystic-batch-v1/scientific_aggregate.py
+          experiments/mystic-batch-v1/scientific_audit.py
+      - name: Prove execution authorization remains disabled
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          auth = json.loads(Path("experiments/mystic-batch-v1/authorization.scientific.json").read_text())
+          required = {
+              "authorized": False,
+              "scientificExecution": False,
+              "authorizationOrdinal": 0,
+              "consumed": False,
+          }
+          stale = {key: (auth.get(key), value) for key, value in required.items() if auth.get(key) != value}
+          if stale:
+              raise SystemExit(f"execution authorization is not disabled: {stale}")
+          PY
+      - name: Prove one-shot ordering and matrix isolation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path(".github/workflows/mystic-batch-v1-execution.yml").read_text()
+          required = (
+              "workflow_dispatch:",
+              "cancel-in-progress: false",
+              "fail-fast: false",
+              "scientific_plan.py",
+              "duplicate_batch_audit.py",
+              "setup-micromamba@v2",
+              "scientific_case_runner.py",
+              "scientific_aggregate.py",
+              "scientific_audit.py",
+          )
+          for token in required:
+              if token not in text:
+                  raise SystemExit(f"missing execution contract token: {token}")
+          if text.index("scientific_plan.py") > text.index("duplicate_batch_audit.py"):
+              raise SystemExit("authorization plan must precede duplicate audit")
+          if text.index("duplicate_batch_audit.py") > text.index("setup-micromamba@v2"):
+              raise SystemExit("duplicate audit must precede runtime installation")
+          if text.count("scientific_case_runner.py") != 1:
+              raise SystemExit("workflow must contain exactly one case-runner invocation")
+          if "pull_request:" in text or "push:" in text:
+              raise SystemExit("scientific execution workflow must not have automatic triggers")
+          PY

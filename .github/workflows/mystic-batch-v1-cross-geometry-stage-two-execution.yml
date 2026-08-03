@@ -1,0 +1,334 @@
+name: MYSTIC cross-geometry stage two v1 scientific execution
+run-name: Cross geometry stage two v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        description: Exact one-purpose stage-two authorization commit SHA
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot stage-two execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact stage-two authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cross-geometry-stage-two-v1-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.cross-geometry-stage-two.json
+  AUTHORIZATION_TEMPLATE: experiments/mystic-batch-v1/authorization.cross-geometry-stage-two-execution-template.json
+  PROPOSAL: experiments/mystic-batch-v1/manifest.cross-geometry-stage-two.proposal.json
+  SOURCE_MANIFEST: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+  SOURCE_ANALYSIS: experiments/mystic-batch-v1/results/screening-analysis.cross-geometry-pilot-screening-2.json
+  SOURCE_PROVENANCE: experiments/mystic-batch-v1/results/stage-two-source-provenance.json
+  CONTRACT: experiments/mystic-batch-v1/cross-geometry-contract.json
+  BASE_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+  EXECUTION_ADAPTER: experiments/mystic-batch-v1/cross_geometry_stage_two_execution_adapter.py
+  ANALYSIS_MODULE: experiments/mystic-batch-v1/cross_geometry_analysis.py
+  DUPLICATE_RUN_AUDIT: experiments/mystic-batch-v1/duplicate_run_audit.py
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+  EXECUTION_WORKFLOW: .github/workflows/mystic-batch-v1-cross-geometry-stage-two-execution.yml
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  PLAN: experiments/mystic-batch-v1/cross_geometry_stage_two_execution_plan.py
+  ANALYSIS_DRIVER: experiments/mystic-batch-v1/cross_geometry_stage_two_execution_analysis_driver.py
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+  SOURCE_POSTPROCESS_RUN_ID: "30858046820"
+  SOURCE_POSTPROCESS_ARTIFACT: cross-geometry-pilot-v1-postprocess-30856116586
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      case_count: ${{ steps.plan.outputs.case_count }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - name: Check out exact stage-two authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Verify exact one-purpose stage-two authorization
+        run: >-
+          python "$GITHUB_WORKSPACE/experiments/mystic-batch-v1/cross_geometry_stage_two_execution_guard.py"
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --authorization-template "$AUTHORIZATION_TEMPLATE"
+          --proposal "$PROPOSAL"
+          --source-manifest "$SOURCE_MANIFEST"
+          --source-analysis "$SOURCE_ANALYSIS"
+          --source-provenance "$SOURCE_PROVENANCE"
+          --contract "$CONTRACT"
+          --base-adapter "$BASE_ADAPTER"
+          --execution-adapter "$EXECUTION_ADAPTER"
+          --analysis-module "$ANALYSIS_MODULE"
+          --duplicate-run-audit "$DUPLICATE_RUN_AUDIT"
+          --runtime-probe "$RUNTIME_PROBE"
+          --execution-workflow "$EXECUTION_WORKFLOW"
+          --runtime-lock "$RUNTIME_LOCK"
+          --plan "$PLAN"
+          --analysis-driver "$ANALYSIS_DRIVER"
+          --executor "$EXECUTOR"
+          --aggregate "$AGGREGATE"
+          --audit "$AUDIT"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate stage-two one-shot marker before syntax or solver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python "$DUPLICATE_RUN_AUDIT"
+          --repository "${{ github.repository }}"
+          --workflow mystic-batch-v1-cross-geometry-stage-two-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact 16-case stage-two matrix plan
+        id: plan
+        run: >-
+          python "$PLAN"
+          --proposal "$PROPOSAL"
+          --guard-report preflight/authorization-guard.json
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-stage-two-v1-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Check out exact stage-two authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: cross-geometry-stage-two-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-preflight
+          path: preflight
+      - name: Recompute exact runtime identity after cache restore
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -d "$DATA_DIR"
+          test -s "$ATMOSPHERE"
+          python "$RUNTIME_PROBE" \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute exactly one isolated stage-two case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" \
+            --manifest "$PROPOSAL" \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$EXECUTION_ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root case-output \
+            --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-stage-two-v1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs: 
+      - preflight
+      - cases
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact stage-two authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-stage-two-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact stage-two case set
+        run: >-
+          python "$AGGREGATE"
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-stage-two-v1-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs:
+      - preflight
+      - cases
+      - aggregate
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact stage-two authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-stage-two-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-aggregate
+          path: aggregate-output
+      - name: Independently audit exact stage-two plan, cases, hashes, counts, and statistics
+        run: >-
+          python "$AUDIT"
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-stage-two-v1-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  screening:
+    needs: 
+      - preflight
+      - cases
+      - aggregate
+      - audit
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact stage-two authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Download exact preserved pilot postprocess artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_POSTPROCESS_ARTIFACT }}
+          path: source-postprocess
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_POSTPROCESS_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-stage-two-v1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-aggregate
+          path: aggregate-output
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-stage-two-v1-audit
+          path: audit-output
+      - name: Analyze combined pilot blocks 1-2 and stage-two blocks 3-4
+        run: >-
+          python "$ANALYSIS_DRIVER"
+          --source-manifest "$SOURCE_MANIFEST"
+          --stage-two-proposal "$PROPOSAL"
+          --contract "$CONTRACT"
+          --source-analysis "$SOURCE_ANALYSIS"
+          --source-provenance "$SOURCE_PROVENANCE"
+          --source-postprocess-root source-postprocess
+          --stage-two-cases-root case-artifacts
+          --stage-two-summary aggregate-output/batch-summary.json
+          --stage-two-audit audit-output/audit-report.json
+          --output-dir screening-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-stage-two-v1-screening
+          path: screening-output
+          if-no-files-found: warn
+          retention-days: 90

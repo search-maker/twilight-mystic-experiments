@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 STAGE_ID = "mystic-batch-v1"
+TITLE_PREFIX = "MYSTIC batch v1 "
 
 
 class DuplicateRefusal(RuntimeError):
@@ -17,7 +18,20 @@ class DuplicateRefusal(RuntimeError):
 
 
 def expected_title(execution_key: str, authorization_ref: str, ordinal: int) -> str:
-    return f"MYSTIC batch v1 | key={execution_key} | auth={authorization_ref} | ordinal={ordinal}"
+    return f"{TITLE_PREFIX}| key={execution_key} | auth={authorization_ref} | ordinal={ordinal}"
+
+
+def one_shot_marker(title: str) -> str:
+    if not title.startswith(TITLE_PREFIX):
+        raise DuplicateRefusal("internal expected title has wrong prefix")
+    marker = title[len(TITLE_PREFIX):]
+    if not marker.startswith("| key=") or " | auth=" not in marker or " | ordinal=" not in marker:
+        raise DuplicateRefusal("internal one-shot marker is malformed")
+    return marker
+
+
+def display_title_matches(display_title: Any, marker: str) -> bool:
+    return isinstance(display_title, str) and display_title.endswith(marker)
 
 
 def evaluate(payload: dict[str, Any], current_run_id: int, title: str) -> dict[str, Any]:
@@ -31,14 +45,16 @@ def evaluate(payload: dict[str, Any], current_run_id: int, title: str) -> dict[s
     if len(current) != 1:
         raise DuplicateRefusal("current workflow run was not found exactly once")
     run = current[0]
-    if run.get("display_title") != title:
+    marker = one_shot_marker(title)
+    actual_title = run.get("display_title")
+    if not display_title_matches(actual_title, marker):
         raise DuplicateRefusal("current workflow title does not match one-shot marker")
     if run.get("event") != "workflow_dispatch" or run.get("run_attempt") != 1:
         raise DuplicateRefusal("current run is not an exact first-attempt workflow_dispatch")
     duplicates = [
         {"id": item.get("id"), "status": item.get("status"), "conclusion": item.get("conclusion")}
         for item in runs
-        if item.get("id") != current_run_id and item.get("display_title") == title
+        if item.get("id") != current_run_id and display_title_matches(item.get("display_title"), marker)
     ]
     if duplicates:
         raise DuplicateRefusal(f"one-shot marker was already used: {duplicates}")
@@ -47,7 +63,8 @@ def evaluate(payload: dict[str, Any], current_run_id: int, title: str) -> dict[s
         "stageId": STAGE_ID,
         "status": "PASS",
         "currentRunId": current_run_id,
-        "displayTitle": title,
+        "displayTitle": actual_title,
+        "oneShotMarker": marker,
         "matchingPriorRunCount": 0,
         "boundary": "duplicate audit completed before syntax check or solver execution",
     }

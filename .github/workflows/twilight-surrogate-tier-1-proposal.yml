@@ -1,0 +1,94 @@
+name: Twilight surrogate tier-1 proposal
+
+on:
+  workflow_run:
+    workflows: ["MYSTIC held-out timeout continuation v1 scientific execution"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful ordinal-6 timeout-continuation run ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  proposal:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Resolve exact source run
+        id: source
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=${{ inputs.source_run_id }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download exact timeout-continuation analysis artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-analysis
+          path: source-download
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch immutable source run and artifact metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p source-meta source-normalized
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('source-download')
+          target = Path('source-normalized')
+          for name in ('timeout-continuation-analysis.json', 'reference-readiness.json', 'audited-reference-dataset.json'):
+              matches = list(root.rglob(name))
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0], target / name)
+          PY
+      - name: Validate anchors and generate exact tier-1 proposal
+        run: >-
+          python experiments/model-readiness-v1/tier1_proposal.py
+          --dataset source-normalized/audited-reference-dataset.json
+          --readiness source-normalized/reference-readiness.json
+          --analysis source-normalized/timeout-continuation-analysis.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --reference-contract experiments/model-readiness-v1/reference_dataset_contract.py
+          --training-design-code experiments/model-readiness-v1/training_design.py
+          --training-design-spec experiments/model-readiness-v1/training-design.proposal.json
+          --importance-policy experiments/model-readiness-v1/importance_policy.py
+          --output-dir proposal-output
+      - name: Prove proposal workflow cannot execute science or train a model
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/twilight-surrogate-tier-1-proposal.yml').read_text().lower()
+          executable = text.split('- name: prove proposal workflow cannot execute science or train a model', 1)[0]
+          forbidden = ('setup-micromamba', 'scientific_case_executor.py', '--allow-execution', 'uvspec -c', 'rte_solver mystic', 'model.fit(', 'torch.optim', 'tensorflow')
+          found = [token for token in forbidden if token in executable]
+          if found:
+              raise SystemExit(f'proposal workflow has forbidden execution or training surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-proposal-v1
+          path: proposal-output
+          if-no-files-found: error
+          retention-days: 90

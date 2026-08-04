@@ -1,0 +1,97 @@
+name: G01 fixed precision diagnosis proposal
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/g01-fixed-precision-diagnosis-proposal.yml"
+      - "experiments/mystic-batch-v1/g01_precision_diagnosis.py"
+      - "tests/test_g01_precision_diagnosis.py"
+  push:
+    branches: ["agent/g01-precision-diagnosis-v1", "main"]
+    paths:
+      - ".github/workflows/g01-fixed-precision-diagnosis-proposal.yml"
+      - "experiments/mystic-batch-v1/g01_precision_diagnosis.py"
+      - "tests/test_g01_precision_diagnosis.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnosis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run diagnosis unit tests
+        run: python -m unittest -v tests/test_g01_precision_diagnosis.py
+      - name: Compile diagnosis generator
+        run: python -m py_compile experiments/mystic-batch-v1/g01_precision_diagnosis.py
+      - name: Download exact successful ordinal-6 analysis
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-analysis
+          path: source-analysis
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download exact ordinal-6 preflight with preserved g01 blocks
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-preflight
+          path: source-preflight
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch immutable source run and artifact metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p source-meta
+          gh api "repos/${{ github.repository }}/actions/runs/30875148389" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/30875148389/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Normalize exact source analysis files
+        run: |
+          mkdir -p source-normalized
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('source-analysis')
+          target = Path('source-normalized')
+          for name in ('timeout-continuation-analysis.json', 'reference-readiness.json', 'audited-reference-dataset.json'):
+              matches = list(root.rglob(name))
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0], target / name)
+          PY
+      - name: Generate exact diagnosis and fixed four-block proposal
+        run: >-
+          python experiments/mystic-batch-v1/g01_precision_diagnosis.py
+          --analysis source-normalized/timeout-continuation-analysis.json
+          --readiness source-normalized/reference-readiness.json
+          --dataset source-normalized/audited-reference-dataset.json
+          --preflight-root source-preflight
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --output-dir diagnosis-output
+      - name: Prove workflow has no scientific execution surface
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/g01-fixed-precision-diagnosis-proposal.yml').read_text().lower()
+          executable = text.split('- name: prove workflow has no scientific execution surface', 1)[0]
+          forbidden = ('setup-micromamba', 'scientific_case_executor.py', '--allow-execution', 'uvspec -c', 'rte_solver mystic')
+          found = [token for token in forbidden if token in executable]
+          if found:
+              raise SystemExit(f'diagnosis proposal workflow has execution surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-proposal-v1
+          path: diagnosis-output
+          if-no-files-found: error
+          retention-days: 90

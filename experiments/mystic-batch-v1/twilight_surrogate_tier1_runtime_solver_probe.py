@@ -14,6 +14,10 @@ STAGE_ID = "twilight-surrogate-tier-1-runtime-solver-probe-v1"
 EXPECTED_ALTITUDE = "altitude 0.357143"
 EXPECTED_ZOUT = "zout 0.000000"
 FORBIDDEN_ZOUT = "zout 0.357143"
+MYSTIC_ALTITUDE_REJECTION = (
+    "Error, option altitude does not work with\n"
+    "       solver montecarlo! Use mc_elevation_file!\n"
+)
 
 
 class ProbeError(RuntimeError):
@@ -61,6 +65,14 @@ def render(data_dir: Path, atmosphere: Path, solar_flux: Path, output_dir: Path)
     ])
 
 
+def classify(returncode: int, stdout: str, stderr: str, generated_count: int) -> tuple[str, bool, bool]:
+    if returncode == 0 and generated_count > 0:
+        return "FROZEN_RUNTIME_SOLVER_ACCEPTS_SITE_ALTITUDE_INPUT", True, False
+    if returncode == 255 and stdout == "" and stderr == MYSTIC_ALTITUDE_REJECTION and generated_count == 0:
+        return "BLOCKED_MYSTIC_ALTITUDE_REQUIRES_VALIDATED_MC_ELEVATION_FILE", False, True
+    return "UNEXPECTED_FROZEN_RUNTIME_SOLVER_RESULT", False, False
+
+
 def probe(uvspec: Path, data_dir: Path, atmosphere: Path, solar_flux: Path, runtime_lock: Path, output_dir: Path) -> dict[str, Any]:
     for path, label in ((uvspec, "uvspec"), (atmosphere, "atmosphere"), (solar_flux, "solar flux"), (runtime_lock, "runtime lock")):
         if not path.is_file():
@@ -83,12 +95,17 @@ def probe(uvspec: Path, data_dir: Path, atmosphere: Path, solar_flux: Path, runt
     generated_sizes = {path.name: path.stat().st_size for path in generated}
     for path in generated:
         path.unlink()
-    accepted = process.returncode == 0 and bool(generated_hashes)
+    status, accepted, recognized_blocker = classify(
+        process.returncode, process.stdout, process.stderr, len(generated_hashes)
+    )
     result = {
         "schemaVersion": 1,
         "stageId": STAGE_ID,
-        "status": "FROZEN_RUNTIME_SOLVER_ACCEPTS_SITE_ALTITUDE_INPUT" if accepted else "FROZEN_RUNTIME_SOLVER_REJECTS_SITE_ALTITUDE_INPUT",
+        "status": status,
         "accepted": accepted,
+        "recognizedStructuralBlocker": recognized_blocker,
+        "authorizationPermitted": False,
+        "ordinal2ScientificDispatchPermitted": False,
         "scientificExecution": False,
         "scientificDatasetProduced": False,
         "surrogateTrainingUsePermitted": False,
@@ -110,11 +127,15 @@ def probe(uvspec: Path, data_dir: Path, atmosphere: Path, solar_flux: Path, runt
         "generatedOutputFilesPreserved": False,
         "requiredInputLines": [EXPECTED_ALTITUDE, EXPECTED_ZOUT],
         "forbiddenInputLine": FORBIDDEN_ZOUT,
-        "boundary": "one separate one-photon solver probe; hashes only, generated numerical files deleted, no dataset, no training, no authorization",
+        "requiredNextProof": (
+            "validate exact mc_elevation_file semantics and constant-site geometry in the frozen public MYSTIC runtime"
+            if recognized_blocker else None
+        ),
+        "boundary": "one separate one-photon compatibility probe; numerical files deleted; no dataset, training, authorization, dispatch, or production use",
     }
     (output_dir / "solver-probe.json").write_text(dump(result))
-    if not accepted:
-        raise ProbeError(f"frozen runtime solver probe failed: exit={process.returncode}, outputs={len(generated_hashes)}")
+    if status == "UNEXPECTED_FROZEN_RUNTIME_SOLVER_RESULT":
+        raise ProbeError(f"unexpected solver result: exit={process.returncode}, outputs={len(generated_hashes)}")
     return result
 
 

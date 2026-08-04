@@ -1,0 +1,191 @@
+name: Twilight surrogate tier-1 libRadtran provenance recovery
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-libradtran-provenance-recovery.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_provenance_recovery.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py"
+      - "tests/test_twilight_surrogate_tier1_libradtran_provenance_recovery.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+
+permissions:
+  contents: read
+
+jobs:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test and compile provenance recovery boundaries
+        run: |
+          python -m unittest -v tests/test_twilight_surrogate_tier1_libradtran_provenance_recovery.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_provenance_recovery.py \
+            tests/test_twilight_surrogate_tier1_libradtran_provenance_recovery.py
+      - name: Verify immutable source and governance constants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_libradtran_provenance_recovery.py'
+          ).read_text()
+          assert 'EXPECTED_SOURCE_SHA256 = "999e47f4' in source
+          assert 'CURRENT_OFFICIAL_OBSERVED_SHA256 = "64930cc4' in source
+          assert 'currentOfficialHashPromotedToExpected": False' in source
+          assert 'expectedHashChangedToMakeCiGreen": False' in source
+          assert 'authorizationPermitted": False' in source
+          assert 'ordinal2ScientificDispatchPermitted": False' in source
+          assert 'solverExecutionCount": 0' in source
+          assert 'return 0 if report["provenanceGatePassed"] else 2' in source
+          PY
+
+  exact-provenance-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-provenance-recovery-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve exact frozen package and feedstock identities
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=libradtran-provenance-recovery-output
+          mkdir -p "$OUT/package-info" package-container-temp package-payload-temp
+          micromamba list --explicit > "$OUT/runtime-package-explicit.txt"
+          micromamba list --json > "$OUT/runtime-package-list.json"
+          sha256sum "$(command -v uvspec)" > "$OUT/installed-uvspec-sha256.txt"
+          cp \
+            "$CONDA_PREFIX/conda-meta/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.json" \
+            "$OUT/exact-package-record.json"
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/conda-forge/rubin-libradtran-feedstock/0ace9da0ce3a994f71fefc14b9b91d12b54a7be8/recipe/meta.yaml \
+            --output "$OUT/feedstock-meta.yaml"
+          PACKAGE_URL="$(grep 'rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda' "$OUT/runtime-package-explicit.txt" | tail -n 1)"
+          test -n "$PACKAGE_URL"
+          printf '%s\n' "$PACKAGE_URL" > "$OUT/exact-package-url.txt"
+          curl --fail --location --silent --show-error \
+            "$PACKAGE_URL" \
+            --output exact-package.conda
+          sha256sum exact-package.conda > "$OUT/exact-package-archive-sha256.txt"
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          with zipfile.ZipFile('exact-package.conda') as archive:
+              archive.extractall('package-container-temp')
+          files = sorted(path.name for path in Path('package-container-temp').iterdir())
+          Path('libradtran-provenance-recovery-output/package-container-members.json').write_text(
+              __import__('json').dumps(files, indent=2) + '\n'
+          )
+          PY
+          INFO_TAR="$(find package-container-temp -maxdepth 1 -name 'info-*.tar.zst' -print -quit)"
+          PKG_TAR="$(find package-container-temp -maxdepth 1 -name 'pkg-*.tar.zst' -print -quit)"
+          test -n "$INFO_TAR"
+          test -n "$PKG_TAR"
+          tar --zstd -xf "$INFO_TAR" -C "$OUT/package-info"
+          tar --zstd -xf "$PKG_TAR" -C package-payload-temp
+          test -f "$OUT/package-info/info/index.json"
+          test -f "$OUT/package-info/info/paths.json"
+          test -f package-payload-temp/bin/uvspec
+      - name: Attempt bounded exact historical source recovery
+        id: recovery
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          OUT=libradtran-provenance-recovery-output
+          set +e
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_provenance_recovery.py \
+            --feedstock-meta "$OUT/feedstock-meta.yaml" \
+            --package-record "$OUT/exact-package-record.json" \
+            --package-archive exact-package.conda \
+            --package-info-dir "$OUT/package-info" \
+            --package-payload-dir package-payload-temp \
+            --installed-uvspec "$(command -v uvspec)" \
+            --source-audit-module experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py \
+            --output-dir "$OUT" \
+            > "$OUT/recovery-command-stdout.txt" \
+            2> "$OUT/recovery-command-stderr.txt"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$OUT/recovery-command-exit-code.txt"
+          echo "recovery_exit_code=$status" >> "$GITHUB_OUTPUT"
+          rm -f exact-package.conda
+          rm -rf package-container-temp package-payload-temp
+      - name: Upload complete provenance evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-libradtran-provenance-recovery-v1
+          path: libradtran-provenance-recovery-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce exact-source or explicit blocked-provenance boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('libradtran-provenance-recovery-output')
+          report_path = root / 'libradtran-provenance-recovery.json'
+          if not report_path.is_file():
+              stderr = (root / 'recovery-command-stderr.txt').read_text() if (root / 'recovery-command-stderr.txt').is_file() else ''
+              raise AssertionError(f'provenance report missing: {stderr}')
+          report = json.loads(report_path.read_text())
+          command_exit = int((root / 'recovery-command-exit-code.txt').read_text().strip())
+          expected_sha = '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+          current_sha = '64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
+          expected_uvspec = '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+
+          assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert report['solverExecutionCount'] == 0
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['githubRerunPermitted'] is False
+          assert report['frozenTier1InvariantsChanged'] is False
+          assert report['sourceHashChangePermitted'] is False
+          assert report['sourceRecovery']['expectedHashChangedToMakeCiGreen'] is False
+          assert report['sourceRecovery']['currentOfficialHashPromotedToExpected'] is False
+          assert report['packageProvenanceDecision'] is True
+          assert report['feedstock']['sourceSha256'] == expected_sha
+          assert report['package']['installedUvspecSha256'] == expected_uvspec
+
+          if command_exit == 0:
+              assert report['provenanceGatePassed'] is True
+              assert report['status'] == 'EXACT_HISTORICAL_SOURCE_RECOVERED_PACKAGE_PROVENANCE_BOUND'
+              assert report['exactHistoricalSourceArchiveRecovered'] is True
+              assert report['sourceMechanismAuditDecision'] is True
+              assert report['sourceEvidenceAccepted'] is True
+          elif command_exit == 2:
+              assert report['provenanceGatePassed'] is False
+              assert report['status'] == 'PACKAGE_PROVENANCE_BOUND_EXACT_HISTORICAL_SOURCE_NOT_RECOVERED'
+              assert report['exactHistoricalSourceArchiveRecovered'] is False
+              assert report['sourceMechanismAuditDecision'] is False
+              assert report['sourceEvidenceAccepted'] is False
+              recovery = report['sourceRecovery']
+              assert recovery['expectedSourceSha256'] == expected_sha
+              assert recovery['currentOfficialObservedSha256'] == current_sha
+              assert recovery['currentOfficialMutableSameVersionResponseObserved'] is True
+              assert any(
+                  attempt.get('matchesCurrentOfficialObservedSha256') is True
+                  for attempt in recovery['attempts']
+              )
+          else:
+              raise AssertionError(f'unexpected provenance-recovery exit code: {command_exit}')
+          PY

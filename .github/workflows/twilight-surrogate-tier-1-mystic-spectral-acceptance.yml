@@ -1,0 +1,166 @@
+name: Twilight surrogate tier-1 MYSTIC spectral acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-mystic-spectral-acceptance.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "tests/test_twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+
+permissions:
+  contents: read
+
+jobs:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test and compile corrected spectral acceptance probe
+        run: |
+          python -m unittest -v tests/test_twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py \
+            tests/test_twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py
+      - name: Verify immutable no-science boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py'
+          ).read_text()
+          assert 'WAVELENGTH_START_NM = 380.0' in source
+          assert 'WAVELENGTH_END_NM = 780.0' in source
+          assert 'IMPORTANCE_WAVELENGTH_NM = 550.0' in source
+          assert 'MYSTIC_PHOTONS = 1' in source
+          assert 'MYSTIC_SEED = 990005' in source
+          assert 'MAXIMUM_MYSTIC_SOLVER_EXECUTIONS = 1' in source
+          assert 'authorizationPermitted": False' in source
+          assert 'ordinal2ScientificDispatchPermitted": False' in source
+          assert 'combinedEquivalenceProofPassed": False' in source
+          assert 'scientificDatasetProduced": False' in source
+          assert 'SINGLE_WAVELENGTH_ENDPOINT_ALIS_REFERENCE_NULL_DEREFERENCE' in source
+          assert 'solverGeneratedFilesPreserved": False' in source
+          PY
+
+  frozen-runtime-spectral-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-atm-z-grid-equivalence-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve exact frozen runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p mystic-spectral-acceptance-output
+          micromamba list --explicit > mystic-spectral-acceptance-output/runtime-package-explicit-before.txt
+          micromamba list --json > mystic-spectral-acceptance-output/runtime-package-list-before.json
+          sha256sum "$(command -v uvspec)" > mystic-spectral-acceptance-output/uvspec-sha256.txt
+      - name: Run one corrected Tier-1-domain spectral acceptance probe
+        id: probe
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          set +e
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_spectral_acceptance_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --base-probe-module experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir mystic-spectral-acceptance-output \
+            --package-explicit mystic-spectral-acceptance-output/runtime-package-explicit-before.txt \
+            --package-json mystic-spectral-acceptance-output/runtime-package-list-before.json \
+            > mystic-spectral-acceptance-output/probe-command-stdout.txt \
+            2> mystic-spectral-acceptance-output/probe-command-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > mystic-spectral-acceptance-output/probe-command-exit-code.txt
+          echo "probe_exit_code=$status" >> "$GITHUB_OUTPUT"
+      - name: Prove frozen runtime remained unchanged
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          micromamba list --explicit > mystic-spectral-acceptance-output/runtime-package-explicit-after.txt
+          micromamba list --json > mystic-spectral-acceptance-output/runtime-package-list-after.json
+          cmp \
+            mystic-spectral-acceptance-output/runtime-package-explicit-before.txt \
+            mystic-spectral-acceptance-output/runtime-package-explicit-after.txt
+          cmp \
+            mystic-spectral-acceptance-output/runtime-package-list-before.json \
+            mystic-spectral-acceptance-output/runtime-package-list-after.json
+      - name: Upload complete corrected probe evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-mystic-spectral-acceptance-v1
+          path: mystic-spectral-acceptance-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce acceptance-only and no-authorization boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('mystic-spectral-acceptance-output')
+          report_path = root / 'mystic-spectral-acceptance-probe.json'
+          if not report_path.is_file():
+              stderr = (root / 'probe-command-stderr.txt').read_text()
+              raise AssertionError(f'probe report missing: {stderr}')
+          report = json.loads(report_path.read_text())
+          command_exit = int((root / 'probe-command-exit-code.txt').read_text().strip())
+          assert report['diagnosticOnly'] is True
+          assert report['combinedEquivalenceProofPassed'] is False
+          assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert report['surrogateTrainingUsePermitted'] is False
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['githubRerunPermitted'] is False
+          assert report['frozenTier1InvariantsChanged'] is False
+          assert report['mysticSolverExecutionCount'] == 1
+          assert report['maximumPermittedMysticSolverExecutionCount'] == 1
+          assert report['mcPhotons'] == 1
+          assert report['mcRandomSeed'] == 990005
+          assert report['candidateRepresentation']['siteAltitudeKm'] == 0.357143
+          assert report['candidateRepresentation']['atmZGridBottomIsSiteAltitude'] is True
+          assert report['candidateRepresentation']['explicitAltitudePresent'] is False
+          assert report['candidateRepresentation']['mcElevationFilePresent'] is False
+          assert report['candidateRepresentation']['localSurfaceZoutKm'] == 0.0
+          assert report['controlGeometry']['notFrozenTier1TwilightGeometry'] is True
+          assert report['spectralConfiguration']['wavelengthDomainNm'] == [380.0, 780.0]
+          assert report['spectralConfiguration']['alisImportanceWavelengthNm'] == 550.0
+          assert report['spectralConfiguration']['alisReferenceStrictlyInsideDomain'] is True
+          assert report['spectralConfiguration']['matchesFrozenTier1Domain'] is True
+          assert report['runtime']['uvspecSha256'] == '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert report['runtime']['runtimeLockRawSha256'] == '3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5'
+          assert report['solverGeneratedFilesPreserved'] is False
+          assert report['priorCrashInterpretation']['classification'] == 'SINGLE_WAVELENGTH_ENDPOINT_ALIS_REFERENCE_NULL_DEREFERENCE'
+          assert command_exit == 0
+          assert report['acceptanceProbePassed'] is True
+          assert report['status'] == 'MYSTIC_ACCEPTS_ATM_Z_GRID_WITH_TIER1_SPECTRAL_DOMAIN'
+          assert report['candidateRepresentation']['surfaceMarkerObserved'] is True
+          assert report['spectralConfiguration']['alisMarkerObserved'] is True
+          assert report['solverGeneratedNumericalFileCount'] >= 1
+          PY

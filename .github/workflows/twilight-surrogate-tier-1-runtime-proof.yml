@@ -1,0 +1,197 @@
+name: Twilight surrogate tier-1 runtime proof
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-runtime-proof.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_mc_elevation_inventory.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal1_audit.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal2_recovery.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+      - "tests/test_twilight_surrogate_tier1_recovery.py"
+      - "tests/test_twilight_surrogate_tier1_runtime_blocker.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run direct recovery, audit, fake-solver, and blocker tests
+        run: >-
+          python -m unittest -v
+          tests/test_twilight_surrogate_tier1_recovery.py
+          tests/test_twilight_surrogate_tier1_runtime_blocker.py
+      - name: Compile owned Tier-1 recovery files
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_mc_elevation_inventory.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal1_audit.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal2_recovery.py
+
+  runtime-syntax-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-runtime-proof-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Run exact non-scientific altitude syntax proof
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir runtime-proof-output
+      - name: Verify exact syntax-proof boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('runtime-proof-output/runtime-proof.json').read_text())
+          assert report['status'] == 'FROZEN_RUNTIME_ACCEPTS_SITE_ALTITUDE_INPUT'
+          assert report['syntaxCheckCount'] == 1
+          assert report['solverExecutionCount'] == 0
+          assert report['scientificDatasetProduced'] is False
+          text = Path('runtime-proof-output/input-resolved.txt').read_text()
+          assert text.count('altitude 0.357143') == 1
+          assert text.count('zout 0.000000') == 1
+          assert 'zout 0.357143' not in text
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-runtime-proof-v1
+          path: runtime-proof-output
+          if-no-files-found: error
+          retention-days: 90
+
+  runtime-solver-compatibility-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-runtime-solver-probe-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Run separate one-photon solver compatibility probe
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir runtime-solver-probe-output
+      - name: Verify exact structural blocker and no dataset
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('runtime-solver-probe-output/solver-probe.json').read_text())
+          assert report['status'] == 'BLOCKED_MYSTIC_ALTITUDE_REQUIRES_VALIDATED_MC_ELEVATION_FILE'
+          assert report['accepted'] is False
+          assert report['recognizedStructuralBlocker'] is True
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['solverExecutionCount'] == 1
+          assert report['mcPhotons'] == 1
+          assert report['exitCode'] == 255
+          assert report['generatedOutputFileCount'] == 0
+          assert report['generatedOutputFilesPreserved'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert not list(Path('runtime-solver-probe-output').glob('mc*'))
+          expected = (
+              'Error, option altitude does not work with\n'
+              '       solver montecarlo! Use mc_elevation_file!\n'
+          )
+          assert Path('runtime-solver-probe-output/stderr.txt').read_text() == expected
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-runtime-solver-probe-v1
+          path: runtime-solver-probe-output
+          if-no-files-found: error
+          retention-days: 90
+
+  runtime-mc-elevation-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-mc-elevation-inventory-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve installed primary runtime evidence only
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_mc_elevation_inventory.py \
+            --uvspec "$(command -v uvspec)" \
+            --prefix "$CONDA_PREFIX" \
+            --output-dir mc-elevation-inventory-output
+      - name: Verify evidence preservation has no semantic or scientific claim
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path('mc-elevation-inventory-output')
+          report = json.loads((root / 'inventory.json').read_text())
+          assert report['status'] == 'PRIMARY_RUNTIME_EVIDENCE_PRESERVED_NO_SEMANTIC_VALIDATION'
+          assert report['solverExecutionCount'] == 0
+          assert report['scientificDatasetProduced'] is False
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['semanticConclusionPermitted'] is False
+          assert report['requiredPrimaryEvidenceCount'] == 7
+          assert report['requiredPrimaryEvidencePresentCount'] == 7
+          assert report['optionalContextEvidenceCount'] == 8
+          required = [row for row in report['primaryEvidence'] if row['required']]
+          assert len(required) == 7
+          for row in report['primaryEvidence']:
+              if not row['present']:
+                  assert row['required'] is False
+                  continue
+              path = root / row['preservedPath']
+              assert path.is_file()
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == row['rawSha256']
+              assert row['preservedRawSha256'] == row['rawSha256']
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-mc-elevation-inventory-v1
+          path: mc-elevation-inventory-output
+          if-no-files-found: error
+          retention-days: 90

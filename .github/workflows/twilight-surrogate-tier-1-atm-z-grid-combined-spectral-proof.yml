@@ -1,0 +1,193 @@
+name: Twilight surrogate tier-1 combined atm z grid spectral proof
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-atm-z-grid-combined-spectral-proof.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "tests/test_twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py"
+      - "tests/test_twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py"
+      - "tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+
+permissions:
+  contents: read
+
+jobs:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test and compile unchanged deterministic and corrected spectral boundaries
+        run: |
+          python -m unittest -v \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py
+      - name: Verify immutable proof and governance boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          combined = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py'
+          ).read_text()
+          proof = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py'
+          ).read_text()
+          base = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_atm_z_grid_probe.py'
+          ).read_text()
+          assert 'MYSTIC_WAVELENGTH_START_NM = 380.0' in combined
+          assert 'MYSTIC_WAVELENGTH_END_NM = 780.0' in combined
+          assert 'MYSTIC_IMPORTANCE_WAVELENGTH_NM = 550.0' in combined
+          assert 'ALIS_MARKER_FRAGMENT = "ALIS calculation wavelength: 550"' in combined
+          assert 'BASE.MYSTIC_PHOTONS != 1' in combined
+          assert 'BASE.MYSTIC_SEED != 990004' in combined
+          assert 'singleWavelengthEndpointCrashConfigurationUsed": False' in combined
+          assert 'authorizationPermitted": False' in proof
+          assert 'ordinal2ScientificDispatchPermitted": False' in proof
+          assert 'githubRerunPermitted": False' in proof
+          assert 'PREREGISTERED_TOLERANCES = BASE.PREREGISTERED_TOLERANCES' in proof
+          assert 'MYSTIC_PHOTONS = 1' in base
+          assert 'MYSTIC_SEED = 990004' in base
+          assert 'SOURCE_ARCHIVE_EXPECTED_SHA256 = "999e47f4' in base
+          assert 'SOURCE_ARCHIVE_CURRENT_DOWNLOAD_SHA256 = "64930cc4' in base
+          PY
+
+  frozen-runtime-combined-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-atm-z-grid-combined-v3
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve exact frozen runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p atm-z-grid-combined-proof-output
+          micromamba list --explicit > atm-z-grid-combined-proof-output/runtime-package-explicit-before.txt
+          micromamba list --json > atm-z-grid-combined-proof-output/runtime-package-list-before.json
+          sha256sum "$(command -v uvspec)" > atm-z-grid-combined-proof-output/uvspec-sha256.txt
+      - name: Run combined deterministic equivalence and one-photon Tier-1 spectral proof
+        id: proof
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          set +e
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_combined_spectral_proof.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --package-explicit atm-z-grid-combined-proof-output/runtime-package-explicit-before.txt \
+            --package-json atm-z-grid-combined-proof-output/runtime-package-list-before.json \
+            --output-dir atm-z-grid-combined-proof-output \
+            > atm-z-grid-combined-proof-output/proof-command-stdout.txt \
+            2> atm-z-grid-combined-proof-output/proof-command-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > atm-z-grid-combined-proof-output/proof-command-exit-code.txt
+          echo "proof_exit_code=$status" >> "$GITHUB_OUTPUT"
+      - name: Prove frozen runtime remained unchanged
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          micromamba list --explicit > atm-z-grid-combined-proof-output/runtime-package-explicit-after.txt
+          micromamba list --json > atm-z-grid-combined-proof-output/runtime-package-list-after.json
+          cmp \
+            atm-z-grid-combined-proof-output/runtime-package-explicit-before.txt \
+            atm-z-grid-combined-proof-output/runtime-package-explicit-after.txt
+          cmp \
+            atm-z-grid-combined-proof-output/runtime-package-list-before.json \
+            atm-z-grid-combined-proof-output/runtime-package-list-after.json
+      - name: Upload complete combined proof evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-atm-z-grid-combined-spectral-proof-v3
+          path: atm-z-grid-combined-proof-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce combined proof and no-authorization boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('atm-z-grid-combined-proof-output')
+          report_path = root / 'atm-z-grid-equivalence-proof.json'
+          if not report_path.is_file():
+              stderr = (root / 'proof-command-stderr.txt').read_text()
+              raise AssertionError(f'combined proof report missing: {stderr}')
+          report = json.loads(report_path.read_text())
+          command_exit = int((root / 'proof-command-exit-code.txt').read_text().strip())
+          assert report['stageId'] == 'twilight-surrogate-tier-1-atm-z-grid-combined-spectral-proof-v3'
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert report['surrogateTrainingUsePermitted'] is False
+          assert report['githubRerunPermitted'] is False
+          assert report['frozenTier1InvariantsChanged'] is False
+          assert report['sourceProvenance']['expectedHashChangedToMakeCiGreen'] is False
+          assert report['sourceProvenance']['sourceEvidenceAccepted'] is False
+          assert report['maximumPermittedMysticSolverExecutionCount'] == 1
+          assert report['mysticSolverExecutionCount'] == 1
+          assert report['deterministicSolverExecutionCount'] == 6
+          assert report['runtime']['uvspecSha256'] == '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert report['runtime']['runtimeLockRawSha256'] == '3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5'
+          assert command_exit == 0
+          assert report['proofPassed'] is True
+          assert report['status'] == 'ATM_Z_GRID_ELEVATED_SITE_EQUIVALENCE_AND_MYSTIC_ACCEPTANCE_PROOF_PASSED'
+          assert report['profileEquivalenceDecision'] is True
+          assert report['opticalPropertyEquivalenceDecision'] is True
+          assert report['deterministicControlDecision'] is True
+          assert report['threeHeightStructuralProfileDecision'] is True
+          assert report['mysticProbeDecision'] is True
+          mystic = report['mysticProbe']
+          assert mystic['passed'] is True
+          assert mystic['solverExecutionCount'] == 1
+          assert mystic['mcPhotons'] == 1
+          assert mystic['mcRandomSeed'] == 990004
+          assert mystic['explicitAltitudePresent'] is False
+          assert mystic['mcElevationFilePresent'] is False
+          assert mystic['localSurfaceZoutKm'] == 0.0
+          assert mystic['surfaceMarkerObserved'] is True
+          assert mystic['generatedFiles']
+          assert mystic['generatedFilesPreserved'] is False
+          assert mystic['scientificDatasetProduced'] is False
+          spectral = mystic['spectralConfiguration']
+          assert spectral['wavelengthDomainNm'] == [380.0, 780.0]
+          assert spectral['alisImportanceWavelengthNm'] == 550.0
+          assert spectral['alisReferenceStrictlyInsideDomain'] is True
+          assert spectral['matchesFrozenTier1Domain'] is True
+          assert spectral['singleWavelengthEndpointCrashConfigurationUsed'] is False
+          assert spectral['alisMarkerObserved'] is True
+          PY

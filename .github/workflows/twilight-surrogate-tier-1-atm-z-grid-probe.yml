@@ -5,7 +5,9 @@ on:
     paths:
       - ".github/workflows/twilight-surrogate-tier-1-atm-z-grid-probe.yml"
       - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py"
       - "tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "tests/test_twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py"
       - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
   workflow_dispatch:
 
@@ -23,27 +25,36 @@ jobs:
           python-version: "3.12.4"
       - name: Test and compile preregistered equivalence proof
         run: |
-          python -m unittest -v tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py
+          python -m unittest -v tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py tests/test_twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py
           python -m py_compile \
             experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
-            tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py
       - name: Verify immutable proof boundaries
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          source = Path(
+          base = Path(
               'experiments/mystic-batch-v1/'
               'twilight_surrogate_tier1_atm_z_grid_probe.py'
           ).read_text()
-          assert 'MYSTIC_PHOTONS = 1' in source
-          assert 'MYSTIC_SEED = 990004' in source
+          source = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py'
+          ).read_text()
+          assert 'MYSTIC_PHOTONS = 1' in base
+          assert 'MYSTIC_SEED = 990004' in base
           assert 'authorizationPermitted": False' in source
           assert 'ordinal2ScientificDispatchPermitted": False' in source
           assert 'expectedHashChangedToMakeCiGreen": False' in source
-          assert 'SOURCE_ARCHIVE_EXPECTED_SHA256 = "999e47f4' in source
-          assert 'SOURCE_ARCHIVE_CURRENT_DOWNLOAD_SHA256 = "64930cc4' in source
+          assert 'SOURCE_ARCHIVE_EXPECTED_SHA256 = "999e47f4' in base
+          assert 'SOURCE_ARCHIVE_CURRENT_DOWNLOAD_SHA256 = "64930cc4' in base
           assert 'PREREGISTERED_TOLERANCES' in source
+          assert 'write_optical_properties' not in source
+          assert 'netCDF4' not in source
+          assert 'PREREGISTERED_TOLERANCES = BASE.PREREGISTERED_TOLERANCES' in source
           PY
 
   frozen-runtime-equivalence-proof:
@@ -58,7 +69,6 @@ jobs:
             -c conda-forge
             python=3.12.4
             rubin-libradtran=2.0.6=py312pl5321he9373c2_1
-            netcdf4=1.7.4
           cache-environment: true
           cache-downloads: true
       - name: Preserve exact package identity
@@ -68,10 +78,6 @@ jobs:
           mkdir -p atm-z-grid-equivalence-proof-output
           micromamba list --explicit > atm-z-grid-equivalence-proof-output/runtime-package-explicit.txt
           micromamba list --json > atm-z-grid-equivalence-proof-output/runtime-package-list.json
-          python - <<'PY'
-          import netCDF4
-          print(netCDF4.__version__)
-          PY
       - name: Run preregistered A/B atmosphere and radiance proof
         id: proof
         shell: bash -el {0}
@@ -79,7 +85,7 @@ jobs:
           set -uo pipefail
           DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
           set +e
-          python experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py \
             --uvspec "$(command -v uvspec)" \
             --data-dir "$DATA_DIR" \
             --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
@@ -126,6 +132,8 @@ jobs:
           assert report['mysticSolverExecutionCount'] <= 1
           assert report['sourceProvenance']['expectedHashChangedToMakeCiGreen'] is False
           assert report['sourceProvenance']['sourceEvidenceAccepted'] is False
+          if command_exit != 0 or report.get('proofPassed') is not True:
+              raise AssertionError(report.get('reason', report.get('status')))
           assert report['candidateRepresentation']['explicitAltitudeForbidden'] is True
           assert report['candidateRepresentation']['mcElevationFileForbidden'] is True
           assert report['controlGeometry']['notFrozenTier1TwilightGeometry'] is True

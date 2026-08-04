@@ -75,6 +75,7 @@ def validate_guard(
     source_run_metadata_path: Path,
     promoted_manifest_output: Path,
     package_path: Path,
+    source_pilot_manifest_path: Path,
     base_adapter_path: Path,
     execution_adapter_path: Path,
     duplicate_run_audit_path: Path,
@@ -99,6 +100,7 @@ def validate_guard(
         "authorization": authorization_path,
         "authorizationTemplate": authorization_template_path,
         "package": package_path,
+        "sourcePilotManifest": source_pilot_manifest_path,
         "baseAdapter": base_adapter_path,
         "executionAdapter": execution_adapter_path,
         "duplicateRunAudit": duplicate_run_audit_path,
@@ -184,6 +186,7 @@ def validate_guard(
         "sourceProposalRawSha256": raw_sha256(source_proposal_path),
         "sourceReadinessRawSha256": raw_sha256(source_readiness_path),
         "sourceRunMetadataRawSha256": raw_sha256(source_run_metadata_path),
+        "sourcePilotManifestRawSha256": raw_sha256(absolute["sourcePilotManifest"]),
         "promotedManifestRawSha256": promoted_hash,
         "authorizationTemplateRawSha256": raw_sha256(absolute["authorizationTemplate"]),
         "packageRawSha256": raw_sha256(absolute["package"]),
@@ -235,6 +238,7 @@ def validate_guard(
         "sourceProposalRawSha256": expected_auth["sourceProposalRawSha256"],
         "sourceReadinessRawSha256": expected_auth["sourceReadinessRawSha256"],
         "sourceRunMetadataRawSha256": expected_auth["sourceRunMetadataRawSha256"],
+        "sourcePilotManifestRawSha256": expected_auth["sourcePilotManifestRawSha256"],
         "promotedManifestRawSha256": promoted_hash,
         "executionAdapterRawSha256": expected_auth["executionAdapterRawSha256"],
         "runtimeLockRawSha256": expected_auth["runtimeLockRawSha256"],
@@ -256,6 +260,7 @@ def main() -> int:
     parser.add_argument("--source-run-metadata", type=Path, required=True)
     parser.add_argument("--promoted-manifest-output", type=Path, required=True)
     parser.add_argument("--package", type=Path, required=True)
+    parser.add_argument("--source-pilot-manifest", type=Path, required=True)
     parser.add_argument("--base-adapter", type=Path, required=True)
     parser.add_argument("--execution-adapter", type=Path, required=True)
     parser.add_argument("--duplicate-run-audit", type=Path, required=True)
@@ -278,7 +283,7 @@ def main() -> int:
         report = validate_guard(
             args.repository_root, args.authorization, args.authorization_template,
             args.source_analysis, args.source_proposal, args.source_readiness, args.source_run_metadata,
-            args.promoted_manifest_output, args.package, args.base_adapter, args.execution_adapter,
+            args.promoted_manifest_output, args.package, args.source_pilot_manifest, args.base_adapter, args.execution_adapter,
             args.duplicate_run_audit, args.runtime_probe, args.execution_workflow, args.runtime_lock,
             args.plan, args.analysis_driver, args.convergence_module, args.executor, args.aggregate, args.audit,
             args.source_run_id, args.authorization_ref, args.execution_key, args.authorization_ordinal,

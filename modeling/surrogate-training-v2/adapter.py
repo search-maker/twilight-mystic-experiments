@@ -20,16 +20,8 @@ class DatasetRefusal(RuntimeError):
     pass
 
 
-def canonical_json(value: Any) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
-
-
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
 def sha256_file(path: Path) -> str:
-    return sha256_bytes(path.read_bytes())
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def load_object(path: Path) -> dict[str, Any]:
@@ -48,6 +40,12 @@ def require_exact(value: dict[str, Any], expected: dict[str, Any], label: str) -
 def require_sha256(value: Any, label: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
         raise DatasetRefusal(f"{label} must be lowercase raw sha256")
+    return value
+
+
+def require_git_sha(value: Any, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
+        raise DatasetRefusal(f"{label} must be lowercase 40-character git sha")
     return value
 
 
@@ -79,19 +77,15 @@ def _validate_record(record: dict[str, Any], expected_role_by_id: dict[str, str]
     if not isinstance(geometry_id, str) or not geometry_id:
         raise DatasetRefusal("geometryId missing")
     role = record.get("role")
-    if role not in ALLOWED_ROLES:
-        raise DatasetRefusal(f"invalid role for {geometry_id}: {role}")
-    if expected_role_by_id.get(geometry_id) != role:
-        raise DatasetRefusal(f"role changed for {geometry_id}")
+    if role not in ALLOWED_ROLES or expected_role_by_id.get(geometry_id) != role:
+        raise DatasetRefusal(f"role changed or invalid for {geometry_id}")
     if record.get("classification") == "ADAPTIVE_CONTINUATION_REQUIRED":
         raise DatasetRefusal(f"adaptive continuation geometry forbidden: {geometry_id}")
     case_ids = record.get("caseIds")
-    if not isinstance(case_ids, list) or len(case_ids) != 2 or any(not isinstance(item, str) or not item for item in case_ids):
-        raise DatasetRefusal(f"case IDs missing for {geometry_id}")
-    if len(set(case_ids)) != len(case_ids):
-        raise DatasetRefusal(f"duplicate case IDs within {geometry_id}")
+    if not isinstance(case_ids, list) or len(case_ids) != 2 or len(set(case_ids)) != 2 or any(not isinstance(item, str) or not item for item in case_ids):
+        raise DatasetRefusal(f"case IDs missing or duplicated for {geometry_id}")
     source_bindings = record.get("sourceBindings")
-    if not isinstance(source_bindings, dict) or not source_bindings:
+    if not isinstance(source_bindings, dict):
         raise DatasetRefusal(f"source bindings missing for {geometry_id}")
     for key in ("manifestRawSha256", "aggregateRawSha256", "auditRawSha256"):
         require_sha256(source_bindings.get(key), f"{geometry_id}.{key}")
@@ -114,16 +108,8 @@ def _validate_record(record: dict[str, Any], expected_role_by_id: dict[str, str]
     return geometry_id, role
 
 
-def read_tier1_dataset(
-    dataset_path: Path,
-    envelope_path: Path,
-    design_path: Path,
-    *,
-    expected_main_sha: str,
-) -> PartitionedDataset:
-    dataset = load_object(dataset_path)
-    envelope = load_object(envelope_path)
-    design = load_object(design_path)
+def read_tier1_dataset(dataset_path: Path, envelope_path: Path, design_path: Path, *, expected_main_sha: str) -> PartitionedDataset:
+    dataset, envelope, design = load_object(dataset_path), load_object(envelope_path), load_object(design_path)
     require_exact(dataset, {"schemaVersion": 2, "stageId": STAGE_ID, "status": DATASET_STATUS}, "dataset")
     require_exact(envelope, {
         "schemaVersion": 1,
@@ -135,7 +121,7 @@ def read_tier1_dataset(
         "scientificExecution": True,
         "productionModelReady": False,
     }, "envelope")
-    require_sha256(expected_main_sha, "expected main sha")
+    require_git_sha(expected_main_sha, "expected main sha")
     if envelope.get("exactMainSha") != expected_main_sha:
         raise DatasetRefusal("exact main SHA mismatch")
     if envelope.get("datasetRawSha256") != sha256_file(dataset_path):
@@ -153,24 +139,21 @@ def read_tier1_dataset(
     records = dataset.get("records")
     if not isinstance(records, list) or len(records) != EXPECTED_GEOMETRY_COUNT:
         raise DatasetRefusal("geometry count mismatch")
-    training_ids = dataset.get("trainingGeometryIds")
-    holdout_ids = dataset.get("internalHoldoutGeometryIds")
-    hard_anchor_ids = dataset.get("hardExternalAnchorIds")
-    soft_ids = dataset.get("softDiagnosticIds")
-    for name, values in (("training", training_ids), ("holdout", holdout_ids), ("hard anchors", hard_anchor_ids), ("soft diagnostics", soft_ids)):
-        if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
-            raise DatasetRefusal(f"{name} IDs missing")
-        if len(values) != len(set(values)):
-            raise DatasetRefusal(f"duplicate {name} IDs")
-    partitions = [set(training_ids), set(holdout_ids), set(hard_anchor_ids), set(soft_ids)]
+    names = ("trainingGeometryIds", "internalHoldoutGeometryIds", "hardExternalAnchorIds", "softDiagnosticIds")
+    values = [dataset.get(name) for name in names]
+    for name, ids in zip(names, values, strict=True):
+        if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids) or len(ids) != len(set(ids)):
+            raise DatasetRefusal(f"{name} missing or duplicated")
+    training_ids, holdout_ids, hard_anchor_ids, soft_ids = values
+    partitions = [set(item) for item in values]
     for index, left in enumerate(partitions):
         for right in partitions[index + 1:]:
             if left & right:
                 raise DatasetRefusal("dataset partitions overlap")
-    if set(hard_anchor_ids) | set(soft_ids) & (set(training_ids) | set(holdout_ids)):
+    if (set(hard_anchor_ids) | set(soft_ids)) & (set(training_ids) | set(holdout_ids)):
         raise DatasetRefusal("anchor or diagnostic appears inside fit/evaluation data")
     ids: set[str] = set()
-    case_ids: set[str] = set()
+    all_case_ids: set[str] = set()
     by_id: dict[str, dict[str, Any]] = {}
     for raw in records:
         if not isinstance(raw, dict):
@@ -180,9 +163,9 @@ def read_tier1_dataset(
             raise DatasetRefusal(f"duplicate geometry ID: {geometry_id}")
         ids.add(geometry_id)
         for case_id in raw["caseIds"]:
-            if case_id in case_ids:
+            if case_id in all_case_ids:
                 raise DatasetRefusal(f"duplicate case ID: {case_id}")
-            case_ids.add(case_id)
+            all_case_ids.add(case_id)
         if role == TRAINING_ROLE and geometry_id not in set(training_ids):
             raise DatasetRefusal(f"training role/list mismatch: {geometry_id}")
         if role == HOLDOUT_ROLE and geometry_id not in set(holdout_ids):
@@ -194,15 +177,19 @@ def read_tier1_dataset(
     if not isinstance(anchors, list):
         raise DatasetRefusal("external records missing")
     external_by_id = {item.get("geometryId"): item for item in anchors if isinstance(item, dict)}
-    if set(external_by_id) != set(hard_anchor_ids) | set(soft_ids):
-        raise DatasetRefusal("external record IDs mismatch")
+    if len(external_by_id) != len(anchors) or set(external_by_id) != set(hard_anchor_ids) | set(soft_ids):
+        raise DatasetRefusal("external record IDs mismatch or duplicated")
     for anchor_id, item in external_by_id.items():
         finite_number(item.get("meanCdM2"), f"{anchor_id}.meanCdM2", positive=True)
+        geometry = item.get("geometry")
+        if not isinstance(geometry, dict):
+            raise DatasetRefusal(f"external geometry missing: {anchor_id}")
+        for key in ("sunDepressionDeg", "targetAltitudeDeg", "relativeAzimuthDeg", "observerElevationM", "aod550"):
+            finite_number(geometry.get(key), f"{anchor_id}.{key}", nonnegative=True)
         if item.get("eligibleForTraining") is not False or item.get("eligibleForHyperparameterSelection") is not False:
             raise DatasetRefusal(f"external record eligibility invalid: {anchor_id}")
     return PartitionedDataset(
-        source_dataset_hash=sha256_file(dataset_path),
-        exact_main_sha=expected_main_sha,
+        source_dataset_hash=sha256_file(dataset_path), exact_main_sha=expected_main_sha,
         training=tuple(by_id[item] for item in training_ids),
         internal_holdout=tuple(by_id[item] for item in holdout_ids),
         hard_anchors=tuple(external_by_id[item] for item in hard_anchor_ids),

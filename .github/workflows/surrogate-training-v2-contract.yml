@@ -1,0 +1,79 @@
+name: Surrogate training v2 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-contract.yml"
+      - "modeling/surrogate-training-v2/**"
+      - "tests/test_surrogate_training_v2.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/surrogate-training-v2-contract.yml"
+      - "modeling/surrogate-training-v2/**"
+      - "tests/test_surrogate_training_v2.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run direct contract tests
+        run: python -m unittest -v tests/test_surrogate_training_v2.py
+      - name: Compile owned Python files
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/adapter.py \
+            modeling/surrogate-training-v2/synthetic_fixture.py \
+            modeling/surrogate-training-v2/training.py \
+            tests/test_surrogate_training_v2.py
+      - name: Prove deterministic synthetic regeneration
+        run: |
+          python modeling/surrogate-training-v2/synthetic_fixture.py --output-dir /tmp/surrogate-v2-a
+          python modeling/surrogate-training-v2/synthetic_fixture.py --output-dir /tmp/surrogate-v2-b
+          diff -ru /tmp/surrogate-v2-a /tmp/surrogate-v2-b
+      - name: Prove synthetic and production boundaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in sorted(Path('/tmp/surrogate-v2-a').glob('*.json')):
+              value = json.loads(path.read_text())
+              assert value['syntheticOnly'] is True, path
+              assert value['scientificExecution'] is False, path
+              assert value['observationallyValidated'] is False, path
+              assert value['productionModelReady'] is False, path
+              assert value['successDoesNotAuthorizeProduction'] is True, path
+          protocol = json.loads(Path('modeling/surrogate-training-v2/candidate-protocol.json').read_text())
+          assert protocol['frozenBeforeInternalHoldout'] is True
+          assert len(protocol['candidates']) == 3
+          assert protocol['productionBoundary']['productionPromotionAuthorized'] is False
+          PY
+      - name: Prove no scientific execution or production surface
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          owned = [
+              Path('modeling/surrogate-training-v2/adapter.py'),
+              Path('modeling/surrogate-training-v2/synthetic_fixture.py'),
+              Path('modeling/surrogate-training-v2/training.py'),
+          ]
+          forbidden = ('subprocess', 'uvspec', 'mc_vroom', 'workflow_dispatch', 'productionPromotionAuthorized": true')
+          text = '\n'.join(path.read_text() for path in owned)
+          for token in forbidden:
+              assert token not in text, token
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-synthetic-contract
+          path: /tmp/surrogate-v2-a
+          if-no-files-found: error
+          retention-days: 30

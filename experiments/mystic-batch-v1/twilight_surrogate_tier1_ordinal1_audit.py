@@ -79,6 +79,7 @@ def audit(
     prepared_hashes: dict[str, str] = {}
     input_hashes: dict[str, str] = {}
     rejected_levels_km: dict[str, float] = {}
+    rendered_zout_levels_km: dict[str, float] = {}
     for path in paths:
         row = load(path)
         case_id = row.get("caseId")
@@ -135,15 +136,28 @@ def audit(
             or not math.isfinite(float(observer_m))
         ):
             raise AuditError(f"prepared observer elevation invalid: {case_id}")
-        expected_level_text = f"{float(observer_m) / 1000.0:.6f}"
-        if match.group("level") != expected_level_text:
-            raise AuditError(
-                f"rejected level differs from rendered observer elevation: {case_id}"
-            )
+
         input_text = input_path.read_text()
         input_lines = input_text.splitlines()
-        if input_lines.count(f"zout {expected_level_text}") != 1:
+        zout_lines = [line for line in input_lines if line.startswith("zout ")]
+        if len(zout_lines) != 1 or len(zout_lines[0].split()) != 2:
             raise AuditError(f"ordinal-1 zout evidence changed: {case_id}")
+        try:
+            rendered_zout = float(zout_lines[0].split()[1])
+        except ValueError as exc:
+            raise AuditError(f"ordinal-1 zout is not numeric: {case_id}") from exc
+        expected_site_km = float(observer_m) / 1000.0
+        if not math.isclose(
+            rendered_zout, expected_site_km, rel_tol=0.0, abs_tol=5.1e-7
+        ):
+            raise AuditError(
+                f"rendered ordinal-1 zout differs from observer elevation: {case_id}"
+            )
+        expected_reported_level = f"{rendered_zout:.6g}"
+        if match.group("level") != expected_reported_level:
+            raise AuditError(
+                f"MYSTIC rejected level differs from exact rendered zout: {case_id}"
+            )
         if any(
             line.startswith("altitude ")
             or line.startswith("mc_elevation_file ")
@@ -172,6 +186,7 @@ def audit(
         prepared_hashes[case_id] = raw(prepared_path)
         input_hashes[case_id] = input_sha
         rejected_levels_km[case_id] = float(match.group("level"))
+        rendered_zout_levels_km[case_id] = rendered_zout
 
     if len(seeds) != EXPECTED_CASES or photons != EXPECTED_PHOTONS:
         raise AuditError("seed uniqueness or photon accounting changed")
@@ -224,7 +239,8 @@ def audit(
             "setupSampleGridFrame": (
                 "Error -1 in (function 'setup_sample_grid', file 'cloud3d.c', line 511)"
             ),
-            "rejectedLevelMatchesSixDecimalRenderedObserverElevationForAllCases": True,
+            "renderedZoutMatchesObserverElevationWithinSixDecimalRendererForAllCases": True,
+            "rejectedLevelMatchesSixSignificantDigitRenderedZoutForAllCases": True,
             "ordinal1InputContainsNoAltitudeOrMcElevationOrAtmZGridForAllCases": True,
         },
         "seedGovernance": {
@@ -247,6 +263,7 @@ def audit(
         "caseResultRawSha256": hashes,
         "preparedCaseRawSha256": prepared_hashes,
         "inputResolvedRawSha256": input_hashes,
+        "renderedZoutKm": rendered_zout_levels_km,
         "rejectedOutputLevelKm": rejected_levels_km,
         "preflightPlanRawSha256": raw(preflight / "plan.json"),
         "aggregateSummaryRawSha256": raw(aggregate_path),

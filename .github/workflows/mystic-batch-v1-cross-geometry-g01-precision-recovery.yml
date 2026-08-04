@@ -1,0 +1,151 @@
+name: G01 precision artifact-only recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-g01-precision-recovery*.yml"
+      - "experiments/mystic-batch-v1/cross_geometry_g01_precision_recovery_plan.py"
+      - "tests/test_mystic_g01_precision_recovery.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_RUN_ID: "30878704003"
+  AUTHORIZATION_REF: "a59b885d28636f6b83aceef30b1029c785b2433d"
+  RECOVERY_PLAN: experiments/mystic-batch-v1/cross_geometry_g01_precision_recovery_plan.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+  ANALYSIS_DRIVER: experiments/mystic-batch-v1/cross_geometry_g01_precision_analysis_driver.py
+  CONVERGENCE_MODULE: experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+  PROPOSAL: experiments/mystic-batch-v1/g01-fixed-diagnostic-execution.proposal.json
+  SOURCE_PILOT_MANIFEST: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Download immutable source preflight
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-g01-precision-continuation-v1-preflight
+          path: source-preflight
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download four immutable completed case artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-g01-precision-continuation-v1-case-*
+          path: source-cases
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch exact source metadata and authorization
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-meta recovery-output aggregate-output audit-output analysis-output
+          gh api "repos/${{ github.repository }}/actions/runs/${SOURCE_RUN_ID}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100" > source-meta/source-jobs.json
+          gh api "repos/${{ github.repository }}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" > source-meta/source-artifacts.json
+          gh api "repos/${{ github.repository }}/contents/experiments/mystic-batch-v1/authorization.cross-geometry-g01-precision.json?ref=${AUTHORIZATION_REF}" --jq .content | base64 --decode > source-meta/authorization.json
+      - name: Verify immutable outputs and build canonical postprocess plan
+        run: >-
+          python "$RECOVERY_PLAN"
+          --preflight source-preflight
+          --cases-root source-cases
+          --source-run source-meta/source-run.json
+          --source-jobs source-meta/source-jobs.json
+          --source-artifacts source-meta/source-artifacts.json
+          --authorization source-meta/authorization.json
+          --output-plan recovery-output/canonical-plan.json
+          --output-audit recovery-output/source-recovery-audit.json
+      - name: Aggregate four already-completed cases
+        run: >-
+          python "$AGGREGATE"
+          --plan recovery-output/canonical-plan.json
+          --cases-root source-cases
+          --output-dir aggregate-output
+      - name: Independently audit recovered aggregate
+        run: >-
+          python "$AUDIT"
+          --plan recovery-output/canonical-plan.json
+          --cases-root source-cases
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - name: Apply frozen eight-block final classification
+        run: >-
+          python "$ANALYSIS_DRIVER"
+          --proposal "$PROPOSAL"
+          --source-analysis-dir source-preflight/source-analysis
+          --source-preflight-dir source-preflight/source-preflight
+          --new-cases-root source-cases
+          --summary aggregate-output/batch-summary.json
+          --audit audit-output/audit-report.json
+          --convergence-module "$CONVERGENCE_MODULE"
+          --source-pilot-manifest "$SOURCE_PILOT_MANIFEST"
+          --output-dir analysis-output
+      - name: Verify terminal non-authorizing result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          analysis=json.loads(Path('analysis-output/g01-fixed-precision-execution-analysis.json').read_text())
+          readiness=json.loads(Path('analysis-output/reference-readiness.json').read_text())
+          dataset=json.loads(Path('analysis-output/audited-reference-dataset.json').read_text())
+          allowed={'G01_FIXED_PRECISION_DIAGNOSIS_PASSED','G01_PERSISTENT_HIGH_VARIANCE','G01_METHOD_DISCREPANCY'}
+          if analysis.get('classification') not in allowed:
+              raise SystemExit(f"unexpected terminal classification: {analysis.get('classification')}")
+          required={
+              'newCaseResultCount':4,
+              'newConfiguredMcPhotonsSum':200000000,
+              'preservedHeldOutBlockCount':4,
+              'finalHeldOutBlockCount':8,
+              'noAutomaticAdditionalBlocks':True,
+              'screeningOnly':True,
+              'successDoesNotAuthorizeProduction':True,
+          }
+          stale={k:(analysis.get(k),v) for k,v in required.items() if analysis.get(k)!=v}
+          if stale:
+              raise SystemExit(f'analysis boundary changed: {stale}')
+          if readiness.get('productionModelReady') is not False or readiness.get('observationValidationRequired') is not True or readiness.get('surrogateTrainingAutomaticallyAuthorized') is not False:
+              raise SystemExit('readiness safety boundary changed')
+          if dataset.get('observationValidationRequired') is not True or dataset.get('screeningOnly') is not True:
+              raise SystemExit('dataset safety boundary changed')
+          PY
+      - name: Prove recovery cannot execute science
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/mystic-batch-v1-cross-geometry-g01-precision-recovery.yml').read_text().lower()
+          executable=text.split('- name: prove recovery cannot execute science',1)[0]
+          forbidden=('setup-micromamba','scientific_case_executor.py','--allow-execution','uvspec -c','rte_solver mystic','rerun','retry')
+          found=[token for token in forbidden if token in executable]
+          if found:
+              raise SystemExit(f'recovery has forbidden execution surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-geometry-g01-precision-continuation-v1-recovery-analysis
+          path: |
+            recovery-output
+            aggregate-output
+            audit-output
+            analysis-output
+            source-meta
+          if-no-files-found: error
+          retention-days: 90

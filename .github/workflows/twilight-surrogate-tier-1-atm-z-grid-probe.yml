@@ -1,16 +1,143 @@
-name: Twilight surrogate tier-1 atm z grid equivalence proof staging
+name: Twilight surrogate tier-1 atm z grid equivalence proof
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-atm-z-grid-probe.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  staging-only:
+  direct-contract-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Refuse automatic proof execution during atomic staging
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test and compile preregistered equivalence proof
         run: |
-          echo "PR-triggered proof is intentionally disabled while code, tests, and final workflow are staged."
-          echo "No uvspec or MYSTIC execution occurs in this staging commit."
+          python -m unittest -v tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+            tests/test_twilight_surrogate_tier1_atm_z_grid_probe.py
+      - name: Verify immutable proof boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_atm_z_grid_probe.py'
+          ).read_text()
+          assert 'MYSTIC_PHOTONS = 1' in source
+          assert 'MYSTIC_SEED = 990004' in source
+          assert 'authorizationPermitted": False' in source
+          assert 'ordinal2ScientificDispatchPermitted": False' in source
+          assert 'expectedHashChangedToMakeCiGreen": False' in source
+          assert 'SOURCE_ARCHIVE_EXPECTED_SHA256 = "999e47f4' in source
+          assert 'SOURCE_ARCHIVE_CURRENT_DOWNLOAD_SHA256 = "64930cc4' in source
+          assert 'PREREGISTERED_TOLERANCES' in source
+          PY
+
+  frozen-runtime-equivalence-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-atm-z-grid-equivalence-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+            netcdf4=1.7.4
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve exact package identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p atm-z-grid-equivalence-proof-output
+          micromamba list --explicit > atm-z-grid-equivalence-proof-output/runtime-package-explicit.txt
+          micromamba list --json > atm-z-grid-equivalence-proof-output/runtime-package-list.json
+          python - <<'PY'
+          import netCDF4
+          print(netCDF4.__version__)
+          PY
+      - name: Run preregistered A/B atmosphere and radiance proof
+        id: proof
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          set +e
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --package-explicit atm-z-grid-equivalence-proof-output/runtime-package-explicit.txt \
+            --package-json atm-z-grid-equivalence-proof-output/runtime-package-list.json \
+            --output-dir atm-z-grid-equivalence-proof-output \
+            > atm-z-grid-equivalence-proof-output/proof-command-stdout.txt \
+            2> atm-z-grid-equivalence-proof-output/proof-command-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > atm-z-grid-equivalence-proof-output/proof-command-exit-code.txt
+          echo "proof_exit_code=$status" >> "$GITHUB_OUTPUT"
+      - name: Upload complete proof evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-atm-z-grid-equivalence-proof-v1
+          path: atm-z-grid-equivalence-proof-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce preregistered proof decision and governance boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('atm-z-grid-equivalence-proof-output')
+          report_path = root / 'atm-z-grid-equivalence-proof.json'
+          if not report_path.is_file():
+              stderr = (root / 'proof-command-stderr.txt').read_text()
+              raise AssertionError(f'proof report missing: {stderr}')
+          report = json.loads(report_path.read_text())
+          command_exit = int((root / 'proof-command-exit-code.txt').read_text().strip())
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert report['surrogateTrainingUsePermitted'] is False
+          assert report['githubRerunPermitted'] is False
+          assert report['maximumPermittedMysticSolverExecutionCount'] == 1
+          assert report['mysticSolverExecutionCount'] <= 1
+          assert report['sourceProvenance']['expectedHashChangedToMakeCiGreen'] is False
+          assert report['sourceProvenance']['sourceEvidenceAccepted'] is False
+          assert report['candidateRepresentation']['explicitAltitudeForbidden'] is True
+          assert report['candidateRepresentation']['mcElevationFileForbidden'] is True
+          assert report['controlGeometry']['notFrozenTier1TwilightGeometry'] is True
+          assert command_exit == 0
+          assert report['proofPassed'] is True
+          assert report['profileEquivalenceDecision'] is True
+          assert report['opticalPropertyEquivalenceDecision'] is True
+          assert report['deterministicControlDecision'] is True
+          assert report['threeHeightStructuralProfileDecision'] is True
+          assert report['mysticProbeDecision'] is True
+          assert report['mysticSolverExecutionCount'] == 1
+          assert report['mysticProbe']['mcPhotons'] == 1
+          assert report['mysticProbe']['generatedFilesPreserved'] is False
+          assert report['mysticProbe']['scientificDatasetProduced'] is False
+          PY

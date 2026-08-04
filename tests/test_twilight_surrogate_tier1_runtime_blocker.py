@@ -55,25 +55,29 @@ class Tier1RuntimeBlockerTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertFalse(blocked)
 
-    def test_recovery_refuses_structural_blocker_artifact(self) -> None:
+    def test_legacy_structural_blocker_cannot_replace_combined_proof(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            manifest = root / "manifest.json"
-            audit = root / "audit.json"
-            syntax = root / "syntax.json"
             blocker = root / "blocker.json"
-            manifest.write_text(json.dumps({"geometries": [], "cases": []}) + "\n")
-            audit.write_text(json.dumps({}) + "\n")
-            syntax.write_text(json.dumps({}) + "\n")
-            blocker.write_text(json.dumps({
-                "status": "BLOCKED_MYSTIC_ALTITUDE_REQUIRES_VALIDATED_MC_ELEVATION_FILE",
-                "accepted": False,
-                "recognizedStructuralBlocker": True,
-                "authorizationPermitted": False,
-                "ordinal2ScientificDispatchPermitted": False,
-            }) + "\n")
+            blocker.write_text(
+                json.dumps(
+                    {
+                        "status": (
+                            "BLOCKED_MYSTIC_ALTITUDE_REQUIRES_VALIDATED_"
+                            "MC_ELEVATION_FILE"
+                        ),
+                        "accepted": False,
+                        "recognizedStructuralBlocker": True,
+                        "authorizationPermitted": False,
+                        "ordinal2ScientificDispatchPermitted": False,
+                    }
+                )
+                + "\n"
+            )
             with self.assertRaises(RECOVERY.RecoveryError):
-                RECOVERY.recover(manifest, audit, syntax, blocker)
+                RECOVERY.validate_combined_proof(
+                    {"runtime": {}}, json.loads(blocker.read_text())
+                )
 
 
 if __name__ == "__main__":

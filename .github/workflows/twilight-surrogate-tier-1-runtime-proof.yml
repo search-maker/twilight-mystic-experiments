@@ -1,0 +1,61 @@
+name: Twilight surrogate tier-1 runtime proof
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-runtime-proof.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+      - "tests/test_twilight_surrogate_tier1_recovery.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-runtime-proof-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Run exact non-scientific altitude syntax proof
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir runtime-proof-output
+      - name: Verify exact proof boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('runtime-proof-output/runtime-proof.json').read_text())
+          assert report['status'] == 'FROZEN_RUNTIME_ACCEPTS_SITE_ALTITUDE_INPUT'
+          assert report['accepted'] is True
+          assert report['syntaxCheckCount'] == 1
+          assert report['solverExecutionCount'] == 0
+          assert report['scientificDatasetProduced'] is False
+          text = Path('runtime-proof-output/input-resolved.txt').read_text()
+          assert text.count('altitude 0.357143') == 1
+          assert text.count('zout 0.000000') == 1
+          assert 'zout 0.357143' not in text
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-runtime-proof-v1
+          path: runtime-proof-output
+          if-no-files-found: error
+          retention-days: 90

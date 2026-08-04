@@ -1,0 +1,129 @@
+name: Twilight surrogate tier-1 execution contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-*.yml"
+      - "experiments/mystic-batch-v1/TWILIGHT_SURROGATE_TIER1_EXECUTION.md"
+      - "experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1*.json"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_*.py"
+      - "tests/test_twilight_surrogate_tier1_execution.py"
+  push:
+    branches: ["agent/**"]
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-*.yml"
+      - "experiments/mystic-batch-v1/TWILIGHT_SURROGATE_TIER1_EXECUTION.md"
+      - "experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1*.json"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_*.py"
+      - "tests/test_twilight_surrogate_tier1_execution.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test package, source audit, per-case wavelength, plan, analysis, and authorization proposal
+        run: python -m unittest -v tests/test_twilight_surrogate_tier1_execution.py
+      - name: Compile tier-1 execution package
+        run: python -m py_compile experiments/mystic-batch-v1/twilight_surrogate_tier1_*.py
+      - name: Prove active authorization remains exactly disabled
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = Path('experiments/mystic-batch-v1')
+          active = json.loads((base / 'authorization.twilight-surrogate-tier-1.json').read_text())
+          template = json.loads((base / 'authorization.twilight-surrogate-tier-1-template.json').read_text())
+          if active != template:
+              raise SystemExit('active tier-1 authorization differs from disabled template')
+          required = {
+              'authorized': False,
+              'scientificExecution': False,
+              'scientificDiagnostic': False,
+              'authorizationOrdinal': 0,
+              'consumed': False,
+              'exactAuthorizationParentCommit': None,
+              'exactAuthorizationCommit': None,
+          }
+          stale = {key: (active.get(key), expected) for key, expected in required.items() if active.get(key) != expected}
+          if stale:
+              raise SystemExit(f'tier-1 authorization is not disabled: {stale}')
+          PY
+      - name: Prove execution is manual, first-attempt, bounded, and non-retrying
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/twilight-surrogate-tier-1-execution.yml')
+          text = path.read_text()
+          header = text.split('jobs:', 1)[0].lower()
+          required = (
+              'workflow_dispatch:',
+              'fail-fast: false',
+              'cancel-in-progress: false',
+              'duplicate_run_audit.py',
+              'runtime_probe.py',
+              'scientific_case_executor.py',
+              'scientific_aggregate.py',
+              'scientific_audit.py',
+              'twilight_surrogate_tier1_analysis.py',
+              'max-parallel:',
+              '--timeout-seconds',
+              'matrix.timeout_seconds',
+          )
+          missing = [token for token in required if token not in text]
+          if missing:
+              raise SystemExit(f'tier-1 execution workflow tokens missing: {missing}')
+          forbidden = ('schedule:', 'repository_dispatch:', '\n  push:', '\n  pull_request:', 'workflow_run:')
+          present = [token for token in forbidden if token in header]
+          if present:
+              raise SystemExit(f'tier-1 execution workflow has forbidden trigger: {present}')
+          if 'rerun' in text.lower() or 'retry' in text.lower():
+              raise SystemExit('tier-1 execution workflow contains retry surface')
+          PY
+      - name: Prove proposal automation cannot execute science or train a model
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for filename, marker in (
+              ('twilight-surrogate-tier-1-authorization-proposal.yml', '- name: prove proposal workflow cannot execute science or fit a model'),
+          ):
+              text = (Path('.github/workflows') / filename).read_text().lower()
+              executable = text.split(marker, 1)[0]
+              required = ('workflow_run:', 'workflow_dispatch:', 'twilight_surrogate_tier1_authorization_proposal.py')
+              missing = [token for token in required if token not in executable]
+              if missing:
+                  raise SystemExit(f'{filename} tokens missing: {missing}')
+              forbidden = ('setup-micromamba', 'scientific_case_executor.py', '--allow-execution', 'uvspec -c', 'rte_solver mystic', 'model.fit(', 'torch.optim', 'tensorflow')
+              present = [token for token in forbidden if token in executable]
+              if present:
+                  raise SystemExit(f'{filename} has forbidden execution or training surface: {present}')
+          PY
+      - name: Prove tier-1 remains exact and does not authorize fitting
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          package = Path('experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_package.py').read_text()
+          plan = Path('experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_plan.py').read_text()
+          analysis = Path('experiments/mystic-batch-v1/twilight_surrogate_tier1_analysis.py').read_text()
+          required = (
+              "'maximumCases':96",
+              "'maximumParallel':8",
+              "'maximumConfiguredMcPhotonsSum':6960000000",
+              "'caseSpecificAlisSpectralImportanceSampling':True",
+              "'caseCount':96",
+              "'configuredMcPhotonsSum':6960000000",
+              "'surrogateTrainingAutomaticallyAuthorized':False",
+              "'productionModelReady':False",
+              "'observationValidationRequired':True",
+          )
+          missing = [token for token in required if token not in package + plan + analysis]
+          if missing:
+              raise SystemExit(f'tier-1 bounded-safety tokens missing: {missing}')
+          PY

@@ -1,0 +1,329 @@
+name: Twilight surrogate tier-1 scientific execution
+run-name: Twilight surrogate tier-1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_proposal_run_id:
+        description: Successful Twilight surrogate tier-1 proposal workflow run ID
+        required: true
+        type: string
+      authorization_ref:
+        description: Exact one-purpose tier-1 authorization commit SHA
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot tier-1 execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact tier-1 authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: twilight-surrogate-tier-1-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1.json
+  AUTHORIZATION_TEMPLATE: experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1-template.json
+  EXECUTION_PACKAGE: experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_package.py
+  EXECUTION_ADAPTER: experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py
+  SOURCE_AUDIT: experiments/mystic-batch-v1/twilight_surrogate_tier1_source_audit.py
+  GUARD: experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_guard.py
+  PLAN: experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_plan.py
+  ANALYSIS_DRIVER: experiments/mystic-batch-v1/twilight_surrogate_tier1_analysis.py
+  SOURCE_PILOT_MANIFEST: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+  DUPLICATE_RUN_AUDIT: experiments/mystic-batch-v1/duplicate_run_audit.py
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Download exact tier-1 proposal artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-proposal-v1
+          path: source-download
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_proposal_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize proposal files and fetch immutable metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-proposal source-meta preflight
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('source-download')
+          target = Path('source-proposal')
+          for name in ('tier-1-scientific-proposal.json', 'validated-reference-anchors.json', 'tier-1-readiness.json'):
+              matches = list(root.rglob(name))
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0], target / name)
+          PY
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_proposal_run_id }}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_proposal_run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Independently audit exact source proposal
+        run: >-
+          python "$SOURCE_AUDIT"
+          --proposal source-proposal/tier-1-scientific-proposal.json
+          --anchors source-proposal/validated-reference-anchors.json
+          --readiness source-proposal/tier-1-readiness.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --output preflight/source-proposal-audit.json
+      - name: Build exact execution manifest without executing science
+        run: >-
+          python "$EXECUTION_PACKAGE"
+          --proposal source-proposal/tier-1-scientific-proposal.json
+          --pilot-manifest "$SOURCE_PILOT_MANIFEST"
+          --output preflight/manifest.json
+      - name: Verify one-purpose tier-1 authorization
+        run: >-
+          python "$GUARD"
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --authorization-template "$AUTHORIZATION_TEMPLATE"
+          --manifest preflight/manifest.json
+          --source-audit preflight/source-proposal-audit.json
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate tier-1 execution marker
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python "$DUPLICATE_RUN_AUDIT"
+          --repository "${{ github.repository }}"
+          --workflow twilight-surrogate-tier-1-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact 96-case plan
+        id: plan
+        run: >-
+          python "$PLAN"
+          --manifest preflight/manifest.json
+          --guard-report preflight/authorization-guard.json
+          --adapter "$EXECUTION_ADAPTER"
+          --runtime-lock "$RUNTIME_LOCK"
+          --workflow .github/workflows/twilight-surrogate-tier-1-execution.yml
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - name: Preserve exact source proposal package
+        run: cp -R source-proposal preflight/source-proposal
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-execution-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-execution-preflight
+          path: preflight
+      - name: Recompute exact runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute one authorized tier-1 case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" \
+            --manifest preflight/manifest.json \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$EXECUTION_ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root case-output \
+            --timeout-seconds "${{ matrix.timeout_seconds }}" \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: twilight-surrogate-tier-1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact tier-1 case set
+        run: python "$AGGREGATE" --plan preflight/plan.json --cases-root case-artifacts --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs: [preflight, cases, aggregate]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: twilight-surrogate-tier-1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-aggregate
+          path: aggregate-output
+      - name: Independently audit plan, cases, hashes, and statistics
+        run: >-
+          python "$AUDIT"
+          --plan preflight/plan.json
+          --cases-root case-artifacts
+          --aggregate-dir aggregate-output
+          --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  analysis:
+    needs: [preflight, cases, aggregate, audit]
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: twilight-surrogate-tier-1-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-aggregate
+          path: aggregate-output
+      - uses: actions/download-artifact@v4
+        with:
+          name: twilight-surrogate-tier-1-audit
+          path: audit-output
+      - name: Analyze precision without fitting a surrogate
+        run: >-
+          python "$ANALYSIS_DRIVER"
+          --manifest preflight/manifest.json
+          --cases-root case-artifacts
+          --summary aggregate-output/batch-summary.json
+          --audit audit-output/audit-report.json
+          --output-dir analysis-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-analysis
+          path: analysis-output
+          if-no-files-found: warn
+          retention-days: 90

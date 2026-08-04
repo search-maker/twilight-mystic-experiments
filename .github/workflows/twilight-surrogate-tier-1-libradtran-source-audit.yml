@@ -1,0 +1,84 @@
+name: Twilight surrogate tier-1 libRadtran source audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-libradtran-source-audit.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py"
+      - "tests/test_twilight_surrogate_tier1_libradtran_source_audit.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-source-mechanism-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Verify exact conda-forge source recipe binding
+        run: |
+          set -euo pipefail
+          mkdir -p libradtran-source-audit-output
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/conda-forge/rubin-libradtran-feedstock/0ace9da0ce3a994f71fefc14b9b91d12b54a7be8/recipe/meta.yaml \
+            --output libradtran-source-audit-output/feedstock-meta.yaml
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          path = Path('libradtran-source-audit-output/feedstock-meta.yaml')
+          raw = path.read_bytes()
+          blob_sha = hashlib.sha1(
+              f'blob {len(raw)}\0'.encode() + raw,
+              usedforsecurity=False,
+          ).hexdigest()
+          text = raw.decode()
+          assert blob_sha == 'f694ceab790989eebaf9bd1763305a1d86e6b723'
+          assert '{% set version = "2.0.6" %}' in text
+          assert 'url: http://www.libradtran.org/download/libRadtran-{{ version }}.tar.gz' in text
+          assert 'sha256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85' in text
+          PY
+      - name: Preserve and audit exact libRadtran 2.0.6 source mechanisms
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py \
+            --output-dir libradtran-source-audit-output
+          rm -f libradtran-source-audit-output/libRadtran-2.0.6.tar.gz
+      - name: Verify conservative no-authorization decision
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path('libradtran-source-audit-output/source-audit.json').read_text()
+          )
+          assert report['status'] == 'EXACT_SOURCE_MECHANISMS_DISTINCT_EQUIVALENCE_NOT_ESTABLISHED'
+          assert report['monteCarloAltitudeExplicitlyRejected'] is True
+          assert report['mcElevationLoadedAsSeparate2DTopographyMechanism'] is True
+          assert report['atmosphereAltitudeHandledBySeparateSourcePath'] is True
+          assert report['siteAltitudeEquivalenceEstablished'] is False
+          assert report['localSurfaceSensorEquivalenceEstablished'] is False
+          assert report['scientificExecution'] is False
+          assert report['solverExecutionCount'] == 0
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          PY
+      - name: Run direct source-audit tests
+        run: |
+          python -m unittest tests/test_twilight_surrogate_tier1_libradtran_source_audit.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py \
+            tests/test_twilight_surrogate_tier1_libradtran_source_audit.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-libradtran-source-audit-v1
+          path: libradtran-source-audit-output
+          if-no-files-found: error
+          retention-days: 90

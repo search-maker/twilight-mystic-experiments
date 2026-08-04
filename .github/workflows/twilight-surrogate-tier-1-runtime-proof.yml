@@ -5,6 +5,9 @@ on:
     paths:
       - ".github/workflows/twilight-surrogate-tier-1-runtime-proof.yml"
       - "experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal1_audit.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal2_recovery.py"
       - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
       - "tests/test_twilight_surrogate_tier1_recovery.py"
   workflow_dispatch:
@@ -13,7 +16,25 @@ permissions:
   contents: read
 
 jobs:
-  runtime-proof:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run direct recovery, audit, and fake-solver tests
+        run: python -m unittest -v tests/test_twilight_surrogate_tier1_recovery.py
+      - name: Compile owned Tier-1 recovery files
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_proof.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal1_audit.py
+          experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal2_recovery.py
+
+  runtime-syntax-proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -36,14 +57,13 @@ jobs:
             --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
             --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
             --output-dir runtime-proof-output
-      - name: Verify exact proof boundary
+      - name: Verify exact syntax-proof boundary
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           report = json.loads(Path('runtime-proof-output/runtime-proof.json').read_text())
           assert report['status'] == 'FROZEN_RUNTIME_ACCEPTS_SITE_ALTITUDE_INPUT'
-          assert report['accepted'] is True
           assert report['syntaxCheckCount'] == 1
           assert report['solverExecutionCount'] == 0
           assert report['scientificDatasetProduced'] is False
@@ -57,5 +77,50 @@ jobs:
         with:
           name: twilight-surrogate-tier-1-runtime-proof-v1
           path: runtime-proof-output
+          if-no-files-found: error
+          retention-days: 90
+
+  runtime-solver-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-runtime-solver-probe-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Run separate one-photon solver probe
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_runtime_solver_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir runtime-solver-probe-output
+      - name: Verify probe is not a dataset
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('runtime-solver-probe-output/solver-probe.json').read_text())
+          assert report['status'] == 'FROZEN_RUNTIME_SOLVER_ACCEPTS_SITE_ALTITUDE_INPUT'
+          assert report['solverExecutionCount'] == 1
+          assert report['mcPhotons'] == 1
+          assert report['generatedOutputFileCount'] > 0
+          assert report['generatedOutputFilesPreserved'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert not list(Path('runtime-solver-probe-output').glob('mc*'))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-runtime-solver-probe-v1
+          path: runtime-solver-probe-output
           if-no-files-found: error
           retention-days: 90

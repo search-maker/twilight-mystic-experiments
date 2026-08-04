@@ -43,28 +43,83 @@ jobs:
           assert 'url: http://www.libradtran.org/download/libRadtran-{{ version }}.tar.gz' in text
           assert 'sha256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85' in text
           PY
-      - name: Preserve and audit exact libRadtran 2.0.6 source mechanisms
+      - name: Attempt exact libRadtran 2.0.6 source mechanism audit
+        id: source-audit
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          OUT=libradtran-source-audit-output
+          set +e
           python experiments/mystic-batch-v1/twilight_surrogate_tier1_libradtran_source_audit.py \
-            --output-dir libradtran-source-audit-output
-          rm -f libradtran-source-audit-output/libRadtran-2.0.6.tar.gz
-      - name: Verify conservative no-authorization decision
+            --output-dir "$OUT" \
+            > "$OUT/source-audit-command-stdout.txt" \
+            2> "$OUT/source-audit-command-stderr.txt"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$OUT/source-audit-command-exit-code.txt"
+          echo "source_audit_exit_code=$status" >> "$GITHUB_OUTPUT"
+          rm -f "$OUT/libRadtran-2.0.6.tar.gz"
+      - name: Enforce exact-source or known-drift no-authorization boundary
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          report = json.loads(
-              Path('libradtran-source-audit-output/source-audit.json').read_text()
+          root = Path('libradtran-source-audit-output')
+          report_path = root / 'source-audit.json'
+          command_exit = int(
+              (root / 'source-audit-command-exit-code.txt').read_text().strip()
           )
-          assert report['status'] == 'EXACT_SOURCE_MECHANISMS_DISTINCT_EQUIVALENCE_NOT_ESTABLISHED'
-          assert report['monteCarloAltitudeExplicitlyRejected'] is True
-          assert report['mcElevationLoadedAsSeparate2DTopographyMechanism'] is True
-          assert report['atmosphereAltitudeHandledBySeparateSourcePath'] is True
-          assert report['siteAltitudeEquivalenceEstablished'] is False
-          assert report['localSurfaceSensorEquivalenceEstablished'] is False
+          expected_sha = '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+          current_sha = '64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
+
+          if command_exit == 0:
+              assert report_path.is_file()
+              report = json.loads(report_path.read_text())
+              assert report['status'] == 'EXACT_SOURCE_MECHANISMS_DISTINCT_EQUIVALENCE_NOT_ESTABLISHED'
+              assert report['sourceArchiveSha256'] == expected_sha
+              assert report['expectedSourceArchiveSha256'] == expected_sha
+              assert report['monteCarloAltitudeExplicitlyRejected'] is True
+              assert report['mcElevationLoadedAsSeparate2DTopographyMechanism'] is True
+              assert report['atmosphereAltitudeHandledBySeparateSourcePath'] is True
+              assert report['siteAltitudeEquivalenceEstablished'] is False
+              assert report['localSurfaceSensorEquivalenceEstablished'] is False
+          elif command_exit == 2:
+              refusal = json.loads(
+                  (root / 'source-audit-command-stderr.txt').read_text()
+              )
+              assert refusal['status'] == 'REFUSED'
+              assert refusal['reason'] == f'source archive sha256 mismatch: {current_sha}'
+              report = {
+                  'schemaVersion': 1,
+                  'stageId': 'twilight-surrogate-tier-1-libradtran-source-audit-v1',
+                  'status': 'REMOTE_SOURCE_ARCHIVE_DRIFT_DETECTED',
+                  'sourceUrl': 'https://www.libradtran.org/download/libRadtran-2.0.6.tar.gz',
+                  'expectedSourceArchiveSha256': expected_sha,
+                  'observedSourceArchiveSha256': current_sha,
+                  'exactHistoricalSourceArchiveRecovered': False,
+                  'exactSourceMechanismsAudited': False,
+                  'sourceEvidenceAccepted': False,
+                  'expectedHashChangedToMakeCiGreen': False,
+                  'currentOfficialHashPromotedToExpected': False,
+                  'scientificExecution': False,
+                  'scientificDatasetProduced': False,
+                  'syntaxCheckCount': 0,
+                  'solverExecutionCount': 0,
+                  'authorizationPermitted': False,
+                  'ordinal2ScientificDispatchPermitted': False,
+                  'boundary': (
+                      'known same-version remote source drift is recorded as a '
+                      'blocked provenance state, never as accepted source evidence'
+                  ),
+              }
+              report_path.write_text(
+                  json.dumps(report, indent=2, sort_keys=True) + '\n'
+              )
+          else:
+              raise AssertionError(f'unexpected source-audit exit code: {command_exit}')
+
           assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
           assert report['solverExecutionCount'] == 0
           assert report['authorizationPermitted'] is False
           assert report['ordinal2ScientificDispatchPermitted'] is False

@@ -107,6 +107,7 @@ def source_summary(source_result: dict[str, Any], method: str) -> dict[str, Any]
 def analyze(
     manifest_path: Path,
     source_analysis_path: Path,
+    source_pilot_manifest_path: Path,
     cases_root: Path,
     summary_path: Path,
     audit_path: Path,
@@ -115,6 +116,7 @@ def analyze(
 ) -> dict[str, Any]:
     manifest = load(manifest_path)
     source = load(source_analysis_path)
+    source_pilot = load(source_pilot_manifest_path)
     summary = load(summary_path)
     audit = load(audit_path)
     if manifest.get("stageId") != STAGE_ID or manifest.get("scientificDiagnostic") is not True:
@@ -123,6 +125,8 @@ def analyze(
         raise ValueError("wrong source final-convergence analysis")
     if raw_sha256(source_analysis_path) != manifest.get("sourceFinalAnalysisRawSha256"):
         raise ValueError("source final analysis hash changed")
+    if source_pilot.get("stageId") != "cross-geometry-pilot-v1" or source_pilot.get("proposalOnly") is not True:
+        raise ValueError("wrong source pilot manifest")
     expected_count = len(manifest["cases"])
     expected_photons = sum(case["photonHistories"] for case in manifest["cases"])
     if summary.get("stageId") != GENERIC_STAGE_ID or summary.get("classification") != "BATCH_NUMERICALLY_COMPLETE":
@@ -139,7 +143,9 @@ def analyze(
     records = exact_records(cases_root, manifest, raw_sha256(manifest_path), adapter_hash)
     convergence = load_module(convergence_module_path)
     source_results = {item["groupId"]: item for item in source.get("geometryResults", [])}
-    geometry_map = {item["geometryId"]: item for item in manifest.get("geometries", [])}
+    geometry_map = {item["geometryId"]: item for item in source_pilot.get("geometries", []) if isinstance(item, dict) and isinstance(item.get("geometryId"), str)}
+    if set(source_results) != set(geometry_map):
+        raise ValueError("source analysis and pilot geometry universe differ")
     by_request: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for case in manifest["cases"]:
         by_request.setdefault((case["groupId"], case["method"]), []).append(records[case["caseId"]])
@@ -210,9 +216,28 @@ def analyze(
     counts: dict[str, int] = {}
     for result in results:
         counts[result["classification"]] = counts.get(result["classification"], 0) + 1
+    requested_groups = set(manifest["selectedGeometryIds"])
+    carried: list[dict[str, Any]] = []
+    for group, source_result in sorted(source_results.items()):
+        if group in requested_groups:
+            continue
+        if source_result.get("classification") != "SCREENING_AGREEMENT":
+            raise ValueError(f"non-confirmed carried geometry is not screening agreement: {group}")
+        methods = source_result.get("methodStatistics")
+        if not isinstance(methods, dict) or not all(isinstance(methods.get(method), dict) for method in METHODS):
+            raise ValueError(f"carried method statistics missing: {group}")
+        carried.append({
+            "groupId": group,
+            "geometry": geometry_map[group],
+            "methodStatistics": methods,
+            "methodOrigins": {method: "frozen-final-convergence-screening" for method in METHODS},
+            "meanRatioAlisToVroom": source_result.get("meanRatioAlisToVroom"),
+            "nodeAgreementFraction": source_result.get("vroomPhotopicWeightFractionNodeRatioInsideInterval"),
+            "sourceClassification": "SCREENING_AGREEMENT",
+        })
     source_diagnosis = sorted(source.get("technicalDiagnosisRequiredGeometryIds", []))
     all_passed = len(accepted) == len(results)
-    computational_complete = all_passed and not source_diagnosis
+    computational_complete = all_passed and not source_diagnosis and len(carried) + len(accepted) == len(source_results)
     status = "COMPUTATIONAL_REFERENCE_SCREENING_COMPLETE" if computational_complete else "COMPUTATIONAL_REFERENCE_SCREENING_REQUIRES_DIAGNOSIS"
     output = {
         "schemaVersion": 1,
@@ -234,7 +259,9 @@ def analyze(
         "schemaVersion": 1,
         "status": status,
         "computationalReferenceScreeningComplete": computational_complete,
-        "acceptedReferenceGeometryCount": len(accepted),
+        "acceptedReferenceGeometryCount": len(carried) + len(accepted),
+        "carriedScreeningAgreementGeometryCount": len(carried),
+        "newHeldOutAcceptedGeometryCount": len(accepted),
         "heldOutConfirmationFailureCount": len(results) - len(accepted),
         "technicalDiagnosisRequiredGeometryIds": sorted(set(source_diagnosis + [item["groupId"] for item in results if item["classification"] != "HELD_OUT_CONFIRMATION_PASSED"])),
         "productionModelReady": False,
@@ -249,7 +276,7 @@ def analyze(
         "sourceStageId": STAGE_ID,
         "screeningOnly": True,
         "observationValidationRequired": True,
-        "records": accepted,
+        "records": carried + accepted,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "held-out-confirmation-analysis.json").write_text(dump(output))
@@ -262,6 +289,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source-final-analysis", type=Path, required=True)
+    parser.add_argument("--source-pilot-manifest", type=Path, required=True)
     parser.add_argument("--cases-root", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--audit", type=Path, required=True)
@@ -269,7 +297,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        result = analyze(args.manifest, args.source_final_analysis, args.cases_root, args.summary, args.audit, args.convergence_module, args.output_dir)
+        result = analyze(args.manifest, args.source_final_analysis, args.source_pilot_manifest, args.cases_root, args.summary, args.audit, args.convergence_module, args.output_dir)
         print(dump(result), end="")
         return 0
     except Exception as exc:

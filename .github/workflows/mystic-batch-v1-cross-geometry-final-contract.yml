@@ -1,0 +1,99 @@
+name: MYSTIC cross-geometry final-convergence contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-final-*.yml"
+      - "experiments/mystic-batch-v1/FINAL_CONVERGENCE.md"
+      - "experiments/mystic-batch-v1/authorization.cross-geometry-final*.json"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-final-convergence.proposal.json"
+      - "experiments/mystic-batch-v1/cross_geometry_final_*.py"
+      - "experiments/mystic-batch-v1/cross_geometry_convergence_v2.py"
+      - "experiments/mystic-batch-v1/results/final-convergence-source-provenance.json"
+      - "experiments/mystic-batch-v1/results/convergence-v2.cross-geometry-stage-two-3.json"
+      - "experiments/mystic-batch-v1/results/screening-analysis.cross-geometry-stage-two-3.json"
+      - "modeling/twilight-surrogate-v1/reference-readiness.cross-geometry.json"
+      - "tests/test_mystic_batch_v1_cross_geometry_final_convergence.py"
+  push:
+    branches:
+      - "agent/**"
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-final-*.yml"
+      - "experiments/mystic-batch-v1/FINAL_CONVERGENCE.md"
+      - "experiments/mystic-batch-v1/authorization.cross-geometry-final*.json"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-final-convergence.proposal.json"
+      - "experiments/mystic-batch-v1/cross_geometry_final_*.py"
+      - "experiments/mystic-batch-v1/cross_geometry_convergence_v2.py"
+      - "experiments/mystic-batch-v1/results/final-convergence-source-provenance.json"
+      - "experiments/mystic-batch-v1/results/convergence-v2.cross-geometry-stage-two-3.json"
+      - "experiments/mystic-batch-v1/results/screening-analysis.cross-geometry-stage-two-3.json"
+      - "modeling/twilight-surrogate-v1/reference-readiness.cross-geometry.json"
+      - "tests/test_mystic_batch_v1_cross_geometry_final_convergence.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Run final-convergence unit and contract tests
+        run: python -m unittest -v tests/test_mystic_batch_v1_cross_geometry_final_convergence.py
+      - name: Compile all final-convergence modules
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+          experiments/mystic-batch-v1/cross_geometry_final_convergence.py
+          experiments/mystic-batch-v1/cross_geometry_final_execution_adapter.py
+          experiments/mystic-batch-v1/cross_geometry_final_execution_guard.py
+          experiments/mystic-batch-v1/cross_geometry_final_execution_plan.py
+          experiments/mystic-batch-v1/cross_geometry_final_analysis_driver.py
+          experiments/mystic-batch-v1/cross_geometry_final_authorization_proposal.py
+      - name: Recompute corrected convergence and exact final proposal
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/cross_geometry_convergence_v2.py \
+            --screening experiments/mystic-batch-v1/results/screening-analysis.cross-geometry-stage-two-3.json \
+            --output /tmp/convergence.json
+          python experiments/mystic-batch-v1/cross_geometry_final_convergence.py \
+            --stage-two-manifest experiments/mystic-batch-v1/manifest.cross-geometry-stage-two.proposal.json \
+            --screening experiments/mystic-batch-v1/results/screening-analysis.cross-geometry-stage-two-3.json \
+            --convergence experiments/mystic-batch-v1/results/convergence-v2.cross-geometry-stage-two-3.json \
+            --provenance experiments/mystic-batch-v1/results/final-convergence-source-provenance.json \
+            --output /tmp/proposal.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          checks = [
+              (Path('/tmp/convergence.json'), Path('experiments/mystic-batch-v1/results/convergence-v2.cross-geometry-stage-two-3.json')),
+              (Path('/tmp/proposal.json'), Path('experiments/mystic-batch-v1/manifest.cross-geometry-final-convergence.proposal.json')),
+          ]
+          for generated, frozen in checks:
+              if json.loads(generated.read_text()) != json.loads(frozen.read_text()):
+                  raise SystemExit(f'semantic reproduction mismatch: {frozen}')
+          PY
+      - name: Prove authorization remains disabled and execution is manual one-shot
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          package = Path('experiments/mystic-batch-v1')
+          active = json.loads((package / 'authorization.cross-geometry-final.json').read_text())
+          template = json.loads((package / 'authorization.cross-geometry-final-execution-template.json').read_text())
+          if active != template or active['authorized'] is not False:
+              raise SystemExit('active final authorization is not exactly disabled')
+          workflow = Path('.github/workflows/mystic-batch-v1-cross-geometry-final-execution.yml').read_text()
+          header = workflow.split('jobs:', 1)[0]
+          if 'workflow_dispatch:' not in header or 'pull_request:' in header or 'push:' in header:
+              raise SystemExit('execution workflow is not manual-only')
+          if 'fail-fast: false' not in workflow or workflow.count('Execute exactly one isolated final-convergence case') != 1:
+              raise SystemExit('execution matrix boundary changed')
+          PY

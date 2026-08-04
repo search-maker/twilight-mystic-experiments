@@ -112,11 +112,7 @@ def build(output_dir: Path, exact_main_sha: str = "e7c7b0e1bef4f8b3e3989e7ed445a
         "independentAuditPassed": True,
         "precisionClassificationComplete": True,
         "provenanceValidated": True,
-        "scientificExecution": True,
-        "productionModelReady": False,
-        "syntheticOnly": True,
-        "observationallyValidated": False,
-        "successDoesNotAuthorizeProduction": True,
+        **BOUNDARY,
         "exactMainSha": exact_main_sha,
         "datasetRawSha256": sha256(dataset_path),
         "bindings": {

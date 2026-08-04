@@ -20,6 +20,12 @@ This package defines **contracts only** between observations, atmosphere metadat
 - `productionUseForbidden: true`
 - `observationallyValidated: false`
 
+## Current provider dependency
+
+`main` now contains the Surrogate Training V2 contracts and the deterministic Tier-1 v1-to-v2 dataset handoff. That merged infrastructure is not itself a trained model or approved radiance provider. This observation package must remain disconnected until a real Tier-1 dataset passes aggregate, independent audit, precision, and provenance gates; the model is selected on training records only; the model is frozen before the internal holdout opens once; and the exact resulting provider artifact is separately approved.
+
+A future provider may populate this contract only if it supplies the exact model artifact hash, source dataset hash, source-code SHA, complete 15-node spectrum, uncertainty method/value, nearest-training distance, and out-of-domain state required below. It may not weaken or omit those fields.
+
 ## Dependencies still missing
 
 Surrogate-dependent fields: `modelId`, `modelVersion`, `modelArtifactHash`, `sourceDatasetHash`, `sourceCodeSha`, spectrum, photopic integration, uncertainty, uncertainty method, nearest-training-distance, and out-of-domain classification.

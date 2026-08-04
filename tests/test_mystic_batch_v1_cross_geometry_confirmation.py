@@ -132,14 +132,15 @@ def fixture():
         "conclusion": "success",
         "display_title": "Cross geometry final convergence v1 | key=cross-geometry-final-convergence-v1:screening:4 | auth=7e630b8f46259ddf6a0cfdf5e381872c0182d0ba | ordinal=4",
     }
-    return analysis, proposal, readiness, run
+    pilot = {"schemaVersion": 1, "stageId": "cross-geometry-pilot-v1", "proposalOnly": True, "geometries": proposal["geometries"]}
+    return analysis, proposal, readiness, run, pilot
 
 
 class ConfirmationTests(unittest.TestCase):
     def write_fixture(self, root: Path):
-        analysis, proposal, readiness, run = fixture()
+        analysis, proposal, readiness, run, pilot = fixture()
         paths = {}
-        for name, value in (("analysis", analysis), ("proposal", proposal), ("readiness", readiness), ("run", run)):
+        for name, value in (("analysis", analysis), ("proposal", proposal), ("readiness", readiness), ("run", run), ("pilot", pilot)):
             path = root / f"{name}.json"
             path.write_text(dump(value))
             paths[name] = path
@@ -244,6 +245,7 @@ class ConfirmationTests(unittest.TestCase):
             result = analysis_module.analyze(
                 manifest,
                 paths["analysis"],
+                paths["pilot"],
                 cases_root,
                 summary,
                 audit,
@@ -253,6 +255,8 @@ class ConfirmationTests(unittest.TestCase):
             self.assertTrue(result["computationalReferenceScreeningComplete"])
             self.assertEqual(result["geometryResults"][0]["classification"], "HELD_OUT_CONFIRMATION_PASSED")
             self.assertEqual(result["geometryResults"][0]["methodOrigins"]["alis"], "held-out-confirmation")
+            dataset = json.loads((output / "audited-reference-dataset.json").read_text())
+            self.assertEqual(len(dataset["records"]), 1)
 
     def test_authorization_is_disabled_by_default(self):
         active = json.loads((PACKAGE_DIR / "authorization.cross-geometry-confirmation.json").read_text())

@@ -40,15 +40,7 @@ class FinalConvergenceContract(unittest.TestCase):
 
     def test_final_manifest_reproduces_from_frozen_sources(self) -> None:
         generator = module("final_generator", PKG / "cross_geometry_final_convergence.py")
-        generated = generator.build(
-            load(self.stage2_path),
-            load(self.screening_path),
-            load(self.convergence_path),
-            load(self.provenance_path),
-            self.stage2_path,
-            self.screening_path,
-            self.convergence_path,
-        )
+        generated = generator.build(load(self.stage2_path), load(self.screening_path), load(self.convergence_path), load(self.provenance_path), self.stage2_path, self.screening_path, self.convergence_path)
         self.assertEqual(generated, load(self.proposal_path))
         self.assertEqual(len(generated["cases"]), 26)
         self.assertEqual(sum(case["photonHistories"] for case in generated["cases"]), 520_000_000)
@@ -57,12 +49,19 @@ class FinalConvergenceContract(unittest.TestCase):
         self.assertEqual(len(diagnostic), 18)
         self.assertEqual({case["alisSpectralImportanceSamplingNm"] for case in diagnostic}, {500.0, 550.0, 600.0})
 
-    def test_authorization_is_exactly_disabled(self) -> None:
+    def test_authorization_is_exactly_disabled_and_proposal_is_exact(self) -> None:
         active = load(PKG / "authorization.cross-geometry-final.json")
         template = load(PKG / "authorization.cross-geometry-final-execution-template.json")
         self.assertEqual(active, template)
         self.assertFalse(active["authorized"])
         self.assertEqual(active["authorizationOrdinal"], 0)
+        generator = module("authorization_generator", PKG / "cross_geometry_final_authorization_proposal.py")
+        proposal = generator.build(ROOT)
+        self.assertEqual(proposal["status"], "PROPOSAL_ONLY_NOT_AUTHORIZATION")
+        self.assertEqual(proposal["authorizationOrdinal"], 4)
+        self.assertEqual(proposal["caseCount"], 26)
+        self.assertEqual(proposal["configuredMcPhotonsSum"], 520_000_000)
+        self.assertFalse(proposal["executionAuthorizedByProposal"])
 
     def test_adapter_and_plan_boundaries(self) -> None:
         adapter = module("final_adapter", PKG / "cross_geometry_final_execution_adapter.py")
@@ -74,21 +73,7 @@ class FinalConvergenceContract(unittest.TestCase):
             adapter.validate_manifest(broken)
 
         plan_module = module("final_plan", PKG / "cross_geometry_final_execution_plan.py")
-        guard = {
-            "status": "AUTHORIZED",
-            "stageId": "cross-geometry-final-convergence-v1",
-            "batchId": proposal["batchId"],
-            "proposalRawSha256": "a" * 64,
-            "executionAdapterRawSha256": "b" * 64,
-            "runtimeLockRawSha256": "c" * 64,
-            "executionWorkflowRawSha256": "d" * 64,
-            "authorizationRef": "e" * 40,
-            "authorizationOrdinal": 4,
-            "executionKey": "cross-geometry-final-convergence-v1:screening:4",
-            "sourceScreeningRawSha256": "f" * 64,
-            "sourceConvergenceV2RawSha256": "1" * 64,
-            "sourceProvenanceRawSha256": "2" * 64,
-        }
+        guard = {"status": "AUTHORIZED", "stageId": "cross-geometry-final-convergence-v1", "batchId": proposal["batchId"], "proposalRawSha256": "a" * 64, "executionAdapterRawSha256": "b" * 64, "runtimeLockRawSha256": "c" * 64, "executionWorkflowRawSha256": "d" * 64, "authorizationRef": "e" * 40, "authorizationOrdinal": 4, "executionKey": "cross-geometry-final-convergence-v1:screening:4", "sourceScreeningRawSha256": "f" * 64, "sourceConvergenceV2RawSha256": "1" * 64, "sourceProvenanceRawSha256": "2" * 64}
         with tempfile.TemporaryDirectory() as temporary:
             guard_path = Path(temporary) / "guard.json"
             guard_path.write_text(json.dumps(guard))
@@ -112,7 +97,7 @@ class FinalConvergenceContract(unittest.TestCase):
         proposal_header = proposal_workflow.split("jobs:", 1)[0]
         self.assertNotIn("workflow_dispatch:", proposal_header)
         self.assertNotIn("uvspec", proposal_workflow.lower())
-        self.assertNotIn("micromamba", proposal_workflow.lower())
+        self.assertNotIn("setup-micromamba", proposal_workflow.lower())
 
 
 if __name__ == "__main__":

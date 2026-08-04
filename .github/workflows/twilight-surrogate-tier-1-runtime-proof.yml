@@ -10,6 +10,7 @@ on:
       - "experiments/mystic-batch-v1/twilight_surrogate_tier1_ordinal2_recovery.py"
       - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
       - "tests/test_twilight_surrogate_tier1_recovery.py"
+      - "tests/test_twilight_surrogate_tier1_runtime_blocker.py"
   workflow_dispatch:
 
 permissions:
@@ -24,8 +25,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12.4"
-      - name: Run direct recovery, audit, and fake-solver tests
-        run: python -m unittest -v tests/test_twilight_surrogate_tier1_recovery.py
+      - name: Run direct recovery, audit, fake-solver, and blocker tests
+        run: >-
+          python -m unittest -v
+          tests/test_twilight_surrogate_tier1_recovery.py
+          tests/test_twilight_surrogate_tier1_runtime_blocker.py
       - name: Compile owned Tier-1 recovery files
         run: >-
           python -m py_compile
@@ -80,7 +84,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  runtime-solver-probe:
+  runtime-solver-compatibility-probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -91,7 +95,7 @@ jobs:
           create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
           cache-environment: true
           cache-downloads: true
-      - name: Run separate one-photon solver probe
+      - name: Run separate one-photon solver compatibility probe
         shell: bash -el {0}
         run: |
           set -euo pipefail
@@ -103,19 +107,29 @@ jobs:
             --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
             --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
             --output-dir runtime-solver-probe-output
-      - name: Verify probe is not a dataset
+      - name: Verify exact structural blocker and no dataset
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           report = json.loads(Path('runtime-solver-probe-output/solver-probe.json').read_text())
-          assert report['status'] == 'FROZEN_RUNTIME_SOLVER_ACCEPTS_SITE_ALTITUDE_INPUT'
+          assert report['status'] == 'BLOCKED_MYSTIC_ALTITUDE_REQUIRES_VALIDATED_MC_ELEVATION_FILE'
+          assert report['accepted'] is False
+          assert report['recognizedStructuralBlocker'] is True
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
           assert report['solverExecutionCount'] == 1
           assert report['mcPhotons'] == 1
-          assert report['generatedOutputFileCount'] > 0
+          assert report['exitCode'] == 255
+          assert report['generatedOutputFileCount'] == 0
           assert report['generatedOutputFilesPreserved'] is False
           assert report['scientificDatasetProduced'] is False
           assert not list(Path('runtime-solver-probe-output').glob('mc*'))
+          expected = (
+              'Error, option altitude does not work with\n'
+              '       solver montecarlo! Use mc_elevation_file!\n'
+          )
+          assert Path('runtime-solver-probe-output/stderr.txt').read_text() == expected
           PY
       - uses: actions/upload-artifact@v4
         if: always()

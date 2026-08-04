@@ -10,6 +10,9 @@ on:
         description: Successful Twilight surrogate tier-1 proposal workflow run ID
         required: true
         type: string
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-authorization-proposal.yml"
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ permissions:
 
 jobs:
   proposal:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -30,12 +33,21 @@ jobs:
           python-version: "3.12.4"
       - name: Resolve exact source proposal run
         id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+            run_id="${{ github.event.workflow_run.id }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            run_id="${{ inputs.source_proposal_run_id }}"
           else
-            echo "run_id=${{ inputs.source_proposal_run_id }}" >> "$GITHUB_OUTPUT"
+            run_id="$(gh api "repos/${{ github.repository }}/actions/workflows/twilight-surrogate-tier-1-proposal.yml/runs?branch=main&status=success&per_page=20" --jq '[.workflow_runs[] | select(.run_attempt == 1 and (.event == "push" or .event == "workflow_run" or .event == "workflow_dispatch"))][0].id')"
           fi
+          case "$run_id" in
+            ''|null|*[!0-9]*) echo "no exact successful source proposal run" >&2; exit 2 ;;
+          esac
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
       - name: Download exact tier-1 proposal artifact
         uses: actions/download-artifact@v4
         with:

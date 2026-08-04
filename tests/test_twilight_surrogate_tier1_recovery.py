@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -154,6 +155,18 @@ def combined_proof_fixture(manifest: dict) -> dict:
     }
 
 
+def exact_ordinal1_stderr(level_text: str) -> str:
+    return (
+        "\nFATAL error: altitude grid does not contain level "
+        f"{level_text}\n"
+        "which has been specified as output altitude\n"
+        "Error -1 in (function 'setup_sample_grid', file 'cloud3d.c', line 511)\n"
+        "Error -1 in (function 'setup_atmosphere3D', file 'cloud3d.c', line 1896)\n"
+        "Error -1 in (function 'uvspec', file 'uvspec.c', line 129)\n"
+        "Error -1 during execution of uvspec\n"
+    )
+
+
 class Tier1RecoveryTests(unittest.TestCase):
     def test_ordinal1_audit_accepts_exact_uniform_failure_and_rejects_science(
         self,
@@ -176,10 +189,31 @@ class Tier1RecoveryTests(unittest.TestCase):
             write_json(preflight / "duplicate-run-audit.json", {"status": "PASS"})
             photons = [70_000_000] * 95 + [310_000_000]
             for index in range(96):
+                case_id = f"case-{index + 1:04d}"
+                case_dir = cases_root / case_id
+                observer_m = 51.02 * (index + 1)
+                level_text = f"{observer_m / 1000.0:.6f}"
+                input_text = (
+                    "atmosphere_file /frozen/afglus.dat\n"
+                    f"zout {level_text}\n"
+                    "rte_solver mystic\n"
+                )
+                input_path = case_dir / "input-resolved.txt"
+                input_path.parent.mkdir(parents=True, exist_ok=True)
+                input_path.write_text(input_text)
+                input_sha = hashlib.sha256(input_text.encode()).hexdigest()
                 write_json(
-                    cases_root / f"case-{index + 1:04d}" / "case-result.json",
+                    case_dir / "tier1-prepared.json",
                     {
-                        "caseId": f"case-{index + 1:04d}",
+                        "caseId": case_id,
+                        "inputs": {"observerElevationM": observer_m},
+                        "inputResolvedSha256": input_sha,
+                    },
+                )
+                write_json(
+                    case_dir / "case-result.json",
+                    {
+                        "caseId": case_id,
                         "seed": 910_001 + index,
                         "photonHistories": photons[index],
                         "status": "FAILED",
@@ -188,19 +222,17 @@ class Tier1RecoveryTests(unittest.TestCase):
                         "syntax": {"exitCode": 0, "timedOut": False},
                         "solver": {"exitCode": 255, "timedOut": False},
                         "failure": {
+                            "code": "solver-failure",
                             "detail": {
                                 "stdout": "",
-                                "stderr": (
-                                    "FATAL error: altitude grid does not contain level "
-                                    f"{0.05102 * (index + 1):.6f}\n"
-                                    "which has been specified as output altitude\n"
-                                    "setup_sample_grid failed\n"
-                                ),
-                            }
+                                "stderr": exact_ordinal1_stderr(level_text),
+                            },
                         },
+                        "inputResolvedSha256": input_sha,
                         "radianceOutputSha256": None,
                         "stdOutputSha256": None,
                         "selectedNodeRadiance": [],
+                        "selectedNodeStdRadiance": [],
                         "selectedPhotopicContributionCdM2": None,
                     },
                 )
@@ -230,6 +262,11 @@ class Tier1RecoveryTests(unittest.TestCase):
             report = AUDIT.audit(preflight, cases_root, aggregate, prior)
             self.assertEqual(report["validScientificCaseResultCount"], 0)
             self.assertFalse(report["githubRerunPermitted"])
+            self.assertTrue(
+                report["uniformFailureEvidence"][
+                    "rejectedLevelMatchesSixDecimalRenderedObserverElevationForAllCases"
+                ]
+            )
             bad_path = cases_root / "case-0001" / "case-result.json"
             bad = json.loads(bad_path.read_text())
             bad["radianceOutputSha256"] = "0" * 64

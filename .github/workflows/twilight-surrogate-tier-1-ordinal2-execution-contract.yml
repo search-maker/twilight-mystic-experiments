@@ -48,21 +48,31 @@ jobs:
             "$GUARD" \
             "$PROPOSAL" \
             tests/test_twilight_surrogate_tier1_ordinal2_execution_guard.py
-      - name: Prove authorization is disabled in preparation PR
+      - name: Prove authorization state is disabled or exact ordinal-2
         run: |
           python - <<'PY'
-          import json
+          import json, re
           from pathlib import Path
           active = json.loads(Path('experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1-ordinal2.json').read_text())
           template = json.loads(Path('experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1-ordinal2-template.json').read_text())
-          assert active == template
-          assert active['authorized'] is False
-          assert active['scientificExecution'] is False
-          assert active['scientificDiagnostic'] is False
-          assert active['authorizationOrdinal'] == 0
-          assert active['consumed'] is False
-          assert active['exactAuthorizationParentCommit'] is None
-          assert active['exactAuthorizationCommit'] is None
+          assert active.keys() == template.keys()
+          if active == template:
+              assert active['authorized'] is False
+              assert active['scientificExecution'] is False
+              assert active['scientificDiagnostic'] is False
+              assert active['authorizationOrdinal'] == 0
+              assert active['consumed'] is False
+              assert active['exactAuthorizationParentCommit'] is None
+              assert active['exactAuthorizationCommit'] is None
+          else:
+              assert active['authorized'] is True
+              assert active['scientificExecution'] is True
+              assert active['scientificDiagnostic'] is True
+              assert active['executionKey'] == 'twilight-surrogate-tier-1-v1:numerical:2'
+              assert active['authorizationOrdinal'] == 2
+              assert active['consumed'] is False
+              assert re.fullmatch(r'[0-9a-f]{40}', active['exactAuthorizationParentCommit'])
+              assert active['exactAuthorizationCommit'] is None
           PY
       - name: Prove manual one-shot workflow and fresh-seed manifest path
         run: |
@@ -105,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
@@ -156,26 +167,35 @@ jobs:
             gh api "repos/${{ github.repository }}/actions/runs/$run_id/artifacts?per_page=100" > "contract/metadata/$label-artifacts.json"
           done
           gh api "repos/${{ github.repository }}/issues/55/comments?per_page=100" > contract/issue-comments.json
-      - name: Normalize and validate exact evidence without science
-        run: |
-          python "$EVIDENCE_BUNDLE" \
-            --readiness-root downloads/readiness \
-            --combined-root downloads/combined \
-            --source-audit-root downloads/source-audit \
-            --provenance-root downloads/provenance \
-            --output-dir contract/evidence
-          python "$PROPOSAL" \
-            --repository-root . \
-            --authorization-template "$AUTHORIZATION_TEMPLATE" \
-            --active-authorization "$AUTHORIZATION" \
-            --evidence-dir contract/evidence \
-            --metadata-dir contract/metadata \
-            --issue-comments contract/issue-comments.json \
-            --output contract/authorization-proposal.json
-      - name: Prove generated authorization is one-purpose and guard-valid
+      - name: Normalize exact evidence without science
+        run: >-
+          python "$EVIDENCE_BUNDLE"
+          --readiness-root downloads/readiness
+          --combined-root downloads/combined
+          --source-audit-root downloads/source-audit
+          --provenance-root downloads/provenance
+          --output-dir contract/evidence
+      - name: Validate disabled preparation or actual one-file authorization
         run: |
           set -euo pipefail
-          python - <<'PY'
+          MODE="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          active = json.loads(Path('experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1-ordinal2.json').read_text())
+          template = json.loads(Path('experiments/mystic-batch-v1/authorization.twilight-surrogate-tier-1-ordinal2-template.json').read_text())
+          print('disabled' if active == template else 'authorization')
+          PY
+          )"
+          if [ "$MODE" = disabled ]; then
+            python "$PROPOSAL" \
+              --repository-root . \
+              --authorization-template "$AUTHORIZATION_TEMPLATE" \
+              --active-authorization "$AUTHORIZATION" \
+              --evidence-dir contract/evidence \
+              --metadata-dir contract/metadata \
+              --issue-comments contract/issue-comments.json \
+              --output contract/authorization-proposal.json
+            python - <<'PY'
           import json
           from pathlib import Path
           proposal = json.loads(Path('contract/authorization-proposal.json').read_text())
@@ -185,11 +205,15 @@ jobs:
               json.dumps(proposal['authorization'], indent=2, sort_keys=True) + '\n'
           )
           PY
-          git config user.email contract@example.invalid
-          git config user.name "Ordinal-2 Contract"
-          git add "$AUTHORIZATION"
-          git commit -m "Ephemeral ordinal-2 authorization contract"
+            git config user.email contract@example.invalid
+            git config user.name "Ordinal-2 Contract"
+            git add "$AUTHORIZATION"
+            git commit -m "Ephemeral ordinal-2 authorization contract"
+          else
+            cp "$AUTHORIZATION" contract/authorization-current.json
+          fi
           AUTH_REF="$(git rev-parse HEAD)"
+          printf '%s\n' "$MODE" > contract/authorization-mode.txt
           python "$GUARD" \
             --repository-root . \
             --authorization "$AUTHORIZATION" \

@@ -1,0 +1,82 @@
+name: MYSTIC cross-geometry Stage-3 diagnostics contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-stage-three-contract.yml"
+      - "experiments/mystic-batch-v1/CROSS_GEOMETRY_STAGE_THREE.md"
+      - "experiments/mystic-batch-v1/cross_geometry_convergence_v2.py"
+      - "experiments/mystic-batch-v1/cross_geometry_stage_three.py"
+      - "experiments/mystic-batch-v1/cross_geometry_stage_three_execution_adapter.py"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-stage-three.proposal.json"
+      - "experiments/mystic-batch-v1/results/stage-two-screening-analysis.json"
+      - "experiments/mystic-batch-v1/results/convergence-v2.stage-two.json"
+      - "experiments/mystic-batch-v1/results/stage-three-source-provenance.json"
+      - "tests/test_mystic_batch_v1_cross_geometry_stage_three.py"
+  push:
+    branches: ["agent/**"]
+    paths:
+      - ".github/workflows/mystic-batch-v1-cross-geometry-stage-three-contract.yml"
+      - "experiments/mystic-batch-v1/CROSS_GEOMETRY_STAGE_THREE.md"
+      - "experiments/mystic-batch-v1/cross_geometry_convergence_v2.py"
+      - "experiments/mystic-batch-v1/cross_geometry_stage_three.py"
+      - "experiments/mystic-batch-v1/cross_geometry_stage_three_execution_adapter.py"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-stage-three.proposal.json"
+      - "experiments/mystic-batch-v1/results/stage-two-screening-analysis.json"
+      - "experiments/mystic-batch-v1/results/convergence-v2.stage-two.json"
+      - "experiments/mystic-batch-v1/results/stage-three-source-provenance.json"
+      - "tests/test_mystic_batch_v1_cross_geometry_stage_three.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test corrected convergence, Stage-3 allocation, and per-case ALIS rendering
+        run: python -m unittest -v tests/test_mystic_batch_v1_cross_geometry_stage_three.py
+      - name: Recompute corrected convergence exactly
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+          --input experiments/mystic-batch-v1/results/stage-two-screening-analysis.json
+          --output /tmp/convergence-v2.json
+      - name: Recompute Stage-3 proposal exactly
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_stage_three.py
+          --convergence experiments/mystic-batch-v1/results/convergence-v2.stage-two.json
+          --provenance experiments/mystic-batch-v1/results/stage-three-source-provenance.json
+          --output /tmp/stage-three.json
+      - name: Prove committed outputs are deterministic
+        run: |
+          cmp /tmp/convergence-v2.json experiments/mystic-batch-v1/results/convergence-v2.stage-two.json
+          cmp /tmp/stage-three.json experiments/mystic-batch-v1/manifest.cross-geometry-stage-three.proposal.json
+      - name: Compile Stage-3 package
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+          experiments/mystic-batch-v1/cross_geometry_stage_three.py
+          experiments/mystic-batch-v1/cross_geometry_stage_three_execution_adapter.py
+      - name: Prove proposal-only boundary and exact accounting
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('experiments/mystic-batch-v1/manifest.cross-geometry-stage-three.proposal.json').read_text())
+          if p['proposalOnly'] is not True or p['scientificExecution'] is not False:
+              raise SystemExit('Stage-3 proposal execution boundary changed')
+          if len(p['cases']) != 24 or sum(c['photonHistories'] for c in p['cases']) != 480_000_000:
+              raise SystemExit('Stage-3 accounting changed')
+          if 'g04-mid-perpendicular' in {c['groupId'] for c in p['cases']}:
+              raise SystemExit('g04 must not be rerun')
+          workflow=Path('.github/workflows/mystic-batch-v1-cross-geometry-stage-three-contract.yml').read_text()
+          header=workflow.split('jobs:',1)[0]
+          for token in ('workflow_dispatch:', 'schedule:', 'repository_dispatch:'):
+              if token in header:
+                  raise SystemExit(f'proposal contract has execution trigger: {token}')
+          PY

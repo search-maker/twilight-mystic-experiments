@@ -5,38 +5,63 @@ on:
     workflows:
       - "MYSTIC held-out timeout continuation v1 scientific execution"
       - "MYSTIC g01 fixed precision diagnosis execution v1"
+      - "G01 precision artifact-only recovery"
     types: [completed]
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful completed reference-screen source run ID
+        description: Successful completed reference-screen or artifact-recovery run ID
         required: true
         type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-proposal.yml"
+      - "experiments/model-readiness-v1/reference_dataset_contract.py"
+      - "experiments/model-readiness-v1/tier1_proposal.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_source_audit.py"
+      - "tests/test_tier1_soft_anchor.py"
 
-permissions: {contents: read, actions: read}
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   proposal:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with: {ref: main, fetch-depth: 1}
+        with:
+          ref: main
+          fetch-depth: 1
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12.4"}
+        with:
+          python-version: "3.12.4"
       - name: Resolve exact source run
         id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+            run_id="${{ github.event.workflow_run.id }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            run_id="${{ inputs.source_run_id }}"
           else
-            echo "run_id=${{ inputs.source_run_id }}" >> "$GITHUB_OUTPUT"
+            run_id="$(gh api "repos/${{ github.repository }}/actions/workflows/mystic-batch-v1-cross-geometry-g01-precision-recovery.yml/runs?branch=main&status=success&per_page=20" --jq '[.workflow_runs[] | select(.run_attempt == 1 and (.event == "push" or .event == "workflow_dispatch"))][0].id')"
           fi
+          case "$run_id" in
+            ''|null|*[!0-9]*) echo "no exact successful source run" >&2; exit 2 ;;
+          esac
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
       - name: Fetch source run and resolve profile
         id: profile
-        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p source-meta source-normalized
           gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}" > source-meta/source-run.json
           python - <<'PY'
@@ -45,11 +70,13 @@ jobs:
           profiles={
             'MYSTIC held-out timeout continuation v1 scientific execution':('cross-geometry-timeout-continuation-v1-analysis','timeout-continuation-analysis.json'),
             'MYSTIC g01 fixed precision diagnosis execution v1':('g01-fixed-precision-diagnosis-execution-v1-analysis','g01-fixed-precision-execution-analysis.json'),
+            'G01 precision artifact-only recovery':('cross-geometry-g01-precision-continuation-v1-recovery-analysis','g01-fixed-precision-execution-analysis.json'),
           }
-          if run.get('name') not in profiles: raise SystemExit(f"unsupported source workflow: {run.get('name')}")
+          if run.get('name') not in profiles:
+              raise SystemExit(f"unsupported source workflow: {run.get('name')}")
           artifact,analysis=profiles[run['name']]
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
-            f.write(f'artifact_name={artifact}\nanalysis_file={analysis}\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
+              handle.write(f'artifact_name={artifact}\nanalysis_file={analysis}\n')
           PY
       - name: Download exact completed analysis artifact
         uses: actions/download-artifact@v4
@@ -60,20 +87,28 @@ jobs:
           run-id: ${{ steps.source.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Normalize files and fetch artifact metadata
-        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}", ANALYSIS_FILE: "${{ steps.profile.outputs.analysis_file }}"}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANALYSIS_FILE: ${{ steps.profile.outputs.analysis_file }}
         run: |
+          set -euo pipefail
           gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
           python - <<'PY'
           from pathlib import Path
           import os, shutil
           root=Path('source-download');target=Path('source-normalized')
-          names={os.environ['ANALYSIS_FILE']:'source-analysis.json','reference-readiness.json':'reference-readiness.json','audited-reference-dataset.json':'audited-reference-dataset.json'}
+          names={
+              os.environ['ANALYSIS_FILE']:'source-analysis.json',
+              'reference-readiness.json':'reference-readiness.json',
+              'audited-reference-dataset.json':'audited-reference-dataset.json',
+          }
           for source,dest in names.items():
-            matches=list(root.rglob(source))
-            if len(matches)!=1: raise SystemExit(f'expected one {source}, found {len(matches)}')
-            shutil.copy2(matches[0],target/dest)
+              matches=list(root.rglob(source))
+              if len(matches)!=1:
+                  raise SystemExit(f'expected one {source}, found {len(matches)}')
+              shutil.copy2(matches[0],target/dest)
           PY
-      - name: Validate anchors and generate exact tier-1 proposal
+      - name: Validate hard and soft anchors and generate exact tier-1 proposal
         run: >-
           python experiments/model-readiness-v1/tier1_proposal.py
           --dataset source-normalized/audited-reference-dataset.json
@@ -85,15 +120,22 @@ jobs:
           --training-design-code experiments/model-readiness-v1/training_design.py
           --training-design-spec experiments/model-readiness-v1/training-design.proposal.json
           --importance-policy experiments/model-readiness-v1/importance_policy.py
+          --source-pilot-manifest experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
           --output-dir proposal-output
       - name: Prove proposal workflow cannot execute science or train a model
         run: |
           python - <<'PY'
           from pathlib import Path
-          text=Path('.github/workflows/twilight-surrogate-tier-1-proposal.yml').read_text().lower();executable=text.split('- name: prove proposal workflow cannot execute science or train a model',1)[0]
+          text=Path('.github/workflows/twilight-surrogate-tier-1-proposal.yml').read_text().lower()
+          executable=text.split('- name: prove proposal workflow cannot execute science or train a model',1)[0]
           forbidden=('setup-micromamba','scientific_case_executor.py','--allow-execution','uvspec -c','rte_solver mystic','model.fit(','torch.optim','tensorflow')
-          found=[x for x in forbidden if x in executable]
-          if found: raise SystemExit(f'proposal workflow has forbidden execution/training surface: {found}')
+          found=[item for item in forbidden if item in executable]
+          if found:
+              raise SystemExit(f'proposal workflow has forbidden execution/training surface: {found}')
           PY
       - uses: actions/upload-artifact@v4
-        with: {name: twilight-surrogate-tier-1-proposal-v1, path: proposal-output, if-no-files-found: error, retention-days: 90}
+        with:
+          name: twilight-surrogate-tier-1-proposal-v1
+          path: proposal-output
+          if-no-files-found: error
+          retention-days: 90

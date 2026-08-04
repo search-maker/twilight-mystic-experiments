@@ -36,6 +36,27 @@ def raw_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def anchor_partition(anchors: dict[str, Any]) -> tuple[list[str], list[str]]:
+    rows = anchors.get("anchors")
+    if not isinstance(rows, list) or len(rows) != 6 or any(not isinstance(row, dict) for row in rows):
+        raise SourceAuditError("reference anchor rows missing")
+    if any(row.get("eligibleForTraining") is not False for row in rows):
+        raise SourceAuditError("reference anchor became eligible for training")
+    hard = [row for row in rows if row.get("anchorStrength", "hard") == "hard"]
+    soft = [row for row in rows if row.get("anchorStrength") == "soft-diagnostic"]
+    if len(hard) + len(soft) != 6 or (len(hard), len(soft)) not in {(6, 0), (5, 1)}:
+        raise SourceAuditError(f"unsupported hard/soft anchor partition: {len(hard)}/{len(soft)}")
+    if any(row.get("eligibleForModelAcceptance", True) is not True for row in hard):
+        raise SourceAuditError("hard anchor cannot gate model acceptance")
+    if any(row.get("eligibleForModelAcceptance") is not False for row in soft):
+        raise SourceAuditError("soft diagnostic became eligible for model acceptance")
+    hard_ids = sorted(str(row.get("groupId")) for row in hard)
+    soft_ids = sorted(str(row.get("groupId")) for row in soft)
+    if len(set(hard_ids + soft_ids)) != 6:
+        raise SourceAuditError("reference anchor IDs are missing or duplicated")
+    return hard_ids, soft_ids
+
+
 def audit(
     proposal_path: Path,
     anchors_path: Path,
@@ -64,7 +85,7 @@ def audit(
     }
     if stale:
         raise SourceAuditError(f"source proposal workflow mismatch: {stale}")
-    if source_run.get("event") not in {"workflow_run", "workflow_dispatch"}:
+    if source_run.get("event") not in {"workflow_run", "workflow_dispatch", "push"}:
         raise SourceAuditError(f"unsupported source proposal event: {source_run.get('event')}")
     run_id = source_run.get("id")
     head_sha = source_run.get("head_sha")
@@ -77,8 +98,7 @@ def audit(
     if not isinstance(artifacts, list):
         raise SourceAuditError("source artifact listing missing")
     matches = [
-        item
-        for item in artifacts
+        item for item in artifacts
         if isinstance(item, dict) and item.get("name") == ARTIFACT_NAME
     ]
     if len(matches) != 1:
@@ -159,11 +179,23 @@ def audit(
     }
     if stale:
         raise SourceAuditError(f"reference anchors mismatch: {stale}")
-    anchor_rows = anchors.get("anchors")
-    if not isinstance(anchor_rows, list) or len(anchor_rows) != 6:
-        raise SourceAuditError("reference anchor rows missing")
-    if any(row.get("eligibleForTraining") is not False for row in anchor_rows if isinstance(row, dict)):
-        raise SourceAuditError("reference anchor became eligible for training")
+    hard_ids, soft_ids = anchor_partition(anchors)
+    if sorted(proposal.get("externalValidationAnchorIds", [])) != sorted(hard_ids + soft_ids):
+        raise SourceAuditError("proposal external anchor IDs differ from validated anchors")
+    if sorted(proposal.get("hardExternalValidationAnchorIds", hard_ids)) != hard_ids:
+        raise SourceAuditError("proposal hard anchor IDs differ from validated anchors")
+    if sorted(proposal.get("softDiagnosticAnchorIds", soft_ids)) != soft_ids:
+        raise SourceAuditError("proposal soft diagnostic IDs differ from validated anchors")
+    policy = proposal.get("referenceAnchorPolicy")
+    if soft_ids:
+        required_policy = {
+            "allExcludedFromFitting": True,
+            "hardAnchorsGateComputationalAcceptance": True,
+            "softDiagnosticsAreReportOnly": True,
+            "softDiagnosticsCannotCompensateForFailedPrecision": True,
+        }
+        if not isinstance(policy, dict) or any(policy.get(k) != v for k, v in required_policy.items()):
+            raise SourceAuditError("soft diagnostic proposal policy changed")
 
     required_readiness = {
         "schemaVersion": 1,
@@ -184,6 +216,13 @@ def audit(
         for key, expected in required_readiness.items()
         if readiness.get(key) != expected
     }
+    hard_count = readiness.get("hardValidationAnchorCount", len(hard_ids))
+    soft_count = readiness.get("softDiagnosticAnchorCount", len(soft_ids))
+    if hard_count != len(hard_ids) or soft_count != len(soft_ids):
+        stale.update({
+            "hardValidationAnchorCount": (hard_count, len(hard_ids)),
+            "softDiagnosticAnchorCount": (soft_count, len(soft_ids)),
+        })
     if stale:
         raise SourceAuditError(f"tier-1 readiness mismatch: {stale}")
 
@@ -204,12 +243,17 @@ def audit(
         "caseCount": 96,
         "configuredMcPhotonsSum": 6_960_000_000,
         "referenceAnchorCount": 6,
+        "hardValidationAnchorCount": len(hard_ids),
+        "softDiagnosticAnchorCount": len(soft_ids),
         "scientificExecution": False,
         "executionAuthorized": False,
         "surrogateTrainingAuthorized": False,
         "productionModelReady": False,
         "observationValidationRequired": True,
-        "boundary": "audits the proposal workflow artifact only; no syntax check, solver, model fitting, or authorization",
+        "boundary": (
+            "audits the proposal artifact only; all anchors remain outside fitting; soft diagnostics "
+            "are report-only; no syntax check, solver, model fitting, or authorization"
+        ),
     }
 
 

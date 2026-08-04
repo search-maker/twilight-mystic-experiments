@@ -1,0 +1,73 @@
+name: MYSTIC timeout continuation authorization proposal
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "experiments/mystic-batch-v1/*timeout*"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-timeout-continuation*"
+  push:
+    branches: ["main"]
+    paths:
+      - "experiments/mystic-batch-v1/*timeout*"
+      - "experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-timeout-continuation*"
+permissions: {contents: read, actions: read}
+jobs:
+  proposal:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-held-out-confirmation-v1-preflight
+          path: source-preflight
+          repository: ${{ github.repository }}
+          run-id: 30871800549
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-held-out-confirmation-v1-case-*
+          path: source-cases
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: 30871800549
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch immutable source metadata
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          mkdir -p source-meta
+          gh api "repos/${{ github.repository }}/actions/runs/30871800549" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/30871800549/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Reproduce source timeout audit
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_source_audit.py
+          --proposal experiments/mystic-batch-v1/cross-geometry-confirmation-timeout-continuation.proposal.json
+          --source-manifest source-preflight/manifest.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --cases-root source-cases
+          --output source-audit/source-timeout-audit.json
+      - name: Generate exact ordinal-6 proposal
+        run: >-
+          python experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_authorization_proposal.py
+          --repository-root .
+          --source-audit source-audit/source-timeout-audit.json
+          --output authorization-proposal/timeout-continuation-authorization-proposal.json
+      - name: Prove proposal workflow cannot execute science
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/mystic-batch-v1-cross-geometry-timeout-continuation-authorization-proposal.yml').read_text().lower()
+          before=text.split('- name: prove proposal workflow cannot execute science',1)[0]
+          forbidden=('setup-micromamba','--allow-execution','rte_solver mystic','uvspec -c')
+          found=[x for x in forbidden if x in before]
+          if found: raise SystemExit(found)
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-authorization-proposal, path: authorization-proposal, if-no-files-found: error, retention-days: 90}

@@ -1,0 +1,237 @@
+name: MYSTIC held-out timeout continuation v1 scientific execution
+run-name: Held-out timeout continuation | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact failed held-out source run ID
+        required: true
+        type: string
+      authorization_ref:
+        description: Exact one-purpose ordinal-6 authorization commit
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot continuation execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact continuation authorization ordinal
+        required: true
+        type: string
+permissions: {contents: read, actions: read}
+concurrency:
+  group: held-out-timeout-continuation-${{ inputs.execution_key }}
+  cancel-in-progress: false
+env:
+  PROPOSAL: experiments/mystic-batch-v1/cross-geometry-confirmation-timeout-continuation.proposal.json
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.cross-geometry-timeout-continuation.json
+  AUTHORIZATION_TEMPLATE: experiments/mystic-batch-v1/authorization.cross-geometry-timeout-continuation-template.json
+  SOURCE_AUDIT: experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_source_audit.py
+  GUARD: experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_execution_guard.py
+  PLAN: experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_execution_plan.py
+  EXECUTION_ADAPTER: experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_execution_adapter.py
+  ANALYSIS_DRIVER: experiments/mystic-batch-v1/cross_geometry_confirmation_timeout_analysis_driver.py
+  BASE_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+  DUPLICATE_RUN_AUDIT: experiments/mystic-batch-v1/duplicate_run_audit.py
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+  CONVERGENCE_MODULE: experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+  SOURCE_PILOT_MANIFEST: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.authorization_ref }}", fetch-depth: 2}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - name: Download exact failed source preflight
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-held-out-confirmation-v1-preflight
+          path: source-preflight
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all exact failed source case artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cross-geometry-held-out-confirmation-v1-case-*
+          path: source-cases
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch immutable source run and artifact metadata
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          mkdir -p source-meta
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_run_id }}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Audit exact source success and timeout partition
+        run: >-
+          python "$SOURCE_AUDIT"
+          --proposal "$PROPOSAL"
+          --source-manifest source-preflight/manifest.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --cases-root source-cases
+          --output preflight/source-timeout-audit.json
+      - name: Verify one-purpose ordinal-6 authorization
+        run: >-
+          python "$GUARD"
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --authorization-template "$AUTHORIZATION_TEMPLATE"
+          --proposal "$PROPOSAL"
+          --source-audit preflight/source-timeout-audit.json
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate continuation marker
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: >-
+          python "$DUPLICATE_RUN_AUDIT"
+          --repository "${{ github.repository }}"
+          --workflow mystic-batch-v1-cross-geometry-confirmation-timeout-continuation.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact continuation manifest and plan
+        id: plan
+        run: |
+          cp "$PROPOSAL" preflight/manifest.json
+          python "$PLAN" --manifest preflight/manifest.json --guard-report preflight/authorization-guard.json --output preflight/plan.json --github-output "$GITHUB_OUTPUT"
+      - name: Preserve source package and only successful g01 case artifacts
+        run: |
+          cp -R source-preflight/source-package preflight/source-package
+          mkdir -p preflight/source-g01
+          python - <<'PY'
+          from pathlib import Path
+          import shutil, json
+          for path in Path('source-cases').rglob('case-result.json'):
+              record=json.loads(path.read_text())
+              if record.get('caseId','').startswith('cgc-g01-'):
+                  shutil.copytree(path.parent, Path('preflight/source-g01')/record['caseId'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: cross-geometry-timeout-continuation-v1-preflight, path: preflight, if-no-files-found: warn, retention-days: 90}
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.authorization_ref }}", fetch-depth: 2}
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: cross-geometry-timeout-continuation-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-preflight, path: preflight}
+      - name: Recompute exact runtime identity
+        shell: bash -el {0}
+        run: |
+          UVSPEC="$(command -v uvspec)"; DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"; ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATMOSPHERE" --runtime-lock "$RUNTIME_LOCK" --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute one fresh 200M g06 continuation subblock
+        shell: bash -el {0}
+        run: |
+          UVSPEC="$(command -v uvspec)"; DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" --manifest preflight/manifest.json --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" --adapter "$EXECUTION_ADAPTER" --case-id "${{ matrix.case_id }}" --data-dir "$DATA_DIR" --repository-root "$GITHUB_WORKSPACE" --uvspec "$UVSPEC" --output-root case-output --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-geometry-timeout-continuation-v1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+  aggregate:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.authorization_ref }}"}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-preflight, path: preflight}
+      - uses: actions/download-artifact@v4
+        with: {pattern: cross-geometry-timeout-continuation-v1-case-*, path: case-artifacts, merge-multiple: true}
+      - run: python "$AGGREGATE" --plan preflight/plan.json --cases-root case-artifacts --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: cross-geometry-timeout-continuation-v1-aggregate, path: aggregate-output, if-no-files-found: warn, retention-days: 90}
+  audit:
+    needs: [preflight, cases, aggregate]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.authorization_ref }}"}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-preflight, path: preflight}
+      - uses: actions/download-artifact@v4
+        with: {pattern: cross-geometry-timeout-continuation-v1-case-*, path: case-artifacts, merge-multiple: true}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-aggregate, path: aggregate-output}
+      - run: python "$AUDIT" --plan preflight/plan.json --cases-root case-artifacts --aggregate-dir aggregate-output --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: cross-geometry-timeout-continuation-v1-audit, path: audit-output, if-no-files-found: warn, retention-days: 90}
+  analysis:
+    needs: [preflight, cases, aggregate, audit]
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.authorization_ref }}"}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-preflight, path: preflight}
+      - uses: actions/download-artifact@v4
+        with: {pattern: cross-geometry-timeout-continuation-v1-case-*, path: case-artifacts, merge-multiple: true}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-aggregate, path: aggregate-output}
+      - uses: actions/download-artifact@v4
+        with: {name: cross-geometry-timeout-continuation-v1-audit, path: audit-output}
+      - run: >-
+          python "$ANALYSIS_DRIVER"
+          --proposal preflight/manifest.json
+          --source-final-analysis preflight/source-package/final-convergence-analysis.json
+          --source-pilot-manifest "$SOURCE_PILOT_MANIFEST"
+          --source-g01-root preflight/source-g01
+          --new-cases-root case-artifacts
+          --summary aggregate-output/batch-summary.json
+          --audit audit-output/audit-report.json
+          --convergence-module "$CONVERGENCE_MODULE"
+          --output-dir analysis-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: cross-geometry-timeout-continuation-v1-analysis, path: analysis-output, if-no-files-found: warn, retention-days: 90}

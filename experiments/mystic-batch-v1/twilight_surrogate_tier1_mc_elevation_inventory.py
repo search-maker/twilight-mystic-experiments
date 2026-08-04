@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,15 @@ STAGE_ID = "twilight-surrogate-tier-1-mc-elevation-inventory-v1"
 TOKENS = ("mc_elevation_file", "elevation_file")
 MAX_TEXT_BYTES = 5_000_000
 MAX_MATCHES = 500
+PRIMARY_EVIDENCE_PATHS = (
+    "share/libRadtran/GUI/resources/html_doc/mc_elevation_file.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_panorama_view.html",
+    "share/libRadtran/examples/UVSPEC_MC.INP",
+    "share/libRadtran/examples/UVSPEC_MC_ELEV.DAT",
+    "share/libRadtran/examples/mc_thermal_forward/MC_THERMAL_ELEVATION.INP",
+    "share/libRadtran/examples/mc_thermal_forward/MC_THERMAL_ELEVATION_PAR.INP",
+    "share/libRadtran/examples/mc_thermal_forward/MC_THERMAL_ELEVATION_HILL.DAT",
+)
 
 
 class InventoryError(RuntimeError):
@@ -56,6 +66,28 @@ def text_matches(prefix: Path) -> list[dict[str, Any]]:
     return matches
 
 
+def preserve_primary_evidence(prefix: Path, output_dir: Path) -> list[dict[str, Any]]:
+    evidence_root = output_dir / "primary-evidence"
+    records: list[dict[str, Any]] = []
+    for relative in PRIMARY_EVIDENCE_PATHS:
+        source = prefix / relative
+        record: dict[str, Any] = {"path": relative, "present": source.is_file()}
+        if source.is_file():
+            target = evidence_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            record.update({
+                "sizeBytes": source.stat().st_size,
+                "rawSha256": raw_sha256(source),
+                "preservedPath": str(target.relative_to(output_dir)),
+                "preservedRawSha256": raw_sha256(target),
+            })
+            if record["rawSha256"] != record["preservedRawSha256"]:
+                raise InventoryError(f"primary evidence copy hash mismatch: {relative}")
+        records.append(record)
+    return records
+
+
 def inventory(uvspec: Path, prefix: Path, output_dir: Path) -> dict[str, Any]:
     if not uvspec.is_file():
         raise InventoryError(f"uvspec missing: {uvspec}")
@@ -74,12 +106,11 @@ def inventory(uvspec: Path, prefix: Path, output_dir: Path) -> dict[str, Any]:
     (output_dir / "uvspec-help.txt").write_text(help_text)
 
     binary = uvspec.read_bytes()
-    binary_tokens = {
-        token: token.encode() in binary
-        for token in TOKENS
-    }
+    binary_tokens = {token: token.encode() in binary for token in TOKENS}
     matches = text_matches(prefix)
     (output_dir / "text-matches.json").write_text(dump(matches))
+    primary_evidence = preserve_primary_evidence(prefix, output_dir)
+    (output_dir / "primary-evidence-index.json").write_text(dump(primary_evidence))
 
     metadata_files = sorted((prefix / "conda-meta").glob("rubin-libradtran-*.json"))
     metadata_hashes = {str(path.relative_to(prefix)): raw_sha256(path) for path in metadata_files}
@@ -87,7 +118,7 @@ def inventory(uvspec: Path, prefix: Path, output_dir: Path) -> dict[str, Any]:
     result = {
         "schemaVersion": 1,
         "stageId": STAGE_ID,
-        "status": "INVENTORY_CAPTURED_NO_SEMANTIC_VALIDATION",
+        "status": "PRIMARY_RUNTIME_EVIDENCE_PRESERVED_NO_SEMANTIC_VALIDATION",
         "scientificExecution": False,
         "scientificDatasetProduced": False,
         "syntaxCheckCount": 0,
@@ -100,10 +131,13 @@ def inventory(uvspec: Path, prefix: Path, output_dir: Path) -> dict[str, Any]:
         "uvspecBinaryTokenPresence": binary_tokens,
         "installedTextMatchCount": len(matches),
         "installedTextMatches": matches,
+        "primaryEvidenceExpectedCount": len(PRIMARY_EVIDENCE_PATHS),
+        "primaryEvidencePresentCount": sum(1 for row in primary_evidence if row["present"]),
+        "primaryEvidence": primary_evidence,
         "packageMetadataRawSha256": metadata_hashes,
         "semanticConclusionPermitted": False,
-        "requiredNextStep": "inspect primary runtime/package evidence, then design a separate constant-elevation mc_elevation_file probe without a Tier-1 dataset",
-        "boundary": "installed-runtime option inventory only; no inferred file format, no terrain model, no scientific run, authorization, dispatch, training, or production use",
+        "requiredNextStep": "independently inspect preserved primary documentation and examples before designing a separate constant-elevation mc_elevation_file compatibility probe",
+        "boundary": "installed primary runtime evidence preservation only; no inferred format or semantics, no terrain model, scientific run, authorization, dispatch, training, or production use",
     }
     (output_dir / "inventory.json").write_text(dump(result))
     return result

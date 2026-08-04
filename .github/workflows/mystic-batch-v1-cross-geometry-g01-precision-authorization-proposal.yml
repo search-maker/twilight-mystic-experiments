@@ -1,0 +1,97 @@
+name: MYSTIC g01 fixed precision execution authorization proposal
+on:
+  workflow_dispatch:
+    inputs:
+      source_diagnosis_run_id:
+        description: Successful g01 diagnosis proposal run ID
+        required: true
+        default: "30876899126"
+        type: string
+  pull_request:
+    paths:
+      - "experiments/mystic-batch-v1/*g01*precision*"
+      - "experiments/mystic-batch-v1/g01-fixed-diagnostic-execution.proposal.json"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-g01-precision*"
+      - "tests/test_mystic_g01_precision_continuation.py"
+  push:
+    branches: ["main"]
+    paths:
+      - "experiments/mystic-batch-v1/*g01*precision*"
+      - "experiments/mystic-batch-v1/g01-fixed-diagnostic-execution.proposal.json"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-g01-precision*"
+permissions: {contents: read, actions: read}
+jobs:
+  proposal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - name: Resolve diagnosis run
+        id: diagnosis
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_id=${{ inputs.source_diagnosis_run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=30876899126" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-proposal-v1
+          path: diagnosis-source
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.diagnosis.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-analysis
+          path: source-analysis
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-preflight
+          path: source-preflight
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch immutable metadata
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          mkdir -p diagnosis-meta source-meta proposal-output
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.diagnosis.outputs.run_id }}" > diagnosis-meta/run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.diagnosis.outputs.run_id }}/artifacts?per_page=100" > diagnosis-meta/artifacts.json
+          gh api "repos/${{ github.repository }}/actions/runs/30875148389" > source-meta/run.json
+          gh api "repos/${{ github.repository }}/actions/runs/30875148389/artifacts?per_page=100" > source-meta/artifacts.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('source-meta/run.json');v=json.loads(p.read_text())
+          v['display_title']=v.get('name','');v['name']='MYSTIC held-out timeout continuation v1 scientific execution'
+          p.write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Audit reviewed diagnosis and generate ordinal-7 proposal
+        run: |
+          python experiments/mystic-batch-v1/cross_geometry_g01_precision_source_audit.py \
+            --execution-proposal experiments/mystic-batch-v1/g01-fixed-diagnostic-execution.proposal.json \
+            --diagnosis-dir diagnosis-source --diagnosis-run diagnosis-meta/run.json --diagnosis-artifacts diagnosis-meta/artifacts.json \
+            --source-analysis-dir source-analysis --source-preflight-dir source-preflight \
+            --source-run source-meta/run.json --source-artifacts source-meta/artifacts.json \
+            --output proposal-output/source-audit.json
+          python experiments/mystic-batch-v1/cross_geometry_g01_precision_authorization_proposal.py --repository-root . --source-audit proposal-output/source-audit.json --output proposal-output/authorization-proposal.json
+      - name: Prove proposal workflow cannot execute science
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/mystic-batch-v1-cross-geometry-g01-precision-authorization-proposal.yml').read_text().lower();executable=text.split('- name: prove proposal workflow cannot execute science',1)[0]
+          forbidden=('setup-micromamba','scientific_case_executor.py','--allow-execution','uvspec -c','rte_solver mystic')
+          found=[x for x in forbidden if x in executable]
+          if found: raise SystemExit(f'proposal workflow has scientific execution surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: g01-fixed-precision-execution-authorization-proposal-v1, path: proposal-output, if-no-files-found: error, retention-days: 90}

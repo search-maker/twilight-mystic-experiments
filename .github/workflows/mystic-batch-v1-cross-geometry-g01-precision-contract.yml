@@ -1,0 +1,51 @@
+name: MYSTIC g01 precision continuation contract
+on:
+  pull_request:
+    paths:
+      - "experiments/mystic-batch-v1/*g01*precision*"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-g01-precision*"
+      - "tests/test_mystic_g01_precision_continuation.py"
+  push:
+    branches: ["agent/**"]
+    paths:
+      - "experiments/mystic-batch-v1/*g01*precision*"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-g01-precision*"
+      - "tests/test_mystic_g01_precision_continuation.py"
+permissions: {contents: read}
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12.4"}
+      - name: Test source diagnosis, exact planning, and final dataset assembly
+        run: python -m unittest -v tests/test_mystic_g01_precision_continuation.py
+      - name: Compile g01 precision package
+        run: python -m py_compile experiments/mystic-batch-v1/*g01*precision*.py
+      - name: Prove active authorization is disabled and stage is bounded
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base=Path('experiments/mystic-batch-v1')
+          a=json.loads((base/'authorization.cross-geometry-g01-precision.json').read_text())
+          t=json.loads((base/'authorization.cross-geometry-g01-precision-template.json').read_text())
+          if a!=t or a.get('authorized') is not False or a.get('authorizationOrdinal')!=0: raise SystemExit('active authorization not disabled')
+          p=json.loads((base/'g01-fixed-diagnostic-execution.proposal.json').read_text())
+          if len(p.get('cases',[]))!=4 or sum(x['photonHistories'] for x in p['cases'])!=200_000_000 or p['limits']['perCaseTimeoutSeconds']!=900: raise SystemExit('stage boundary changed')
+          if p['analysisPlan'].get('noAutomaticAdditionalBlocks') is not True: raise SystemExit('final cap missing')
+          PY
+      - name: Prove execution is manual and non-retrying
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/mystic-batch-v1-cross-geometry-g01-precision-continuation.yml').read_text().lower();header=text.split('jobs:',1)[0]
+          required=('workflow_dispatch:','fail-fast: false','cancel-in-progress: false','duplicate_run_audit.py','scientific_case_executor.py','scientific_aggregate.py','scientific_audit.py')
+          missing=[x for x in required if x not in text]
+          if missing: raise SystemExit(f'missing execution tokens: {missing}')
+          forbidden=('schedule:','repository_dispatch:','\n  push:','\n  pull_request:','rerun')
+          found=[x for x in forbidden if x in header]
+          if found: raise SystemExit(f'forbidden trigger/retry: {found}')
+          PY

@@ -1,0 +1,60 @@
+name: Observation integration v2 contract
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/observation-integration-v2-contract.yml"
+      - "experiments/observation-integration-v2/**"
+      - "tests/test_observation_integration_v2.py"
+  push:
+    branches: ["agent/**"]
+    paths:
+      - ".github/workflows/observation-integration-v2-contract.yml"
+      - "experiments/observation-integration-v2/**"
+      - "tests/test_observation_integration_v2.py"
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - run: pip install jsonschema==4.23.0
+      - name: Unit tests
+        run: PYTHONPATH=experiments/observation-integration-v2 python -m unittest -v tests/test_observation_integration_v2.py
+      - name: Compile
+        run: python -m py_compile experiments/observation-integration-v2/*.py tests/test_observation_integration_v2.py
+      - name: Validate schemas and examples
+        run: |
+          PYTHONPATH=experiments/observation-integration-v2 python - <<'PY'
+          import json
+          from pathlib import Path
+          from jsonschema import Draft202012Validator, FormatChecker
+          from example_data import observation, radiance_request
+          from contracts import synthetic_radiance_response
+          root = Path('experiments/observation-integration-v2/schemas')
+          pairs = [
+              ('observation.schema.json', observation()),
+              ('radiance-request.schema.json', radiance_request()),
+              ('radiance-response.schema.json', synthetic_radiance_response(radiance_request())),
+          ]
+          for schema_name, instance in pairs:
+              schema = json.loads((root / schema_name).read_text())
+              Draft202012Validator(schema, format_checker=FormatChecker()).validate(instance)
+          PY
+      - name: Prove synthetic and production boundaries
+        run: |
+          PYTHONPATH=experiments/observation-integration-v2 python - <<'PY'
+          from contracts import build_visibility_input, synthetic_radiance_response
+          from example_data import radiance_request
+          response = synthetic_radiance_response(radiance_request())
+          value = build_visibility_input(response, catalog_magnitude=1.0, color_information=None, extinction_inputs={}, observer_adaptation_inputs={})
+          assert value['syntheticOnly'] is True
+          assert value['scientificVisibilityModelInstalled'] is False
+          assert value['productionUseForbidden'] is True
+          assert value['observationallyValidated'] is False
+          assert response['productionEligibility'] == 'forbidden'
+          PY

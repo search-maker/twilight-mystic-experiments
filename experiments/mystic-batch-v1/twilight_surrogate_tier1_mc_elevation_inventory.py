@@ -14,7 +14,7 @@ STAGE_ID = "twilight-surrogate-tier-1-mc-elevation-inventory-v1"
 TOKENS = ("mc_elevation_file", "elevation_file")
 MAX_TEXT_BYTES = 5_000_000
 MAX_MATCHES = 500
-PRIMARY_EVIDENCE_PATHS = (
+REQUIRED_PRIMARY_EVIDENCE_PATHS = (
     "share/libRadtran/GUI/resources/html_doc/mc_elevation_file.html",
     "share/libRadtran/GUI/resources/html_doc/mc_panorama_view.html",
     "share/libRadtran/examples/UVSPEC_MC.INP",
@@ -23,6 +23,17 @@ PRIMARY_EVIDENCE_PATHS = (
     "share/libRadtran/examples/mc_thermal_forward/MC_THERMAL_ELEVATION_PAR.INP",
     "share/libRadtran/examples/mc_thermal_forward/MC_THERMAL_ELEVATION_HILL.DAT",
 )
+OPTIONAL_CONTEXT_EVIDENCE_PATHS = (
+    "share/libRadtran/GUI/resources/html_doc/altitude.html",
+    "share/libRadtran/GUI/resources/html_doc/zout.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_sensorposition.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_surfaceparallel.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_sample_grid.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_spherical.html",
+    "share/libRadtran/GUI/resources/html_doc/mc_backward.html",
+    "share/libRadtran/GUI/resources/html_doc/rte_solver.html",
+)
+PRIMARY_EVIDENCE_PATHS = REQUIRED_PRIMARY_EVIDENCE_PATHS + OPTIONAL_CONTEXT_EVIDENCE_PATHS
 
 
 class InventoryError(RuntimeError):
@@ -38,7 +49,7 @@ def sha_bytes(value: bytes) -> str:
 
 
 def raw_sha256(path: Path) -> str:
-    return sha_bytes(path.read_bytes())
+    return sha_bytes(path.read_bytes()).hexdigest() if False else hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def text_matches(prefix: Path) -> list[dict[str, Any]]:
@@ -69,9 +80,14 @@ def text_matches(prefix: Path) -> list[dict[str, Any]]:
 def preserve_primary_evidence(prefix: Path, output_dir: Path) -> list[dict[str, Any]]:
     evidence_root = output_dir / "primary-evidence"
     records: list[dict[str, Any]] = []
+    required = set(REQUIRED_PRIMARY_EVIDENCE_PATHS)
     for relative in PRIMARY_EVIDENCE_PATHS:
         source = prefix / relative
-        record: dict[str, Any] = {"path": relative, "present": source.is_file()}
+        record: dict[str, Any] = {
+            "path": relative,
+            "required": relative in required,
+            "present": source.is_file(),
+        }
         if source.is_file():
             target = evidence_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +100,8 @@ def preserve_primary_evidence(prefix: Path, output_dir: Path) -> list[dict[str, 
             })
             if record["rawSha256"] != record["preservedRawSha256"]:
                 raise InventoryError(f"primary evidence copy hash mismatch: {relative}")
+        elif record["required"]:
+            raise InventoryError(f"required primary evidence missing: {relative}")
         records.append(record)
     return records
 
@@ -131,13 +149,19 @@ def inventory(uvspec: Path, prefix: Path, output_dir: Path) -> dict[str, Any]:
         "uvspecBinaryTokenPresence": binary_tokens,
         "installedTextMatchCount": len(matches),
         "installedTextMatches": matches,
-        "primaryEvidenceExpectedCount": len(PRIMARY_EVIDENCE_PATHS),
-        "primaryEvidencePresentCount": sum(1 for row in primary_evidence if row["present"]),
+        "requiredPrimaryEvidenceCount": len(REQUIRED_PRIMARY_EVIDENCE_PATHS),
+        "requiredPrimaryEvidencePresentCount": sum(
+            1 for row in primary_evidence if row["required"] and row["present"]
+        ),
+        "optionalContextEvidenceCount": len(OPTIONAL_CONTEXT_EVIDENCE_PATHS),
+        "optionalContextEvidencePresentCount": sum(
+            1 for row in primary_evidence if not row["required"] and row["present"]
+        ),
         "primaryEvidence": primary_evidence,
         "packageMetadataRawSha256": metadata_hashes,
         "semanticConclusionPermitted": False,
-        "requiredNextStep": "independently inspect preserved primary documentation and examples before designing a separate constant-elevation mc_elevation_file compatibility probe",
-        "boundary": "installed primary runtime evidence preservation only; no inferred format or semantics, no terrain model, scientific run, authorization, dispatch, training, or production use",
+        "requiredNextStep": "independently inspect preserved primary and context documentation before designing any separate constant-elevation mc_elevation_file compatibility probe",
+        "boundary": "installed primary runtime evidence preservation only; no inferred format equivalence or observer semantics, no terrain model, scientific run, authorization, dispatch, training, or production use",
     }
     (output_dir / "inventory.json").write_text(dump(result))
     return result

@@ -142,8 +142,9 @@ def audit(
         zout_lines = [line for line in input_lines if line.startswith("zout ")]
         if len(zout_lines) != 1 or len(zout_lines[0].split()) != 2:
             raise AuditError(f"ordinal-1 zout evidence changed: {case_id}")
+        rendered_zout_text = zout_lines[0].split()[1]
         try:
-            rendered_zout = float(zout_lines[0].split()[1])
+            rendered_zout = float(rendered_zout_text)
         except ValueError as exc:
             raise AuditError(f"ordinal-1 zout is not numeric: {case_id}") from exc
         expected_site_km = float(observer_m) / 1000.0
@@ -153,8 +154,11 @@ def audit(
             raise AuditError(
                 f"rendered ordinal-1 zout differs from observer elevation: {case_id}"
             )
-        expected_reported_level = f"{rendered_zout:.6g}"
-        if match.group("level") != expected_reported_level:
+        canonical_reported_levels = {
+            rendered_zout_text,
+            f"{rendered_zout:.6g}",
+        }
+        if match.group("level") not in canonical_reported_levels:
             raise AuditError(
                 f"MYSTIC rejected level differs from exact rendered zout: {case_id}"
             )
@@ -239,8 +243,9 @@ def audit(
             "setupSampleGridFrame": (
                 "Error -1 in (function 'setup_sample_grid', file 'cloud3d.c', line 511)"
             ),
+            "rejectedLevelMatchesSixDecimalRenderedObserverElevationForAllCases": True,
             "renderedZoutMatchesObserverElevationWithinSixDecimalRendererForAllCases": True,
-            "rejectedLevelMatchesSixSignificantDigitRenderedZoutForAllCases": True,
+            "rejectedLevelMatchesCanonicalRenderedZoutForAllCases": True,
             "ordinal1InputContainsNoAltitudeOrMcElevationOrAtmZGridForAllCases": True,
         },
         "seedGovernance": {

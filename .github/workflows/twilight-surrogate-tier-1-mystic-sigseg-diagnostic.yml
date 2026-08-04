@@ -1,0 +1,175 @@
+name: Twilight surrogate tier-1 MYSTIC SIGSEGV diagnostic
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/twilight-surrogate-tier-1-mystic-sigseg-diagnostic.yml"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_sigseg_diagnostic.py"
+      - "experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py"
+      - "tests/test_twilight_surrogate_tier1_mystic_sigseg_diagnostic.py"
+      - "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test and compile bounded crash diagnostic
+        run: |
+          python -m unittest -v tests/test_twilight_surrogate_tier1_mystic_sigseg_diagnostic.py
+          python -m py_compile \
+            experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_sigseg_diagnostic.py \
+            tests/test_twilight_surrogate_tier1_mystic_sigseg_diagnostic.py
+      - name: Verify immutable diagnostic boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              'experiments/mystic-batch-v1/'
+              'twilight_surrogate_tier1_mystic_sigseg_diagnostic.py'
+          ).read_text()
+          assert 'EXPECTED_MYSTIC_PHOTONS = 1' in source
+          assert 'EXPECTED_MYSTIC_SEED = 990004' in source
+          assert 'MAXIMUM_MYSTIC_SOLVER_EXECUTIONS = 1' in source
+          assert 'EXPECTED_RESOLVED_INPUT_SHA256 = "89cbb012' in source
+          assert 'EXPECTED_UVSPEC_SHA256 = "2b9c7a69' in source
+          assert 'authorizationPermitted": False' in source
+          assert 'ordinal2ScientificDispatchPermitted": False' in source
+          assert 'scientificDatasetProduced": False' in source
+          assert 'debuggerInstalledInSeparateEnvironment": True' in source
+          assert 'handle SIGSEGV stop print nopass' in source
+          assert 'thread apply all bt full' in source
+          PY
+
+  frozen-runtime-sigseg-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: twilight-surrogate-tier-1-atm-z-grid-equivalence-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Preserve exact frozen target identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p atm-z-grid-equivalence-proof-output
+          micromamba list --explicit > atm-z-grid-equivalence-proof-output/runtime-package-explicit-before.txt
+          micromamba list --json > atm-z-grid-equivalence-proof-output/runtime-package-list-before.json
+          sha256sum "$(command -v uvspec)" > atm-z-grid-equivalence-proof-output/uvspec-sha256.txt
+      - name: Create isolated debugger tool environment
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          GDB_PREFIX="$RUNNER_TEMP/tier1-gdb-tools"
+          micromamba create -y -p "$GDB_PREFIX" -c conda-forge python=3.12.4 gdb=17.2
+          micromamba list -p "$GDB_PREFIX" --explicit > atm-z-grid-equivalence-proof-output/gdb-package-explicit.txt
+          micromamba list -p "$GDB_PREFIX" --json > atm-z-grid-equivalence-proof-output/gdb-package-list.json
+          "$GDB_PREFIX/bin/gdb" --version > atm-z-grid-equivalence-proof-output/gdb-version.txt
+          printf '%s\n' "$GDB_PREFIX" > atm-z-grid-equivalence-proof-output/gdb-prefix.txt
+      - name: Run one exact-input one-photon stopped-process diagnostic
+        id: diagnostic
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          GDB_PREFIX="$(cat atm-z-grid-equivalence-proof-output/gdb-prefix.txt)"
+          set +e
+          python experiments/mystic-batch-v1/twilight_surrogate_tier1_mystic_sigseg_diagnostic.py \
+            --uvspec "$(command -v uvspec)" \
+            --gdb "$GDB_PREFIX/bin/gdb" \
+            --probe-module experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_probe.py \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output-dir atm-z-grid-equivalence-proof-output \
+            --package-explicit atm-z-grid-equivalence-proof-output/runtime-package-explicit-before.txt \
+            --package-json atm-z-grid-equivalence-proof-output/runtime-package-list-before.json \
+            --gdb-package-explicit atm-z-grid-equivalence-proof-output/gdb-package-explicit.txt \
+            --gdb-package-json atm-z-grid-equivalence-proof-output/gdb-package-list.json \
+            > atm-z-grid-equivalence-proof-output/diagnostic-command-stdout.txt \
+            2> atm-z-grid-equivalence-proof-output/diagnostic-command-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > atm-z-grid-equivalence-proof-output/diagnostic-command-exit-code.txt
+          echo "diagnostic_exit_code=$status" >> "$GITHUB_OUTPUT"
+      - name: Prove frozen target environment remained unchanged
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          micromamba list --explicit > atm-z-grid-equivalence-proof-output/runtime-package-explicit-after.txt
+          micromamba list --json > atm-z-grid-equivalence-proof-output/runtime-package-list-after.json
+          cmp \
+            atm-z-grid-equivalence-proof-output/runtime-package-explicit-before.txt \
+            atm-z-grid-equivalence-proof-output/runtime-package-explicit-after.txt
+          cmp \
+            atm-z-grid-equivalence-proof-output/runtime-package-list-before.json \
+            atm-z-grid-equivalence-proof-output/runtime-package-list-after.json
+      - name: Upload complete crash evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twilight-surrogate-tier-1-mystic-sigseg-diagnostic-v1
+          path: atm-z-grid-equivalence-proof-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce diagnostic-only decision and governance boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('atm-z-grid-equivalence-proof-output')
+          report_path = root / 'mystic-sigseg-diagnostic.json'
+          if not report_path.is_file():
+              stderr = (root / 'diagnostic-command-stderr.txt').read_text()
+              raise AssertionError(f'diagnostic report missing: {stderr}')
+          report = json.loads(report_path.read_text())
+          command_exit = int((root / 'diagnostic-command-exit-code.txt').read_text().strip())
+          assert report['diagnosticOnly'] is True
+          assert report['proofPassed'] is False
+          assert report['mysticAcceptanceEstablished'] is False
+          assert report['physicalEquivalenceEstablished'] is False
+          assert report['scientificExecution'] is False
+          assert report['scientificDatasetProduced'] is False
+          assert report['surrogateTrainingUsePermitted'] is False
+          assert report['authorizationPermitted'] is False
+          assert report['ordinal2ScientificDispatchPermitted'] is False
+          assert report['githubRerunPermitted'] is False
+          assert report['frozenTier1InvariantsChanged'] is False
+          assert report['frozenTargetEnvironmentModified'] is False
+          assert report['debuggerInstalledInSeparateEnvironment'] is True
+          assert report['mysticSolverExecutionCount'] == 1
+          assert report['maximumPermittedMysticSolverExecutionCount'] == 1
+          assert report['mcPhotons'] == 1
+          assert report['mcRandomSeed'] == 990004
+          assert report['resolvedInput']['rawSha256'] == '89cbb012ef8ec6118285ab2664a6e2a32ad99851c313fcadab8244308bee04d4'
+          assert report['resolvedInput']['matchesPreservedFailedProbeInput'] is True
+          assert report['runtime']['uvspecSha256'] == '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert report['runtime']['runtimeLockRawSha256'] == '3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5'
+          assert report['generatedFilesPreserved'] is False
+          assert report['diagnosticEvidenceCaptured'] is True
+          assert report['status'] == 'FROZEN_MYSTIC_SIGSEGV_REPRODUCED_WITH_BACKTRACE'
+          assert report['gdb']['sigsegvReproduced'] is True
+          assert report['gdb']['backtraceObserved'] is True
+          assert report['gdb']['signalContextBoundaryObserved'] is True
+          assert command_exit == 0
+          PY

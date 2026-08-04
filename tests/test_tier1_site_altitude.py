@@ -25,29 +25,85 @@ adapter = load_module(
 )
 
 
+def atmosphere_text() -> str:
+    return (
+        "# z p T air o3 o2 h2o co2 no2\n"
+        "120.0 1 1 1 1 1 1 1 1\n"
+        "2.0 1 1 1 1 1 1 1 1\n"
+        "1.0 1 1 1 1 1 1 1 1\n"
+        "0.0 1 1 1 1 1 1 1 1\n"
+    )
+
+
 class Tier1SiteAltitudeTests(unittest.TestCase):
-    def test_replaces_output_altitude_with_site_altitude_and_ground_zout(self):
-        rendered = "rte_solver mystic\nzout 0.357143\nquiet\n"
-        corrected, altitude_km = adapter.apply_ground_site_altitude(rendered, 357.142857)
-        self.assertEqual(altitude_km, 0.357142857)
-        self.assertIn("altitude 0.357143\n", corrected)
-        self.assertIn("zout 0.000000\n", corrected)
-        self.assertNotIn("zout 0.357143", corrected)
+    def test_replaces_output_altitude_with_validated_grid_and_ground_zout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            atmosphere = Path(temp) / "afglus.dat"
+            atmosphere.write_text(atmosphere_text())
+            rendered = (
+                f"atmosphere_file {atmosphere.resolve()}\n"
+                "rte_solver mystic\n"
+                "zout 0.357143\n"
+                "quiet\n"
+            )
+            corrected, altitude_km, grid = adapter.apply_ground_site_atm_z_grid(
+                rendered, 357.142857
+            )
+            self.assertEqual(altitude_km, 0.357142857)
+            self.assertEqual(grid, [0.357142857, 1.0, 2.0, 120.0])
+            self.assertIn(
+                "atm_z_grid 0.357143 1.000000 2.000000 120.000000\n",
+                corrected,
+            )
+            self.assertIn("zout 0.000000\n", corrected)
+            self.assertNotIn("zout 0.357143", corrected)
+            self.assertNotIn("\naltitude ", corrected)
+            self.assertNotIn("mc_elevation_file", corrected)
 
-    def test_zero_elevation_remains_ground_level(self):
-        corrected, altitude_km = adapter.apply_ground_site_altitude("zout 0.000000\n", 0)
-        self.assertEqual(altitude_km, 0.0)
-        self.assertEqual(corrected, "altitude 0.000000\nzout 0.000000\n")
+    def test_zero_elevation_preserves_all_original_levels(self):
+        with tempfile.TemporaryDirectory() as temp:
+            atmosphere = Path(temp) / "afglus.dat"
+            atmosphere.write_text(atmosphere_text())
+            rendered = f"atmosphere_file {atmosphere.resolve()}\nzout 0.000000\n"
+            corrected, altitude_km, grid = adapter.apply_ground_site_atm_z_grid(
+                rendered, 0
+            )
+            self.assertEqual(altitude_km, 0.0)
+            self.assertEqual(grid, [0.0, 1.0, 2.0, 120.0])
+            self.assertIn(
+                "atm_z_grid 0.000000 1.000000 2.000000 120.000000\n",
+                corrected,
+            )
+            self.assertEqual(corrected.count("zout 0.000000"), 1)
 
-    def test_refuses_missing_or_duplicate_zout(self):
-        with self.assertRaises(adapter.AdapterError):
-            adapter.apply_ground_site_altitude("quiet\n", 100)
-        with self.assertRaises(adapter.AdapterError):
-            adapter.apply_ground_site_altitude("zout 0\nzout 1\n", 100)
+    def test_refuses_missing_duplicate_or_forbidden_elevation_mechanism(self):
+        with tempfile.TemporaryDirectory() as temp:
+            atmosphere = Path(temp) / "afglus.dat"
+            atmosphere.write_text(atmosphere_text())
+            atmosphere_line = f"atmosphere_file {atmosphere.resolve()}\n"
+            with self.assertRaises(adapter.AdapterError):
+                adapter.apply_ground_site_atm_z_grid(atmosphere_line + "quiet\n", 100)
+            with self.assertRaises(adapter.AdapterError):
+                adapter.apply_ground_site_atm_z_grid(
+                    atmosphere_line + "zout 0\nzout 1\n", 100
+                )
+            with self.assertRaises(adapter.AdapterError):
+                adapter.apply_ground_site_atm_z_grid("zout 0\n", 100)
+            with self.assertRaises(adapter.AdapterError):
+                adapter.apply_ground_site_atm_z_grid(
+                    atmosphere_line + "altitude 0.1\nzout 0\n", 100
+                )
+            with self.assertRaises(adapter.AdapterError):
+                adapter.apply_ground_site_atm_z_grid(
+                    atmosphere_line + "mc_elevation_file x\nzout 0\n", 100
+                )
 
     def test_prepare_case_records_physical_semantics(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            atmosphere = root / "atmmod" / "afglus.dat"
+            atmosphere.parent.mkdir(parents=True)
+            atmosphere.write_text(atmosphere_text())
             stub = root / "cross_geometry_adapter.py"
             stub.write_text(
                 """
@@ -61,7 +117,13 @@ def normalized_inputs(manifest, case, geometry):
     }
 
 def render_input(inputs, data_dir, repository_root, case_dir):
-    return f"rte_solver mystic\\nzout {inputs['observerElevationM'] / 1000.0:.6f}\\nquiet\\n"
+    atmosphere = (data_dir / 'atmmod' / 'afglus.dat').resolve()
+    return (
+        f"atmosphere_file {atmosphere}\\n"
+        f"rte_solver mystic\\n"
+        f"zout {inputs['observerElevationM'] / 1000.0:.6f}\\n"
+        "quiet\\n"
+    )
 """
             )
             hashes = {
@@ -94,7 +156,9 @@ def render_input(inputs, data_dir, repository_root, case_dir):
                 geometries.append(
                     {
                         "geometryId": f"geometry-{index:03d}",
-                        "observerElevationM": 357.142857 if index == 1 else float(index),
+                        "observerElevationM": (
+                            357.142857 if index == 1 else float(index)
+                        ),
                     }
                 )
             manifest = {
@@ -136,13 +200,18 @@ def render_input(inputs, data_dir, repository_root, case_dir):
             finally:
                 adapter.BASE = old_base
             text = Path(result["inputPath"]).read_text()
-            self.assertIn("altitude 0.357143", text)
+            self.assertIn("atm_z_grid 0.357143", text)
             self.assertIn("zout 0.000000", text)
+            self.assertNotIn("\naltitude ", text)
+            self.assertNotIn("mc_elevation_file", text)
             self.assertEqual(result["siteAltitudeKm"], 0.357142857)
             self.assertEqual(result["zoutKmAboveLocalSurface"], 0.0)
+            self.assertEqual(result["observerElevationMechanism"], "atm_z_grid")
+            self.assertEqual(result["atmosphereGridBottomKm"], 0.357142857)
             self.assertEqual(
                 result["observerElevationSemantics"],
-                "site-altitude-above-sea-level; sensor-at-local-surface",
+                "site-altitude-above-sea-level-via-atm-z-grid; "
+                "sensor-at-local-surface",
             )
 
 

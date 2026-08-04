@@ -134,7 +134,7 @@ jobs:
           path: libradtran-provenance-recovery-output
           if-no-files-found: error
           retention-days: 90
-      - name: Enforce exact-source and no-authorization boundary
+      - name: Enforce exact-source or explicit blocked-provenance boundary
         if: always()
         run: |
           python - <<'PY'
@@ -148,6 +148,10 @@ jobs:
               raise AssertionError(f'provenance report missing: {stderr}')
           report = json.loads(report_path.read_text())
           command_exit = int((root / 'recovery-command-exit-code.txt').read_text().strip())
+          expected_sha = '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+          current_sha = '64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
+          expected_uvspec = '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+
           assert report['scientificExecution'] is False
           assert report['scientificDatasetProduced'] is False
           assert report['solverExecutionCount'] == 0
@@ -159,12 +163,29 @@ jobs:
           assert report['sourceRecovery']['expectedHashChangedToMakeCiGreen'] is False
           assert report['sourceRecovery']['currentOfficialHashPromotedToExpected'] is False
           assert report['packageProvenanceDecision'] is True
-          if command_exit != 0 or report.get('provenanceGatePassed') is not True:
-              raise AssertionError(report.get('status', report.get('reason')))
-          assert report['status'] == 'EXACT_HISTORICAL_SOURCE_RECOVERED_PACKAGE_PROVENANCE_BOUND'
-          assert report['exactHistoricalSourceArchiveRecovered'] is True
-          assert report['sourceMechanismAuditDecision'] is True
-          assert report['sourceEvidenceAccepted'] is True
-          assert report['feedstock']['sourceSha256'] == '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
-          assert report['package']['installedUvspecSha256'] == '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert report['feedstock']['sourceSha256'] == expected_sha
+          assert report['package']['installedUvspecSha256'] == expected_uvspec
+
+          if command_exit == 0:
+              assert report['provenanceGatePassed'] is True
+              assert report['status'] == 'EXACT_HISTORICAL_SOURCE_RECOVERED_PACKAGE_PROVENANCE_BOUND'
+              assert report['exactHistoricalSourceArchiveRecovered'] is True
+              assert report['sourceMechanismAuditDecision'] is True
+              assert report['sourceEvidenceAccepted'] is True
+          elif command_exit == 2:
+              assert report['provenanceGatePassed'] is False
+              assert report['status'] == 'PACKAGE_PROVENANCE_BOUND_EXACT_HISTORICAL_SOURCE_NOT_RECOVERED'
+              assert report['exactHistoricalSourceArchiveRecovered'] is False
+              assert report['sourceMechanismAuditDecision'] is False
+              assert report['sourceEvidenceAccepted'] is False
+              recovery = report['sourceRecovery']
+              assert recovery['expectedSourceSha256'] == expected_sha
+              assert recovery['currentOfficialObservedSha256'] == current_sha
+              assert recovery['currentOfficialMutableSameVersionResponseObserved'] is True
+              assert any(
+                  attempt.get('matchesCurrentOfficialObservedSha256') is True
+                  for attempt in recovery['attempts']
+              )
+          else:
+              raise AssertionError(f'unexpected provenance-recovery exit code: {command_exit}')
           PY

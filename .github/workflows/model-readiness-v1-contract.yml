@@ -1,0 +1,48 @@
+name: Twilight model readiness v1 contract
+
+on:
+  pull_request:
+    paths:
+      - "experiments/model-readiness-v1/**"
+      - "tests/test_model_readiness_v1.py"
+      - ".github/workflows/model-readiness-v1-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test reference anchors, space-filling design, and leakage boundaries
+        run: python -m unittest tests/test_model_readiness_v1.py -v
+      - name: Compile model-readiness package
+        run: python -m py_compile experiments/model-readiness-v1/*.py
+      - name: Generate exact proposal artifact
+        run: >-
+          python experiments/model-readiness-v1/training_design.py
+          --spec experiments/model-readiness-v1/training-design.proposal.json
+          --importance-policy experiments/model-readiness-v1/importance_policy.py
+          --output generated/training-design.json
+      - name: Prove package cannot execute science or train a model
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          root = Path('experiments/model-readiness-v1')
+          text = '\n'.join(path.read_text().lower() for path in root.rglob('*') if path.is_file())
+          forbidden = ('setup-micromamba', '--allow-execution', 'rte_solver mystic', 'uvspec -c', 'model.fit(', 'torch.optim', 'tensorflow')
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'forbidden execution or training surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twilight-surrogate-training-design-v1-proposal
+          path: generated/training-design.json
+          if-no-files-found: error
+          retention-days: 90

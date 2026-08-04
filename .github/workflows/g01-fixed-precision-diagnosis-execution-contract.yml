@@ -1,0 +1,91 @@
+name: G01 fixed precision diagnosis execution contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/g01-fixed-precision-diagnosis-*.yml"
+      - "experiments/mystic-batch-v1/G01_FIXED_PRECISION_DIAGNOSIS_EXECUTION.md"
+      - "experiments/mystic-batch-v1/authorization.g01-fixed-precision-diagnosis*.json"
+      - "experiments/mystic-batch-v1/g01_fixed_diagnostic_*.py"
+      - "tests/test_g01_fixed_diagnostic_execution.py"
+  push:
+    branches: ["agent/**"]
+    paths:
+      - ".github/workflows/g01-fixed-precision-diagnosis-*.yml"
+      - "experiments/mystic-batch-v1/G01_FIXED_PRECISION_DIAGNOSIS_EXECUTION.md"
+      - "experiments/mystic-batch-v1/authorization.g01-fixed-precision-diagnosis*.json"
+      - "experiments/mystic-batch-v1/g01_fixed_diagnostic_*.py"
+      - "tests/test_g01_fixed_diagnostic_execution.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Test source audit, manifest, adapter, plan, endpoint analysis, and authorization proposal
+        run: python -m unittest -v tests/test_g01_fixed_diagnostic_execution.py
+      - name: Compile fixed diagnosis package
+        run: python -m py_compile experiments/mystic-batch-v1/g01_fixed_diagnostic_*.py
+      - name: Prove active authorization remains exactly disabled
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base=Path('experiments/mystic-batch-v1')
+          active=json.loads((base/'authorization.g01-fixed-precision-diagnosis.json').read_text())
+          template=json.loads((base/'authorization.g01-fixed-precision-diagnosis-template.json').read_text())
+          if active != template:
+              raise SystemExit('active fixed-diagnosis authorization differs from template')
+          required={'authorized':False,'scientificExecution':False,'scientificDiagnostic':False,'authorizationOrdinal':0,'consumed':False,'exactAuthorizationParentCommit':None,'exactAuthorizationCommit':None}
+          stale={key:(active.get(key),value) for key,value in required.items() if active.get(key)!=value}
+          if stale:
+              raise SystemExit(f'fixed-diagnosis authorization is not disabled: {stale}')
+          PY
+      - name: Prove execution is manual-only, first-attempt, bounded, and non-retrying
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/g01-fixed-precision-diagnosis-execution.yml').read_text()
+          header=text.split('jobs:',1)[0].lower()
+          required=('workflow_dispatch:','fail-fast: false','cancel-in-progress: false','duplicate_run_audit.py','runtime_probe.py','scientific_case_executor.py','scientific_aggregate.py','scientific_audit.py','g01_fixed_diagnostic_execution.py','max-parallel:','--timeout-seconds','timeout_seconds')
+          missing=[token for token in required if token not in text]
+          if missing:
+              raise SystemExit(f'execution workflow tokens missing: {missing}')
+          forbidden=('schedule:','repository_dispatch:','\n  push:','\n  pull_request:','workflow_run:')
+          present=[token for token in forbidden if token in header]
+          if present:
+              raise SystemExit(f'execution workflow has forbidden trigger: {present}')
+          PY
+      - name: Prove authorization automation is proposal-only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/g01-fixed-precision-diagnosis-authorization-proposal.yml').read_text().lower()
+          executable=text.split('- name: prove proposal workflow cannot execute science',1)[0]
+          required=('workflow_run:','workflow_dispatch:','authorization-proposal','source-audit','build-manifest')
+          missing=[token for token in required if token not in executable]
+          if missing:
+              raise SystemExit(f'authorization proposal tokens missing: {missing}')
+          forbidden=('setup-micromamba','scientific_case_executor.py','--allow-execution','uvspec -c','rte_solver mystic')
+          present=[token for token in forbidden if token in executable]
+          if present:
+              raise SystemExit(f'authorization proposal has execution surface: {present}')
+          PY
+      - name: Prove exact fixed endpoint and no automatic continuation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          core=Path('experiments/mystic-batch-v1/g01_fixed_diagnostic_execution.py').read_text()
+          adapter=Path('experiments/mystic-batch-v1/g01_fixed_diagnostic_adapter.py').read_text()
+          required=('NEW_CASE_IDS = [f"g01pd-alis-b{i}" for i in range(5, 9)]','NEW_SEEDS = [84601, 84602, 84603, 84604]','caseCount": 4','configuredMcPhotonsSum": 200_000_000','perCaseTimeoutSeconds": 900','G01_PERSISTENT_HIGH_VARIANCE','G01_METHOD_DISCREPANCY','noAutomaticAdditionalBlocks": True','600.0')
+          missing=[token for token in required if token not in core+adapter]
+          if missing:
+              raise SystemExit(f'fixed endpoint tokens missing: {missing}')
+          PY

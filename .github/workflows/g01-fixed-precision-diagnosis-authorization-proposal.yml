@@ -1,0 +1,123 @@
+name: G01 fixed precision diagnosis authorization proposal
+
+on:
+  workflow_run:
+    workflows: ["G01 fixed precision diagnosis proposal"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_diagnosis_run_id:
+        description: Successful main-branch G01 diagnosis proposal run ID
+        required: true
+        type: string
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/g01-fixed-precision-diagnosis-authorization-proposal.yml"
+      - ".github/workflows/g01-fixed-precision-diagnosis-execution.yml"
+      - "experiments/mystic-batch-v1/authorization.g01-fixed-precision-diagnosis*.json"
+      - "experiments/mystic-batch-v1/g01_fixed_diagnostic_*.py"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  proposal:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Resolve exact source diagnosis run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            run_id="${{ github.event.workflow_run.id }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            run_id="${{ inputs.source_diagnosis_run_id }}"
+          else
+            run_id="$(gh api "repos/${{ github.repository }}/actions/workflows/g01-fixed-precision-diagnosis-proposal.yml/runs?branch=main&status=success&per_page=20" --jq '[.workflow_runs[] | select(.run_attempt == 1 and (.event == "push" or .event == "workflow_dispatch"))][0].id')"
+          fi
+          case "$run_id" in
+            ''|null|*[!0-9]*) echo "no exact successful source diagnosis run" >&2; exit 2 ;;
+          esac
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download exact diagnosis proposal artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-proposal-v1
+          path: source-download
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize source and fetch immutable metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-diagnosis source-meta source-audit execution-package authorization-proposal
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('source-download'); target=Path('source-diagnosis')
+          for name in ('g01-precision-diagnosis.json','g01-fixed-diagnostic-proposal.json','g01-diagnosis-readiness.json'):
+              matches=list(root.rglob(name))
+              if len(matches)!=1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0],target/name)
+          PY
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ steps.source.outputs.run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Reproduce exact diagnosis source audit
+        run: >-
+          python experiments/mystic-batch-v1/g01_fixed_diagnostic_execution.py source-audit
+          --diagnosis source-diagnosis/g01-precision-diagnosis.json
+          --proposal source-diagnosis/g01-fixed-diagnostic-proposal.json
+          --readiness source-diagnosis/g01-diagnosis-readiness.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --output source-audit/source-diagnosis-audit.json
+      - name: Build exact four-case manifest
+        run: >-
+          python experiments/mystic-batch-v1/g01_fixed_diagnostic_execution.py build-manifest
+          --proposal source-diagnosis/g01-fixed-diagnostic-proposal.json
+          --pilot-manifest experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+          --source-audit source-audit/source-diagnosis-audit.json
+          --output execution-package/manifest.json
+      - name: Generate exact ordinal-1 authorization proposal
+        run: >-
+          python experiments/mystic-batch-v1/g01_fixed_diagnostic_execution.py authorization-proposal
+          --repository-root .
+          --source-audit source-audit/source-diagnosis-audit.json
+          --manifest execution-package/manifest.json
+          --output authorization-proposal/g01-fixed-diagnostic-authorization-proposal.json
+      - name: Prove proposal workflow cannot execute science
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/g01-fixed-precision-diagnosis-authorization-proposal.yml').read_text().lower()
+          executable=text.split('- name: prove proposal workflow cannot execute science',1)[0]
+          forbidden=('setup-micromamba','scientific_case_executor.py','--allow-execution','uvspec -c','rte_solver mystic')
+          found=[token for token in forbidden if token in executable]
+          if found:
+              raise SystemExit(f'authorization proposal workflow has scientific execution surface: {found}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-authorization-proposal-v1
+          path: |
+            authorization-proposal
+            source-audit
+            execution-package
+          if-no-files-found: error
+          retention-days: 90

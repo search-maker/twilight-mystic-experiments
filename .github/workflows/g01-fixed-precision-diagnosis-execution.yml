@@ -1,0 +1,335 @@
+name: G01 fixed precision diagnosis scientific execution
+run-name: G01 fixed diagnosis | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_diagnosis_run_id:
+        description: Successful main-branch G01 diagnosis proposal run ID
+        required: true
+        type: string
+      authorization_ref:
+        description: Exact one-purpose fixed-diagnosis authorization commit
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot fixed-diagnosis execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact fixed-diagnosis authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: g01-fixed-precision-diagnosis-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  CORE: experiments/mystic-batch-v1/g01_fixed_diagnostic_execution.py
+  ADAPTER: experiments/mystic-batch-v1/g01_fixed_diagnostic_adapter.py
+  AUTHORIZATION: experiments/mystic-batch-v1/authorization.g01-fixed-precision-diagnosis.json
+  AUTHORIZATION_TEMPLATE: experiments/mystic-batch-v1/authorization.g01-fixed-precision-diagnosis-template.json
+  PILOT: experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json
+  DUPLICATE_RUN_AUDIT: experiments/mystic-batch-v1/duplicate_run_audit.py
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+  CONVERGENCE: experiments/mystic-batch-v1/cross_geometry_convergence_v2.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Download exact diagnosis proposal artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-proposal-v1
+          path: source-diagnosis-download
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_diagnosis_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download immutable ordinal-6 analysis and preflight
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-analysis
+          path: source-reference-analysis
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-geometry-timeout-continuation-v1-preflight
+          path: source-reference-preflight
+          repository: ${{ github.repository }}
+          run-id: 30875148389
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Normalize sources and fetch diagnosis metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-diagnosis source-meta source-reference preflight
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('source-diagnosis-download')
+          target = Path('source-diagnosis')
+          for name in ('g01-precision-diagnosis.json', 'g01-fixed-diagnostic-proposal.json', 'g01-diagnosis-readiness.json'):
+              matches = list(root.rglob(name))
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0], target / name)
+          root = Path('source-reference-analysis')
+          target = Path('source-reference')
+          for name in ('timeout-continuation-analysis.json', 'reference-readiness.json', 'audited-reference-dataset.json'):
+              matches = list(root.rglob(name))
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one {name}, found {len(matches)}')
+              shutil.copy2(matches[0], target / name)
+          PY
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_diagnosis_run_id }}" > source-meta/source-run.json
+          gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.source_diagnosis_run_id }}/artifacts?per_page=100" > source-meta/source-artifacts.json
+      - name: Audit exact diagnosis proposal source
+        run: >-
+          python "$CORE" source-audit
+          --diagnosis source-diagnosis/g01-precision-diagnosis.json
+          --proposal source-diagnosis/g01-fixed-diagnostic-proposal.json
+          --readiness source-diagnosis/g01-diagnosis-readiness.json
+          --source-run source-meta/source-run.json
+          --source-artifacts source-meta/source-artifacts.json
+          --output preflight/source-diagnosis-audit.json
+      - name: Build exact four-case execution manifest
+        run: >-
+          python "$CORE" build-manifest
+          --proposal source-diagnosis/g01-fixed-diagnostic-proposal.json
+          --pilot-manifest "$PILOT"
+          --source-audit preflight/source-diagnosis-audit.json
+          --output preflight/manifest.json
+      - name: Verify one-purpose execution authorization
+        run: >-
+          python "$CORE" guard
+          --repository-root .
+          --authorization "$AUTHORIZATION"
+          --authorization-template "$AUTHORIZATION_TEMPLATE"
+          --manifest preflight/manifest.json
+          --source-audit preflight/source-diagnosis-audit.json
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate execution marker
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python "$DUPLICATE_RUN_AUDIT"
+          --repository "${{ github.repository }}"
+          --workflow g01-fixed-precision-diagnosis-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact plan
+        id: plan
+        run: >-
+          python "$CORE" plan
+          --manifest preflight/manifest.json
+          --guard-report preflight/authorization-guard.json
+          --adapter "$ADAPTER"
+          --runtime-lock "$RUNTIME_LOCK"
+          --workflow .github/workflows/g01-fixed-precision-diagnosis-execution.yml
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - name: Preserve diagnosis, five-record source dataset, and held-out blocks 1-4
+        run: |
+          cp -R source-diagnosis preflight/source-diagnosis
+          cp -R source-reference preflight/source-reference
+          cp -R source-reference-preflight/source-g01 preflight/source-g01
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g01-fixed-precision-diagnosis-execution-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: g01-fixed-precision-diagnosis-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-execution-preflight
+          path: preflight
+      - name: Recompute exact runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATMOSPHERE" --runtime-lock "$RUNTIME_LOCK" --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute one fresh fixed diagnostic block
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" --manifest preflight/manifest.json --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" --adapter "$ADAPTER" --case-id "${{ matrix.case_id }}" --data-dir "$DATA_DIR" --repository-root "$GITHUB_WORKSPACE" --uvspec "$UVSPEC" --output-root case-output --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g01-fixed-precision-diagnosis-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: g01-fixed-precision-diagnosis-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - run: python "$AGGREGATE" --plan preflight/plan.json --cases-root case-artifacts --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g01-fixed-precision-diagnosis-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs: [preflight, cases, aggregate]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: g01-fixed-precision-diagnosis-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-aggregate
+          path: aggregate-output
+      - run: python "$AUDIT" --plan preflight/plan.json --cases-root case-artifacts --aggregate-dir aggregate-output --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g01-fixed-precision-diagnosis-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  analysis:
+    needs: [preflight, cases, aggregate, audit]
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-execution-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: g01-fixed-precision-diagnosis-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-aggregate
+          path: aggregate-output
+      - uses: actions/download-artifact@v4
+        with:
+          name: g01-fixed-precision-diagnosis-audit
+          path: audit-output
+      - name: Analyze exact eight-block endpoint
+        run: >-
+          python "$CORE" analyze
+          --diagnosis preflight/source-diagnosis/g01-precision-diagnosis.json
+          --proposal preflight/source-diagnosis/g01-fixed-diagnostic-proposal.json
+          --manifest preflight/manifest.json
+          --source-analysis preflight/source-reference/timeout-continuation-analysis.json
+          --source-readiness preflight/source-reference/reference-readiness.json
+          --source-dataset preflight/source-reference/audited-reference-dataset.json
+          --old-cases-root preflight/source-g01
+          --new-cases-root case-artifacts
+          --summary aggregate-output/batch-summary.json
+          --audit audit-output/audit-report.json
+          --convergence-module "$CONVERGENCE"
+          --output-dir analysis-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g01-fixed-precision-diagnosis-analysis
+          path: analysis-output
+          if-no-files-found: warn
+          retention-days: 90

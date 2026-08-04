@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,10 @@ from typing import Any
 STAGE_ID = "twilight-surrogate-tier-1-ordinal1-failure-audit-v1"
 EXPECTED_CASES = 96
 EXPECTED_PHOTONS = 6_960_000_000
-EXPECTED_FAILURE_TEXT = "FATAL error: altitude grid does not contain level"
+FAILURE_RE = re.compile(
+    r"^FATAL error: altitude grid does not contain level [0-9]+(?:\.[0-9]+)?\n"
+    r"which has been specified as output altitude\n"
+)
 
 
 class AuditError(RuntimeError):
@@ -77,7 +81,7 @@ def audit(preflight: Path, cases_root: Path, aggregate_path: Path, audit_path: P
         detail = failure.get("detail") if isinstance(failure, dict) else None
         stderr = detail.get("stderr") if isinstance(detail, dict) else None
         stdout = detail.get("stdout") if isinstance(detail, dict) else None
-        if not isinstance(stderr, str) or EXPECTED_FAILURE_TEXT not in stderr or stdout != "":
+        if not isinstance(stderr, str) or FAILURE_RE.match(stderr) is None or stdout != "":
             raise AuditError(f"uniform altitude-grid failure changed: {case_id}")
         if row.get("radianceOutputSha256") is not None or row.get("stdOutputSha256") is not None:
             raise AuditError(f"unexpected scientific output hash: {case_id}")
@@ -88,16 +92,20 @@ def audit(preflight: Path, cases_root: Path, aggregate_path: Path, audit_path: P
     if len(seeds) != EXPECTED_CASES or photons != EXPECTED_PHOTONS:
         raise AuditError("seed uniqueness or photon accounting changed")
     expected_aggregate = {
-        "caseCountExpected": 96,
+        "caseCountPlanned": EXPECTED_CASES,
         "caseCountCompleted": 0,
-        "caseCountFailed": 96,
+        "caseCountFailed": EXPECTED_CASES,
         "configuredMcPhotonsSum": EXPECTED_PHOTONS,
         "completedConfiguredMcPhotonsSum": 0,
+        "syntaxCheckCount": EXPECTED_CASES,
+        "solverExecutionCount": EXPECTED_CASES,
+        "classification": "STRUCTURAL_OR_EXECUTION_FAILURE",
+        "status": "FAILED",
     }
     if any(aggregate.get(key) != value for key, value in expected_aggregate.items()):
         raise AuditError("aggregate failure boundary changed")
-    if prior_audit.get("status") == "PASSED":
-        raise AuditError("failed batch unexpectedly passed independent audit")
+    if prior_audit.get("status") != "FAILED" or prior_audit.get("batchClassification") != "STRUCTURAL_OR_EXECUTION_FAILURE":
+        raise AuditError("independent audit failure boundary changed")
 
     return {
         "schemaVersion": 1,
@@ -109,10 +117,10 @@ def audit(preflight: Path, cases_root: Path, aggregate_path: Path, audit_path: P
         "sourceAuthorizationOrdinal": 1,
         "authorizationConsumed": True,
         "githubRerunPermitted": False,
-        "caseCountFailed": 96,
+        "caseCountFailed": EXPECTED_CASES,
         "caseCountCompleted": 0,
-        "syntaxCheckCount": 96,
-        "solverInvocationCount": 96,
+        "syntaxCheckCount": EXPECTED_CASES,
+        "solverInvocationCount": EXPECTED_CASES,
         "timedOutCount": 0,
         "configuredMcPhotonsSum": EXPECTED_PHOTONS,
         "completedConfiguredMcPhotonsSum": 0,

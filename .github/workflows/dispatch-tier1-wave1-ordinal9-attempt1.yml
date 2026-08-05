@@ -1,0 +1,154 @@
+name: Dispatch Tier-1 wave-1 ordinal 9 attempt 1 bridge
+run-name: Dispatch Tier-1 wave-1 ordinal 9 attempt 1 bridge
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/dispatch-tier1-wave1-ordinal9-attempt1.yml'
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: dispatch-tier1-wave1-ordinal9-attempt1
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    if: ${{ github.event.pull_request.head.ref == 'dispatch/tier1-wave1-v3-ordinal9-attempt1' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 811f9e773b21dbecf9e63d10bd42df22889d7ff6
+          fetch-depth: 0
+      - name: Prove exact state and issue one dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MAIN_SHA: 811f9e773b21dbecf9e63d10bd42df22889d7ff6
+          AUTH_REF: 18f1abdb014dc00f5ef4583b0ccbcf5bad8f2a28
+          AUTH_BRANCH: authorization/tier1-precision-continuation-wave1-ordinal9-v3
+          AUTH_PATH: experiments/tier1-precision-continuation-wave1-v3/authorization.ordinal9.json
+          AUTH_PR: '74'
+          AUTH_ORDINAL: '9'
+          EXECUTION_KEY: twilight-surrogate-tier-1-v1:numerical:9
+          RUN_TITLE: Tier-1 precision continuation wave 1 ordinal 9
+          WORKFLOW_FILE: tier1-precision-continuation-wave1-ordinal9-execution.yml
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$PR_ACTION" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_HEAD_REF" = dispatch/tier1-wave1-v3-ordinal9-attempt1
+          test "$PR_BASE_SHA" = "$MAIN_SHA"
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA"
+
+          git fetch origin "$AUTH_REF"
+          test "$(git cat-file -p "$AUTH_REF" | grep -c '^parent ')" = 1
+          test "$(git rev-parse "$AUTH_REF^")" = "$MAIN_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_REF")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH_PATH"
+          git show "$AUTH_REF:$AUTH_PATH" > authorization.json
+          jq -e \
+            --arg main "$MAIN_SHA" \
+            --arg key "$EXECUTION_KEY" \
+            --arg title "$RUN_TITLE" \
+            '.schemaVersion == 1 and
+             .stageId == "tier1-precision-continuation-wave1-authorization-v3" and
+             .status == "AUTHORIZED_PENDING_SEPARATE_DISPATCH" and
+             .authorizationOrdinal == 9 and
+             .executionKey == $key and
+             .runTitle == $title and
+             .runAttempt == 1 and
+             .caseCount == 40 and
+             .enabled == true and
+             .solverExecutionAuthorized == true and
+             .automaticDispatch == false and
+             .dispatch == false and
+             .workflowDispatchEnabled == false and
+             .githubRerunAllowed == false and
+             .surrogateTrainingAuthorized == false and
+             .internalHoldoutOpeningAuthorized == false and
+             .tier2Authorized == false and
+             .productionPromotionAuthorized == false and
+             .executionSourceHeadSha == $main' authorization.json
+
+          API="https://api.github.com/repos/$REPOSITORY"
+          HEADER_ACCEPT='Accept: application/vnd.github+json'
+          HEADER_AUTH="Authorization: Bearer $GH_TOKEN"
+          HEADER_VERSION='X-GitHub-Api-Version: 2022-11-28'
+
+          curl --fail-with-body --silent --show-error --location \
+            -H "$HEADER_ACCEPT" -H "$HEADER_AUTH" -H "$HEADER_VERSION" \
+            "$API/pulls/$AUTH_PR" > authorization-pr.json
+          jq -e \
+            --arg auth "$AUTH_REF" \
+            --arg branch "$AUTH_BRANCH" \
+            --arg main "$MAIN_SHA" \
+            '.state == "open" and .merged == false and
+             .head.sha == $auth and .head.ref == $branch and
+             .base.sha == $main and .base.ref == "main"' authorization-pr.json
+
+          curl --fail-with-body --silent --show-error --location \
+            -H "$HEADER_ACCEPT" -H "$HEADER_AUTH" -H "$HEADER_VERSION" \
+            "$API/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&per_page=100" > before-runs.json
+          test "$(jq -r '.total_count' before-runs.json)" = 0
+
+          jq -cn \
+            --arg ref main \
+            --arg auth "$AUTH_REF" \
+            --arg ordinal "$AUTH_ORDINAL" \
+            --arg key "$EXECUTION_KEY" \
+            '{ref:$ref,inputs:{authorization_ref:$auth,authorization_ordinal:$ordinal,execution_key:$key}}' \
+            > dispatch-request.json
+
+          HTTP_CODE="$(curl --silent --show-error --location \
+            --output dispatch-response.txt --write-out '%{http_code}' \
+            --request POST \
+            -H "$HEADER_ACCEPT" -H "$HEADER_AUTH" -H "$HEADER_VERSION" \
+            -H 'Content-Type: application/json' \
+            "$API/actions/workflows/$WORKFLOW_FILE/dispatches" \
+            --data-binary @dispatch-request.json)"
+          test "$HTTP_CODE" = 204
+
+          TARGET_RUN_ID=''
+          for _ in $(seq 1 40); do
+            curl --fail-with-body --silent --show-error --location \
+              -H "$HEADER_ACCEPT" -H "$HEADER_AUTH" -H "$HEADER_VERSION" \
+              "$API/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&per_page=20" > after-runs.json
+            TARGET_RUN_ID="$(jq -r \
+              --arg head "$MAIN_SHA" \
+              --arg title "$RUN_TITLE" \
+              '[.workflow_runs[] | select(.head_sha == $head and .display_title == $title and .event == "workflow_dispatch" and .run_attempt == 1)] | sort_by(.id) | last | .id // empty' \
+              after-runs.json)"
+            if [ -n "$TARGET_RUN_ID" ]; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$TARGET_RUN_ID"
+          test "$(jq -r --argjson id "$TARGET_RUN_ID" '.workflow_runs[] | select(.id == $id) | .head_branch' after-runs.json)" = main
+
+          jq -n \
+            --argjson bridgeRunId "$GITHUB_RUN_ID" \
+            --argjson targetRunId "$TARGET_RUN_ID" \
+            --arg mainSha "$MAIN_SHA" \
+            --arg authorizationRef "$AUTH_REF" \
+            --arg executionKey "$EXECUTION_KEY" \
+            --arg runTitle "$RUN_TITLE" \
+            '{schemaVersion:1,status:"DISPATCHED_EXACTLY_ONCE",bridgeRunId:$bridgeRunId,targetRunId:$targetRunId,mainSha:$mainSha,authorizationRef:$authorizationRef,authorizationOrdinal:9,executionKey:$executionKey,runTitle:$runTitle,runAttempt:1,githubRerunAllowed:false}' \
+            > dispatch-receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-ordinal9-attempt1-dispatch-receipt
+          path: |
+            authorization.json
+            authorization-pr.json
+            before-runs.json
+            dispatch-request.json
+            dispatch-response.txt
+            after-runs.json
+            dispatch-receipt.json

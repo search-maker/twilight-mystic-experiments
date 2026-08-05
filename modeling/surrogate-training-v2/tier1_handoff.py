@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ GEOMETRY_FIELDS = (
     "observerElevationM",
     "aod550",
 )
+CIE = [0.09098, 0.13902, 0.20802, 0.323, 0.503, 0.71, 0.862, 0.954, 0.995, 0.87, 0.757, 0.631, 0.503, 0.175, 0.061]
 
 
 class HandoffRefusal(RuntimeError):
@@ -75,6 +77,53 @@ def exact(value: dict[str, Any], expected: dict[str, Any], label: str) -> None:
     changed = {key: (value.get(key), wanted) for key, wanted in expected.items() if value.get(key) != wanted}
     if changed:
         raise HandoffRefusal(f"{label} boundary changed: {changed}")
+
+
+def numerically_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return math.isclose(float(left), float(right), rel_tol=1e-12, abs_tol=1e-30)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(numerically_equal(a, b) for a, b in zip(left, right))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return set(left) == set(right) and all(numerically_equal(left[key], right[key]) for key in left)
+    return left == right
+
+
+def v2_statistics_from_audit(case_ids: list[str], audit: dict[str, Any]) -> dict[str, Any]:
+    raw_evidence = audit.get("rawCaseEvidence")
+    if not isinstance(raw_evidence, dict):
+        raise HandoffRefusal("audit v2 raw case evidence missing")
+    node_rows: list[list[float]] = []
+    values: list[float] = []
+    for case_id in case_ids:
+        evidence = raw_evidence.get(case_id)
+        radiance = evidence.get("radiance") if isinstance(evidence, dict) else None
+        nodes = radiance.get("selectedNodeValues") if isinstance(radiance, dict) else None
+        if not isinstance(nodes, list) or len(nodes) != 15:
+            raise HandoffRefusal(f"audit v2 raw selected nodes missing: {case_id}")
+        parsed = [finite(node, f"audit.{case_id}.node", nonnegative=True) for node in nodes]
+        node_rows.append(parsed)
+        values.append(683.002 * 10.0 * sum((value / 1000.0) * weight for value, weight in zip(parsed, CIE)))
+    count = len(values)
+    mean = statistics.fmean(values)
+    sample_std = statistics.stdev(values) if count > 1 else 0.0
+    zero_count = sum(value == 0.0 for value in values)
+    if zero_count or mean == 0.0:
+        raise HandoffRefusal("eligible v2 point contains raw zero-hit evidence")
+    return {
+        "blockCount": count,
+        "valuesCdM2": values,
+        "meanCdM2": mean,
+        "sampleStdCdM2": sample_std,
+        "relativeStandardErrorOfMean": (sample_std / math.sqrt(count)) / mean,
+        "relativeStandardErrorStatus": "COMPUTED",
+        "zeroHitBlockCount": 0,
+        "zeroHitBlockFraction": 0.0,
+        "nonzeroBlockValuesCdM2": values,
+        "nodeMeanRadiance": [statistics.fmean(row[index] for row in node_rows) for index in range(15)],
+    }
 
 
 def validate_geometry(value: Any, label: str) -> dict[str, float]:
@@ -283,6 +332,9 @@ def validate_audit(audit: dict[str, Any], plan_path: Path, summary_path: Path, c
             },
             "audit v2 eligibility",
         )
+        raw_evidence = audit.get("rawCaseEvidence")
+        if not isinstance(raw_evidence, dict) or set(raw_evidence) != case_ids:
+            raise HandoffRefusal("audit v2 raw evidence universe mismatch")
     if audit.get("planRawSha256") != raw_sha256(plan_path):
         raise HandoffRefusal("audit plan hash mismatch")
     if audit.get("aggregateRawSha256") != raw_sha256(summary_path):
@@ -302,6 +354,7 @@ def validate_analysis_and_v1_dataset(
     geometry_by_id: dict[str, Any],
     case_by_id: dict[str, Any],
     source_bindings: dict[str, Any] | None = None,
+    audit: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     schema_version = analysis.get("schemaVersion")
     analysis_stage = analysis.get("stageId")
@@ -413,6 +466,12 @@ def validate_analysis_and_v1_dataset(
             raise HandoffRefusal(f"analysis spectral nodes missing: {geometry_id}")
         for index, node in enumerate(nodes):
             finite(node, f"{geometry_id}.node[{index}]", positive=True)
+        if schema_version == 2:
+            if not isinstance(audit, dict):
+                raise HandoffRefusal("audit v2 required for numerical recomputation")
+            expected_statistics = v2_statistics_from_audit(sorted(case_ids), audit)
+            if not numerically_equal(statistics, expected_statistics):
+                raise HandoffRefusal(f"analysis values differ from raw audit evidence: {geometry_id}")
         seen.add(geometry_id)
         result.append(dict(point))
     if seen != set(geometry_by_id) or all_case_ids != set(case_by_id):
@@ -553,7 +612,7 @@ def build(
         "caseResultRawSha256ByCaseId": audit.get("caseResultHashes"),
     }
     points = validate_analysis_and_v1_dataset(
-        analysis, v1_dataset, geometry_by_id, case_by_id, source_bindings
+        analysis, v1_dataset, geometry_by_id, case_by_id, source_bindings, audit
     )
     hard_ids, soft_ids, external = validate_reference(reference)
     validate_source_run_and_artifacts(source_run, artifacts)

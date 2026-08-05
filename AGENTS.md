@@ -42,7 +42,7 @@ Record artifact ID, exact name, GitHub digest, downloaded ZIP SHA-256, compresse
 
 ## Architecture and scientific workstreams
 
-- `experiments/mystic-batch-v1/`: MYSTIC plans, execution guards, one-shot case execution, aggregation, independent audit, Tier-1 analysis, runtime/provenance proofs, and immutable execution protocols.
+- `experiments/mystic-batch-v1/`: MYSTIC plans, execution guards, one-shot case execution, aggregation, independent audit, Tier-1 analysis, runtime/provenance proofs, and immutable execution protocols. Frozen v1 programs and hashes remain unchanged; explicit `_v2.py` modules handle zero-hit semantics, raw numerical recomputation, and exact analysis bindings for preserved evidence and future versioned protocols.
 - `experiments/tier1-precision-continuation-v1/`: proposal-only bounded continuation contracts. Continuation is additive and must never replace an original block.
 - `experiments/tier2-disabled-readiness-v1/`: dormant Tier-2 readiness. It remains disabled until its preregistered trigger and separate authorization are satisfied.
 - `modeling/surrogate-training-v2/`: strict Tier-1-to-v2 handoff, frozen candidate protocol, deterministic fitting/evaluation, uncertainty, OOD behavior, and model-card artifacts.

@@ -94,9 +94,15 @@ def analyze(
         raise AnalysisError("aggregate execution incomplete")
     if (
         audit.get("schemaVersion") != 2
+        or audit.get("stageId") != "mystic-batch-v1"
         or audit.get("status") != "PASSED"
+        or audit.get("batchClassification") != batch.get("classification")
         or audit.get("executionComplete") is not True
+        or audit.get("scientificallyEligible") is not False
         or audit.get("caseResultCount") != 96
+        or audit.get("failures") != []
+        or audit.get("successDoesNotAuthorizeProduction") is not True
+        or audit.get("incompleteGeometryEnteredTrainingEligibility") is not False
     ):
         raise AnalysisError("independent audit failed")
     manifest_hash = raw_sha256(manifest_path)

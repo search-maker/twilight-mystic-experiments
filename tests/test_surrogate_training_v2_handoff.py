@@ -363,6 +363,11 @@ class Tier1HandoffTests(unittest.TestCase):
             }
         )
         self.fixture.rewrite("summary", self.fixture.summary)
+        raw_evidence = {}
+        for point in self.fixture.analysis["points"]:
+            nodes = list(point["statistics"]["nodeMeanRadiance"])
+            for case_id in point["caseIds"]:
+                raw_evidence[case_id] = {"radiance": {"selectedNodeValues": nodes}}
         self.fixture.audit.update(
             {
                 "schemaVersion": 2,
@@ -371,6 +376,7 @@ class Tier1HandoffTests(unittest.TestCase):
                 "zeroHitDiagnostics": [],
                 "incompleteGeometryEnteredTrainingEligibility": False,
                 "aggregateRawSha256": handoff.raw_sha256(self.fixture.paths["summary"]),
+                "rawCaseEvidence": raw_evidence,
             }
         )
         self.fixture.rewrite("audit", self.fixture.audit)
@@ -391,6 +397,9 @@ class Tier1HandoffTests(unittest.TestCase):
             }
         )
         for point in self.fixture.analysis["points"]:
+            point["statistics"] = handoff.v2_statistics_from_audit(
+                sorted(point["caseIds"]), self.fixture.audit
+            )
             point.update(
                 {
                     "numericalStatus": "NUMERICALLY_CONVERGED",
@@ -415,6 +424,22 @@ class Tier1HandoffTests(unittest.TestCase):
         result = self.fixture.build(self.root / "eligible-v2")
         self.assertTrue(result["dataset"].is_file())
 
+        valid_analysis = json.loads(json.dumps(self.fixture.analysis))
+        valid_dataset = json.loads(json.dumps(self.fixture.dataset))
+        self.fixture.analysis["points"][0]["statistics"]["meanCdM2"] *= 1_000_000
+        self.fixture.analysis["points"][0]["statistics"]["nodeMeanRadiance"] = [
+            value * 1_000_000
+            for value in self.fixture.analysis["points"][0]["statistics"]["nodeMeanRadiance"]
+        ]
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "raw audit evidence"):
+            self.fixture.build(self.root / "forged-v2-values")
+
+        self.fixture.analysis = valid_analysis
+        self.fixture.dataset = valid_dataset
+        self.fixture.rewrite("dataset", self.fixture.dataset)
         self.fixture.analysis["sourceBindings"] = {**bindings, "auditRawSha256": "f" * 64}
         self.fixture.rewrite("analysis", self.fixture.analysis)
         with self.assertRaisesRegex(handoff.HandoffRefusal, "source bindings changed"):

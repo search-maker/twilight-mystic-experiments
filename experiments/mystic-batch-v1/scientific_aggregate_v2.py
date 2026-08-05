@@ -86,9 +86,16 @@ def aggregate(plan_path: Path, cases_root: Path, output_dir: Path) -> tuple[dict
     index: list[dict[str, Any]] = []
     structural_failures: list[dict[str, Any]] = []
     zero_hit_diagnostics: list[dict[str, Any]] = []
-    planned_seeds = [case.get("seed") for case in planned.values()]
-    if len(set(planned_seeds)) != len(planned_seeds):
-        structural_failures.append({"code": "duplicate-planned-seeds"})
+    cases_by_seed: dict[Any, list[str]] = {}
+    for case_id, case in planned.items():
+        cases_by_seed.setdefault(case.get("seed"), []).append(case_id)
+    duplicate_seed_case_ids = {
+        case_id for case_ids in cases_by_seed.values() if len(case_ids) > 1 for case_id in case_ids
+    }
+    if duplicate_seed_case_ids:
+        structural_failures.append(
+            {"code": "duplicate-planned-seeds", "caseIds": sorted(duplicate_seed_case_ids)}
+        )
 
     for path in result_paths:
         record = load_json(path)
@@ -177,9 +184,17 @@ def aggregate(plan_path: Path, cases_root: Path, output_dir: Path) -> tuple[dict
                     )
         records[case_id] = record
         case_validity[case_id] = (
-            record.get("status") == "COMPLETED" and len(structural_failures) == failure_count_before
+            record.get("status") == "COMPLETED"
+            and case_id not in duplicate_seed_case_ids
+            and len(structural_failures) == failure_count_before
         )
-        index.append({"caseId": case_id, "path": str(path), "caseResultSha256": raw_sha256(path)})
+        index.append(
+            {
+                "caseId": case_id,
+                "path": path.relative_to(cases_root).as_posix(),
+                "caseResultSha256": raw_sha256(path),
+            }
+        )
 
     missing = sorted(set(planned) - set(records))
     if missing:

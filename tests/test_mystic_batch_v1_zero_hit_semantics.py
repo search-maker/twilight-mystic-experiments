@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -251,9 +252,27 @@ class ZeroHitSemanticsTests(unittest.TestCase):
         write_json(self.plan_path, plan)
         duplicate_summary, _ = self._aggregate()
         self.assertEqual(duplicate_summary["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+        duplicate_geometry = next(
+            item for item in duplicate_summary["geometryResults"] if item["geometryId"] == "train-0046"
+        )
+        self.assertFalse(duplicate_geometry["executionComplete"])
+        self.assertEqual(duplicate_geometry["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
         duplicate_report, passed = self._audit()
         self.assertFalse(passed)
         self.assertTrue(any(item["code"] == "duplicate-planned-seeds" for item in duplicate_report["failures"]))
+
+    def test_aggregate_case_paths_are_relative_posix_and_location_independent(self) -> None:
+        first, first_complete = self._aggregate()
+        self.assertTrue(first_complete)
+        self.assertTrue(all(not Path(item["path"]).is_absolute() for item in first["caseIndex"]))
+        self.assertTrue(all("\\" not in item["path"] for item in first["caseIndex"]))
+        copied_cases = self.root / "copied-case-artifacts"
+        shutil.copytree(self.cases_root, copied_cases)
+        second, second_complete = aggregate_module.aggregate(
+            self.plan_path, copied_cases, self.root / "copied-aggregate"
+        )
+        self.assertTrue(second_complete)
+        self.assertEqual(first, second)
 
     def test_tier1_analysis_emits_all_48_points_while_zero_hit_remains_ineligible(self) -> None:
         analysis_root = self.root / "analysis-fixture"
@@ -324,9 +343,15 @@ class ZeroHitSemanticsTests(unittest.TestCase):
             audit_path,
             {
                 "schemaVersion": 2,
+                "stageId": "mystic-batch-v1",
                 "status": "PASSED",
+                "batchClassification": "SCIENTIFICALLY_INELIGIBLE",
                 "executionComplete": True,
+                "scientificallyEligible": False,
                 "caseResultCount": 96,
+                "failures": [],
+                "successDoesNotAuthorizeProduction": True,
+                "incompleteGeometryEnteredTrainingEligibility": False,
                 "manifestRawSha256": sha256(manifest_path),
                 "aggregateRawSha256": sha256(summary_path),
                 "caseResultHashes": case_hashes,

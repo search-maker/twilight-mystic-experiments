@@ -1,0 +1,159 @@
+name: One-time Tier-1 wave-1 ordinal-11 dispatch bridge
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/tier1-wave1-ordinal11-dispatch-bridge.yml'
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: tier1-wave1-ordinal11-dispatch-bridge
+  cancel-in-progress: false
+jobs:
+  dispatch-once:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Prove exact bridge and immutable authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_ACTION" = opened
+          test "$BASE_REF" = main
+          test "$BASE_SHA" = 5b28ea31649f2c37e8b56ddae893a57608c2e148
+          test "$HEAD_REF" = dispatch/tier1-wave1-ordinal11-once
+          test "$HEAD_REPO" = "$REPO"
+          test "$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/tier1-wave1-ordinal11-dispatch-bridge.yml
+          AUTH_REF=23b2f823d826a1655f716006c9b87d07e44e0e99
+          test "$(gh api "repos/$REPO/commits/$AUTH_REF" --jq '.parents | length')" = 1
+          test "$(gh api "repos/$REPO/commits/$AUTH_REF" --jq '.parents[0].sha')" = "$BASE_SHA"
+          test "$(gh api "repos/$REPO/commits/$AUTH_REF" --jq '.files | length')" = 1
+          test "$(gh api "repos/$REPO/commits/$AUTH_REF" --jq '.files[0].filename')" = experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json
+          gh api "repos/$REPO/contents/experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json?ref=$AUTH_REF" --jq .content | tr -d '\n' | base64 -d > authorization.json
+          python - <<'PY'
+          import json
+          value=json.load(open('authorization.json'))
+          expected={
+            'schemaVersion':1,
+            'stageId':'tier1-precision-continuation-wave1-authorization-v5',
+            'status':'AUTHORIZED_PENDING_SEPARATE_DISPATCH',
+            'preregistrationSha256':'835d752fd31b54d1b08cf38d8f624f48eab28e590deadf64b07af113f6ecaa62',
+            'executionSourceHeadSha':'5b28ea31649f2c37e8b56ddae893a57608c2e148',
+            'authorizationOrdinal':11,
+            'executionKey':'twilight-surrogate-tier-1-v1:numerical:11',
+            'runTitle':'Tier-1 precision continuation wave 1 ordinal 11',
+            'runAttempt':1,
+            'caseCount':40,
+            'geometryCount':20,
+            'blocks':[3,4],
+            'maximumConfiguredPhotonHistories':5100000000,
+            'orderedSeedsSha256':'687a267a0222d5977a1f0c9f4e5bd7a59e4093d7215fee40dbb013232d40af55',
+            'enabled':True,
+            'solverExecutionAuthorized':True,
+            'automaticDispatch':False,
+            'dispatch':False,
+            'workflowDispatchEnabled':False,
+            'githubRerunAllowed':False,
+            'surrogateTrainingAuthorized':False,
+            'internalHoldoutOpeningAuthorized':False,
+            'tier2Authorized':False,
+            'productionPromotionAuthorized':False,
+          }
+          stale={k:(value.get(k),v) for k,v in expected.items() if value.get(k)!=v}
+          if stale: raise SystemExit(f'authorization mismatch: {stale}')
+          PY
+      - name: Refuse any prior ordinal-11 scientific run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method GET --paginate "repos/$REPO/actions/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml/runs" -f per_page=100 --slurp > before-pages.json
+          python - <<'PY'
+          import json
+          pages=json.load(open('before-pages.json'))
+          rows=[run for page in pages for run in page.get('workflow_runs',[])]
+          if rows: raise SystemExit(f'ordinal-11 workflow already has {len(rows)} run(s)')
+          PY
+      - name: Dispatch exact ordinal-11 workflow once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --method POST "repos/$REPO/actions/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml/dispatches" \
+            -f ref=main \
+            -f 'inputs[authorization_ref]=23b2f823d826a1655f716006c9b87d07e44e0e99' \
+            -f 'inputs[authorization_ordinal]=11' \
+            -f 'inputs[execution_key]=twilight-surrogate-tier-1-v1:numerical:11'
+      - name: Verify exactly one attempt-1 run appeared
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          COUNT=0
+          for _ in $(seq 1 30); do
+            gh api --method GET --paginate "repos/$REPO/actions/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml/runs" -f per_page=100 --slurp > after-pages.json
+            COUNT=$(python - <<'PY'
+          import json
+          pages=json.load(open('after-pages.json'))
+          print(sum(len(page.get('workflow_runs',[])) for page in pages))
+          PY
+            )
+            if [ "$COUNT" = 1 ]; then break; fi
+            test "$COUNT" = 0
+            sleep 2
+          done
+          python - <<'PY'
+          import json
+          pages=json.load(open('after-pages.json'))
+          rows=[run for page in pages for run in page.get('workflow_runs',[])]
+          if len(rows)!=1: raise SystemExit(f'expected one run, found {len(rows)}')
+          run=rows[0]
+          expected={
+            'event':'workflow_dispatch',
+            'run_attempt':1,
+            'head_branch':'main',
+            'head_sha':'5b28ea31649f2c37e8b56ddae893a57608c2e148',
+            'display_title':'Tier-1 precision continuation wave 1 ordinal 11',
+          }
+          stale={key:(run.get(key),value) for key,value in expected.items() if run.get(key)!=value}
+          if stale: raise SystemExit(f'run identity mismatch: {stale}')
+          report={
+            'status':'EXACTLY_ONE_ORDINAL11_RUN_DISPATCHED',
+            'runId':run['id'],
+            'runAttempt':run['run_attempt'],
+            'event':run['event'],
+            'headBranch':run['head_branch'],
+            'headSha':run['head_sha'],
+            'authorizationRef':'23b2f823d826a1655f716006c9b87d07e44e0e99',
+            'authorizationOrdinal':11,
+            'executionKey':'twilight-surrogate-tier-1-v1:numerical:11',
+            'githubRerunAllowed':False,
+          }
+          open('dispatch-report.json','w').write(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-one-time-dispatch-report
+          path: |
+            authorization.json
+            before-pages.json
+            after-pages.json
+            dispatch-report.json

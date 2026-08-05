@@ -1,27 +1,30 @@
 name: Surrogate training v2 real Tier-1 handoff
-run-name: Tier-1 v2 artifact handoff | source=30952457327
+run-name: Tier-1 v2 artifact handoff | descriptor=${{ inputs.source_descriptor_path }}
 
 on:
   workflow_dispatch:
+    inputs:
+      source_descriptor_path:
+        description: Reviewed committed immutable future-source descriptor path
+        required: true
+        type: string
+      source_descriptor_raw_sha256:
+        description: Exact raw SHA-256 of the reviewed descriptor file
+        required: true
+        type: string
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: surrogate-training-v2-real-tier1-handoff-30952457327
+  group: surrogate-training-v2-real-tier1-handoff-${{ inputs.source_descriptor_raw_sha256 }}
   cancel-in-progress: false
 
 env:
-  SOURCE_RUN_ID: "30952457327"
-  SOURCE_RUN_HEAD_SHA: "c9679a515c5f4538345d0d83252bcd8e37eb7b7e"
   REFERENCE_RUN_ID: "30905632743"
-  SOURCE_PREFLIGHT_ARTIFACT: twilight-surrogate-tier-1-ordinal2-execution-preflight
-  SOURCE_CASE_PATTERN: twilight-surrogate-tier-1-ordinal2-case-*
-  SOURCE_AGGREGATE_ARTIFACT: twilight-surrogate-tier-1-ordinal2-aggregate
-  SOURCE_AUDIT_ARTIFACT: twilight-surrogate-tier-1-ordinal2-audit
-  SOURCE_ANALYSIS_ARTIFACT: twilight-surrogate-tier-1-ordinal2-analysis
   REFERENCE_ARTIFACT: twilight-surrogate-tier-1-proposal-v1
+  SOURCE_DESCRIPTOR: ${{ inputs.source_descriptor_path }}
   SOURCE_GUARD: modeling/surrogate-training-v2/real_handoff_guard.py
   HANDOFF: modeling/surrogate-training-v2/tier1_handoff.py
 
@@ -35,7 +38,21 @@ jobs:
         with:
           python-version: "3.12.4"
 
-      - name: Fetch immutable source and reference metadata
+      - name: Resolve reviewed immutable future-source descriptor
+        run: |
+          set -euo pipefail
+          case "$SOURCE_DESCRIPTOR" in
+            modeling/surrogate-training-v2/future-tier1-source-*.json) ;;
+            *) echo "source descriptor must be a scoped committed future-tier1-source JSON file" >&2; exit 2 ;;
+          esac
+          git ls-files --error-unmatch -- "$SOURCE_DESCRIPTOR"
+          python "$SOURCE_GUARD" \
+            --source-descriptor "$SOURCE_DESCRIPTOR" \
+            --source-descriptor-raw-sha256 "${{ inputs.source_descriptor_raw_sha256 }}" \
+            --resolve-descriptor \
+            --github-env "$GITHUB_ENV"
+
+      - name: Fetch exact source and frozen-reference metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -64,12 +81,14 @@ jobs:
           run-id: ${{ env.REFERENCE_RUN_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse nonterminal, retried, incomplete, or drifted sources
+      - name: Refuse consumed, nonterminal, retried, incomplete, or drifted sources
         run: >-
           python "$SOURCE_GUARD"
+          --source-descriptor "$SOURCE_DESCRIPTOR"
+          --source-descriptor-raw-sha256 "$SOURCE_DESCRIPTOR_RAW_SHA256"
           --source-run metadata/source-run.json
           --source-artifacts metadata/source-artifacts.json
-          --manifest preflight/evidence/ordinal2-manifest.json
+          --manifest "preflight/$SOURCE_MANIFEST_RELATIVE_PATH"
           --reference-run metadata/reference-run.json
           --reference-artifacts metadata/reference-artifacts.json
           --handoff-head-sha "$GITHUB_SHA"
@@ -115,7 +134,7 @@ jobs:
       - name: Build strict Tier-1 v2 dataset envelope without fitting
         run: >-
           python "$HANDOFF"
-          --manifest preflight/evidence/ordinal2-manifest.json
+          --manifest "preflight/$SOURCE_MANIFEST_RELATIVE_PATH"
           --plan preflight/plan.json
           --summary aggregate-output/batch-summary.json
           --audit audit-output/audit-report.json
@@ -131,6 +150,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           guard = json.loads(Path('metadata/source-guard.json').read_text())
@@ -138,19 +158,26 @@ jobs:
           dataset = json.loads(Path('handoff-output/tier1-numerical-dataset.json').read_text())
           design = json.loads(Path('handoff-output/frozen-design.json').read_text())
 
+          source_run_id = int(os.environ['SOURCE_RUN_ID'])
+          source_head_sha = os.environ['SOURCE_RUN_HEAD_SHA']
           assert guard['status'] == 'REAL_TIER1_HANDOFF_SOURCE_ACCEPTED'
-          assert guard['sourceRunId'] == 30952457327
+          assert guard['sourceRunId'] == source_run_id
+          assert guard['sourceRunId'] != 30952457327
           assert guard['sourceArtifactCount'] == 100
           assert guard['caseArtifactCount'] == 96
-          assert envelope['sourceRunId'] == 30952457327
-          assert envelope['sourceRunHeadSha'] == 'c9679a515c5f4538345d0d83252bcd8e37eb7b7e'
-          assert envelope['exactMainSha'] == 'c9679a515c5f4538345d0d83252bcd8e37eb7b7e'
+          assert envelope['sourceRunId'] == source_run_id
+          assert envelope['sourceRunHeadSha'] == source_head_sha
+          assert envelope['exactMainSha'] == source_head_sha
           for value in (envelope, dataset, design):
               assert value['syntheticOnly'] is False
               assert value['scientificExecution'] is True
               assert value['observationallyValidated'] is False
               assert value['productionModelReady'] is False
               assert value['successDoesNotAuthorizeProduction'] is True
+          assert guard['surrogateTrainingAuthorized'] is False
+          assert guard['internalHoldoutOpeningAuthorized'] is False
+          assert guard['tier2Authorized'] is False
+          assert guard['productionPromotionAuthorized'] is False
           assert envelope['authorizationPermitted'] is False
           assert envelope['tier2AutomaticallyPermitted'] is False
           assert envelope['productionPromotionAuthorized'] is False
@@ -158,7 +185,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: surrogate-training-v2-tier1-real-handoff-ordinal2
+          name: surrogate-training-v2-tier1-real-handoff-${{ env.SOURCE_RUN_ID }}
           path: |
             handoff-output
             metadata/source-run.json
@@ -166,5 +193,6 @@ jobs:
             metadata/reference-run.json
             metadata/reference-artifacts.json
             metadata/source-guard.json
+            ${{ inputs.source_descriptor_path }}
           if-no-files-found: error
           retention-days: 90

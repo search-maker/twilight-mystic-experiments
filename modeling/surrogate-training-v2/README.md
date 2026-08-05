@@ -31,6 +31,22 @@ This package does not modify Tier-1 execution, recovery, authorization, workflow
 
 The current merged Tier-1 analyzer emits schema version 1 without the full envelope required here. A later Tier-1 handoff must add or generate the schema-version-2 dataset and envelope without weakening this adapter.
 
+## Future real-source handoff
+
+The manual real-source workflow is no longer permanently wired to failed ordinal 2. It accepts only a reviewed descriptor committed with the workflow ref and the descriptor's exact raw SHA-256 supplied manually at dispatch. Start from `future-tier1-source-descriptor-template.json`; the template itself is deliberately unbound and always refused.
+
+A bound descriptor is proposal/preparation evidence only. It must name one fresh, unconsumed attempt-1 execution identity and bind:
+
+- run ID, workflow ID and run number;
+- exact main head SHA, authorization ref, execution key, and authorization ordinal;
+- workflow path and exact display title containing the execution key and ordinal;
+- the raw manifest SHA-256 and its safe path inside the preflight artifact;
+- all 100 expected artifact IDs, names, and GitHub `sha256:` digests: preflight, aggregate, audit, analysis, and exactly 96 case artifacts.
+
+Before downloading bulk artifacts, `real_handoff_guard.py` verifies the descriptor hash and exports only its validated values. The full guard then compares live GitHub run metadata and the exact artifact universe to the descriptor, verifies the frozen reference artifact, and refuses failed ordinal 2, retries, nonterminal or unsuccessful runs, expired artifacts, missing or extra artifacts, and any ID/name/digest drift. A future source descriptor must be added by a separate reviewed commit after that source run is terminal and its immutable artifact metadata has been recorded. This package does not create, authorize, dispatch, or rerun that scientific execution.
+
+Even a successful guarded handoff authorizes no fitting, internal-holdout opening, Tier-2 action, production promotion, or observational-validity claim.
+
 ## Frozen evaluation order
 
 1. Use surrogate-training geometries only for five-fold cross-validation, candidate-family selection, hyperparameter selection, transformations, uncertainty rules, and out-of-domain rules.

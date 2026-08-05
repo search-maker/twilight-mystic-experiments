@@ -326,6 +326,165 @@ class Tier1HandoffTests(unittest.TestCase):
         with self.assertRaises(handoff.HandoffRefusal):
             self.fixture.build(self.root / "continuation")
 
+    def test_refuses_unresolved_zero_hit_geometry(self):
+        geometry_id = self.fixture.analysis["points"][0]["geometryId"]
+        case_id = self.fixture.analysis["points"][0]["caseIds"][0]
+        self.fixture.analysis["adaptiveContinuationRequiredGeometryIds"] = [geometry_id]
+        self.fixture.analysis["zeroHitGeometryIds"] = [geometry_id]
+        self.fixture.analysis["allPointsWithinMaximumRsem"] = False
+        self.fixture.analysis["points"][0].update(
+            {
+                "classification": "ADAPTIVE_CONTINUATION_REQUIRED",
+                "numericalStatus": "NUMERICAL_ZERO_HIT_UNDERCONVERGED",
+                "scientificallyEligible": False,
+                "zeroHitCaseIds": [case_id],
+            }
+        )
+        self.fixture.dataset["status"] = "TIER_1_NUMERICAL_DATASET_PARTIAL_PRECISION"
+        self.fixture.dataset["adaptiveContinuationRequiredGeometryIds"] = [geometry_id]
+        self.fixture.dataset["zeroHitGeometryIds"] = [geometry_id]
+        self.fixture.dataset["scientificallyEligible"] = False
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaises(handoff.HandoffRefusal):
+            self.fixture.build(self.root / "zero-hit-continuation")
+
+    def test_eligible_v2_source_requires_exact_analysis_bindings(self):
+        self.fixture.summary.update(
+            {
+                "schemaVersion": 2,
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "scientificEligibilityPendingPrecisionAnalysis": True,
+                "zeroHitCaseCount": 0,
+                "zeroHitDiagnostics": [],
+                "continuationRequiredGeometryIds": [],
+            }
+        )
+        self.fixture.rewrite("summary", self.fixture.summary)
+        raw_evidence = {}
+        for point in self.fixture.analysis["points"]:
+            nodes = list(point["statistics"]["nodeMeanRadiance"])
+            for case_id in point["caseIds"]:
+                raw_evidence[case_id] = {"radiance": {"selectedNodeValues": nodes}}
+        self.fixture.audit.update(
+            {
+                "schemaVersion": 2,
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "zeroHitDiagnostics": [],
+                "incompleteGeometryEnteredTrainingEligibility": False,
+                "aggregateRawSha256": handoff.raw_sha256(self.fixture.paths["summary"]),
+                "rawCaseEvidence": raw_evidence,
+            }
+        )
+        self.fixture.rewrite("audit", self.fixture.audit)
+        bindings = {
+            "manifestRawSha256": handoff.raw_sha256(self.fixture.paths["manifest"]),
+            "aggregateRawSha256": handoff.raw_sha256(self.fixture.paths["summary"]),
+            "auditRawSha256": handoff.raw_sha256(self.fixture.paths["audit"]),
+            "caseResultRawSha256ByCaseId": self.fixture.audit["caseResultHashes"],
+        }
+        self.fixture.analysis.update(
+            {
+                "schemaVersion": 2,
+                "stageId": "twilight-surrogate-tier-1-analysis-v2",
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+                "precisionTargetGeometryCount": 48,
+                "precisionAcceptedGeometryCount": 48,
+                "sourceBindings": bindings,
+            }
+        )
+        for point in self.fixture.analysis["points"]:
+            point["statistics"] = handoff.v2_statistics_from_audit(
+                sorted(point["caseIds"]), self.fixture.audit
+            )
+            point.update(
+                {
+                    "numericalStatus": "NUMERICALLY_CONVERGED",
+                    "executionComplete": True,
+                    "scientificallyEligible": True,
+                    "zeroHitCaseIds": [],
+                }
+            )
+        self.fixture.dataset.update(
+            {
+                "schemaVersion": 2,
+                "stageId": "twilight-surrogate-tier-1-analysis-v2",
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+                "sourceBindings": bindings,
+                "records": self.fixture.analysis["points"],
+            }
+        )
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        result = self.fixture.build(self.root / "eligible-v2")
+        self.assertTrue(result["dataset"].is_file())
+
+        valid_analysis = json.loads(json.dumps(self.fixture.analysis))
+        valid_dataset = json.loads(json.dumps(self.fixture.dataset))
+        self.fixture.analysis["points"][0]["statistics"]["meanCdM2"] *= 1_000_000
+        self.fixture.analysis["points"][0]["statistics"]["nodeMeanRadiance"] = [
+            value * 1_000_000
+            for value in self.fixture.analysis["points"][0]["statistics"]["nodeMeanRadiance"]
+        ]
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "raw audit evidence"):
+            self.fixture.build(self.root / "forged-v2-values")
+
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        self.fixture.analysis["sourceBindings"] = {**bindings, "auditRawSha256": "f" * 64}
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "source bindings changed"):
+            self.fixture.build(self.root / "tampered-v2-bindings")
+
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
+        self.fixture.analysis["points"][0]["eligibleForProvisionalFit"] = False
+        self.fixture.dataset["trainingRecordCount"] = 38
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "role eligibility differs"):
+            self.fixture.build(self.root / "forged-v2-role-eligibility")
+
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
+        first_point = self.fixture.analysis["points"][0]
+        high_variance_case = first_point["caseIds"][1]
+        high_variance_nodes = self.fixture.audit["rawCaseEvidence"][high_variance_case]["radiance"][
+            "selectedNodeValues"
+        ]
+        self.fixture.audit["rawCaseEvidence"][high_variance_case]["radiance"]["selectedNodeValues"] = [
+            value * 10.0 for value in high_variance_nodes
+        ]
+        self.fixture.rewrite("audit", self.fixture.audit)
+        high_variance_bindings = {
+            **bindings,
+            "auditRawSha256": handoff.raw_sha256(self.fixture.paths["audit"]),
+        }
+        first_point["statistics"] = handoff.v2_statistics_from_audit(
+            sorted(first_point["caseIds"]), self.fixture.audit
+        )
+        first_point["classification"] = "PRECISION_ACCEPTED"
+        self.fixture.analysis["precisionTargetGeometryCount"] = 47
+        self.fixture.analysis["sourceBindings"] = high_variance_bindings
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.dataset["sourceBindings"] = high_variance_bindings
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "precision classification differs"):
+            self.fixture.build(self.root / "forged-v2-precision-classification")
+
     def test_refuses_missing_artifact_provenance_and_case_hash(self):
         self.fixture.artifacts["artifacts"][0].pop("digest")
         self.fixture.rewrite("artifacts", self.fixture.artifacts)

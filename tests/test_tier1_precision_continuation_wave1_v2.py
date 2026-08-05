@@ -67,6 +67,16 @@ def fake_results(preregistration, value=1.0):
 
 
 class Wave1PreparationTests(unittest.TestCase):
+    def test_base_source_binding_is_line_ending_independent(self):
+        source = (ROOT / m.BASE_PACKAGE_RELATIVE_PATH).read_bytes().replace(b"\r\n", b"\n")
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp) / "base.py"
+            temp_path.write_bytes(source)
+            lf_hash = m.canonical_source_sha256(temp_path)
+            temp_path.write_bytes(source.replace(b"\n", b"\r\n"))
+            crlf_hash = m.canonical_source_sha256(temp_path)
+        self.assertEqual(lf_hash, m.BASE_PACKAGE_RAW_SHA256)
+        self.assertEqual(crlf_hash, m.BASE_PACKAGE_RAW_SHA256)
     def test_committed_generation_is_byte_identical(self):
         first = m.build_preregistration(ROOT)
         second = m.build_preregistration(ROOT)

@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 BASE_COMMIT_SHA = "2cb23408e73fc8e8313d483a02d8e05c58de9cff"
 BASE_PACKAGE_RELATIVE_PATH = "experiments/tier1-precision-continuation-v2/package.py"
-BASE_PACKAGE_RAW_SHA256 = "f705c4cab2b509f2a9f38e9899ccd3e7825ec411acf6249cefcabf64adb1806e"
+BASE_PACKAGE_RAW_SHA256 = "0ce3f817b535a15a27e4cb989a414185cab249224ea47a8de5f99a486992a037"
 EVIDENCE_RAW_SHA256 = {
     "evidence/ordinal2-corrected-v2/audit-report.json": "06655a37fb5b21981c89ac0c9044289e6fd327269ff03d6804835788ebf58428",
     "evidence/ordinal2-corrected-v2/batch-summary.json": "2fee3ffc7bed4c3f18cc0ee8745f6406a3aa1828a6470327a32e9599a70f5431",
@@ -59,6 +59,11 @@ def raw_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def canonical_source_sha256(path: Path) -> str:
+    payload = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def canonical_sha256(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -84,7 +89,7 @@ def _load_module(name: str, path: Path):
 def base_module(root: Path | None = None):
     root = root or repository_root()
     path = root / BASE_PACKAGE_RELATIVE_PATH
-    if raw_sha256(path) != BASE_PACKAGE_RAW_SHA256:
+    if canonical_source_sha256(path) != BASE_PACKAGE_RAW_SHA256:
         raise Refusal("reviewed continuation-v2 package hash changed")
     return _load_module("tier1_precision_continuation_v2_base", path)
 

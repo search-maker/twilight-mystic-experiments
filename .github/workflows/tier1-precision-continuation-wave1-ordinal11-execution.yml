@@ -1,0 +1,140 @@
+name: Tier-1 precision continuation wave 1 ordinal 11 execution
+run-name: Tier-1 precision continuation wave 1 ordinal 11
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        required: true
+        type: string
+      authorization_ordinal:
+        required: true
+        type: string
+      execution_key:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: tier1-wave1-ordinal11-execution
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Refuse wrong source or identity
+        env:
+          AUTH_REF: ${{ inputs.authorization_ref }}
+          AUTH_ORDINAL: ${{ inputs.authorization_ordinal }}
+          EXECUTION_KEY: ${{ inputs.execution_key }}
+        run: |
+          test "$GITHUB_REF_NAME" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$AUTH_ORDINAL" = 11
+          test "$EXECUTION_KEY" = twilight-surrogate-tier-1-v1:numerical:11
+          test "${#AUTH_REF}" = 40
+          test -z "$(printf '%s' "$AUTH_REF" | tr -d '0123456789abcdef')"
+      - name: Fetch and prove one-file authorization
+        env: {AUTH_REF: '${{ inputs.authorization_ref }}'}
+        run: |
+          git fetch origin "$AUTH_REF"
+          test "$(git cat-file -p "$AUTH_REF" | grep -c '^parent ')" = 1
+          AUTH_PARENT="$(git rev-parse "$AUTH_REF^")"
+          test "$AUTH_PARENT" = "$GITHUB_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_REF")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json
+          git show "$AUTH_REF":experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json > authorization.json
+          AUTH_REF="$AUTH_REF" AUTH_PARENT="$AUTH_PARENT" python - <<'PY'
+          import json, os
+          json.dump({'authorizationCommit':os.environ['AUTH_REF'],'authorizationParent':os.environ['AUTH_PARENT'],'changedFiles':['experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json'],'parentCount':1},open('authorization-metadata.json','w'),sort_keys=True)
+          PY
+      - name: Capture complete duplicate-search pages
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          gh api --method GET --paginate repos/${{ github.repository }}/actions/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml/runs -f per_page=100 --slurp > run-pages.json
+          python experiments/tier1-precision-continuation-wave1-v3/duplicate_pages.py --pages run-pages.json --output runs.json
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: tier1-wave1-ordinal11
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Capture runtime identity without solver execution
+        shell: micromamba-shell {0}
+        run: python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --output runtime-report.json
+      - name: Build exact 40-case manifest
+        env:
+          AUTH_REF: ${{ inputs.authorization_ref }}
+          AUTH_ORDINAL: ${{ inputs.authorization_ordinal }}
+          EXECUTION_KEY: ${{ inputs.execution_key }}
+        run: |
+          python - <<'PY'
+          import json,os
+          json.dump({'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'displayTitle':'Tier-1 precision continuation wave 1 ordinal 11','authorizationRef':os.environ['AUTH_REF'],'authorizationOrdinal':int(os.environ['AUTH_ORDINAL']),'executionKey':os.environ['EXECUTION_KEY'],'headBranch':os.environ['GITHUB_REF_NAME'],'headSha':os.environ['GITHUB_SHA'],'runId':int(os.environ['GITHUB_RUN_ID'])},open('context.json','w'),sort_keys=True)
+          PY
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py manifest --root . --authorization authorization.json --context context.json --runs runs.json --runtime runtime-report.json --authorization-metadata authorization-metadata.json --output execution-manifest.json
+      - id: matrix
+        run: python experiments/tier1-precision-continuation-wave1-v5/matrix_output.py --manifest execution-manifest.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-execution-manifest
+          path: |
+            authorization.json
+            authorization-metadata.json
+            context.json
+            run-pages.json
+            runs.json
+            runtime-report.json
+            execution-manifest.json
+  cases:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: tier1-wave1-ordinal11
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with: {name: tier1-wave1-ordinal11-execution-manifest}
+      - name: Re-prove runtime identity
+        shell: micromamba-shell {0}
+        run: python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --output case-runtime.json
+      - name: Execute exactly one syntax check and one solver invocation
+        shell: micromamba-shell {0}
+        run: python experiments/tier1-precision-continuation-wave1-v5/case_executor.py --manifest execution-manifest.json --runtime-report case-runtime.json --adapter experiments/tier1-precision-continuation-wave1-v5/execution_adapter.py --case-id '${{ matrix.caseId }}' --data-dir "$CONDA_PREFIX/share/libRadtran/data" --repository-root . --uvspec "$(command -v uvspec)" --output-root output --timeout-seconds '${{ matrix.timeoutSeconds }}' --allow-execution
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-case-${{ matrix.caseId }}
+          path: output/${{ matrix.caseId }}
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases.result == 'success' }}
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {pattern: tier1-wave1-ordinal11-*, path: artifacts}
+      - name: Complete aggregate, independent audit, and closed analysis
+        run: |
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py aggregate --root . --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json --results-root artifacts --output aggregate.json
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py audit --root . --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json --results-root artifacts --aggregate aggregate.json --output audit.json
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py analyze --root . --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json --aggregate aggregate.json --audit audit.json --output analysis.json
+      - uses: actions/upload-artifact@v4
+        with: {name: tier1-wave1-ordinal11-aggregate, path: aggregate.json}
+      - uses: actions/upload-artifact@v4
+        with: {name: tier1-wave1-ordinal11-audit, path: audit.json}
+      - uses: actions/upload-artifact@v4
+        with: {name: tier1-wave1-ordinal11-analysis, path: analysis.json}

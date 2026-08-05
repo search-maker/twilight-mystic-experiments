@@ -122,10 +122,14 @@ class RealHandoffGuardTests(unittest.TestCase):
         }
 
     def source_artifacts(self) -> dict:
-        return {"artifacts": [self.artifact(index + 1, name) for index, name in enumerate(self.artifact_names())]}
+        return {
+            "total_count": 100,
+            "artifacts": [self.artifact(index + 1, name) for index, name in enumerate(self.artifact_names())],
+        }
 
     def reference_artifacts(self) -> dict:
         return {
+            "total_count": 1,
             "artifacts": [
                 {
                     "id": GUARD.REFERENCE_ARTIFACT_ID,
@@ -180,6 +184,27 @@ class RealHandoffGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARD.GuardRefusal, "consumed historical"):
             self.validate(source_descriptor=descriptor)
 
+    def test_each_consumed_identity_dimension_is_independently_refused(self):
+        cases = (
+            ("id", 30906913329),
+            ("executionKey", "twilight-surrogate-tier-1-v1:numerical:1"),
+            ("authorizationOrdinal", 1),
+        )
+        for field, value in cases:
+            descriptor = self.descriptor()
+            source = descriptor["sourceRun"]
+            source[field] = value
+            source["displayTitle"] = (
+                f"MYSTIC batch v1 | key={source['executionKey']} | auth={source['authorizationRef']} | "
+                f"ordinal={source['authorizationOrdinal']}"
+            )
+            if field == "authorizationOrdinal":
+                descriptor["caseArtifactPrefix"] = "twilight-surrogate-tier-1-ordinal1-case-"
+                for item in descriptor["sourceArtifacts"]:
+                    item["name"] = item["name"].replace("ordinal3-case-", "ordinal1-case-")
+            with self.subTest(field=field), self.assertRaisesRegex(GUARD.GuardRefusal, "consumed historical"):
+                self.validate(source_descriptor=descriptor)
+
     def test_refuses_nonterminal_retried_or_failed_source(self):
         for field, value in (("status", "in_progress"), ("run_attempt", 2), ("conclusion", "failure")):
             run = self.source_run()
@@ -203,6 +228,16 @@ class RealHandoffGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARD.GuardRefusal, "source artifact"):
             self.validate(source_artifacts=drifted)
 
+        hidden_extra_page = self.source_artifacts()
+        hidden_extra_page["total_count"] = 101
+        with self.assertRaisesRegex(GUARD.GuardRefusal, "artifact total"):
+            self.validate(source_artifacts=hidden_extra_page)
+
+        boolean_id = self.source_artifacts()
+        boolean_id["artifacts"][0]["id"] = True
+        with self.assertRaisesRegex(GUARD.GuardRefusal, "artifact ID"):
+            self.validate(source_artifacts=boolean_id)
+
     def test_refuses_descriptor_artifact_universe_or_manifest_hash_drift(self):
         descriptor = self.descriptor()
         descriptor["sourceArtifacts"].pop()
@@ -210,6 +245,21 @@ class RealHandoffGuardTests(unittest.TestCase):
             self.validate(source_descriptor=descriptor)
         with self.assertRaisesRegex(GUARD.GuardRefusal, "manifest raw hash"):
             self.validate(manifest_raw_sha256="0" * 64)
+
+        broad_prefix = self.descriptor()
+        broad_prefix["caseArtifactPrefix"] = "twilight-surrogate-tier-1-ordinal3-"
+        broad_prefix["sourceArtifacts"] = [
+            {
+                **item,
+                "name": item["name"].replace(
+                    "twilight-surrogate-tier-1-ordinal3-case-",
+                    "twilight-surrogate-tier-1-ordinal3-",
+                ),
+            }
+            for item in broad_prefix["sourceArtifacts"]
+        ]
+        with self.assertRaisesRegex(GUARD.GuardRefusal, "case artifact prefix"):
+            self.validate(source_descriptor=broad_prefix)
 
     def test_refuses_reference_drift(self):
         reference = self.reference_artifacts()
@@ -235,6 +285,27 @@ class RealHandoffGuardTests(unittest.TestCase):
             self.assertEqual(values["SOURCE_CASE_PATTERN"], "twilight-surrogate-tier-1-ordinal3-case-*")
             with self.assertRaisesRegex(GUARD.GuardRefusal, "raw hash mismatch"):
                 GUARD.descriptor_environment(self.descriptor(), descriptor_path, "0" * 64)
+
+    def test_descriptor_repository_path_refuses_escape_and_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scoped = root / "modeling" / "surrogate-training-v2"
+            scoped.mkdir(parents=True)
+            descriptor = scoped / "future-tier1-source-ordinal3.json"
+            descriptor.write_text("{}")
+            relative = descriptor.relative_to(root)
+            self.assertEqual(GUARD.validate_descriptor_repository_path(relative, root), descriptor.resolve())
+            outside = root / "future-tier1-source-outside.json"
+            outside.write_text("{}")
+            with self.assertRaisesRegex(GUARD.GuardRefusal, "outside"):
+                GUARD.validate_descriptor_repository_path(outside.relative_to(root), root)
+            link = scoped / "future-tier1-source-link.json"
+            try:
+                link.symlink_to(descriptor)
+            except OSError:
+                self.skipTest("symlink creation unavailable")
+            with self.assertRaisesRegex(GUARD.GuardRefusal, "non-symlink"):
+                GUARD.validate_descriptor_repository_path(link.relative_to(root), root)
 
     def test_cli_writes_guard_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -292,6 +363,8 @@ class RealHandoffWorkflowTests(unittest.TestCase):
         self.assertIn("--source-descriptor-raw-sha256", text)
         self.assertIn("modeling/surrogate-training-v2/future-tier1-source-*.json", text)
         self.assertIn("git ls-files --error-unmatch", text)
+        self.assertIn('test "$GITHUB_REF" = "refs/heads/main"', text)
+        self.assertIn("awk '{print $1}'", text)
         self.assertIn('REFERENCE_RUN_ID: "30905632743"', text)
         self.assertIn("real_handoff_guard.py", text)
         self.assertIn("tier1_handoff.py", text)

@@ -105,10 +105,23 @@ def require_safe_relative_path(value: Any, label: str) -> str:
     return value
 
 
-def artifact_map(payload: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
+def artifact_map(
+    payload: dict[str, Any], label: str, *, expected_total_count: int | None = None
+) -> dict[str, dict[str, Any]]:
     values = payload.get("artifacts")
     if not isinstance(values, list):
         raise GuardRefusal(f"{label} artifact list missing")
+    if expected_total_count is not None:
+        total_count = payload.get("total_count")
+        if (
+            not isinstance(total_count, int)
+            or isinstance(total_count, bool)
+            or total_count != expected_total_count
+            or len(values) != expected_total_count
+        ):
+            raise GuardRefusal(
+                f"{label} artifact total must equal {expected_total_count} on the complete API page"
+            )
     by_name: dict[str, dict[str, Any]] = {}
     ids: set[int] = set()
     for item in values:
@@ -116,7 +129,12 @@ def artifact_map(payload: dict[str, Any], label: str) -> dict[str, dict[str, Any
             raise GuardRefusal(f"{label} artifact entry invalid")
         artifact_id = item.get("id")
         name = item.get("name")
-        if not isinstance(artifact_id, int) or artifact_id < 1 or artifact_id in ids:
+        if (
+            not isinstance(artifact_id, int)
+            or isinstance(artifact_id, bool)
+            or artifact_id < 1
+            or artifact_id in ids
+        ):
             raise GuardRefusal(f"{label} artifact ID duplicated or invalid")
         if not isinstance(name, str) or not SAFE_ARTIFACT_NAME.fullmatch(name) or name in by_name:
             raise GuardRefusal(f"{label} artifact name duplicated or invalid")
@@ -227,6 +245,11 @@ def validate_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
         names.append(value)
     if len(set(names[:4])) != 4:
         raise GuardRefusal("source descriptor singleton artifact names overlap")
+    canonical_case_prefix = f"twilight-surrogate-tier-1-ordinal{ordinal}-case-"
+    if descriptor["caseArtifactPrefix"] != canonical_case_prefix:
+        raise GuardRefusal("source descriptor case artifact prefix is not canonical for its ordinal")
+    if any(name.startswith(canonical_case_prefix) for name in names[:4]):
+        raise GuardRefusal("source descriptor case prefix overlaps a singleton artifact")
 
     expected_payload = {"artifacts": descriptor.get("sourceArtifacts")}
     expected = artifact_map(expected_payload, "descriptor")
@@ -305,7 +328,7 @@ def validate_manifest_case_ids(manifest: dict[str, Any]) -> list[str]:
 
 
 def validate_source_artifacts(payload: dict[str, Any], descriptor: dict[str, Any], case_ids: list[str]) -> dict[str, dict[str, Any]]:
-    actual = artifact_map(payload, "source")
+    actual = artifact_map(payload, "source", expected_total_count=SOURCE_ARTIFACT_COUNT)
     expected = artifact_map({"artifacts": descriptor["sourceArtifacts"]}, "descriptor")
     expected_names = {
         descriptor["preflightArtifactName"],
@@ -335,7 +358,7 @@ def validate_source_artifacts(payload: dict[str, Any], descriptor: dict[str, Any
 
 
 def validate_reference_artifacts(payload: dict[str, Any]) -> None:
-    by_name = artifact_map(payload, "reference")
+    by_name = artifact_map(payload, "reference", expected_total_count=1)
     if set(by_name) != {REFERENCE_ARTIFACT_NAME}:
         raise GuardRefusal("reference artifact universe changed")
     require_exact(
@@ -421,6 +444,22 @@ def descriptor_environment(descriptor: dict[str, Any], descriptor_path: Path, su
     }
 
 
+def validate_descriptor_repository_path(descriptor_path: Path, repository_root: Path) -> Path:
+    if descriptor_path.is_absolute():
+        raise GuardRefusal("source descriptor path must be repository-relative")
+    root = repository_root.resolve(strict=True)
+    scoped_root = (root / "modeling" / "surrogate-training-v2").resolve(strict=True)
+    candidate = root / descriptor_path
+    if candidate.is_symlink() or not candidate.is_file():
+        raise GuardRefusal("source descriptor must be a regular non-symlink file")
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(scoped_root)
+    except ValueError as exc:
+        raise GuardRefusal("source descriptor resolves outside its scoped repository directory") from exc
+    return resolved
+
+
 def write_github_env(path: Path, values: dict[str, str]) -> None:
     with path.open("a") as stream:
         stream.write("".join(f"{key}={value}\n" for key, value in sorted(values.items())))
@@ -449,7 +488,8 @@ def main() -> int:
         if args.resolve_descriptor:
             if args.github_env is None:
                 raise GuardRefusal("--github-env is required with --resolve-descriptor")
-            values = descriptor_environment(descriptor, args.source_descriptor, args.source_descriptor_raw_sha256)
+            descriptor_path = validate_descriptor_repository_path(args.source_descriptor, Path.cwd())
+            values = descriptor_environment(descriptor, descriptor_path, args.source_descriptor_raw_sha256)
             write_github_env(args.github_env, values)
             print(dump({"status": "IMMUTABLE_SOURCE_DESCRIPTOR_RESOLVED", **values}), end="")
             return 0

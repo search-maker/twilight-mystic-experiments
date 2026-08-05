@@ -1,0 +1,85 @@
+name: Tier-1 precision continuation wave 1 v2 contract
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/tier1-precision-continuation-wave1-v2/**'
+      - 'evidence/tier1-precision-continuation-wave1-v2/**'
+      - 'tests/test_tier1_precision_continuation_wave1_v2.py'
+      - '.github/workflows/tier1-precision-continuation-wave1-v2-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Compile preparation package
+        run: python -m py_compile experiments/tier1-precision-continuation-wave1-v2/package.py tests/test_tier1_precision_continuation_wave1_v2.py
+      - name: Run focused wave-1 refusal contract
+        run: python -m unittest discover -s tests -p 'test_tier1_precision_continuation_wave1_v2.py' -v
+      - name: Run inherited continuation contract
+        run: python -m unittest discover -s tests -p 'test_tier1_precision_continuation_v2.py' -v
+      - name: Run semantic and handoff contracts
+        run: |
+          python -m unittest discover -s tests -p 'test_mystic_batch_v1_zero_hit_semantics.py' -v
+          python -m unittest discover -s tests -p 'test_mystic_batch_v1_scientific_execution.py' -v
+          python -m unittest discover -s tests -p 'test_surrogate_training_v2_handoff.py' -v
+      - name: Prove deterministic committed bytes and closed boundary
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          python experiments/tier1-precision-continuation-wave1-v2/package.py --output-preregistration "$tmp/preregistration.json" --output-authorization-template "$tmp/authorization.template.json"
+          cmp evidence/tier1-precision-continuation-wave1-v2/preregistration.json "$tmp/preregistration.json"
+          cmp experiments/tier1-precision-continuation-wave1-v2/authorization.template.json "$tmp/authorization.template.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          prereg = json.loads(Path('evidence/tier1-precision-continuation-wave1-v2/preregistration.json').read_text())
+          auth = json.loads(Path('experiments/tier1-precision-continuation-wave1-v2/authorization.template.json').read_text())
+          assert prereg['caseCount'] == 40
+          assert prereg['geometryCount'] == 20
+          assert prereg['maximumConfiguredPhotonHistories'] == 5_100_000_000
+          assert prereg['roleCounts'] == {'internal-holdout': 3, 'surrogate-training': 17}
+          assert prereg['historicalSeedProof']['overlap'] == []
+          assert auth['enabled'] is False
+          assert auth['authorizationOrdinal'] is None
+          assert auth['executionKey'] is None
+          assert auth['automaticDispatch'] is False
+          text = Path('.github/workflows/tier1-precision-continuation-wave1-v2-contract.yml').read_text()
+          assert ('workflow_' + 'dispatch:') not in text
+          PY
+      - name: Build deterministic contract report
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          files = [
+              Path('evidence/tier1-precision-continuation-wave1-v2/preregistration.json'),
+              Path('experiments/tier1-precision-continuation-wave1-v2/authorization.template.json'),
+          ]
+          report = {
+              'schemaVersion': 1,
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'attempt': '${{ github.run_attempt }}',
+              'files': [
+                  {'path': str(path), 'sizeBytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                  for path in files
+              ],
+          }
+          Path('wave1-contract-report.json').write_text(json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-continuation-wave1-v2-contract
+          path: |
+            evidence/tier1-precision-continuation-wave1-v2/preregistration.json
+            experiments/tier1-precision-continuation-wave1-v2/authorization.template.json
+            wave1-contract-report.json
+          if-no-files-found: error
+          retention-days: 30

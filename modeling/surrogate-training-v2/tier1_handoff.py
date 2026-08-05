@@ -19,6 +19,8 @@ ENVELOPE_STAGE = "twilight-surrogate-tier-1-dataset-envelope-v1"
 GEOMETRY_COUNT = 48
 CASE_COUNT = 96
 PHOTON_COUNT = 6_960_000_000
+TARGET_RSEM = 0.05
+ACCEPTED_MAX_RSEM = 0.08
 ALLOWED_ROLES = {"surrogate-training", "internal-holdout"}
 ALLOWED_IMPORTANCE_NM = {500.0, 550.0, 600.0}
 GEOMETRY_FIELDS = (
@@ -427,6 +429,8 @@ def validate_analysis_and_v1_dataset(
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     all_case_ids: set[str] = set()
+    target_count = 0
+    accepted_count = 0
     for point in points:
         if not isinstance(point, dict):
             raise HandoffRefusal("analysis point invalid")
@@ -472,10 +476,45 @@ def validate_analysis_and_v1_dataset(
             expected_statistics = v2_statistics_from_audit(sorted(case_ids), audit)
             if not numerically_equal(statistics, expected_statistics):
                 raise HandoffRefusal(f"analysis values differ from raw audit evidence: {geometry_id}")
+            recomputed_rsem = expected_statistics["relativeStandardErrorOfMean"]
+            recomputed_classification = (
+                "PRECISION_TARGET_MET"
+                if recomputed_rsem <= TARGET_RSEM
+                else "PRECISION_ACCEPTED"
+                if recomputed_rsem <= ACCEPTED_MAX_RSEM
+                else "ADAPTIVE_CONTINUATION_REQUIRED"
+            )
+            if classification != recomputed_classification:
+                raise HandoffRefusal(
+                    f"analysis precision classification differs from raw audit evidence: {geometry_id}"
+                )
+        if classification == "PRECISION_TARGET_MET":
+            target_count += 1
+        if classification in {"PRECISION_TARGET_MET", "PRECISION_ACCEPTED"}:
+            accepted_count += 1
         seen.add(geometry_id)
         result.append(dict(point))
     if seen != set(geometry_by_id) or all_case_ids != set(case_by_id):
         raise HandoffRefusal("analysis universe incomplete")
+    if schema_version == 2:
+        exact(
+            analysis,
+            {
+                "precisionTargetGeometryCount": target_count,
+                "precisionAcceptedGeometryCount": accepted_count,
+            },
+            "analysis v2 precision counts",
+        )
+        exact(
+            dataset,
+            {
+                "trainingRecordCount": sum(point.get("eligibleForProvisionalFit") is True for point in result),
+                "internalHoldoutRecordCount": sum(
+                    point.get("eligibleForInternalHoldout") is True for point in result
+                ),
+            },
+            "dataset v2 role counts",
+        )
     return result
 
 

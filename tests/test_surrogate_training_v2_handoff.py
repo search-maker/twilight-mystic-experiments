@@ -393,6 +393,8 @@ class Tier1HandoffTests(unittest.TestCase):
                 "executionComplete": True,
                 "scientificallyEligible": True,
                 "zeroHitGeometryIds": [],
+                "precisionTargetGeometryCount": 48,
+                "precisionAcceptedGeometryCount": 48,
                 "sourceBindings": bindings,
             }
         )
@@ -444,6 +446,34 @@ class Tier1HandoffTests(unittest.TestCase):
         self.fixture.rewrite("analysis", self.fixture.analysis)
         with self.assertRaisesRegex(handoff.HandoffRefusal, "source bindings changed"):
             self.fixture.build(self.root / "tampered-v2-bindings")
+
+        self.fixture.analysis = valid_analysis
+        self.fixture.dataset = valid_dataset
+        first_point = self.fixture.analysis["points"][0]
+        high_variance_case = first_point["caseIds"][1]
+        high_variance_nodes = self.fixture.audit["rawCaseEvidence"][high_variance_case]["radiance"][
+            "selectedNodeValues"
+        ]
+        self.fixture.audit["rawCaseEvidence"][high_variance_case]["radiance"]["selectedNodeValues"] = [
+            value * 10.0 for value in high_variance_nodes
+        ]
+        self.fixture.rewrite("audit", self.fixture.audit)
+        high_variance_bindings = {
+            **bindings,
+            "auditRawSha256": handoff.raw_sha256(self.fixture.paths["audit"]),
+        }
+        first_point["statistics"] = handoff.v2_statistics_from_audit(
+            sorted(first_point["caseIds"]), self.fixture.audit
+        )
+        first_point["classification"] = "PRECISION_ACCEPTED"
+        self.fixture.analysis["precisionTargetGeometryCount"] = 47
+        self.fixture.analysis["sourceBindings"] = high_variance_bindings
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.dataset["sourceBindings"] = high_variance_bindings
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "precision classification differs"):
+            self.fixture.build(self.root / "forged-v2-precision-classification")
 
     def test_refuses_missing_artifact_provenance_and_case_hash(self):
         self.fixture.artifacts["artifacts"][0].pop("digest")

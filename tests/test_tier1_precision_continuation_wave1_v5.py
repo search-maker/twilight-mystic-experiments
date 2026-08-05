@@ -100,14 +100,14 @@ class Wave1V5Tests(unittest.TestCase):
             adapter.write_text(
                 "import hashlib\nfrom pathlib import Path\n"
                 "def prepare_case(manifest_path,runtime_report_path,case_id,data_dir,repository_root,output_root):\n"
-                " d=output_root/case_id; d.mkdir(parents=True); text='source solar\\n'; (d/'input-resolved.txt').write_text(text); return {'inputResolvedSha256':hashlib.sha256(text.encode()).hexdigest()}\n",
+                " d=output_root/case_id; d.mkdir(parents=True); text='source solar'+chr(10); (d/'input-resolved.txt').write_text(text); return {'inputResolvedSha256':hashlib.sha256(text.encode()).hexdigest()}\n",
                 encoding="utf-8",
             )
             calls = []
             def runner(command, text, cwd, timeout):
                 calls.append(list(command))
                 if len(calls) == 2:
-                    spectrum = "".join(f"{node} 1.0\\n" for node in x._base(ROOT).NODES)
+                    spectrum = chr(10).join(f"{node} 1.0" for node in x._base(ROOT).NODES) + chr(10)
                     (cwd / "mc.rad.spc").write_text(spectrum, encoding="utf-8")
                     (cwd / "mc.rad.std.spc").write_text(spectrum, encoding="utf-8")
                 return {"exitCode": 0, "timedOut": False, "stdout": "", "stderr": ""}

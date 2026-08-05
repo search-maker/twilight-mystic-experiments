@@ -1,0 +1,118 @@
+name: Tier-1 precision continuation wave 1 v3 execution contract
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tier1-precision-continuation-wave1-ordinal9-execution.yml'
+      - '.github/workflows/tier1-precision-continuation-wave1-v3-execution-contract.yml'
+      - 'experiments/tier1-precision-continuation-wave1-v3/package.py'
+      - 'experiments/tier1-precision-continuation-wave1-v3/execution.py'
+      - 'experiments/tier1-precision-continuation-wave1-v3/execution_adapter.py'
+      - 'experiments/tier1-precision-continuation-wave1-v3/case_executor.py'
+      - 'experiments/tier1-precision-continuation-wave1-v3/authorization.ordinal9.json'
+      - 'tests/test_tier1_precision_continuation_wave1_v3_execution.py'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - run: pip install PyYAML
+      - name: Compile execution infrastructure
+        run: python -m py_compile experiments/tier1-precision-continuation-wave1-v3/package.py experiments/tier1-precision-continuation-wave1-v3/duplicate_pages.py experiments/tier1-precision-continuation-wave1-v3/execution.py experiments/tier1-precision-continuation-wave1-v3/execution_adapter.py experiments/tier1-precision-continuation-wave1-v3/case_executor.py tests/test_tier1_precision_continuation_wave1_v3_execution.py
+      - name: Validate one-file authorization PR when present
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          auth_path = Path('experiments/tier1-precision-continuation-wave1-v3/authorization.ordinal9.json')
+          if auth_path.exists():
+              expected_branch = 'authorization/tier1-precision-continuation-wave1-ordinal9-v3'
+              assert os.environ['HEAD_REF'] == expected_branch
+              changed = subprocess.check_output(
+                  ['git', 'diff', '--name-only', os.environ['BASE_SHA'], os.environ['HEAD_SHA']],
+                  text=True,
+              ).splitlines()
+              assert changed == [str(auth_path)]
+
+              def load(path, name):
+                  spec = importlib.util.spec_from_file_location(name, path)
+                  assert spec is not None and spec.loader is not None
+                  module = importlib.util.module_from_spec(spec)
+                  spec.loader.exec_module(module)
+                  return module
+
+              package = load(Path('experiments/tier1-precision-continuation-wave1-v3/package.py'), 'authorization_contract_package')
+              execution = load(Path('experiments/tier1-precision-continuation-wave1-v3/execution.py'), 'authorization_contract_execution')
+              prereg = package.build_preregistration(Path('.'))
+              package.validate_preregistration(prereg, Path('.'))
+              auth = json.loads(auth_path.read_text(encoding='utf-8'))
+              context = {
+                  'eventName': 'workflow_dispatch',
+                  'runAttempt': 1,
+                  'displayTitle': execution.RUN_TITLE,
+                  'authorizationRef': os.environ['HEAD_SHA'],
+                  'authorizationOrdinal': 9,
+                  'executionKey': execution.EXECUTION_KEY,
+                  'headBranch': 'main',
+                  'headSha': os.environ['BASE_SHA'],
+                  'runId': 1,
+              }
+              metadata = {
+                  'authorizationCommit': os.environ['HEAD_SHA'],
+                  'authorizationParent': os.environ['BASE_SHA'],
+                  'changedFiles': [str(auth_path)],
+                  'parentCount': 1,
+              }
+              execution.validate_context(context)
+              execution.validate_authorization(auth, prereg, context)
+              execution.validate_authorization_metadata(metadata, context)
+          PY
+      - name: Run focused execution tests
+        run: python -m unittest discover -s tests -p 'test_tier1_precision_continuation_wave1_v3_execution.py' -v
+      - name: Parse both workflow files
+        run: python -c "import yaml; yaml.safe_load(open('.github/workflows/tier1-precision-continuation-wave1-ordinal9-execution.yml')); yaml.safe_load(open('.github/workflows/tier1-precision-continuation-wave1-v3-execution-contract.yml'))"
+      - name: Prove exact static execution boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          execution = Path('.github/workflows/tier1-precision-continuation-wave1-ordinal9-execution.yml').read_text()
+          contract = Path('.github/workflows/tier1-precision-continuation-wave1-v3-execution-contract.yml').read_text()
+          contract_trigger = contract.split('permissions:', 1)[0]
+          assert 'workflow_dispatch:' in execution
+          assert '--slurp > run-pages.json' in execution
+          assert '--slurp --jq' not in execution
+          assert 'ordinal8-execution' not in execution
+          assert 'authorization.ordinal9.json' in execution
+          assert 'authorization.ordinal9.json' in contract
+          assert 'workflow_' + 'dispatch:' not in contract_trigger
+          assert 'rerun-workflow' not in execution.lower()
+          PY
+      - name: Run complete non-scientific repository suite
+        run: python -m unittest discover -s tests -v
+      - name: Generate deterministic infrastructure evidence
+        run: |
+          mkdir -p contract-artifacts
+          python experiments/tier1-precision-continuation-wave1-v3/package.py --output-dir contract-artifacts/generated
+          cp .github/workflows/tier1-precision-continuation-wave1-ordinal9-execution.yml contract-artifacts/
+          cp .github/workflows/tier1-precision-continuation-wave1-v3-execution-contract.yml contract-artifacts/
+          cp experiments/tier1-precision-continuation-wave1-v3/execution.py contract-artifacts/
+          cp experiments/tier1-precision-continuation-wave1-v3/duplicate_pages.py contract-artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-v3-ordinal9-execution-infrastructure-contract
+          path: contract-artifacts

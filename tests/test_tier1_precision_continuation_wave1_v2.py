@@ -77,6 +77,15 @@ class Wave1PreparationTests(unittest.TestCase):
             crlf_hash = m.canonical_source_sha256(temp_path)
         self.assertEqual(lf_hash, m.BASE_PACKAGE_RAW_SHA256)
         self.assertEqual(crlf_hash, m.BASE_PACKAGE_RAW_SHA256)
+    def test_evidence_bindings_are_line_ending_independent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp) / "evidence.json"
+            for relative_path, expected in m.EVIDENCE_RAW_SHA256.items():
+                source = (ROOT / relative_path).read_bytes().replace(b"\r\n", b"\n")
+                temp_path.write_bytes(source)
+                self.assertEqual(m.canonical_source_sha256(temp_path), expected)
+                temp_path.write_bytes(source.replace(b"\n", b"\r\n"))
+                self.assertEqual(m.canonical_source_sha256(temp_path), expected)
     def test_committed_generation_is_byte_identical(self):
         first = m.build_preregistration(ROOT)
         second = m.build_preregistration(ROOT)

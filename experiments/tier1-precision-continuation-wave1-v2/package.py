@@ -14,10 +14,10 @@ BASE_COMMIT_SHA = "2cb23408e73fc8e8313d483a02d8e05c58de9cff"
 BASE_PACKAGE_RELATIVE_PATH = "experiments/tier1-precision-continuation-v2/package.py"
 BASE_PACKAGE_RAW_SHA256 = "0ce3f817b535a15a27e4cb989a414185cab249224ea47a8de5f99a486992a037"
 EVIDENCE_RAW_SHA256 = {
-    "evidence/ordinal2-corrected-v2/audit-report.json": "06655a37fb5b21981c89ac0c9044289e6fd327269ff03d6804835788ebf58428",
-    "evidence/ordinal2-corrected-v2/batch-summary.json": "2fee3ffc7bed4c3f18cc0ee8745f6406a3aa1828a6470327a32e9599a70f5431",
-    "evidence/ordinal2-corrected-v2/plan.json": "eb21d5d925fde3680159776276bab880fea0c0dae62809b21b17bfb9f2fd58f1",
-    "evidence/ordinal2-corrected-v2/tier1-numerical-dataset.json": "c3328156a7a45d03c10418dc22b6a6b15faf5e14842c8b6a032c91fcf4744ef1",
+    "evidence/ordinal2-corrected-v2/audit-report.json": "a3b427bbd345e310f851d8839da4ff92931f9b747e6981700eb5a3878a38882b",
+    "evidence/ordinal2-corrected-v2/batch-summary.json": "5041bf89000d067e644d234f2c42344dd8a2a15796a75785d9254af4af627d04",
+    "evidence/ordinal2-corrected-v2/plan.json": "f19ea2eb742ca6e5ca638714128b52f3ba5167dfa23b9ff08ee19ae01416d448",
+    "evidence/ordinal2-corrected-v2/tier1-numerical-dataset.json": "81db9f2c418d4b078c23586513c5ba4591f3f3a496367bd818c8701d26136c00",
 }
 
 ORDINAL1_RUN_ID = 30_906_913_329
@@ -106,7 +106,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _verify_evidence_hashes(root: Path) -> None:
     for relative_path, expected_hash in EVIDENCE_RAW_SHA256.items():
-        if raw_sha256(root / relative_path) != expected_hash:
+        if canonical_source_sha256(root / relative_path) != expected_hash:
             raise Refusal(f"bound evidence hash changed: {relative_path}")
 
 

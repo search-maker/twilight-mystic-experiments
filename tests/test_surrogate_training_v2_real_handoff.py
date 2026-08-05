@@ -219,6 +219,30 @@ class RealHandoffGuardTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(GUARD.GuardRefusal):
                 self.validate(source_descriptor=descriptor)
 
+    def test_each_consumed_authorization_ref_is_independently_refused(self):
+        expected_refs = {
+            "81bbdbe17f7dcf024f49378debfd08d1317137a2",
+            "9f3ef4b2afd93d5ae15a45ac70c9f27e32636f88",
+        }
+        self.assertEqual(GUARD.CONSUMED_AUTHORIZATION_REFS, expected_refs)
+        for authorization_ref in sorted(expected_refs):
+            descriptor = self.descriptor()
+            source = descriptor["sourceRun"]
+            source["authorizationRef"] = authorization_ref
+            source["displayTitle"] = (
+                f"MYSTIC batch v1 | key={source['executionKey']} | auth={authorization_ref} | "
+                f"ordinal={source['authorizationOrdinal']}"
+            )
+            run = self.source_run()
+            run["display_title"] = source["displayTitle"]
+            plan = self.source_plan()
+            plan["authorizationRef"] = authorization_ref
+            with self.subTest(authorization_ref=authorization_ref), self.assertRaisesRegex(
+                GUARD.GuardRefusal,
+                "consumed historical Tier-1 authorization ref",
+            ):
+                self.validate(source_descriptor=descriptor, source_run=run, source_plan=plan)
+
     def test_refuses_nonterminal_retried_or_failed_source(self):
         for field, value in (("status", "in_progress"), ("run_attempt", 2), ("conclusion", "failure")):
             run = self.source_run()

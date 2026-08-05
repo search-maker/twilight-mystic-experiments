@@ -19,6 +19,10 @@ CONSUMED_EXECUTION_KEYS = {
     "twilight-surrogate-tier-1-v1:numerical:2",
 }
 CONSUMED_AUTHORIZATION_ORDINALS = {1, 2}
+CONSUMED_AUTHORIZATION_REFS = {
+    "81bbdbe17f7dcf024f49378debfd08d1317137a2",
+    "9f3ef4b2afd93d5ae15a45ac70c9f27e32636f88",
+}
 
 REFERENCE_RUN_ID = 30905632743
 REFERENCE_WORKFLOW_ID = 326688920
@@ -217,7 +221,9 @@ def validate_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
     require_positive_int(source.get("runNumber"), "source descriptor run number")
     require_exact(source, {"runAttempt": 1, "event": "workflow_dispatch", "headBranch": "main"}, "source descriptor run")
     require_git_sha(source.get("headSha"), "source descriptor head SHA")
-    require_git_sha(source.get("authorizationRef"), "source descriptor authorization ref")
+    authorization_ref = require_git_sha(source.get("authorizationRef"), "source descriptor authorization ref")
+    if authorization_ref in CONSUMED_AUTHORIZATION_REFS:
+        raise GuardRefusal("consumed historical Tier-1 authorization ref is permanently ineligible")
     require_safe_relative_path(source.get("path"), "source descriptor workflow path")
     if not isinstance(source.get("displayTitle"), str) or not source["displayTitle"].strip():
         raise GuardRefusal("source descriptor display title missing")

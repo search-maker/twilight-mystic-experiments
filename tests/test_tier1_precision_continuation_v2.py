@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -19,7 +20,7 @@ SPEC.loader.exec_module(m)
 ACCEPTED_IDS = {"train-0005", "train-0014", "train-0037"}
 
 
-def source_fixture():
+def _legacy_synthetic_source_fixture():
     schedule = {gid: photons for photons, gids in m.GEOMETRIES_BY_PHOTONS.items() for gid in gids}
     records = []
     for index in range(1, 49):
@@ -153,10 +154,46 @@ def source_fixture():
     return dataset, aggregate, audit, provenance
 
 
+def source_fixture():
+    evidence = ROOT / "evidence" / "ordinal2-corrected-v2"
+    dataset = json.loads((evidence / "tier1-numerical-dataset.json").read_text())
+    aggregate = json.loads((evidence / "batch-summary.json").read_text())
+    audit = json.loads((evidence / "audit-report.json").read_text())
+    plan = json.loads((evidence / "plan.json").read_text())
+    source_seeds = [case["seed"] for case in plan["cases"]]
+    provenance = {
+        "runId": m.SOURCE_RUN_ID,
+        "runAttempt": 1,
+        "headSha": m.SOURCE_HEAD_SHA,
+        "authorizationRef": m.SOURCE_AUTHORIZATION_REF,
+        "executionKey": m.SOURCE_EXECUTION_KEY,
+        "authorizationOrdinal": m.SOURCE_AUTHORIZATION_ORDINAL,
+        "event": "workflow_dispatch",
+        "planRawSha256": m.SOURCE_PLAN_RAW_SHA256,
+        "artifactManifestRawSha256": m.SOURCE_ARTIFACT_MANIFEST_RAW_SHA256,
+        "historicalReproductionRawSha256": m.SOURCE_HISTORICAL_REPRODUCTION_RAW_SHA256,
+        "artifactDigests": m.SOURCE_ARTIFACT_DIGESTS,
+        "historicalTerminalConclusion": "failure",
+        "historicalEvidenceImmutable": True,
+        "correctedInterpretationOnly": True,
+        "sourceSeeds": source_seeds,
+        "sourceSeedsSha256": m.SOURCE_SEEDS_SHA256,
+        "bindings": {
+            "datasetSha256": m.SOURCE_DATASET_CANONICAL_SHA256,
+            "aggregateSha256": m.SOURCE_AGGREGATE_CANONICAL_SHA256,
+            "auditSha256": m.SOURCE_AUDIT_CANONICAL_SHA256,
+        },
+    }
+    return dataset, aggregate, audit, provenance
+
+
 def fake_results(cases, value=1.0):
     results = []
     for case in cases:
         case_value = value(case) if callable(value) else value
+        node_value = case_value / (6.83002 * sum(m.CIE))
+        nodes = [node_value] * 15
+        case_value = m._photopic_value(nodes)
         results.append(
             {
                 "caseId": case["caseId"],
@@ -171,7 +208,7 @@ def fake_results(cases, value=1.0):
                 "syntax": {"exitCode": 0, "timedOut": False},
                 "solver": {"exitCode": 0, "timedOut": False},
                 "valueCdM2": case_value,
-                "selectedNodeRadiance": [case_value] * 15,
+                "selectedNodeRadiance": nodes,
                 "artifactSha256": "1" * 64,
                 "inputSha256": "2" * 64,
                 "radianceOutputSha256": "3" * 64,
@@ -180,6 +217,22 @@ def fake_results(cases, value=1.0):
             }
         )
     return results
+
+
+def completed_audited_wave(proposal, wave, active_geometry_ids, value=None):
+    if value is None:
+        source_means = {
+            row["geometryId"]: sum(row["valuesCdM2"]) / len(row["valuesCdM2"])
+            for row in proposal["sourceRecords"]
+        }
+        value = lambda case: source_means[case["groupId"]]
+    cases = m.wave_cases(proposal, wave, active_geometry_ids)
+    results = fake_results(cases, value)
+    aggregate = m.aggregate_wave(proposal, wave, active_geometry_ids, results)
+    audit = m.audit_wave(proposal, wave, active_geometry_ids, results, aggregate)
+    if audit["status"] != "PASSED":
+        raise AssertionError(audit["failures"])
+    return aggregate, audit
 
 
 class ContinuationV2Tests(unittest.TestCase):
@@ -217,6 +270,14 @@ class ContinuationV2Tests(unittest.TestCase):
         with self.assertRaises(m.Refusal):
             m.build(dataset, aggregate, audit, provenance)
 
+        proposal = m.build(*source_fixture())
+        proposal["potentialCases"][0]["seed"] = proposal["seedProof"]["sourceSeedCount"]
+        unhashed = dict(proposal)
+        unhashed.pop("proposalSha256")
+        proposal["proposalSha256"] = m.canonical_sha256(unhashed)
+        with self.assertRaisesRegex(m.Refusal, "case universe"):
+            m.wave_cases(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)
+
     def test_immutable_ordinal2_identity_and_hash_binding_refused_on_drift(self):
         dataset, aggregate, audit, provenance = source_fixture()
         provenance["runAttempt"] = 2
@@ -233,6 +294,13 @@ class ContinuationV2Tests(unittest.TestCase):
         dataset["adaptiveContinuationRequiredGeometryIds"].pop()
         provenance["bindings"]["datasetSha256"] = m.canonical_sha256(dataset)
         with self.assertRaises(m.Refusal):
+            m.build(dataset, aggregate, audit, provenance)
+        dataset, aggregate, audit, provenance = source_fixture()
+        changed = next(record for record in dataset["records"] if record["geometryId"] == "train-0003")
+        changed["geometry"]["sunDepressionDeg"] += 1.0
+        changed["geometry"]["alisSpectralImportanceSamplingNm"] = 500.0
+        provenance["bindings"]["datasetSha256"] = m.canonical_sha256(dataset)
+        with self.assertRaisesRegex(m.Refusal, "reviewed ordinal-2 evidence"):
             m.build(dataset, aggregate, audit, provenance)
         dataset, aggregate, audit, provenance = source_fixture()
         zero = next(record for record in dataset["records"] if record["geometryId"] == "train-0047")
@@ -265,6 +333,9 @@ class ContinuationV2Tests(unittest.TestCase):
         aggregate = m.aggregate_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS, results)
         self.assertEqual(aggregate["status"], "COMPLETED")
         self.assertEqual(len(aggregate["zeroHitDiagnostics"]), 1)
+        audit = m.audit_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS, results, aggregate)
+        self.assertEqual(audit["status"], "PASSED")
+        self.assertTrue(audit["independentlyRecomputedFromRawSelectedNodeRadiance"])
         failed = copy.deepcopy(results)
         failed[0]["solver"]["timedOut"] = True
         aggregate = m.aggregate_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS, failed)
@@ -282,24 +353,23 @@ class ContinuationV2Tests(unittest.TestCase):
 
     def test_two_block_stopping_is_additive_and_zero_reaches_cap(self):
         proposal = m.build(*source_fixture())
-        wave1_cases = m.wave_cases(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)
-        wave1 = m.aggregate_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS, fake_results(wave1_cases))
-        analysis1 = m.analyze_waves(proposal, [wave1])
-        self.assertEqual(analysis1["nextWaveGeometryIds"], list(m.CONTINUATION_GEOMETRY_IDS))
+        wave1, audit1 = completed_audited_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)
+        analysis1 = m.analyze_waves(proposal, [wave1], [audit1])
+        self.assertEqual(len(analysis1["nextWaveGeometryIds"]), 15)
+        self.assertIn("train-0047", analysis1["nextWaveGeometryIds"])
 
-        wave2_cases = m.wave_cases(proposal, 2, analysis1["nextWaveGeometryIds"])
-        wave2 = m.aggregate_wave(proposal, 2, analysis1["nextWaveGeometryIds"], fake_results(wave2_cases))
-        analysis2 = m.analyze_waves(proposal, [wave1, wave2])
-        self.assertEqual(analysis2["nextWaveGeometryIds"], ["train-0047"])
-        accepted = [point for point in analysis2["points"] if point["geometryId"] == "train-0003"][0]
+        wave2, audit2 = completed_audited_wave(proposal, 2, analysis1["nextWaveGeometryIds"])
+        analysis2 = m.analyze_waves(proposal, [wave1, wave2], [audit1, audit2])
+        self.assertEqual(len(analysis2["nextWaveGeometryIds"]), 13)
+        accepted = [point for point in analysis2["points"] if point["geometryId"] == "train-0019"][0]
         self.assertEqual(accepted["blockCount"], 6)
         self.assertEqual(accepted["classification"], "PRECISION_ACCEPTED")
 
-        wave3_cases = m.wave_cases(proposal, 3, analysis2["nextWaveGeometryIds"])
-        wave3 = m.aggregate_wave(proposal, 3, analysis2["nextWaveGeometryIds"], fake_results(wave3_cases))
-        analysis3 = m.analyze_waves(proposal, [wave1, wave2, wave3])
+        wave3, audit3 = completed_audited_wave(proposal, 3, analysis2["nextWaveGeometryIds"])
+        analysis3 = m.analyze_waves(proposal, [wave1, wave2, wave3], [audit1, audit2, audit3])
         self.assertEqual(analysis3["nextWaveGeometryIds"], [])
-        self.assertEqual(analysis3["exhaustedGeometryIds"], ["train-0047"])
+        self.assertEqual(len(analysis3["exhaustedGeometryIds"]), 6)
+        self.assertIn("train-0047", analysis3["exhaustedGeometryIds"])
         zero = [point for point in analysis3["points"] if point["geometryId"] == "train-0047"][0]
         self.assertEqual(zero["blockCount"], 8)
         self.assertEqual(zero["classification"], "PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT")
@@ -307,26 +377,31 @@ class ContinuationV2Tests(unittest.TestCase):
 
     def test_stopped_geometry_cannot_be_selectively_reintroduced(self):
         proposal = m.build(*source_fixture())
-        wave1 = m.aggregate_wave(
-            proposal,
-            1,
-            m.CONTINUATION_GEOMETRY_IDS,
-            fake_results(m.wave_cases(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)),
-        )
-        wave2 = m.aggregate_wave(
-            proposal,
-            2,
-            m.CONTINUATION_GEOMETRY_IDS,
-            fake_results(m.wave_cases(proposal, 2, m.CONTINUATION_GEOMETRY_IDS)),
-        )
-        wrong_wave3 = m.aggregate_wave(
-            proposal,
-            3,
-            m.CONTINUATION_GEOMETRY_IDS,
-            fake_results(m.wave_cases(proposal, 3, m.CONTINUATION_GEOMETRY_IDS)),
-        )
+        wave1, audit1 = completed_audited_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)
+        wave2, audit2 = completed_audited_wave(proposal, 2, m.CONTINUATION_GEOMETRY_IDS)
+        wrong_wave3, wrong_audit3 = completed_audited_wave(proposal, 3, m.CONTINUATION_GEOMETRY_IDS)
         with self.assertRaises(m.Refusal):
-            m.analyze_waves(proposal, [wave1, wave2, wrong_wave3])
+            m.analyze_waves(proposal, [wave1, wave2, wrong_wave3], [audit1, audit2, wrong_audit3])
+
+    def test_analysis_requires_matching_independent_raw_wave_audit(self):
+        proposal = m.build(*source_fixture())
+        wave1, audit1 = completed_audited_wave(proposal, 1, m.CONTINUATION_GEOMETRY_IDS)
+        fabricated = copy.deepcopy(wave1)
+        fabricated["valuesByGeometry"]["train-0003"].extend(
+            [
+                {"caseId": "forged-b5", "block": 5, "valueCdM2": 1.0, "zeroHit": False},
+                {"caseId": "forged-b6", "block": 6, "valueCdM2": 1.0, "zeroHit": False},
+            ]
+        )
+        with self.assertRaisesRegex(m.Refusal, "independent audit invalid"):
+            m.analyze_waves(proposal, [fabricated], [audit1])
+        forged_raw = copy.deepcopy(audit1)
+        forged_raw["rawValuesByGeometry"]["train-0003"][0]["valueCdM2"] = 1_000_000.0
+        unhashed = dict(forged_raw)
+        unhashed.pop("auditPayloadSha256")
+        forged_raw["auditPayloadSha256"] = m.canonical_sha256(unhashed)
+        with self.assertRaisesRegex(m.Refusal, "audited geometry universe"):
+            m.analyze_waves(proposal, [wave1], [forged_raw])
 
     def test_authorization_template_allocates_nothing(self):
         proposal = m.build(*source_fixture())

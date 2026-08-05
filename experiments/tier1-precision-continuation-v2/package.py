@@ -25,6 +25,11 @@ SOURCE_AUTHORIZATION_ORDINAL = 2
 SOURCE_PLAN_RAW_SHA256 = "f19ea2eb742ca6e5ca638714128b52f3ba5167dfa23b9ff08ee19ae01416d448"
 SOURCE_ARTIFACT_MANIFEST_RAW_SHA256 = "33ff075963f1f57828c6369d58eec7adb60dcc8df820b25e2d11cf33e79aa070"
 SOURCE_HISTORICAL_REPRODUCTION_RAW_SHA256 = "1c992bf9e22ee1c293508f4dcbcdf00ea84c4ecf03ee4f0120de8dc5089dee57"
+SOURCE_DATASET_CANONICAL_SHA256 = "0fef4b51922abcf3026cd3c1be2251972cf7cab5c4925644a82a921150f0774e"
+SOURCE_AGGREGATE_CANONICAL_SHA256 = "4321a6255da3eb8a06316a2b25beb370575431f83816eeef8f0de7cad9584940"
+SOURCE_AUDIT_CANONICAL_SHA256 = "52448c99047d90fc8c88aa253f0ba74aa78562c9e6f55397e15005d39aad4a94"
+SOURCE_SEEDS_SHA256 = "609270965a1296608c20a9e832d027686a932b52e0b671b3c5bc4fa865ac6122"
+SOURCE_CONTINUATION_RECORDS_SHA256 = "1576b45cefb38ddc4c1f4dec93b38121f5e6439654ab45e259b8ef6df650490b"
 SOURCE_ARTIFACT_DIGESTS = {
     "twilight-surrogate-tier-1-ordinal2-execution-preflight": "sha256:e042bac7c3e50f03d0f2501e950d16393ce94da0c8bc45dd77efaa03e865eb8f",
     "twilight-surrogate-tier-1-ordinal2-aggregate": "sha256:b85620fa0af8ec4609ad4934c7f0bfbcdd346f8a5f6f4f2b3d55e5fadf6088c2",
@@ -91,6 +96,7 @@ PRECOMPUTED_SEEDS = {
 
 ALLOWED_ROLES = {"surrogate-training", "internal-holdout"}
 HEX = set("0123456789abcdef")
+CIE = [0.09098, 0.13902, 0.20802, 0.323, 0.503, 0.71, 0.862, 0.954, 0.995, 0.87, 0.757, 0.631, 0.503, 0.175, 0.061]
 
 
 class Refusal(RuntimeError):
@@ -163,7 +169,7 @@ def classify_values(values: Iterable[float]) -> dict[str, Any]:
         else:
             classification = "ADAPTIVE_CONTINUATION_REQUIRED"
             numerical_status = "NUMERICAL_PRECISION_INSUFFICIENT"
-    return {
+    report = {
         "blockCount": len(rows),
         "valuesCdM2": rows,
         "nonzeroBlockValuesCdM2": [value for value in rows if value != 0.0],
@@ -176,6 +182,7 @@ def classify_values(values: Iterable[float]) -> dict[str, Any]:
         "capReached": cap_reached,
         "scientificallyEligible": classification in {"PRECISION_TARGET_MET", "PRECISION_ACCEPTED"},
     }
+    return report
 
 
 def _validate_source_provenance(
@@ -201,10 +208,16 @@ def _validate_source_provenance(
         raise Refusal("ordinal-2 source identity or immutable-history boundary changed")
     bindings = provenance.get("bindings")
     expected = {
-        "datasetSha256": canonical_sha256(dataset),
-        "aggregateSha256": canonical_sha256(aggregate),
-        "auditSha256": canonical_sha256(audit),
+        "datasetSha256": SOURCE_DATASET_CANONICAL_SHA256,
+        "aggregateSha256": SOURCE_AGGREGATE_CANONICAL_SHA256,
+        "auditSha256": SOURCE_AUDIT_CANONICAL_SHA256,
     }
+    if (
+        canonical_sha256(dataset) != SOURCE_DATASET_CANONICAL_SHA256
+        or canonical_sha256(aggregate) != SOURCE_AGGREGATE_CANONICAL_SHA256
+        or canonical_sha256(audit) != SOURCE_AUDIT_CANONICAL_SHA256
+    ):
+        raise Refusal("corrected source payload differs from reviewed ordinal-2 evidence")
     if not isinstance(bindings, dict) or any(bindings.get(key) != value for key, value in expected.items()):
         raise Refusal("corrected source binding failed")
     source_seeds = provenance.get("sourceSeeds")
@@ -214,7 +227,10 @@ def _validate_source_provenance(
         raise Refusal("source seed invalid")
     if len(set(source_seeds)) != 96:
         raise Refusal("source seed reuse")
-    if provenance.get("sourceSeedsSha256") != canonical_sha256(sorted(source_seeds)):
+    if (
+        canonical_sha256(sorted(source_seeds)) != SOURCE_SEEDS_SHA256
+        or provenance.get("sourceSeedsSha256") != SOURCE_SEEDS_SHA256
+    ):
         raise Refusal("source seed binding failed")
     return set(source_seeds)
 
@@ -333,7 +349,8 @@ def validate_source(
     }
     if any(audit.get(key) != value for key, value in audit_required.items()):
         raise Refusal("schema-v2 independent audit state changed")
-    zero = audit.get("zeroHitDiagnostics")
+    zero_rows = audit.get("zeroHitDiagnostics")
+    zero = zero_rows[0] if isinstance(zero_rows, list) and len(zero_rows) == 1 else None
     if not isinstance(zero, dict) or any(
         zero.get(key) != value
         for key, value in {
@@ -346,7 +363,21 @@ def validate_source(
     ):
         raise Refusal("independent zero-hit audit changed")
     source_seeds = _validate_source_provenance(dataset, aggregate, audit, provenance)
-    return _validate_source_records(dataset), source_seeds
+    records = _validate_source_records(dataset)
+    projected = [
+        {
+            "geometryId": gid,
+            "role": records[gid]["role"],
+            "caseIds": list(records[gid]["caseIds"]),
+            "valuesCdM2": list(records[gid]["statistics"]["valuesCdM2"]),
+            "zeroHitCaseIds": list(records[gid].get("zeroHitCaseIds", [])),
+            "geometry": records[gid]["geometry"],
+        }
+        for gid in CONTINUATION_GEOMETRY_IDS
+    ]
+    if canonical_sha256(projected) != SOURCE_CONTINUATION_RECORDS_SHA256:
+        raise Refusal("continuation source geometry or numerical evidence changed")
+    return records, source_seeds
 
 
 def build(
@@ -405,9 +436,9 @@ def build(
             "artifactManifestRawSha256": SOURCE_ARTIFACT_MANIFEST_RAW_SHA256,
             "historicalReproductionRawSha256": SOURCE_HISTORICAL_REPRODUCTION_RAW_SHA256,
             "artifactDigests": SOURCE_ARTIFACT_DIGESTS,
-            "datasetSha256": canonical_sha256(dataset),
-            "aggregateSha256": canonical_sha256(aggregate),
-            "auditSha256": canonical_sha256(audit),
+            "datasetSha256": SOURCE_DATASET_CANONICAL_SHA256,
+            "aggregateSha256": SOURCE_AGGREGATE_CANONICAL_SHA256,
+            "auditSha256": SOURCE_AUDIT_CANONICAL_SHA256,
             "historicalTerminalConclusion": "failure",
             "correctedInterpretationOnly": True,
             "historicalEvidenceImmutable": True,
@@ -418,6 +449,8 @@ def build(
         "hardCapTotalBlocksPerGeometry": MAX_TOTAL_BLOCKS,
         "continuationGeometryIds": list(CONTINUATION_GEOMETRY_IDS),
         "continuationGeometryCount": len(CONTINUATION_GEOMETRY_IDS),
+        "thresholds": {"targetMaximum": TARGET_RSEM, "acceptedMaximum": ACCEPTED_MAX_RSEM},
+        "waveBlocks": {str(wave): list(blocks) for wave, blocks in BLOCK_WAVES.items()},
         "sourceRecords": [
             {
                 "geometryId": gid,
@@ -437,7 +470,7 @@ def build(
         "potentialCases": cases,
         "seedProof": {
             "sourceSeedCount": len(source_seeds),
-            "sourceSeedsSha256": canonical_sha256(sorted(source_seeds)),
+            "sourceSeedsSha256": SOURCE_SEEDS_SHA256,
             "continuationSeedCount": len(all_seeds),
             "continuationSeedsSha256": canonical_sha256(all_seeds),
             "allContinuationSeedsUnique": True,
@@ -469,9 +502,133 @@ def build(
         "tier2AutomaticallyAuthorized": False,
         "productionPromotionAuthorized": False,
         "boundary": "proposal and contract preparation only; no authorization, dispatch, scientific execution, surrogate fit, or production claim",
+        "boundary": "proposal and contract preparation only; no authorization, dispatch, scientific execution, surrogate fit, or production claim",
     }
     proposal["proposalSha256"] = canonical_sha256(proposal)
     return proposal
+
+
+def validate_proposal(proposal: dict[str, Any]) -> None:
+    if not isinstance(proposal, dict):
+        raise Refusal("continuation proposal missing")
+    payload = dict(proposal)
+    supplied_hash = payload.pop("proposalSha256", None)
+    if not is_sha256(supplied_hash) or canonical_sha256(payload) != supplied_hash:
+        raise Refusal("continuation proposal hash changed")
+    required = {
+        "schemaVersion": 2,
+        "stageId": "tier1-precision-continuation-preparation-v2",
+        "status": "PROPOSAL_ONLY_NOT_AUTHORIZATION",
+        "proposalOnly": True,
+        "scientificExecution": False,
+        "automaticDispatch": False,
+        "automaticContinuation": False,
+        "authorizationEnabled": False,
+        "authorizationOrdinalAllocated": False,
+        "githubRerunAllowed": False,
+        "firstAttemptOnly": True,
+        "initialBlocksPerGeometry": INITIAL_BLOCKS,
+        "hardCapTotalBlocksPerGeometry": MAX_TOTAL_BLOCKS,
+        "continuationGeometryIds": list(CONTINUATION_GEOMETRY_IDS),
+        "continuationGeometryCount": len(CONTINUATION_GEOMETRY_IDS),
+        "photonScheduleGeometryIds": {str(key): list(value) for key, value in GEOMETRIES_BY_PHOTONS.items()},
+        "maximumCasesPerWave": MAX_WAVE_CASES,
+        "maximumConfiguredPhotonHistoriesPerWave": MAX_WAVE_PHOTONS,
+        "maximumContinuationCases": MAX_CONTINUATION_CASES,
+        "maximumConfiguredContinuationPhotonHistories": MAX_CONTINUATION_PHOTONS,
+        "surrogateFitAuthorized": False,
+        "tier2AutomaticallyAuthorized": False,
+        "productionPromotionAuthorized": False,
+    }
+    if any(proposal.get(key) != value for key, value in required.items()):
+        raise Refusal("continuation proposal boundary changed")
+    expected_source = {
+        "runId": SOURCE_RUN_ID,
+        "runAttempt": SOURCE_RUN_ATTEMPT,
+        "headSha": SOURCE_HEAD_SHA,
+        "authorizationRef": SOURCE_AUTHORIZATION_REF,
+        "executionKey": SOURCE_EXECUTION_KEY,
+        "authorizationOrdinal": SOURCE_AUTHORIZATION_ORDINAL,
+        "planRawSha256": SOURCE_PLAN_RAW_SHA256,
+        "artifactManifestRawSha256": SOURCE_ARTIFACT_MANIFEST_RAW_SHA256,
+        "historicalReproductionRawSha256": SOURCE_HISTORICAL_REPRODUCTION_RAW_SHA256,
+        "artifactDigests": SOURCE_ARTIFACT_DIGESTS,
+        "datasetSha256": SOURCE_DATASET_CANONICAL_SHA256,
+        "aggregateSha256": SOURCE_AGGREGATE_CANONICAL_SHA256,
+        "auditSha256": SOURCE_AUDIT_CANONICAL_SHA256,
+        "historicalTerminalConclusion": "failure",
+        "correctedInterpretationOnly": True,
+        "historicalEvidenceImmutable": True,
+    }
+    if proposal.get("source") != expected_source:
+        raise Refusal("continuation proposal source changed")
+    source_records = proposal.get("sourceRecords")
+    if not isinstance(source_records, list) or canonical_sha256(source_records) != SOURCE_CONTINUATION_RECORDS_SHA256:
+        raise Refusal("continuation proposal source records changed")
+    records = {row.get("geometryId"): row for row in source_records if isinstance(row, dict)}
+    if set(records) != set(CONTINUATION_GEOMETRY_IDS):
+        raise Refusal("continuation proposal source universe changed")
+    schedule = _photon_schedule()
+    expected_cases: list[dict[str, Any]] = []
+    for gid in CONTINUATION_GEOMETRY_IDS:
+        record = records[gid]
+        geometry = record.get("geometry")
+        if not isinstance(geometry, dict):
+            raise Refusal("continuation proposal geometry missing")
+        geometry_sha = canonical_sha256(geometry)
+        for block in range(3, 9):
+            expected_cases.append(
+                {
+                    "caseId": f"{gid}-precision-continuation-v2-b{block}",
+                    "groupId": gid,
+                    "block": block,
+                    "wave": (block - 1) // 2,
+                    "seed": _seed_for(gid, block),
+                    "role": record["role"],
+                    "photonHistories": schedule[gid],
+                    "alisSpectralImportanceSamplingNm": geometry["alisSpectralImportanceSamplingNm"],
+                    "geometrySha256": geometry_sha,
+                    "sourceCaseIds": list(record["caseIds"]),
+                    "proposalOnly": True,
+                }
+            )
+    if proposal.get("potentialCases") != expected_cases:
+        raise Refusal("continuation proposal case universe changed")
+    all_seeds = [row["seed"] for row in expected_cases]
+    expected_seed_proof = {
+        "sourceSeedCount": 96,
+        "sourceSeedsSha256": SOURCE_SEEDS_SHA256,
+        "continuationSeedCount": MAX_CONTINUATION_CASES,
+        "continuationSeedsSha256": canonical_sha256(all_seeds),
+        "allContinuationSeedsUnique": True,
+        "sourceContinuationOverlap": [],
+        "seedsConsumedOnDispatchEvenOnFailure": True,
+    }
+    if proposal.get("seedProof") != expected_seed_proof:
+        raise Refusal("continuation proposal seed proof changed")
+    expected_stopping_rule = {
+        "evaluateOnlyAfterCompleteAuditedTwoBlockWave": True,
+        "allOriginalAndContinuationBlocksPreserved": True,
+        "targetIfRsemAtMost": TARGET_RSEM,
+        "acceptedIfRsemAboveTargetAndAtMost": ACCEPTED_MAX_RSEM,
+        "continueIfRsemAboveAcceptedAndBelowCap": True,
+        "zeroHitKeepsRsemNull": True,
+        "zeroHitContinuesUntilCap": True,
+        "noEpsilonSubstitution": True,
+        "noSelectiveBlockDeletion": True,
+    }
+    expected_fresh_identity_rule = {
+        "separateAuthorizationRequiredForEachWave": True,
+        "nextVerifiedUnusedMonotonicOrdinalRequired": True,
+        "freshExecutionKeyRequired": True,
+        "onePurposeAuthorizationCommitRequired": True,
+        "exactHeadWorkflowDispatchRequired": True,
+        "runAttemptMustEqual": 1,
+        "githubRerunForbidden": True,
+        "identityAndSeedsConsumedOnDispatch": True,
+    }
+    if proposal.get("stoppingRule") != expected_stopping_rule or proposal.get("freshIdentityRule") != expected_fresh_identity_rule:
+        raise Refusal("continuation proposal stopping or identity rule changed")
 
 
 def authorization_template(proposal: dict[str, Any], wave: int) -> dict[str, Any]:
@@ -495,7 +652,8 @@ def authorization_template(proposal: dict[str, Any], wave: int) -> dict[str, Any
 
 
 def wave_cases(proposal: dict[str, Any], wave: int, active_geometry_ids: Iterable[str]) -> list[dict[str, Any]]:
-    if proposal.get("status") != "PROPOSAL_ONLY_NOT_AUTHORIZATION" or wave not in BLOCK_WAVES:
+    validate_proposal(proposal)
+    if wave not in BLOCK_WAVES:
         raise Refusal("invalid proposal or wave")
     active = tuple(sorted(active_geometry_ids))
     if not active or len(set(active)) != len(active) or not set(active) <= set(CONTINUATION_GEOMETRY_IDS):
@@ -585,7 +743,134 @@ def aggregate_wave(
     }
 
 
-def analyze_waves(proposal: dict[str, Any], wave_aggregates: list[dict[str, Any]]) -> dict[str, Any]:
+def _photopic_value(nodes: list[float]) -> float:
+    return 683.002 * 10.0 * sum((value / 1000.0) * weight for value, weight in zip(nodes, CIE))
+
+
+def audit_wave(
+    proposal: dict[str, Any],
+    wave: int,
+    active_geometry_ids: Iterable[str],
+    results: list[dict[str, Any]],
+    aggregate: dict[str, Any],
+) -> dict[str, Any]:
+    active = tuple(sorted(active_geometry_ids))
+    planned_rows = wave_cases(proposal, wave, active)
+    planned = {case["caseId"]: case for case in planned_rows}
+    observed: dict[str, dict[str, Any]] = {}
+    failures: list[dict[str, Any]] = []
+    values: dict[str, list[dict[str, Any]]] = {}
+    zero_hits: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            failures.append({"code": "invalid-result-row"})
+            continue
+        case_id = result.get("caseId")
+        if case_id not in planned or case_id in observed:
+            failures.append({"code": "unplanned-or-duplicate-result", "caseId": case_id})
+            continue
+        observed[case_id] = result
+        expected = planned[case_id]
+        for key in ("seed", "role", "photonHistories", "alisSpectralImportanceSamplingNm", "geometrySha256"):
+            if result.get(key) != expected[key]:
+                failures.append({"code": "case-identity-drift", "caseId": case_id, "field": key})
+        syntax, solver = result.get("syntax"), result.get("solver")
+        if (
+            result.get("status") != "COMPLETED"
+            or not isinstance(syntax, dict)
+            or syntax.get("exitCode") != 0
+            or syntax.get("timedOut") is not False
+            or not isinstance(solver, dict)
+            or solver.get("exitCode") != 0
+            or solver.get("timedOut") is not False
+            or result.get("syntaxCheckCount") != 1
+            or result.get("solverExecutionCount") != 1
+        ):
+            failures.append({"code": "execution-contract", "caseId": case_id})
+            continue
+        if any(
+            not is_sha256(result.get(name))
+            for name in ("artifactSha256", "inputSha256", "radianceOutputSha256", "stdOutputSha256", "runtimeSha256")
+        ):
+            failures.append({"code": "hash-contract", "caseId": case_id})
+            continue
+        try:
+            nodes = [_finite(node, "raw radiance node", nonnegative=True) for node in result.get("selectedNodeRadiance", [])]
+            reported_value = _finite(result.get("valueCdM2"), "reported continuation value", nonnegative=True)
+        except Refusal as exc:
+            failures.append({"code": "numeric-contract", "caseId": case_id, "detail": str(exc)})
+            continue
+        if len(nodes) != len(CIE):
+            failures.append({"code": "spectral-node-count", "caseId": case_id})
+            continue
+        recomputed_value = _photopic_value(nodes)
+        if not math.isclose(reported_value, recomputed_value, rel_tol=1e-12, abs_tol=1e-30):
+            failures.append({"code": "reported-estimator-differs-from-raw-spectrum", "caseId": case_id})
+            continue
+        zero_hit = recomputed_value == 0.0
+        row = {"caseId": case_id, "block": expected["block"], "valueCdM2": recomputed_value, "zeroHit": zero_hit}
+        values.setdefault(expected["groupId"], []).append(row)
+        if zero_hit:
+            zero_hits.append(
+                {
+                    "caseId": case_id,
+                    "geometryId": expected["groupId"],
+                    "block": expected["block"],
+                    "derivedFromRawOutputs": True,
+                }
+            )
+    for case_id in sorted(set(planned) - set(observed)):
+        failures.append({"code": "missing-result", "caseId": case_id})
+    audited_values = {gid: sorted(rows, key=lambda row: row["block"]) for gid, rows in sorted(values.items())}
+    expected_aggregate = {
+        "schemaVersion": 2,
+        "stageId": "tier1-precision-continuation-wave-aggregate-v2",
+        "status": "COMPLETED",
+        "classification": "CONTINUATION_WAVE_EXECUTION_COMPLETE",
+        "executionComplete": True,
+        "scientificallyEligible": False,
+        "proposalSha256": proposal["proposalSha256"],
+        "wave": wave,
+        "activeGeometryIds": list(active),
+        "caseCountPlanned": len(planned),
+        "caseCountObserved": len(observed),
+        "configuredPhotonHistories": sum(case["photonHistories"] for case in planned.values()),
+        "valuesByGeometry": audited_values,
+        "zeroHitDiagnostics": sorted(zero_hits, key=lambda row: row["caseId"]),
+        "structuralFailures": [],
+        "executionFailures": [],
+        "additionalExecutionAutomaticallyAuthorized": False,
+    }
+    if aggregate != expected_aggregate:
+        failures.append({"code": "aggregate-differs-from-independent-raw-audit"})
+    report = {
+        "schemaVersion": 2,
+        "stageId": "tier1-precision-continuation-wave-audit-v2",
+        "status": "PASSED" if not failures else "FAILED",
+        "proposalSha256": proposal["proposalSha256"],
+        "aggregateSha256": canonical_sha256(aggregate),
+        "wave": wave,
+        "activeGeometryIds": list(active),
+        "caseResultCount": len(observed),
+        "caseResultHashes": {case_id: canonical_sha256(result) for case_id, result in sorted(observed.items())},
+        "rawValuesByGeometry": audited_values,
+        "zeroHitDiagnostics": sorted(zero_hits, key=lambda row: row["caseId"]),
+        "failures": failures,
+        "independentlyRecomputedFromRawSelectedNodeRadiance": True,
+        "additionalExecutionAutomaticallyAuthorized": False,
+    }
+    report["auditPayloadSha256"] = canonical_sha256(report)
+    return report
+
+
+def analyze_waves(
+    proposal: dict[str, Any],
+    wave_aggregates: list[dict[str, Any]],
+    wave_audits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    validate_proposal(proposal)
+    if len(wave_aggregates) != len(wave_audits):
+        raise Refusal("every continuation aggregate requires an independent audit")
     source_records = {case["groupId"]: case for case in proposal["potentialCases"] if case["block"] == 3}
     source_values = {
         gid: list(next(point for point in proposal["sourceRecords"] if point["geometryId"] == gid)["valuesCdM2"])
@@ -594,11 +879,12 @@ def analyze_waves(proposal: dict[str, Any], wave_aggregates: list[dict[str, Any]
     if source_values is None:
         raise Refusal("proposal source records missing")
     continuation: dict[str, list[dict[str, Any]]] = {gid: [] for gid in CONTINUATION_GEOMETRY_IDS}
-    ordered = sorted(wave_aggregates, key=lambda row: row.get("wave", -1))
+    ordered_pairs = sorted(zip(wave_aggregates, wave_audits), key=lambda pair: pair[0].get("wave", -1))
+    ordered = [pair[0] for pair in ordered_pairs]
     if [row.get("wave") for row in ordered] != list(range(1, len(ordered) + 1)):
         raise Refusal("waves must be contiguous from wave one")
     expected_active = list(CONTINUATION_GEOMETRY_IDS)
-    for aggregate in ordered:
+    for aggregate, audit in ordered_pairs:
         if aggregate.get("status") != "COMPLETED" or aggregate.get("executionComplete") is not True:
             raise Refusal("cannot analyze failed or incomplete wave")
         wave = aggregate.get("wave")
@@ -606,9 +892,49 @@ def analyze_waves(proposal: dict[str, Any], wave_aggregates: list[dict[str, Any]
             raise Refusal("wave provenance invalid")
         if aggregate.get("activeGeometryIds") != expected_active:
             raise Refusal("wave active set violates preregistered stopping rule")
-        for gid, rows in aggregate.get("valuesByGeometry", {}).items():
+        if (
+            audit.get("schemaVersion") != 2
+            or audit.get("stageId") != "tier1-precision-continuation-wave-audit-v2"
+            or audit.get("status") != "PASSED"
+            or audit.get("failures") != []
+            or audit.get("proposalSha256") != proposal.get("proposalSha256")
+            or audit.get("aggregateSha256") != canonical_sha256(aggregate)
+            or audit.get("wave") != wave
+            or audit.get("activeGeometryIds") != expected_active
+            or audit.get("independentlyRecomputedFromRawSelectedNodeRadiance") is not True
+        ):
+            raise Refusal("continuation wave independent audit invalid")
+        audit_payload = dict(audit)
+        supplied_audit_hash = audit_payload.pop("auditPayloadSha256", None)
+        if not is_sha256(supplied_audit_hash) or canonical_sha256(audit_payload) != supplied_audit_hash:
+            raise Refusal("continuation wave independent audit payload changed")
+        expected_cases = wave_cases(proposal, wave, expected_active)
+        expected_case_ids = {case["caseId"] for case in expected_cases}
+        hashes = audit.get("caseResultHashes")
+        if (
+            audit.get("caseResultCount") != len(expected_cases)
+            or not isinstance(hashes, dict)
+            or set(hashes) != expected_case_ids
+            or any(not is_sha256(value) for value in hashes.values())
+        ):
+            raise Refusal("continuation wave audited case universe invalid")
+        audited_values = audit.get("rawValuesByGeometry")
+        if (
+            not isinstance(audited_values, dict)
+            or set(audited_values) != set(expected_active)
+            or audited_values != aggregate.get("valuesByGeometry")
+            or audit.get("zeroHitDiagnostics") != aggregate.get("zeroHitDiagnostics")
+        ):
+            raise Refusal("continuation wave audited geometry universe invalid")
+        for gid, rows in audited_values.items():
             if gid not in continuation:
                 raise Refusal("unplanned continuation geometry")
+            if (
+                not isinstance(rows, list)
+                or [row.get("block") for row in rows if isinstance(row, dict)] != list(BLOCK_WAVES[wave])
+                or len(rows) != 2
+            ):
+                raise Refusal("continuation wave audited block universe invalid")
             continuation[gid].extend(rows)
         expected_active = []
         for gid in CONTINUATION_GEOMETRY_IDS:

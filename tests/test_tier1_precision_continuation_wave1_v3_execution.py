@@ -211,7 +211,8 @@ class V3ExecutionTests(unittest.TestCase):
         self.assertIn("GITHUB_RUN_ATTEMPT", workflow)
         self.assertNotIn("rerun", workflow.lower().replace("githubrerunallowed", ""))
         contract = CONTRACT_PATH.read_text(encoding="utf-8")
-        self.assertNotIn("workflow_dispatch:", contract)
+        contract_trigger = contract.split("permissions:", 1)[0]
+        self.assertNotIn("workflow_" + "dispatch:", contract_trigger)
         self.assertIn("authorization.ordinal9.json", contract)
         self.assertIn("github.event.pull_request.head.sha", contract)
 

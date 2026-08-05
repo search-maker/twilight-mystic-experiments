@@ -236,11 +236,12 @@ class HandoffFixture:
     def rewrite(self, key: str, value) -> None:
         write(self.paths[key], value)
 
-    def build(self, output: Path):
+    def build(self, output: Path, *, synthetic_only: bool = True, source_guard: Path | None = None):
         return handoff.build(
             self.paths["manifest"], self.paths["plan"], self.paths["summary"], self.paths["audit"],
             self.paths["analysis"], self.paths["dataset"], self.paths["reference"], self.paths["source_run"],
-            self.paths["artifacts"], output, exact_main_sha=MAIN_SHA, synthetic_only=True,
+            self.paths["artifacts"], output, exact_main_sha=MAIN_SHA, synthetic_only=synthetic_only,
+            source_guard_path=source_guard,
         )
 
 
@@ -268,6 +269,56 @@ class Tier1HandoffTests(unittest.TestCase):
         self.assertFalse(envelope["authorizationPermitted"])
         self.assertFalse(envelope["tier2AutomaticallyPermitted"])
         self.assertFalse(envelope["productionPromotionAuthorized"])
+
+    def test_real_handoff_binds_accepted_guard_descriptor_plan_and_artifact_list(self):
+        self.fixture.plan.update(
+            {
+                "executionKey": "twilight-surrogate-tier-1-v1:numerical:3",
+                "authorizationOrdinal": 3,
+                "authorizationRef": "e" * 40,
+            }
+        )
+        self.fixture.rewrite("plan", self.fixture.plan)
+        self.fixture.audit["planRawSha256"] = handoff.raw_sha256(self.fixture.paths["plan"])
+        self.fixture.rewrite("audit", self.fixture.audit)
+        self.fixture.source_run["head_sha"] = MAIN_SHA
+        self.fixture.rewrite("source_run", self.fixture.source_run)
+        guard = {
+            "schemaVersion": 2,
+            "stageId": "surrogate-training-v2-real-tier1-handoff-guard-v2",
+            "status": "REAL_TIER1_HANDOFF_SOURCE_ACCEPTED",
+            "sourceRunId": self.fixture.source_run["id"],
+            "sourceRunHeadSha": MAIN_SHA,
+            "sourceExecutionKey": self.fixture.plan["executionKey"],
+            "sourceAuthorizationOrdinal": 3,
+            "sourceAuthorizationRef": "e" * 40,
+            "sourcePlanRawSha256": handoff.raw_sha256(self.fixture.paths["plan"]),
+            "sourceManifestRawSha256": handoff.raw_sha256(self.fixture.paths["manifest"]),
+            "sourceArtifactListRawSha256": handoff.raw_sha256(self.fixture.paths["artifacts"]),
+            "sourceDescriptorRawSha256": "d" * 64,
+            "sourceRunAttempt": 1,
+            "sourceArtifactCount": 100,
+            "caseArtifactCount": 96,
+            "surrogateTrainingAuthorized": False,
+            "internalHoldoutOpeningAuthorized": False,
+            "tier2Authorized": False,
+            "productionPromotionAuthorized": False,
+        }
+        guard_path = write(self.root / "source-guard.json", guard)
+        result = self.fixture.build(self.root / "real", synthetic_only=False, source_guard=guard_path)
+        envelope = json.loads(result["envelope"].read_text())
+        self.assertEqual(envelope["bindings"]["sourceDescriptorRawSha256"], "d" * 64)
+        self.assertEqual(envelope["bindings"]["sourcePlanRawSha256"], guard["sourcePlanRawSha256"])
+        self.assertEqual(
+            envelope["bindings"]["sourceArtifactListGuardRawSha256"],
+            guard["sourceArtifactListRawSha256"],
+        )
+        self.assertEqual(envelope["bindings"]["sourceGuardRawSha256"], handoff.raw_sha256(guard_path))
+
+        guard["sourceExecutionKey"] = "twilight-surrogate-tier-1-v1:numerical:4"
+        write(guard_path, guard)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "accepted real-source guard"):
+            self.fixture.build(self.root / "real-mismatch", synthetic_only=False, source_guard=guard_path)
 
     def test_refuses_aggregate_and_audit_failures(self):
         self.fixture.summary["caseCountCompleted"] = 95

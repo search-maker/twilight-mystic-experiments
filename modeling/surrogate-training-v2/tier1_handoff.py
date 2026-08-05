@@ -431,6 +431,8 @@ def validate_analysis_and_v1_dataset(
     all_case_ids: set[str] = set()
     target_count = 0
     accepted_count = 0
+    training_count = 0
+    holdout_count = 0
     for point in points:
         if not isinstance(point, dict):
             raise HandoffRefusal("analysis point invalid")
@@ -452,6 +454,15 @@ def validate_analysis_and_v1_dataset(
         expected_role = next(item["role"] for item in case_by_id.values() if item["groupId"] == geometry_id)
         if point.get("role") != expected_role:
             raise HandoffRefusal(f"analysis role drift: {geometry_id}")
+        expected_fit_eligibility = expected_role == "surrogate-training"
+        expected_holdout_eligibility = expected_role == "internal-holdout"
+        if (
+            point.get("eligibleForProvisionalFit") is not expected_fit_eligibility
+            or point.get("eligibleForInternalHoldout") is not expected_holdout_eligibility
+        ):
+            raise HandoffRefusal(f"analysis role eligibility differs from manifest: {geometry_id}")
+        training_count += int(expected_fit_eligibility)
+        holdout_count += int(expected_holdout_eligibility)
         case_ids = point.get("caseIds")
         expected_cases = sorted(item["caseId"] for item in case_by_id.values() if item["groupId"] == geometry_id)
         if not isinstance(case_ids, list) or sorted(case_ids) != expected_cases:
@@ -508,10 +519,8 @@ def validate_analysis_and_v1_dataset(
         exact(
             dataset,
             {
-                "trainingRecordCount": sum(point.get("eligibleForProvisionalFit") is True for point in result),
-                "internalHoldoutRecordCount": sum(
-                    point.get("eligibleForInternalHoldout") is True for point in result
-                ),
+                "trainingRecordCount": training_count,
+                "internalHoldoutRecordCount": holdout_count,
             },
             "dataset v2 role counts",
         )

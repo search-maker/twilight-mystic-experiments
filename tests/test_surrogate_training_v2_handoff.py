@@ -439,16 +439,26 @@ class Tier1HandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(handoff.HandoffRefusal, "raw audit evidence"):
             self.fixture.build(self.root / "forged-v2-values")
 
-        self.fixture.analysis = valid_analysis
-        self.fixture.dataset = valid_dataset
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
         self.fixture.rewrite("dataset", self.fixture.dataset)
         self.fixture.analysis["sourceBindings"] = {**bindings, "auditRawSha256": "f" * 64}
         self.fixture.rewrite("analysis", self.fixture.analysis)
         with self.assertRaisesRegex(handoff.HandoffRefusal, "source bindings changed"):
             self.fixture.build(self.root / "tampered-v2-bindings")
 
-        self.fixture.analysis = valid_analysis
-        self.fixture.dataset = valid_dataset
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
+        self.fixture.analysis["points"][0]["eligibleForProvisionalFit"] = False
+        self.fixture.dataset["trainingRecordCount"] = 38
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "role eligibility differs"):
+            self.fixture.build(self.root / "forged-v2-role-eligibility")
+
+        self.fixture.analysis = json.loads(json.dumps(valid_analysis))
+        self.fixture.dataset = json.loads(json.dumps(valid_dataset))
         first_point = self.fixture.analysis["points"][0]
         high_variance_case = first_point["caseIds"][1]
         high_variance_nodes = self.fixture.audit["rawCaseEvidence"][high_variance_case]["radiance"][

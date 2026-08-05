@@ -301,14 +301,22 @@ class ScientificExecutionTests(unittest.TestCase):
             "scientificAdapterRawSha256": "d" * 64,
             "executionWorkflowRawSha256": "e" * 64,
             "cases": [
-                {"ordinal": 1, "caseId": "case-1", "seed": 1, "photonHistories": 100},
-                {"ordinal": 2, "caseId": "case-2", "seed": 2, "photonHistories": 100},
+                {"ordinal": 1, "caseId": "case-1", "groupId": "group-1", "block": 1, "role": "test", "seed": 1, "photonHistories": 100},
+                {"ordinal": 2, "caseId": "case-2", "groupId": "group-1", "block": 2, "role": "test", "seed": 2, "photonHistories": 100},
             ],
         }
         plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
         for case, value in zip(plan["cases"], [10.0, 12.0]):
             case_dir = cases_root / case["caseId"]
             case_dir.mkdir(parents=True)
+            input_path = case_dir / "input-resolved.txt"
+            radiance_path = case_dir / "mc.rad.spc"
+            std_path = case_dir / "mc.rad.std.spc"
+            runtime_path = case_dir / "runtime-report.json"
+            input_path.write_text("test input\n")
+            radiance_path.write_text("".join(f"{node} {value}\n" for node in executor_module.NODES))
+            std_path.write_text("".join(f"{node} 0.1\n" for node in executor_module.NODES))
+            runtime_path.write_text("{}\n")
             result = {
                 "stageId": "mystic-batch-v1",
                 "status": "COMPLETED",
@@ -321,20 +329,24 @@ class ScientificExecutionTests(unittest.TestCase):
                 "photonHistories": case["photonHistories"],
                 "manifestRawSha256": plan["manifestRawSha256"],
                 "adapterRawSha256": plan["scientificAdapterRawSha256"],
-                "runtimeReportRawSha256": "f" * 64,
-                "inputResolvedSha256": "1" * 64,
-                "radianceOutputSha256": "2" * 64,
-                "stdOutputSha256": "3" * 64,
+                "runtimeReportRawSha256": sha(runtime_path),
+                "inputResolvedSha256": sha(input_path),
+                "radianceOutputSha256": sha(radiance_path),
+                "stdOutputSha256": sha(std_path),
                 "syntaxCheckCount": 1,
                 "solverExecutionCount": 1,
                 "syntax": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 1.0},
                 "solver": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 2.0},
                 "selectedPhotopicContributionCdM2": value,
+                "selectedNodeRadiance": [value] * 15,
+                "selectedNodeStdRadiance": [0.1] * 15,
                 "failure": None,
             }
             (case_dir / "case-result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         summary, complete = aggregate_module.aggregate(plan_path, cases_root, aggregate_dir)
         self.assertTrue(complete)
+        self.assertTrue(summary["executionComplete"])
+        self.assertFalse(summary["scientificallyEligible"])
         self.assertEqual(summary["classification"], "BATCH_NUMERICALLY_COMPLETE")
         report, passed = audit_module.audit(plan_path, cases_root, aggregate_dir, self.root / "audit.json")
         self.assertTrue(passed)
@@ -380,6 +392,8 @@ class ScientificExecutionTests(unittest.TestCase):
             "syntax": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 1.0},
             "solver": {"exitCode": 0, "timedOut": False, "elapsedSeconds": 2.0},
             "selectedPhotopicContributionCdM2": 10.0,
+            "selectedNodeRadiance": [10.0] * 15,
+            "selectedNodeStdRadiance": [0.1] * 15,
             "failure": None,
         }
         (case_dir / "case-result.json").write_text(json.dumps(result))

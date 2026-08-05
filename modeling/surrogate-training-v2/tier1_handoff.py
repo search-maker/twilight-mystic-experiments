@@ -12,6 +12,7 @@ from typing import Any
 SOURCE_STAGE = "twilight-surrogate-tier-1-execution-v1"
 PLAN_STAGE = "mystic-batch-v1"
 ANALYSIS_STAGE = "twilight-surrogate-tier-1-analysis-v1"
+ANALYSIS_STAGE_V2 = "twilight-surrogate-tier-1-analysis-v2"
 REFERENCE_STAGE = "twilight-model-readiness-v1"
 ENVELOPE_STAGE = "twilight-surrogate-tier-1-dataset-envelope-v1"
 GEOMETRY_COUNT = 48
@@ -204,10 +205,11 @@ def validate_plan(plan: dict[str, Any], manifest_path: Path, case_by_id: dict[st
 
 
 def validate_summary(summary: dict[str, Any], manifest_path: Path) -> None:
+    schema_version = summary.get("schemaVersion")
     exact(
         summary,
         {
-            "schemaVersion": 1,
+            "schemaVersion": schema_version,
             "stageId": PLAN_STAGE,
             "status": "COMPLETED",
             "classification": "BATCH_NUMERICALLY_COMPLETE",
@@ -223,6 +225,21 @@ def validate_summary(summary: dict[str, Any], manifest_path: Path) -> None:
         },
         "aggregate",
     )
+    if schema_version not in {1, 2}:
+        raise HandoffRefusal("aggregate schema unsupported")
+    if schema_version == 2:
+        exact(
+            summary,
+            {
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "scientificEligibilityPendingPrecisionAnalysis": True,
+                "zeroHitCaseCount": 0,
+                "zeroHitDiagnostics": [],
+                "continuationRequiredGeometryIds": [],
+            },
+            "aggregate v2 eligibility",
+        )
     if summary.get("manifestRawSha256") != raw_sha256(manifest_path):
         raise HandoffRefusal("aggregate manifest hash mismatch")
     if summary.get("structuralFailures") != [] or summary.get("failedCases") != []:
@@ -240,10 +257,11 @@ def validate_summary(summary: dict[str, Any], manifest_path: Path) -> None:
 
 
 def validate_audit(audit: dict[str, Any], plan_path: Path, summary_path: Path, case_ids: set[str]) -> None:
+    schema_version = audit.get("schemaVersion")
     exact(
         audit,
         {
-            "schemaVersion": 1,
+            "schemaVersion": schema_version,
             "stageId": PLAN_STAGE,
             "status": "PASSED",
             "batchClassification": "BATCH_NUMERICALLY_COMPLETE",
@@ -252,6 +270,19 @@ def validate_audit(audit: dict[str, Any], plan_path: Path, summary_path: Path, c
         },
         "audit",
     )
+    if schema_version not in {1, 2}:
+        raise HandoffRefusal("audit schema unsupported")
+    if schema_version == 2:
+        exact(
+            audit,
+            {
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "zeroHitDiagnostics": [],
+                "incompleteGeometryEnteredTrainingEligibility": False,
+            },
+            "audit v2 eligibility",
+        )
     if audit.get("planRawSha256") != raw_sha256(plan_path):
         raise HandoffRefusal("audit plan hash mismatch")
     if audit.get("aggregateRawSha256") != raw_sha256(summary_path):
@@ -271,11 +302,14 @@ def validate_analysis_and_v1_dataset(
     geometry_by_id: dict[str, Any],
     case_by_id: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    schema_version = analysis.get("schemaVersion")
+    analysis_stage = analysis.get("stageId")
+    expected_stage = ANALYSIS_STAGE if schema_version == 1 else ANALYSIS_STAGE_V2
     exact(
         analysis,
         {
-            "schemaVersion": 1,
-            "stageId": ANALYSIS_STAGE,
+            "schemaVersion": schema_version,
+            "stageId": expected_stage,
             "status": "TIER_1_ANALYZED",
             "geometryCount": GEOMETRY_COUNT,
             "caseCount": CASE_COUNT,
@@ -287,19 +321,43 @@ def validate_analysis_and_v1_dataset(
         },
         "analysis",
     )
+    if schema_version not in {1, 2}:
+        raise HandoffRefusal("analysis schema unsupported")
+    if analysis_stage != expected_stage:
+        raise HandoffRefusal("analysis stage/schema mismatch")
+    if schema_version == 2:
+        exact(
+            analysis,
+            {
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+            },
+            "analysis v2 eligibility",
+        )
     if analysis.get("adaptiveContinuationRequiredGeometryIds") != []:
         raise HandoffRefusal("analysis still requires adaptive continuation")
     exact(
         dataset,
         {
-            "schemaVersion": 1,
-            "stageId": ANALYSIS_STAGE,
+            "schemaVersion": schema_version,
+            "stageId": expected_stage,
             "status": "TIER_1_NUMERICAL_DATASET_COMPLETE",
             "surrogateTrainingAutomaticallyAuthorized": False,
             "observationValidationRequired": True,
         },
         "v1 dataset",
     )
+    if schema_version == 2:
+        exact(
+            dataset,
+            {
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+            },
+            "v2 source dataset eligibility",
+        )
     if dataset.get("adaptiveContinuationRequiredGeometryIds") != []:
         raise HandoffRefusal("v1 dataset still requires adaptive continuation")
     points = analysis.get("points")
@@ -322,6 +380,13 @@ def validate_analysis_and_v1_dataset(
         classification = point.get("classification")
         if classification not in {"PRECISION_TARGET_MET", "PRECISION_ACCEPTED"}:
             raise HandoffRefusal(f"analysis precision incomplete: {geometry_id}")
+        if schema_version == 2:
+            if point.get("numericalStatus") != "NUMERICALLY_CONVERGED":
+                raise HandoffRefusal(f"analysis numerical status incomplete: {geometry_id}")
+            if point.get("executionComplete") is not True or point.get("scientificallyEligible") is not True:
+                raise HandoffRefusal(f"analysis eligibility incomplete: {geometry_id}")
+            if point.get("zeroHitCaseIds") != []:
+                raise HandoffRefusal(f"analysis zero hit unresolved: {geometry_id}")
         expected_role = next(item["role"] for item in case_by_id.values() if item["groupId"] == geometry_id)
         if point.get("role") != expected_role:
             raise HandoffRefusal(f"analysis role drift: {geometry_id}")

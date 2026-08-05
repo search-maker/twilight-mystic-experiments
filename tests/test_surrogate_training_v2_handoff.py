@@ -326,6 +326,30 @@ class Tier1HandoffTests(unittest.TestCase):
         with self.assertRaises(handoff.HandoffRefusal):
             self.fixture.build(self.root / "continuation")
 
+    def test_refuses_unresolved_zero_hit_geometry(self):
+        geometry_id = self.fixture.analysis["points"][0]["geometryId"]
+        case_id = self.fixture.analysis["points"][0]["caseIds"][0]
+        self.fixture.analysis["adaptiveContinuationRequiredGeometryIds"] = [geometry_id]
+        self.fixture.analysis["zeroHitGeometryIds"] = [geometry_id]
+        self.fixture.analysis["allPointsWithinMaximumRsem"] = False
+        self.fixture.analysis["points"][0].update(
+            {
+                "classification": "ADAPTIVE_CONTINUATION_REQUIRED",
+                "numericalStatus": "NUMERICAL_ZERO_HIT_UNDERCONVERGED",
+                "scientificallyEligible": False,
+                "zeroHitCaseIds": [case_id],
+            }
+        )
+        self.fixture.dataset["status"] = "TIER_1_NUMERICAL_DATASET_PARTIAL_PRECISION"
+        self.fixture.dataset["adaptiveContinuationRequiredGeometryIds"] = [geometry_id]
+        self.fixture.dataset["zeroHitGeometryIds"] = [geometry_id]
+        self.fixture.dataset["scientificallyEligible"] = False
+        self.fixture.dataset["records"] = self.fixture.analysis["points"]
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        with self.assertRaises(handoff.HandoffRefusal):
+            self.fixture.build(self.root / "zero-hit-continuation")
+
     def test_refuses_missing_artifact_provenance_and_case_hash(self):
         self.fixture.artifacts["artifacts"][0].pop("digest")
         self.fixture.rewrite("artifacts", self.fixture.artifacts)

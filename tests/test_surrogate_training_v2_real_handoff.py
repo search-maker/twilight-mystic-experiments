@@ -107,6 +107,17 @@ class RealHandoffGuardTests(unittest.TestCase):
             "display_title": source["displayTitle"],
         }
 
+    def source_plan(self) -> dict:
+        source = self.source_identity()
+        return {
+            "executionKey": source["executionKey"],
+            "authorizationOrdinal": source["authorizationOrdinal"],
+            "authorizationRef": source["authorizationRef"],
+            "manifestRawSha256": self.MANIFEST_SHA,
+            "scientificExecution": True,
+            "successDoesNotAuthorizeProduction": True,
+        }
+
     def reference_run(self) -> dict:
         return {
             "id": GUARD.REFERENCE_RUN_ID,
@@ -144,11 +155,14 @@ class RealHandoffGuardTests(unittest.TestCase):
         values = {
             "source_descriptor": self.descriptor(),
             "source_run": self.source_run(),
+            "source_plan": self.source_plan(),
             "source_artifacts": self.source_artifacts(),
             "manifest": self.manifest(),
             "reference_run": self.reference_run(),
             "reference_artifacts": self.reference_artifacts(),
             "source_descriptor_raw_sha256": self.DESCRIPTOR_SHA,
+            "source_plan_raw_sha256": "f" * 64,
+            "source_artifact_list_raw_sha256": "1" * 64,
             "manifest_raw_sha256": self.MANIFEST_SHA,
         }
         values.update(overrides)
@@ -202,7 +216,7 @@ class RealHandoffGuardTests(unittest.TestCase):
                 descriptor["caseArtifactPrefix"] = "twilight-surrogate-tier-1-ordinal1-case-"
                 for item in descriptor["sourceArtifacts"]:
                     item["name"] = item["name"].replace("ordinal3-case-", "ordinal1-case-")
-            with self.subTest(field=field), self.assertRaisesRegex(GUARD.GuardRefusal, "consumed historical"):
+            with self.subTest(field=field), self.assertRaises(GUARD.GuardRefusal):
                 self.validate(source_descriptor=descriptor)
 
     def test_refuses_nonterminal_retried_or_failed_source(self):
@@ -211,6 +225,35 @@ class RealHandoffGuardTests(unittest.TestCase):
             run[field] = value
             with self.subTest(field=field), self.assertRaises(GUARD.GuardRefusal):
                 self.validate(source_run=run)
+
+    def test_refuses_ambiguous_or_aliased_execution_identity(self):
+        descriptor = self.descriptor()
+        source = descriptor["sourceRun"]
+        source["displayTitle"] = source["displayTitle"].replace("numerical:3", "numerical:30").replace(
+            "ordinal=3", "ordinal=30"
+        )
+        with self.assertRaises(GUARD.GuardRefusal):
+            self.validate(source_descriptor=descriptor)
+
+        descriptor = self.descriptor()
+        source = descriptor["sourceRun"]
+        source["executionKey"] = "twilight-surrogate-tier-1-v1:numerical:2-alias"
+        source["displayTitle"] = (
+            f"MYSTIC batch v1 | key={source['executionKey']} | auth={source['authorizationRef']} | ordinal=3"
+        )
+        with self.assertRaisesRegex(GUARD.GuardRefusal, "not canonical"):
+            self.validate(source_descriptor=descriptor)
+
+    def test_source_plan_identity_must_match_descriptor(self):
+        for field, value in (
+            ("executionKey", "twilight-surrogate-tier-1-v1:numerical:4"),
+            ("authorizationOrdinal", 4),
+            ("authorizationRef", "0" * 40),
+        ):
+            plan = self.source_plan()
+            plan[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(GUARD.GuardRefusal, "plan identity"):
+                self.validate(source_plan=plan)
 
     def test_refuses_missing_extra_or_digest_drifted_source_artifact(self):
         missing = self.source_artifacts()
@@ -319,6 +362,7 @@ class RealHandoffGuardTests(unittest.TestCase):
             descriptor_sha = hashlib.sha256(descriptor_path.read_bytes()).hexdigest()
             values = {
                 "source-run.json": self.source_run(),
+                "plan.json": {**self.source_plan(), "manifestRawSha256": descriptor["manifestRawSha256"]},
                 "source-artifacts.json": self.source_artifacts(),
                 "reference-run.json": self.reference_run(),
                 "reference-artifacts.json": self.reference_artifacts(),
@@ -331,6 +375,7 @@ class RealHandoffGuardTests(unittest.TestCase):
                 "--source-descriptor", str(descriptor_path),
                 "--source-descriptor-raw-sha256", descriptor_sha,
                 "--source-run", str(root / "source-run.json"),
+                "--plan", str(root / "plan.json"),
                 "--source-artifacts", str(root / "source-artifacts.json"),
                 "--manifest", str(manifest_path),
                 "--reference-run", str(root / "reference-run.json"),
@@ -369,6 +414,8 @@ class RealHandoffWorkflowTests(unittest.TestCase):
         self.assertIn("real_handoff_guard.py", text)
         self.assertIn("tier1_handoff.py", text)
         self.assertIn('--main-sha "$SOURCE_RUN_HEAD_SHA"', text)
+        self.assertIn("--source-guard metadata/source-guard.json", text)
+        self.assertIn('--plan "preflight/plan.json"', text)
         self.assertIn("sourceArtifactCount'] == 100", text)
         self.assertIn("caseArtifactCount'] == 96", text)
         self.assertIn("guard['sourceRunId'] != 30952457327", text)

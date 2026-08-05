@@ -514,6 +514,37 @@ def validate_source_run_and_artifacts(source_run: dict[str, Any], artifacts: dic
         names.add(name)
 
 
+def validate_source_guard(
+    guard: dict[str, Any], plan: dict[str, Any], plan_path: Path, manifest_path: Path,
+    artifact_list_path: Path, source_run: dict[str, Any]
+) -> None:
+    exact(
+        guard,
+        {
+            "schemaVersion": 2,
+            "stageId": "surrogate-training-v2-real-tier1-handoff-guard-v2",
+            "status": "REAL_TIER1_HANDOFF_SOURCE_ACCEPTED",
+            "sourceRunId": source_run.get("id"),
+            "sourceRunHeadSha": source_run.get("head_sha"),
+            "sourceExecutionKey": plan.get("executionKey"),
+            "sourceAuthorizationOrdinal": plan.get("authorizationOrdinal"),
+            "sourceAuthorizationRef": plan.get("authorizationRef"),
+            "sourcePlanRawSha256": raw_sha256(plan_path),
+            "sourceManifestRawSha256": raw_sha256(manifest_path),
+            "sourceArtifactListRawSha256": raw_sha256(artifact_list_path),
+            "sourceRunAttempt": 1,
+            "sourceArtifactCount": 100,
+            "caseArtifactCount": 96,
+            "surrogateTrainingAuthorized": False,
+            "internalHoldoutOpeningAuthorized": False,
+            "tier2Authorized": False,
+            "productionPromotionAuthorized": False,
+        },
+        "accepted real-source guard",
+    )
+    require_raw_sha(guard.get("sourceDescriptorRawSha256"), "source descriptor hash")
+
+
 def build(
     manifest_path: Path,
     plan_path: Path,
@@ -528,6 +559,7 @@ def build(
     *,
     exact_main_sha: str,
     synthetic_only: bool = False,
+    source_guard_path: Path | None = None,
 ) -> dict[str, Path]:
     require_git_sha(exact_main_sha, "exact main SHA")
     manifest = load(manifest_path)
@@ -539,6 +571,7 @@ def build(
     reference = load(reference_path)
     source_run = load(source_run_path)
     artifacts = load(artifact_list_path)
+    source_guard = load(source_guard_path) if source_guard_path is not None else None
 
     geometry_by_id, case_by_id, training_ids, holdout_ids = validate_manifest(manifest)
     validate_plan(plan, manifest_path, case_by_id)
@@ -557,6 +590,12 @@ def build(
     )
     hard_ids, soft_ids, external = validate_reference(reference)
     validate_source_run_and_artifacts(source_run, artifacts)
+    if not synthetic_only:
+        if source_guard is None or source_guard_path is None:
+            raise HandoffRefusal("accepted real-source guard is required")
+        if source_run.get("head_sha") != exact_main_sha:
+            raise HandoffRefusal("real source run head differs from exact main SHA")
+        validate_source_guard(source_guard, plan, plan_path, manifest_path, artifact_list_path, source_run)
 
     hashes = {
         "manifestRawSha256": raw_sha256(manifest_path),
@@ -569,6 +608,15 @@ def build(
         "sourceRunRawSha256": raw_sha256(source_run_path),
         "artifactListRawSha256": raw_sha256(artifact_list_path),
     }
+    if source_guard is not None and source_guard_path is not None:
+        hashes.update(
+            {
+                "sourceGuardRawSha256": raw_sha256(source_guard_path),
+                "sourceDescriptorRawSha256": source_guard["sourceDescriptorRawSha256"],
+                "sourcePlanRawSha256": source_guard["sourcePlanRawSha256"],
+                "sourceArtifactListGuardRawSha256": source_guard["sourceArtifactListRawSha256"],
+            }
+        )
     audit_hashes = audit["caseResultHashes"]
     records: list[dict[str, Any]] = []
     for point in sorted(points, key=lambda item: item["geometryId"]):
@@ -652,6 +700,7 @@ def main() -> int:
     parser.add_argument("--reference-anchors", type=Path, required=True)
     parser.add_argument("--source-run", type=Path, required=True)
     parser.add_argument("--artifact-list", type=Path, required=True)
+    parser.add_argument("--source-guard", type=Path)
     parser.add_argument("--main-sha", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--synthetic-only", action="store_true")
@@ -670,6 +719,7 @@ def main() -> int:
             args.output_dir,
             exact_main_sha=args.main_sha,
             synthetic_only=args.synthetic_only,
+            source_guard_path=args.source_guard,
         )
         print(dump({"status": "TIER_1_V2_HANDOFF_COMPLETE", "outputs": {key: str(value) for key, value in paths.items()}}), end="")
         return 0

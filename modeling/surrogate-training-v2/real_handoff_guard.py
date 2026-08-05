@@ -223,15 +223,16 @@ def validate_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
         raise GuardRefusal("source descriptor display title missing")
     execution_key = source.get("executionKey")
     ordinal = source.get("authorizationOrdinal")
-    if not isinstance(execution_key, str) or not execution_key.strip():
-        raise GuardRefusal("source descriptor execution key missing")
     require_positive_int(ordinal, "source descriptor authorization ordinal")
-    if (
-        execution_key not in source["displayTitle"]
-        or f"ordinal={ordinal}" not in source["displayTitle"]
-        or f"auth={source['authorizationRef']}" not in source["displayTitle"]
-    ):
-        raise GuardRefusal("source display title does not bind execution key, authorization ref, and ordinal")
+    canonical_execution_key = f"twilight-surrogate-tier-1-v1:numerical:{ordinal}"
+    if execution_key != canonical_execution_key:
+        raise GuardRefusal("source descriptor execution key is not canonical for its ordinal")
+    expected_title = (
+        f"MYSTIC batch v1 | key={canonical_execution_key} | "
+        f"auth={source['authorizationRef']} | ordinal={ordinal}"
+    )
+    if source["displayTitle"] != expected_title:
+        raise GuardRefusal("source display title does not exactly bind execution key, authorization ref, and ordinal")
     if run_id in CONSUMED_SOURCE_RUN_IDS or execution_key in CONSUMED_EXECUTION_KEYS or ordinal in CONSUMED_AUTHORIZATION_ORDINALS:
         raise GuardRefusal("consumed historical Tier-1 source identity is permanently ineligible")
 
@@ -280,6 +281,22 @@ def validate_source_run(run: dict[str, Any], descriptor: dict[str, Any]) -> None
             "display_title": source["displayTitle"],
         },
         "source run",
+    )
+
+
+def validate_source_plan(plan: dict[str, Any], descriptor: dict[str, Any]) -> None:
+    source = descriptor["sourceRun"]
+    require_exact(
+        plan,
+        {
+            "executionKey": source["executionKey"],
+            "authorizationOrdinal": source["authorizationOrdinal"],
+            "authorizationRef": source["authorizationRef"],
+            "manifestRawSha256": descriptor["manifestRawSha256"],
+            "scientificExecution": True,
+            "successDoesNotAuthorizeProduction": True,
+        },
+        "source execution plan identity",
     )
 
 
@@ -376,22 +393,28 @@ def validate_reference_artifacts(payload: dict[str, Any]) -> None:
 def validate(
     source_descriptor: dict[str, Any],
     source_run: dict[str, Any],
+    source_plan: dict[str, Any],
     source_artifacts: dict[str, Any],
     manifest: dict[str, Any],
     reference_run: dict[str, Any],
     reference_artifacts: dict[str, Any],
     *,
     source_descriptor_raw_sha256: str,
+    source_plan_raw_sha256: str,
+    source_artifact_list_raw_sha256: str,
     manifest_raw_sha256: str,
     handoff_head_sha: str,
 ) -> dict[str, Any]:
     require_sha256(source_descriptor_raw_sha256, "source descriptor raw hash")
+    require_sha256(source_plan_raw_sha256, "source plan raw hash")
+    require_sha256(source_artifact_list_raw_sha256, "source artifact-list raw hash")
     require_sha256(manifest_raw_sha256, "manifest raw hash")
     require_git_sha(handoff_head_sha, "handoff workflow head SHA")
     descriptor = validate_descriptor(source_descriptor)
     if manifest_raw_sha256 != descriptor["manifestRawSha256"]:
         raise GuardRefusal("source manifest raw hash differs from immutable descriptor")
     validate_source_run(source_run, descriptor)
+    validate_source_plan(source_plan, descriptor)
     validate_reference_run(reference_run)
     case_ids = validate_manifest_case_ids(manifest)
     source_by_name = validate_source_artifacts(source_artifacts, descriptor, case_ids)
@@ -403,6 +426,8 @@ def validate(
         "status": "REAL_TIER1_HANDOFF_SOURCE_ACCEPTED",
         "sourceDescriptorRawSha256": source_descriptor_raw_sha256,
         "sourceManifestRawSha256": manifest_raw_sha256,
+        "sourcePlanRawSha256": source_plan_raw_sha256,
+        "sourceArtifactListRawSha256": source_artifact_list_raw_sha256,
         "sourceRunId": source["id"],
         "sourceRunHeadSha": source["headSha"],
         "sourceWorkflowId": source["workflowId"],
@@ -472,6 +497,7 @@ def main() -> int:
     parser.add_argument("--resolve-descriptor", action="store_true")
     parser.add_argument("--github-env", type=Path)
     parser.add_argument("--source-run", type=Path)
+    parser.add_argument("--plan", type=Path)
     parser.add_argument("--source-artifacts", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--reference-run", type=Path)
@@ -493,18 +519,21 @@ def main() -> int:
             write_github_env(args.github_env, values)
             print(dump({"status": "IMMUTABLE_SOURCE_DESCRIPTOR_RESOLVED", **values}), end="")
             return 0
-        required_paths = (args.source_run, args.source_artifacts, args.manifest, args.reference_run, args.reference_artifacts, args.output)
+        required_paths = (args.source_run, args.plan, args.source_artifacts, args.manifest, args.reference_run, args.reference_artifacts, args.output)
         if any(path is None for path in required_paths) or args.handoff_head_sha is None:
             raise GuardRefusal("full validation paths and handoff head SHA are required")
-        assert args.source_run and args.source_artifacts and args.manifest and args.reference_run and args.reference_artifacts and args.output
+        assert args.source_run and args.plan and args.source_artifacts and args.manifest and args.reference_run and args.reference_artifacts and args.output
         report = validate(
             descriptor,
             load(args.source_run),
+            load(args.plan),
             load(args.source_artifacts),
             load(args.manifest),
             load(args.reference_run),
             load(args.reference_artifacts),
             source_descriptor_raw_sha256=actual_descriptor_sha,
+            source_plan_raw_sha256=raw_sha256(args.plan),
+            source_artifact_list_raw_sha256=raw_sha256(args.source_artifacts),
             manifest_raw_sha256=raw_sha256(args.manifest),
             handoff_head_sha=args.handoff_head_sha,
         )

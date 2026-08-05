@@ -369,6 +369,13 @@ class ZeroHitSemanticsTests(unittest.TestCase):
         self.assertFalse(zero_point["eligibleForProvisionalFit"])
         self.assertEqual(zero_point["statistics"]["relativeStandardErrorStatus"], "NOT_COMPUTED_ZERO_HIT_PRESENT")
         self.assertEqual(len([point for point in analysis["points"] if point["scientificallyEligible"]]), 47)
+        complete_audit = json.loads(audit_path.read_text())
+        incomplete_audit = dict(complete_audit)
+        incomplete_audit.pop("failures")
+        write_json(audit_path, incomplete_audit)
+        with self.assertRaisesRegex(analysis_module.AnalysisError, "independent audit failed"):
+            analysis_module.analyze(manifest_path, case_root, summary_path, audit_path)
+        write_json(audit_path, complete_audit)
         tampered_path = case_root / "train-0001-alis-b1" / "case-result.json"
         tampered = json.loads(tampered_path.read_text())
         tampered["selectedPhotopicContributionCdM2"] = 999.0

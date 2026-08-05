@@ -1,0 +1,79 @@
+name: Tier-1 precision continuation wave 1 v5 execution contract
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml'
+      - '.github/workflows/tier1-precision-continuation-wave1-v5-execution-contract.yml'
+      - 'evidence/tier1-precision-continuation-wave1-v5/**'
+      - 'experiments/tier1-precision-continuation-wave1-v5/**'
+      - 'tests/test_tier1_precision_continuation_wave1_v5.py'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - run: pip install PyYAML
+      - name: Compile v5 infrastructure
+        run: python -m py_compile experiments/tier1-precision-continuation-wave1-v5/*.py tests/test_tier1_precision_continuation_wave1_v5.py
+      - name: Validate one-file authorization when present
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          import importlib.util,json,os,subprocess
+          from pathlib import Path
+          auth_path=Path('experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal11.json')
+          if auth_path.exists():
+            assert os.environ['HEAD_REF']=='authorization/tier1-precision-continuation-wave1-ordinal11-v5'
+            assert subprocess.check_output(['git','diff','--name-only',os.environ['BASE_SHA'],os.environ['HEAD_SHA']],text=True).splitlines()==[str(auth_path)]
+            def load(path,name):
+              s=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+            p=load(Path('experiments/tier1-precision-continuation-wave1-v5/package.py'),'p'); e=load(Path('experiments/tier1-precision-continuation-wave1-v5/execution.py'),'e')
+            prereg=p.build_preregistration(Path('.')); p.validate_preregistration(prereg,Path('.')); auth=json.loads(auth_path.read_text())
+            context={'eventName':'workflow_dispatch','runAttempt':1,'displayTitle':e.RUN_TITLE,'authorizationRef':os.environ['HEAD_SHA'],'authorizationOrdinal':11,'executionKey':e.EXECUTION_KEY,'headBranch':'main','headSha':os.environ['BASE_SHA'],'runId':1}
+            metadata={'authorizationCommit':os.environ['HEAD_SHA'],'authorizationParent':os.environ['BASE_SHA'],'changedFiles':[str(auth_path)],'parentCount':1}
+            e.validate_context(context); e.validate_authorization(auth,prereg,context); e.validate_authorization_metadata(metadata,context)
+          PY
+      - name: Run focused v5 tests
+        run: python -m unittest discover -s tests -p 'test_tier1_precision_continuation_wave1_v5.py' -v
+      - name: Parse workflow files
+        run: python -c "import yaml; yaml.safe_load(open('.github/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml')); yaml.safe_load(open('.github/workflows/tier1-precision-continuation-wave1-v5-execution-contract.yml'))"
+      - name: Prove direct executor and closed review boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          ex=Path('experiments/tier1-precision-continuation-wave1-v5/case_executor.py').read_text()
+          wf=Path('.github/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml').read_text()
+          contract=Path('.github/workflows/tier1-precision-continuation-wave1-v5-execution-contract.yml').read_text()
+          assert 'tier1-precision-continuation-wave1-v2/case_executor.py' in ex
+          assert 'tier1-precision-continuation-wave1-v4/case_executor.py' not in ex
+          assert 'workflow_dispatch:' in wf
+          assert '--slurp > run-pages.json' in wf and '--slurp --jq' not in wf
+          assert 'authorization.ordinal11.json' in wf and 'authorization.ordinal11.json' in contract
+          assert 'workflow_dispatch:' not in contract.split('permissions:',1)[0]
+          assert 'rerun-workflow' not in wf.lower()
+          PY
+      - name: Run complete non-scientific repository suite
+        run: python -m unittest discover -s tests -v
+      - name: Generate deterministic review evidence twice
+        run: |
+          python experiments/tier1-precision-continuation-wave1-v5/package.py --output-dir out/a
+          python experiments/tier1-precision-continuation-wave1-v5/package.py --output-dir out/b
+          diff -r out/a out/b
+          mkdir -p contract-artifacts
+          cp -r out/a contract-artifacts/generated
+          cp .github/workflows/tier1-precision-continuation-wave1-ordinal11-execution.yml contract-artifacts/
+          cp experiments/tier1-precision-continuation-wave1-v5/case_executor.py contract-artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-v5-ordinal11-execution-infrastructure-contract
+          path: contract-artifacts

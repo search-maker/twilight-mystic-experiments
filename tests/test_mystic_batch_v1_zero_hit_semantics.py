@@ -22,9 +22,9 @@ def load_module(name: str, path: Path):
     return module
 
 
-aggregate_module = load_module("zero_hit_aggregate", PACKAGE / "scientific_aggregate.py")
-audit_module = load_module("zero_hit_audit", PACKAGE / "scientific_audit.py")
-analysis_module = load_module("zero_hit_analysis", PACKAGE / "twilight_surrogate_tier1_analysis.py")
+aggregate_module = load_module("zero_hit_aggregate", PACKAGE / "scientific_aggregate_v2.py")
+audit_module = load_module("zero_hit_audit", PACKAGE / "scientific_audit_v2.py")
+analysis_module = load_module("zero_hit_analysis", PACKAGE / "twilight_surrogate_tier1_analysis_v2.py")
 
 
 def sha256(path: Path) -> str:
@@ -174,6 +174,39 @@ class ZeroHitSemanticsTests(unittest.TestCase):
                 summary, execution_complete = self._aggregate()
                 self.assertFalse(execution_complete)
                 self.assertEqual(summary["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+                geometry = next(item for item in summary["geometryResults"] if item["geometryId"] == "train-0046")
+                self.assertFalse(geometry["executionComplete"])
+                self.assertEqual(geometry["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+                report, passed = self._audit()
+                self.assertFalse(passed)
+                self.assertEqual(report["status"], "FAILED")
+                self.assertEqual(report["batchClassification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+
+    def test_positive_science_values_are_recomputed_from_raw_spectra(self) -> None:
+        result_path = self._case_result_path("train-0046-alis-b1")
+        result = json.loads(result_path.read_text())
+        result["selectedPhotopicContributionCdM2"] = 999.0
+        result["selectedNodeRadiance"] = [999.0] * 15
+        write_json(result_path, result)
+        self._aggregate()
+        report, passed = self._audit()
+        self.assertFalse(passed)
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("selected-radiance-raw-mismatch", codes)
+        self.assertIn("photopic-raw-mismatch", codes)
+
+    def test_malformed_completed_case_is_failed_at_batch_and_geometry_levels(self) -> None:
+        result_path = self._case_result_path("train-0046-alis-b1")
+        result = json.loads(result_path.read_text())
+        result["selectedNodeRadiance"] = [1.0]
+        write_json(result_path, result)
+        summary, execution_complete = self._aggregate()
+        self.assertFalse(execution_complete)
+        self.assertEqual(summary["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+        geometry = next(item for item in summary["geometryResults"] if item["geometryId"] == "train-0046")
+        self.assertFalse(geometry["executionComplete"])
+        self.assertEqual(geometry["classification"], "STRUCTURAL_OR_EXECUTION_FAILURE")
+        self.assertIsNone(geometry["statistics"])
 
     def test_missing_malformed_and_hash_mismatched_outputs_fail_independent_audit(self) -> None:
         mutations = ("missing", "malformed", "hash-mismatch")
@@ -280,11 +313,24 @@ class ZeroHitSemanticsTests(unittest.TestCase):
                 "classification": "SCIENTIFICALLY_INELIGIBLE",
                 "caseCountCompleted": 96,
                 "configuredMcPhotonsSum": 6_960_000_000,
+                "manifestRawSha256": sha256(manifest_path),
             },
         )
+        case_hashes = {
+            json.loads(path.read_text())["caseId"]: sha256(path)
+            for path in sorted(case_root.rglob("case-result.json"))
+        }
         write_json(
             audit_path,
-            {"schemaVersion": 2, "status": "PASSED", "executionComplete": True, "caseResultCount": 96},
+            {
+                "schemaVersion": 2,
+                "status": "PASSED",
+                "executionComplete": True,
+                "caseResultCount": 96,
+                "manifestRawSha256": sha256(manifest_path),
+                "aggregateRawSha256": sha256(summary_path),
+                "caseResultHashes": case_hashes,
+            },
         )
         analysis, dataset = analysis_module.analyze(manifest_path, case_root, summary_path, audit_path)
         self.assertEqual(len(analysis["points"]), 48)
@@ -298,6 +344,12 @@ class ZeroHitSemanticsTests(unittest.TestCase):
         self.assertFalse(zero_point["eligibleForProvisionalFit"])
         self.assertEqual(zero_point["statistics"]["relativeStandardErrorStatus"], "NOT_COMPUTED_ZERO_HIT_PRESENT")
         self.assertEqual(len([point for point in analysis["points"] if point["scientificallyEligible"]]), 47)
+        tampered_path = case_root / "train-0001-alis-b1" / "case-result.json"
+        tampered = json.loads(tampered_path.read_text())
+        tampered["selectedPhotopicContributionCdM2"] = 999.0
+        write_json(tampered_path, tampered)
+        with self.assertRaisesRegex(analysis_module.AnalysisError, "hashes differ"):
+            analysis_module.analyze(manifest_path, case_root, summary_path, audit_path)
 
 
 if __name__ == "__main__":

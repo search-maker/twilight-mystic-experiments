@@ -1,247 +1,52 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
-import argparse
-import json
-import math
-import statistics
-import sys
+import argparse, json, math, statistics, sys
 from pathlib import Path
 from typing import Any
-
-STAGE_ID = "twilight-surrogate-tier-1-analysis-v2"
-SOURCE_STAGE = "twilight-surrogate-tier-1-execution-v1"
-NODES = 15
-
-
-class AnalysisError(RuntimeError):
-    pass
-
-
-def load(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise AnalysisError(f"expected object: {path}")
-    return value
-
-
-def dump(value: Any) -> str:
-    return json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-
-
-def rows(root: Path) -> list[dict[str, Any]]:
-    return [load(path) for path in sorted(root.rglob("case-result.json"))]
-
-
-def finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def summarize(values: list[float], node_rows: list[list[float]]) -> dict[str, Any]:
-    count = len(values)
-    mean = statistics.fmean(values)
-    sample_std = statistics.stdev(values) if count > 1 else 0.0
-    zero_hit_count = sum(value == 0.0 for value in values)
-    if zero_hit_count:
-        rsem = None
-        rsem_status = "NOT_COMPUTED_ZERO_HIT_PRESENT"
-    elif mean == 0.0:
-        rsem = None
-        rsem_status = "NOT_COMPUTED_ZERO_MEAN"
-    else:
-        rsem = (sample_std / math.sqrt(count)) / mean
-        rsem_status = "COMPUTED"
-    return {
-        "blockCount": count,
-        "valuesCdM2": values,
-        "meanCdM2": mean,
-        "sampleStdCdM2": sample_std,
-        "relativeStandardErrorOfMean": rsem,
-        "relativeStandardErrorStatus": rsem_status,
-        "zeroHitBlockCount": zero_hit_count,
-        "zeroHitBlockFraction": zero_hit_count / count,
-        "nonzeroBlockValuesCdM2": [value for value in values if value != 0.0],
-        "nodeMeanRadiance": [statistics.fmean(row[index] for row in node_rows) for index in range(NODES)],
-    }
-
-
-def analyze(
-    manifest_path: Path,
-    cases_root: Path,
-    batch_summary_path: Path,
-    audit_path: Path,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    manifest, batch, audit = load(manifest_path), load(batch_summary_path), load(audit_path)
-    if (
-        manifest.get("stageId") != SOURCE_STAGE
-        or len(manifest.get("geometries", [])) != 48
-        or len(manifest.get("cases", [])) != 96
-    ):
-        raise AnalysisError("manifest invalid")
-    if (
-        batch.get("schemaVersion") != 2
-        or batch.get("status") != "COMPLETED"
-        or batch.get("executionComplete") is not True
-        or batch.get("classification") not in {"BATCH_NUMERICALLY_COMPLETE", "SCIENTIFICALLY_INELIGIBLE"}
-        or batch.get("caseCountCompleted") != 96
-        or batch.get("configuredMcPhotonsSum") != 6_960_000_000
-    ):
-        raise AnalysisError("aggregate execution incomplete")
-    if (
-        audit.get("schemaVersion") != 2
-        or audit.get("status") != "PASSED"
-        or audit.get("executionComplete") is not True
-        or audit.get("caseResultCount") != 96
-    ):
-        raise AnalysisError("independent audit failed")
-    all_rows = rows(cases_root)
-    if len(all_rows) != 96:
-        raise AnalysisError(f"expected 96 case rows, found {len(all_rows)}")
-    expected = {case["caseId"]: case for case in manifest["cases"]}
-    by_group: dict[str, list[dict[str, Any]]] = {}
-    for row in all_rows:
-        case_id = row.get("caseId")
-        expected_case = expected.get(case_id)
-        if (
-            expected_case is None
-            or row.get("status") != "COMPLETED"
-            or row.get("solver", {}).get("exitCode") != 0
-            or row.get("solver", {}).get("timedOut") is not False
-        ):
-            raise AnalysisError(f"invalid case {case_id}")
-        value = row.get("selectedPhotopicContributionCdM2")
-        nodes = row.get("selectedNodeRadiance")
-        if (
-            row.get("seed") != expected_case["seed"]
-            or row.get("photonHistories") != expected_case["photonHistories"]
-            or not finite_number(value)
-            or float(value) < 0.0
-            or not isinstance(nodes, list)
-            or len(nodes) != NODES
-            or not all(finite_number(node) and float(node) >= 0.0 for node in nodes)
-        ):
-            raise AnalysisError(f"case invariant changed {case_id}")
-        zero_value = float(value) == 0.0
-        zero_nodes = all(float(node) == 0.0 for node in nodes)
-        if zero_value != zero_nodes:
-            raise AnalysisError(f"inconsistent zero estimator {case_id}")
-        by_group.setdefault(expected_case["groupId"], []).append(row)
-
-    geometry_map = {geometry["geometryId"]: geometry for geometry in manifest["geometries"]}
-    points: list[dict[str, Any]] = []
-    continuation: list[str] = []
-    target: list[str] = []
-    zero_hit_geometry_ids: list[str] = []
-    for geometry_id in sorted(geometry_map):
-        group = by_group.get(geometry_id, [])
-        if len(group) != 2:
-            raise AnalysisError(f"expected two blocks for {geometry_id}")
-        values = [float(row["selectedPhotopicContributionCdM2"]) for row in group]
-        stats = summarize(values, [[float(value) for value in row["selectedNodeRadiance"]] for row in group])
-        if stats["zeroHitBlockCount"]:
-            classification = "ADAPTIVE_CONTINUATION_REQUIRED"
-            numerical_status = "NUMERICAL_ZERO_HIT_UNDERCONVERGED"
-            zero_hit_geometry_ids.append(geometry_id)
-        else:
-            rsem = stats["relativeStandardErrorOfMean"]
-            assert isinstance(rsem, float)
-            classification = (
-                "PRECISION_TARGET_MET"
-                if rsem <= 0.05
-                else "PRECISION_ACCEPTED"
-                if rsem <= 0.08
-                else "ADAPTIVE_CONTINUATION_REQUIRED"
-            )
-            numerical_status = "NUMERICALLY_CONVERGED" if classification != "ADAPTIVE_CONTINUATION_REQUIRED" else "NUMERICAL_PRECISION_INSUFFICIENT"
-        if classification == "PRECISION_TARGET_MET":
-            target.append(geometry_id)
-        if classification == "ADAPTIVE_CONTINUATION_REQUIRED":
-            continuation.append(geometry_id)
-        group_cases = [case for case in manifest["cases"] if case["groupId"] == geometry_id]
-        roles = {case["role"] for case in group_cases}
-        if len(group_cases) != 2 or len(roles) != 1:
-            raise AnalysisError(f"role or block contract changed for {geometry_id}")
-        role = next(iter(roles))
-        eligible = classification != "ADAPTIVE_CONTINUATION_REQUIRED"
-        points.append(
-            {
-                "geometryId": geometry_id,
-                "geometry": geometry_map[geometry_id],
-                "role": role,
-                "classification": classification,
-                "numericalStatus": numerical_status,
-                "executionComplete": True,
-                "scientificallyEligible": eligible,
-                "statistics": stats,
-                "caseIds": sorted(row["caseId"] for row in group),
-                "zeroHitCaseIds": sorted(
-                    row["caseId"]
-                    for row in group
-                    if float(row["selectedPhotopicContributionCdM2"]) == 0.0
-                ),
-                "eligibleForProvisionalFit": eligible and role == "surrogate-training",
-                "eligibleForInternalHoldout": eligible and role == "internal-holdout",
-            }
-        )
-
-    accepted = 48 - len(continuation)
-    scientifically_eligible = not continuation
-    analysis = {
-        "schemaVersion": 2,
-        "stageId": STAGE_ID,
-        "status": "TIER_1_ANALYZED" if scientifically_eligible else "TIER_1_ANALYZED_WITH_CONTINUATION_REQUIRED",
-        "executionComplete": True,
-        "scientificallyEligible": scientifically_eligible,
-        "geometryCount": 48,
-        "caseCount": 96,
-        "configuredMcPhotonsSum": 6_960_000_000,
-        "precisionTargetGeometryCount": len(target),
-        "precisionAcceptedGeometryCount": accepted,
-        "zeroHitGeometryIds": zero_hit_geometry_ids,
-        "adaptiveContinuationRequiredGeometryIds": continuation,
-        "allPointsWithinMaximumRsem": not continuation,
-        "points": points,
-        "surrogateTrainingAutomaticallyAuthorized": False,
-        "productionModelReady": False,
-        "observationValidationRequired": True,
-        "boundary": "Monte Carlo precision and zero-hit analysis only; no surrogate fit, physical validation, or production claim",
-    }
-    dataset = {
-        "schemaVersion": 2,
-        "stageId": STAGE_ID,
-        "status": "TIER_1_NUMERICAL_DATASET_COMPLETE" if scientifically_eligible else "TIER_1_NUMERICAL_DATASET_PARTIAL_PRECISION",
-        "executionComplete": True,
-        "scientificallyEligible": scientifically_eligible,
-        "records": points,
-        "trainingRecordCount": sum(point["eligibleForProvisionalFit"] for point in points),
-        "internalHoldoutRecordCount": sum(point["eligibleForInternalHoldout"] for point in points),
-        "zeroHitGeometryIds": zero_hit_geometry_ids,
-        "adaptiveContinuationRequiredGeometryIds": continuation,
-        "surrogateTrainingAutomaticallyAuthorized": False,
-        "observationValidationRequired": True,
-    }
-    return analysis, dataset
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--cases-root", type=Path, required=True)
-    parser.add_argument("--summary", type=Path, required=True)
-    parser.add_argument("--audit", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    args = parser.parse_args()
-    try:
-        analysis, dataset = analyze(args.manifest, args.cases_root, args.summary, args.audit)
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / "tier1-analysis.json").write_text(dump(analysis))
-        (args.output_dir / "tier1-numerical-dataset.json").write_text(dump(dataset))
-        print(dump(analysis), end="")
-        return 0
-    except Exception as exc:
-        print(dump({"status": "REFUSED", "stageId": STAGE_ID, "reason": str(exc)}), file=sys.stderr, end="")
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+STAGE_ID='twilight-surrogate-tier-1-analysis-v1';SOURCE_STAGE='twilight-surrogate-tier-1-execution-v1';NODES=15
+class AnalysisError(RuntimeError):pass
+def load(p:Path)->dict[str,Any]:
+ v=json.loads(p.read_text());
+ if not isinstance(v,dict):raise AnalysisError(f'expected object: {p}')
+ return v
+def dump(v:Any)->str:return json.dumps(v,indent=2,sort_keys=True,allow_nan=False)+'\n'
+def rows(root:Path)->list[dict[str,Any]]:return [load(p) for p in sorted(root.rglob('case-result.json'))]
+def summary(vals:list[float],node_rows:list[list[float]])->dict[str,Any]:
+ n=len(vals);mean=statistics.fmean(vals);std=statistics.stdev(vals) if n>1 else 0.0;rsem=(std/math.sqrt(n))/mean if mean else math.inf
+ return {'blockCount':n,'meanCdM2':mean,'sampleStdCdM2':std,'relativeStandardErrorOfMean':rsem,'nodeMeanRadiance':[statistics.fmean(r[i] for r in node_rows) for i in range(NODES)]}
+def analyze(manifest_path:Path,cases_root:Path,batch_summary_path:Path,audit_path:Path)->tuple[dict[str,Any],dict[str,Any]]:
+ m,b,a=load(manifest_path),load(batch_summary_path),load(audit_path)
+ if m.get('stageId')!=SOURCE_STAGE or len(m.get('geometries',[]))!=48 or len(m.get('cases',[]))!=96:raise AnalysisError('manifest invalid')
+ if b.get('classification')!='BATCH_NUMERICALLY_COMPLETE' or b.get('caseCountCompleted')!=96 or b.get('configuredMcPhotonsSum')!=6960000000:raise AnalysisError('aggregate incomplete')
+ if a.get('status')!='PASSED' or a.get('caseResultCount')!=96:raise AnalysisError('independent audit failed')
+ allrows=rows(cases_root)
+ if len(allrows)!=96:raise AnalysisError(f'expected 96 case rows, found {len(allrows)}')
+ expected={c['caseId']:c for c in m['cases']};bygroup:dict[str,list[dict[str,Any]]]={}
+ for r in allrows:
+  cid=r.get('caseId');e=expected.get(cid)
+  if e is None or r.get('status')!='COMPLETED' or r.get('solver',{}).get('exitCode')!=0 or r.get('solver',{}).get('timedOut') is not False:raise AnalysisError(f'invalid case {cid}')
+  if r.get('seed')!=e['seed'] or r.get('photonHistories')!=e['photonHistories'] or len(r.get('selectedNodeRadiance',[]))!=NODES:raise AnalysisError(f'case invariant changed {cid}')
+  bygroup.setdefault(e['groupId'],[]).append(r)
+ geometry_map={g['geometryId']:g for g in m['geometries']};points=[];continuation=[];target=[]
+ for gid in sorted(geometry_map):
+  group=bygroup.get(gid,[])
+  if len(group)!=2:raise AnalysisError(f'expected two blocks for {gid}')
+  vals=[float(r['selectedPhotopicContributionCdM2']) for r in group]
+  if any(not math.isfinite(v) or v<=0 for v in vals):raise AnalysisError(f'invalid luminance {gid}')
+  s=summary(vals,[[float(v) for v in r['selectedNodeRadiance']] for r in group]);rsem=s['relativeStandardErrorOfMean'];classification='PRECISION_TARGET_MET' if rsem<=.05 else 'PRECISION_ACCEPTED' if rsem<=.08 else 'ADAPTIVE_CONTINUATION_REQUIRED'
+  if classification=='PRECISION_TARGET_MET':target.append(gid)
+  if classification=='ADAPTIVE_CONTINUATION_REQUIRED':continuation.append(gid)
+  group_cases=[c for c in m['cases'] if c['groupId']==gid]
+  roles={c['role'] for c in group_cases}
+  if len(group_cases)!=2 or len(roles)!=1:raise AnalysisError(f'role or block contract changed for {gid}')
+  role=next(iter(roles))
+  points.append({'geometryId':gid,'geometry':geometry_map[gid],'role':role,'classification':classification,'statistics':s,'caseIds':sorted(r['caseId'] for r in group),'eligibleForProvisionalFit':classification!='ADAPTIVE_CONTINUATION_REQUIRED' and role=='surrogate-training','eligibleForInternalHoldout':classification!='ADAPTIVE_CONTINUATION_REQUIRED' and role=='internal-holdout'})
+ accepted=48-len(continuation)
+ analysis={'schemaVersion':1,'stageId':STAGE_ID,'status':'TIER_1_ANALYZED','geometryCount':48,'caseCount':96,'configuredMcPhotonsSum':6960000000,'precisionTargetGeometryCount':len(target),'precisionAcceptedGeometryCount':accepted,'adaptiveContinuationRequiredGeometryIds':continuation,'allPointsWithinMaximumRsem':not continuation,'points':points,'surrogateTrainingAutomaticallyAuthorized':False,'productionModelReady':False,'observationValidationRequired':True,'boundary':'Monte Carlo precision analysis only; no surrogate fit, physical validation, or production claim'}
+ dataset={'schemaVersion':1,'stageId':STAGE_ID,'status':'TIER_1_NUMERICAL_DATASET_COMPLETE' if not continuation else 'TIER_1_NUMERICAL_DATASET_PARTIAL_PRECISION','records':points,'trainingRecordCount':sum(p['eligibleForProvisionalFit'] for p in points),'internalHoldoutRecordCount':sum(p['eligibleForInternalHoldout'] for p in points),'adaptiveContinuationRequiredGeometryIds':continuation,'surrogateTrainingAutomaticallyAuthorized':False,'observationValidationRequired':True}
+ return analysis,dataset
+def main()->int:
+ p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,required=True);p.add_argument('--cases-root',type=Path,required=True);p.add_argument('--summary',type=Path,required=True);p.add_argument('--audit',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True);a=p.parse_args()
+ try:x,d=analyze(a.manifest,a.cases_root,a.summary,a.audit);a.output_dir.mkdir(parents=True,exist_ok=True);(a.output_dir/'tier1-analysis.json').write_text(dump(x));(a.output_dir/'tier1-numerical-dataset.json').write_text(dump(d));print(dump(x),end='');return 0
+ except Exception as e:print(dump({'status':'REFUSED','stageId':STAGE_ID,'reason':str(e)}),file=sys.stderr,end='');return 2
+if __name__=='__main__':raise SystemExit(main())

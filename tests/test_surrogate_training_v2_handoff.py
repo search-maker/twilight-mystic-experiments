@@ -350,6 +350,76 @@ class Tier1HandoffTests(unittest.TestCase):
         with self.assertRaises(handoff.HandoffRefusal):
             self.fixture.build(self.root / "zero-hit-continuation")
 
+    def test_eligible_v2_source_requires_exact_analysis_bindings(self):
+        self.fixture.summary.update(
+            {
+                "schemaVersion": 2,
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "scientificEligibilityPendingPrecisionAnalysis": True,
+                "zeroHitCaseCount": 0,
+                "zeroHitDiagnostics": [],
+                "continuationRequiredGeometryIds": [],
+            }
+        )
+        self.fixture.rewrite("summary", self.fixture.summary)
+        self.fixture.audit.update(
+            {
+                "schemaVersion": 2,
+                "executionComplete": True,
+                "scientificallyEligible": False,
+                "zeroHitDiagnostics": [],
+                "incompleteGeometryEnteredTrainingEligibility": False,
+                "aggregateRawSha256": handoff.raw_sha256(self.fixture.paths["summary"]),
+            }
+        )
+        self.fixture.rewrite("audit", self.fixture.audit)
+        bindings = {
+            "manifestRawSha256": handoff.raw_sha256(self.fixture.paths["manifest"]),
+            "aggregateRawSha256": handoff.raw_sha256(self.fixture.paths["summary"]),
+            "auditRawSha256": handoff.raw_sha256(self.fixture.paths["audit"]),
+            "caseResultRawSha256ByCaseId": self.fixture.audit["caseResultHashes"],
+        }
+        self.fixture.analysis.update(
+            {
+                "schemaVersion": 2,
+                "stageId": "twilight-surrogate-tier-1-analysis-v2",
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+                "sourceBindings": bindings,
+            }
+        )
+        for point in self.fixture.analysis["points"]:
+            point.update(
+                {
+                    "numericalStatus": "NUMERICALLY_CONVERGED",
+                    "executionComplete": True,
+                    "scientificallyEligible": True,
+                    "zeroHitCaseIds": [],
+                }
+            )
+        self.fixture.dataset.update(
+            {
+                "schemaVersion": 2,
+                "stageId": "twilight-surrogate-tier-1-analysis-v2",
+                "executionComplete": True,
+                "scientificallyEligible": True,
+                "zeroHitGeometryIds": [],
+                "sourceBindings": bindings,
+                "records": self.fixture.analysis["points"],
+            }
+        )
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        self.fixture.rewrite("dataset", self.fixture.dataset)
+        result = self.fixture.build(self.root / "eligible-v2")
+        self.assertTrue(result["dataset"].is_file())
+
+        self.fixture.analysis["sourceBindings"] = {**bindings, "auditRawSha256": "f" * 64}
+        self.fixture.rewrite("analysis", self.fixture.analysis)
+        with self.assertRaisesRegex(handoff.HandoffRefusal, "source bindings changed"):
+            self.fixture.build(self.root / "tampered-v2-bindings")
+
     def test_refuses_missing_artifact_provenance_and_case_hash(self):
         self.fixture.artifacts["artifacts"][0].pop("digest")
         self.fixture.rewrite("artifacts", self.fixture.artifacts)

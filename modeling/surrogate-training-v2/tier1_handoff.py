@@ -301,6 +301,7 @@ def validate_analysis_and_v1_dataset(
     dataset: dict[str, Any],
     geometry_by_id: dict[str, Any],
     case_by_id: dict[str, Any],
+    source_bindings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     schema_version = analysis.get("schemaVersion")
     analysis_stage = analysis.get("stageId")
@@ -335,6 +336,8 @@ def validate_analysis_and_v1_dataset(
             },
             "analysis v2 eligibility",
         )
+        if analysis.get("sourceBindings") != source_bindings:
+            raise HandoffRefusal("analysis v2 source bindings changed")
     if analysis.get("adaptiveContinuationRequiredGeometryIds") != []:
         raise HandoffRefusal("analysis still requires adaptive continuation")
     exact(
@@ -358,6 +361,8 @@ def validate_analysis_and_v1_dataset(
             },
             "v2 source dataset eligibility",
         )
+        if dataset.get("sourceBindings") != source_bindings:
+            raise HandoffRefusal("v2 source dataset bindings changed")
     if dataset.get("adaptiveContinuationRequiredGeometryIds") != []:
         raise HandoffRefusal("v1 dataset still requires adaptive continuation")
     points = analysis.get("points")
@@ -541,7 +546,15 @@ def build(
     if {item.get("caseId") for item in summary["caseIndex"]} != set(case_by_id):
         raise HandoffRefusal("aggregate case universe differs from manifest")
     validate_audit(audit, plan_path, summary_path, set(case_by_id))
-    points = validate_analysis_and_v1_dataset(analysis, v1_dataset, geometry_by_id, case_by_id)
+    source_bindings = {
+        "manifestRawSha256": raw_sha256(manifest_path),
+        "aggregateRawSha256": raw_sha256(summary_path),
+        "auditRawSha256": raw_sha256(audit_path),
+        "caseResultRawSha256ByCaseId": audit.get("caseResultHashes"),
+    }
+    points = validate_analysis_and_v1_dataset(
+        analysis, v1_dataset, geometry_by_id, case_by_id, source_bindings
+    )
     hard_ids, soft_ids, external = validate_reference(reference)
     validate_source_run_and_artifacts(source_run, artifacts)
 

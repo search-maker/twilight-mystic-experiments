@@ -250,14 +250,11 @@ def proposal(root: Path):
     plan = seed_plan(root)
     snapshot = duplicate_snapshot(root)
     v5_core = load_module(root / V5_CORE_PATH, "tier1_wave1_v5_core_for_wave2")
-    _, base, wave_v2, _, source_seeds, ordinal11_ordered = v5_core.proposal(root)
-    preserved_before_patch = {
-        gid: tuple(values) for gid, values in base.PRECOMPUTED_SEEDS.items()
-    }
+    _, base, wave_v2, proposal_value, source_seeds, ordinal11_ordered = v5_core.proposal(root)
+    base.validate_proposal(proposal_value)
     rows = plan.get("seedsByGeometry")
     if not isinstance(rows, dict) or set(rows) != set(ACTIVE_GEOMETRY_IDS):
         raise Refusal("wave-two seed geometry universe changed")
-    patched = dict(preserved_before_patch)
     ordered: list[int] = []
     for gid in ACTIVE_GEOMETRY_IDS:
         row = rows.get(gid)
@@ -271,9 +268,10 @@ def proposal(root: Path):
             for seed in pair
         ):
             raise Refusal("wave-two seed outside positive signed-32-bit range")
+        frozen_pair = tuple(base.PRECOMPUTED_SEEDS[gid][2:4])
+        if pair != frozen_pair:
+            raise Refusal(f"wave-two seed pair no longer matches original preregistration for {gid}")
         ordered.extend(pair)
-        current = tuple(patched[gid])
-        patched[gid] = current[:2] + pair + current[4:]
     if len(set(ordered)) != CASE_COUNT or canonical_sha256(ordered) != plan.get("orderedSeedsSha256"):
         raise Refusal("ordered wave-two seed proof changed")
     historical = set(wave_v2.ORDINAL1_SEEDS) | set(source_seeds) | set(wave_v2.CONSUMED_PROBE_SEEDS)
@@ -298,20 +296,21 @@ def proposal(root: Path):
     ordinal11 = [row["seed"] for row in v5_prereg["cases"]]
     if ordinal11 != ordinal11_ordered:
         raise Refusal("consumed ordinal-11 seed ordering changed")
-    preserved_future = [
-        preserved_before_patch[gid][block - 3]
+    original_future = [
+        base.PRECOMPUTED_SEEDS[gid][block - 3]
         for gid in base.CONTINUATION_GEOMETRY_IDS
         for block in (5, 6, 7, 8)
     ]
-    consumed = historical | set(ordinal8) | set(ordinal9) | set(ordinal10) | set(ordinal11) | set(preserved_future)
+    remaining_future = [seed for seed in original_future if seed not in set(ordered)]
+    if len(original_future) != 80 or len(set(original_future)) != 80:
+        raise Refusal("original future-wave seed universe changed")
+    if len(remaining_future) != 48 or set(remaining_future) & set(ordered):
+        raise Refusal("remaining future-wave seed universe changed")
+    consumed = historical | set(ordinal8) | set(ordinal9) | set(ordinal10) | set(ordinal11)
     if set(ordered) & consumed:
-        raise Refusal("wave-two seeds overlap consumed or preserved evidence")
-    base.PRECOMPUTED_SEEDS = patched
-    dataset, aggregate, audit, provenance, rebuilt_source_seeds = wave_v2._base_inputs(root, base)
-    if set(rebuilt_source_seeds) != set(source_seeds):
-        raise Refusal("ordinal-2 source seed universe changed")
-    proposal_value = base.build(dataset, aggregate, audit, provenance)
-    base.validate_proposal(proposal_value)
+        raise Refusal("wave-two seeds overlap consumed evidence")
+    if not set(ordered) < set(original_future):
+        raise Refusal("wave-two seeds are not the frozen original b5-b6 subset")
     return {
         "descriptor": descriptor,
         "plan": plan,
@@ -325,6 +324,7 @@ def proposal(root: Path):
         "ordinal9": ordinal9,
         "ordinal10": ordinal10,
         "ordinal11": ordinal11,
-        "preservedFuture": preserved_future,
+        "originalFuture": original_future,
+        "remainingFuture": remaining_future,
         "ordered": ordered,
     }

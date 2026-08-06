@@ -1,0 +1,116 @@
+name: Surrogate training v2 exploratory holdout protocol v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-holdout-protocol-v1-contract.yml"
+      - "modeling/surrogate-training-v2/exploratory_holdout_protocol.json"
+      - "modeling/surrogate-training-v2/exploratory_holdout_evaluation.py"
+      - "modeling/surrogate-training-v2/evidence/exploratory-training-only-model.json"
+      - "tests/test_surrogate_training_v2_exploratory_holdout_evaluation.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-holdout-protocol-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove attempt-one review-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/surrogate-training-v2-exploratory-holdout-protocol-v1-contract.yml').read_text(encoding='utf-8')
+          evaluator = Path('modeling/surrogate-training-v2/exploratory_holdout_evaluation.py').read_text(encoding='utf-8')
+          combined = workflow + '\n' + evaluator
+          forbidden = (
+              'workflow_' + 'dispatch',
+              'actions/download-' + 'artifact',
+              'GH_' + 'TOKEN',
+              'secrets.' + 'GITHUB_TOKEN',
+              'urllib.' + 'request',
+              'requests.' + 'get',
+              'sub' + 'process',
+              'evidence/ordinal2-corrected-v2/' + 'tier1-numerical-dataset.json',
+              'internal-' + 'holdout-values.json',
+          )
+          found = [token for token in forbidden if token in combined]
+          if found:
+              raise SystemExit(f'protocol PR exposed actual holdout access surface: {found}')
+          if 'python modeling/surrogate-training-v2/exploratory_holdout_evaluation.py' in workflow:
+              raise SystemExit('protocol workflow must not execute the real holdout evaluator')
+          PY
+
+      - name: Verify frozen model and protocol contracts
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_exploratory_holdout_evaluation.py
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_holdout_evaluation.py \
+            tests/test_surrogate_training_v2_exploratory_holdout_evaluation.py
+
+      - name: Seal review-only evidence
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p review
+          cp modeling/surrogate-training-v2/exploratory_holdout_protocol.json review/
+          cp modeling/surrogate-training-v2/evidence/exploratory-training-only-model.json review/
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def raw(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+          value = {
+              'schemaVersion': 1,
+              'stageId': 'surrogate-training-v2-exploratory-holdout-protocol-review-v1',
+              'status': 'REVIEW_ONLY_HOLDOUT_PROTOCOL_PASSED',
+              'headSha': os.environ['HEAD_SHA'],
+              'baseSha': os.environ['BASE_SHA'],
+              'runId': int(os.environ['RUN_ID']),
+              'runAttempt': int(os.environ['RUN_ATTEMPT']),
+              'protocolRawSha256': raw('modeling/surrogate-training-v2/exploratory_holdout_protocol.json'),
+              'modelArtifactRawSha256': raw('modeling/surrogate-training-v2/evidence/exploratory-training-only-model.json'),
+              'holdoutValuesRead': False,
+              'internalHoldoutOpened': False,
+              'selectionFromHoldoutForbidden': True,
+              'thresholdTuningFromHoldoutForbidden': True,
+              'tier2Authorized': False,
+              'productionModelReady': False,
+              'productionPromotionAuthorized': False,
+          }
+          value['reviewSha256'] = hashlib.sha256(
+              json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+          ).hexdigest()
+          Path('review/holdout-protocol-review.json').write_text(
+              json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + '\n',
+              encoding='utf-8',
+              newline='\n',
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-holdout-protocol-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

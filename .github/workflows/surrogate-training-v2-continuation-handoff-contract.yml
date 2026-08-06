@@ -1,0 +1,121 @@
+name: Surrogate training v2 continuation handoff contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-continuation-handoff-contract.yml"
+      - "modeling/surrogate-training-v2/continuation_handoff.py"
+      - "modeling/surrogate-training-v2/adapter.py"
+      - "tests/test_surrogate_training_v2_continuation_handoff.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-continuation-handoff-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove review-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path('modeling/surrogate-training-v2/continuation_handoff.py'),
+              Path('tests/test_surrogate_training_v2_continuation_handoff.py'),
+              Path('.github/workflows/surrogate-training-v2-continuation-handoff-contract.yml'),
+          ]
+          text = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden = (
+              'workflow_' + 'dispatch:',
+              'mamba-' + 'org/setup-micromamba',
+              'uv' + 'spec',
+              '--allow-' + 'execution',
+              'internalHoldoutOpened' + ': true',
+              'productionPromotionAuthorized' + ': true',
+          )
+          found = [item for item in forbidden if item in text]
+          if found:
+              raise SystemExit(f'handoff contract exposed forbidden execution surface: {found}')
+          PY
+
+      - name: Run continuation handoff refusal and construction tests
+        run: python -m unittest -v tests/test_surrogate_training_v2_continuation_handoff.py
+
+      - name: Compile continuation handoff
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/continuation_handoff.py \
+            tests/test_surrogate_training_v2_continuation_handoff.py
+
+      - name: Prove output is accepted by the frozen training adapter
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import json
+          import tempfile
+          from pathlib import Path
+
+          root = Path.cwd()
+          test_path = root / 'tests/test_surrogate_training_v2_continuation_handoff.py'
+          spec = importlib.util.spec_from_file_location('continuation_contract_fixture', test_path)
+          assert spec and spec.loader
+          fixture = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(fixture)
+          adapter_path = root / 'modeling/surrogate-training-v2/adapter.py'
+          spec = importlib.util.spec_from_file_location('continuation_contract_adapter', adapter_path)
+          assert spec and spec.loader
+          adapter = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(adapter)
+          with tempfile.TemporaryDirectory() as raw:
+              work = Path(raw)
+              args = fixture.make_fixture(work)
+              outputs = fixture.h.build(**args, output_dir=work/'out', exact_main_sha='b'*40)
+              partitioned = adapter.read_tier1_dataset(
+                  outputs['dataset'], outputs['envelope'], outputs['design'], expected_main_sha='b'*40
+              )
+              assert len(partitioned.training) == 42
+              assert len(partitioned.internal_holdout) == 6
+              assert len(partitioned.hard_anchors) == 5
+              assert len(partitioned.soft_diagnostics) == 1
+              report = {
+                  'schemaVersion': 1,
+                  'stageId': 'surrogate-training-v2-continuation-handoff-contract-review',
+                  'status': 'ADAPTER_COMPATIBLE_HANDOFF_REVIEWED',
+                  'headSha': '${{ github.event.pull_request.head.sha }}',
+                  'runId': ${{ github.run_id }},
+                  'runAttempt': ${{ github.run_attempt }},
+                  'trainingGeometryCount': len(partitioned.training),
+                  'internalHoldoutGeometryCount': len(partitioned.internal_holdout),
+                  'hardAnchorCount': len(partitioned.hard_anchors),
+                  'softDiagnosticCount': len(partitioned.soft_diagnostics),
+                  'sourceDatasetHash': partitioned.source_dataset_hash,
+                  'scientificSolverExecutions': 0,
+                  'modelFittingPerformed': False,
+                  'internalHoldoutOpened': False,
+                  'tier2Authorized': False,
+                  'productionPromotionAuthorized': False,
+              }
+              review = root / 'review'
+              review.mkdir(exist_ok=True)
+              (review/'review-report.json').write_text(json.dumps(report, indent=2, sort_keys=True)+'\n')
+              for name, path in outputs.items():
+                  (review/path.name).write_bytes(path.read_bytes())
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-continuation-handoff-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

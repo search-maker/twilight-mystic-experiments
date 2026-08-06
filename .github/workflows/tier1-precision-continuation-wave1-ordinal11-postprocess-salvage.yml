@@ -1,0 +1,201 @@
+name: Tier-1 ordinal 11 postprocess salvage
+run-name: Tier-1 ordinal 11 postprocess-only salvage
+on:
+  pull_request:
+    paths:
+      - .github/workflows/tier1-precision-continuation-wave1-ordinal11-postprocess-salvage.yml
+      - experiments/tier1-precision-continuation-wave1-v5/postprocess.py
+      - experiments/tier1-precision-continuation-wave1-v5/execution.py
+      - experiments/tier1-precision-continuation-wave1-v5/package.py
+      - tests/test_tier1_precision_continuation_wave1_v5.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-wave1-ordinal11-postprocess-salvage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  salvage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prove postprocessing-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test ! -e experiments/tier1-precision-continuation-wave1-v5/authorization.ordinal12.json
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/tier1-precision-continuation-wave1-ordinal11-postprocess-salvage.yml').read_text(encoding='utf-8')
+          forbidden = ('mamba-' + 'org/setup-micromamba', 'uv' + 'spec', '--allow-' + 'execution', 'solverExecutionAuthorized' + ': true')
+          found = [item for item in forbidden if item in workflow]
+          if found:
+              raise SystemExit(f'forbidden scientific execution surface: {found}')
+          PY
+
+      - name: Run focused schema-translation tests
+        run: python -m unittest tests.test_tier1_precision_continuation_wave1_v5
+
+      - name: Download exact ordinal-11 manifest artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-execution-manifest
+          path: artifacts/tier1-wave1-ordinal11-execution-manifest
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31052639692
+
+      - name: Download exact ordinal-11 case artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tier1-wave1-ordinal11-case-*
+          path: artifacts
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31052639692
+
+      - name: Verify immutable source identity and case universe
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts')
+          manifest_path = root / 'tier1-wave1-ordinal11-execution-manifest' / 'execution-manifest.json'
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          expected = {
+              'runId': 31052639692,
+              'runAttempt': 1,
+              'eventName': 'workflow_dispatch',
+              'headSha': '5b28ea31649f2c37e8b56ddae893a57608c2e148',
+              'authorizationRef': '23b2f823d826a1655f716006c9b87d07e44e0e99',
+              'authorizationOrdinal': 11,
+              'executionKey': 'twilight-surrogate-tier-1-v1:numerical:11',
+              'caseCount': 40,
+          }
+          stale = {key: (manifest.get(key), value) for key, value in expected.items() if manifest.get(key) != value}
+          if stale:
+              raise SystemExit(f'ordinal-11 manifest identity changed: {stale}')
+          results = sorted(root.rglob('case-result.json'))
+          if len(results) != 40:
+              raise SystemExit(f'expected 40 immutable case results, found {len(results)}')
+          expected_ids = {row['caseId'] for row in manifest['cases']}
+          observed_ids = {json.loads(path.read_text(encoding='utf-8'))['caseId'] for path in results}
+          if observed_ids != expected_ids:
+              raise SystemExit('ordinal-11 case universe changed')
+          rows = []
+          for path in sorted(root.rglob('*')):
+              if path.is_file():
+                  rows.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.as_posix()}")
+          Path('source-before.sha256').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+          PY
+
+      - name: Reproduce aggregate, independent audit, and analysis without solver execution
+        run: |
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py aggregate \
+            --root . \
+            --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json \
+            --results-root artifacts \
+            --output salvage/aggregate.json
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py audit \
+            --root . \
+            --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json \
+            --results-root artifacts \
+            --aggregate salvage/aggregate.json \
+            --output salvage/audit.json
+          python experiments/tier1-precision-continuation-wave1-v5/execution.py analyze \
+            --root . \
+            --manifest artifacts/tier1-wave1-ordinal11-execution-manifest/execution-manifest.json \
+            --aggregate salvage/aggregate.json \
+            --audit salvage/audit.json \
+            --output salvage/analysis.json
+
+      - name: Verify audited result and seal salvage report
+        run: |
+          python - <<'PY'
+          import collections
+          import hashlib
+          import json
+          from pathlib import Path
+
+          def canonical(value):
+              return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+          aggregate_path = Path('salvage/aggregate.json')
+          audit_path = Path('salvage/audit.json')
+          analysis_path = Path('salvage/analysis.json')
+          aggregate = json.loads(aggregate_path.read_text(encoding='utf-8'))
+          audit = json.loads(audit_path.read_text(encoding='utf-8'))
+          analysis = json.loads(analysis_path.read_text(encoding='utf-8'))
+          if aggregate.get('aggregate', {}).get('status') != 'COMPLETED':
+              raise SystemExit('salvaged aggregate is not complete')
+          if audit.get('audit', {}).get('status') != 'PASSED' or audit.get('audit', {}).get('failures') != []:
+              raise SystemExit('salvaged independent audit did not pass')
+          payload = analysis.get('analysis', {})
+          points = payload.get('points')
+          if payload.get('status') != 'CONTINUATION_ANALYZED' or not isinstance(points, list) or len(points) != 20:
+              raise SystemExit('salvaged continuation analysis is incomplete')
+          if analysis.get('additionalExecutionAutomaticallyAuthorized') is not False:
+              raise SystemExit('automatic additional execution boundary changed')
+          for key in ('surrogateFitAuthorized', 'internalHoldoutOpened', 'tier2Authorized', 'productionPromotionAuthorized'):
+              if analysis.get(key) is not False:
+                  raise SystemExit(f'closed boundary changed: {key}')
+          classifications = collections.Counter(point['classification'] for point in points)
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'tier1-wave1-ordinal11-postprocess-only-salvage',
+              'status': 'AUDITED_POSTPROCESS_SALVAGE_COMPLETE',
+              'sourceRunId': 31052639692,
+              'sourceRunAttempt': 1,
+              'sourceHeadSha': '5b28ea31649f2c37e8b56ddae893a57608c2e148',
+              'authorizationRef': '23b2f823d826a1655f716006c9b87d07e44e0e99',
+              'authorizationOrdinal': 11,
+              'executionKey': 'twilight-surrogate-tier-1-v1:numerical:11',
+              'caseCount': 40,
+              'classificationCounts': dict(sorted(classifications.items())),
+              'nextWaveGeometryIds': payload['nextWaveGeometryIds'],
+              'scientificallyEligible': payload['scientificallyEligible'],
+              'aggregateRawSha256': hashlib.sha256(aggregate_path.read_bytes()).hexdigest(),
+              'auditRawSha256': hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+              'analysisRawSha256': hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
+              'solverExecutionsPerformedBySalvage': 0,
+              'sourceArtifactsModified': False,
+              'additionalExecutionAutomaticallyAuthorized': False,
+              'surrogateFitAuthorized': False,
+              'internalHoldoutOpened': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = canonical(report)
+          Path('salvage/salvage-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+
+      - name: Re-prove source artifacts are byte-identical
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          rows = []
+          for path in sorted(Path('artifacts').rglob('*')):
+              if path.is_file():
+                  rows.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.as_posix()}")
+          Path('source-after.sha256').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+          PY
+          diff -u source-before.sha256 source-after.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-postprocess-salvage
+          path: |
+            salvage/aggregate.json
+            salvage/audit.json
+            salvage/analysis.json
+            salvage/salvage-report.json
+            source-before.sha256
+            source-after.sha256

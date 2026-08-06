@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import math
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,10 @@ def _load(name: str):
     return module
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
 def translate_results(preregistration: dict[str, Any], results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     c = _load("core")
     expected = {row["caseId"]: row for row in preregistration["cases"]}
@@ -26,7 +31,40 @@ def translate_results(preregistration: dict[str, Any], results: list[dict[str, A
         row = copy.deepcopy(result)
         if row.get("seed") != case["seed"] or row.get("block") != case["block"] or row.get("role") != case["role"]:
             raise c.Refusal("v5 result provenance changed")
+        if row.get("status") != "COMPLETED" or row.get("syntaxCheckCount") != 1 or row.get("solverExecutionCount") != 1:
+            raise c.Refusal("v5 result did not prove one successful case execution")
+
+        supplied_content_sha = row.pop("contentSha256", None)
+        computed_content_sha = c.canonical_sha256(row)
+        if supplied_content_sha is not None and supplied_content_sha != computed_content_sha:
+            raise c.Refusal("v5 result content hash changed")
+
+        runtime_sha = row.get("runtimeReportSha256")
+        value = row.get("selectedPhotopicContributionCdM2")
+        nodes = row.get("selectedNodeRadiance")
+        if not _is_sha256(runtime_sha):
+            raise c.Refusal("v5 runtime report hash missing")
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)) or value < 0:
+            raise c.Refusal("v5 photopic contribution invalid")
+        if not isinstance(nodes, list) or len(nodes) != 15 or any(
+            not isinstance(node, (int, float)) or isinstance(node, bool) or not math.isfinite(float(node)) or node < 0
+            for node in nodes
+        ):
+            raise c.Refusal("v5 selected-node radiance invalid")
+        if row.get("zeroHit") is not (float(value) == 0.0 and all(float(node) == 0.0 for node in nodes)):
+            raise c.Refusal("v5 zero-hit semantics changed")
+        for name in ("inputSha256", "radianceOutputSha256", "stdOutputSha256"):
+            if not _is_sha256(row.get(name)):
+                raise c.Refusal(f"v5 {name} missing")
+
         row["caseId"] = case["baseCaseId"]
+        row["alisSpectralImportanceSamplingNm"] = case["alisSpectralImportanceSamplingNm"]
+        row["geometrySha256"] = case["geometrySha256"]
+        row["syntax"] = {"exitCode": 0, "timedOut": False}
+        row["solver"] = {"exitCode": 0, "timedOut": False}
+        row["artifactSha256"] = supplied_content_sha or computed_content_sha
+        row["runtimeSha256"] = runtime_sha
+        row["valueCdM2"] = float(value)
         translated.append(row)
     return translated
 

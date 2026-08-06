@@ -1,0 +1,135 @@
+name: Surrogate training v2 exploratory internal holdout once v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-internal-holdout-once-v1.yml"
+      - "modeling/surrogate-training-v2/exploratory_holdout_dataset.py"
+      - "modeling/surrogate-training-v2/exploratory_holdout_real_evaluation.py"
+      - "modeling/surrogate-training-v2/exploratory_holdout_dataset_exact.py"
+      - "modeling/surrogate-training-v2/exploratory_holdout_real_evaluation_exact.py"
+      - "tests/test_surrogate_training_v2_exploratory_holdout_dataset.py"
+      - "tests/test_surrogate_training_v2_exploratory_holdout_real_evaluation.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-internal-holdout-once-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate-once:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exact attempt-one opening boundary
+        env:
+          EXPECTED_BASE_SHA: "0749f1645f06519528ad370e05fcd112cae76e8b"
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol=json.loads(Path('modeling/surrogate-training-v2/exploratory_holdout_protocol.json').read_text())
+          model=json.loads(Path('modeling/surrogate-training-v2/evidence/exploratory-training-only-model.json').read_text())
+          assert protocol['protocolSha256']=='f8fe9d486679ef1c9179ed08c790da987bc838cd952effcdebb33862f57d8f69'
+          assert model['modelHash']=='381323604143498619cec494d221747d0d32f37a7e7cbb811b0154b6b4f68848'
+          assert model['internalHoldoutOpened'] is False
+          assert model['holdoutValuesRead'] is False
+          PY
+
+      - name: Verify builder and evaluator before opening
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_exploratory_holdout_evaluation.py \
+            tests/test_surrogate_training_v2_exploratory_holdout_dataset.py \
+            tests/test_surrogate_training_v2_exploratory_holdout_real_evaluation.py
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_holdout_evaluation.py \
+            modeling/surrogate-training-v2/exploratory_holdout_dataset.py \
+            modeling/surrogate-training-v2/exploratory_holdout_real_evaluation.py \
+            modeling/surrogate-training-v2/exploratory_holdout_dataset_exact.py \
+            modeling/surrogate-training-v2/exploratory_holdout_real_evaluation_exact.py
+
+      - name: Refuse duplicate holdout opening
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python modeling/surrogate-training-v2/exploratory_holdout_real_evaluation_exact.py claim-check \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN"
+
+      - name: Seal irreversible opening claim
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p claim
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          value={
+            'schemaVersion':1,
+            'stageId':'surrogate-training-v2-exploratory-internal-holdout-opening-claim-v1',
+            'status':'INTERNAL_HOLDOUT_OPENING_CLAIMED_ONCE',
+            'headSha':os.environ['HEAD_SHA'],
+            'baseSha':os.environ['BASE_SHA'],
+            'runId':int(os.environ['RUN_ID']),
+            'runAttempt':int(os.environ['RUN_ATTEMPT']),
+            'modelHash':'381323604143498619cec494d221747d0d32f37a7e7cbb811b0154b6b4f68848',
+            'protocolSha256':'f8fe9d486679ef1c9179ed08c790da987bc838cd952effcdebb33862f57d8f69',
+            'selectionFromHoldoutForbidden':True,
+            'thresholdTuningFromHoldoutForbidden':True,
+            'rerunForbidden':True,
+          }
+          value['claimSha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('claim/holdout-opening-claim.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-holdout-opening-claim-v1
+          path: claim
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Open and evaluate internal holdout exactly once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p review
+          cp claim/holdout-opening-claim.json review/
+          set +e
+          python modeling/surrogate-training-v2/exploratory_holdout_real_evaluation_exact.py evaluate \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN" \
+            --repository-root . \
+            --work-root holdout-source-once \
+            --output-root review \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            >review/evaluation-stdout.log 2>review/evaluation-stderr.log
+          status=$?
+          printf '%s\n' "$status" > review/evaluation-exit-status.txt
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: surrogate-training-v2-exploratory-internal-holdout-result-v1
+          path: review
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,183 @@
+name: Tier-1 precision continuation wave 2 v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-precision-continuation-wave2-v1-contract.yml"
+      - "evidence/tier1-precision-continuation-wave2-v1/**"
+      - "experiments/tier1-precision-continuation-wave2-v1/**"
+      - "tests/test_tier1_precision_continuation_wave2_v1.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-precision-continuation-wave2-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Run wave-two preparation tests
+        run: |
+          python -m unittest -v \
+            tests/test_tier1_precision_continuation_wave2_v1.py \
+            tests/test_tier1_precision_continuation_wave1_v5.py \
+            tests/test_tier1_precision_continuation_v2.py
+
+      - name: Compile preparation files
+        run: |
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave2-v1/core.py \
+            experiments/tier1-precision-continuation-wave2-v1/package.py \
+            tests/test_tier1_precision_continuation_wave2_v1.py
+
+      - name: Prove deterministic generation
+        run: |
+          python experiments/tier1-precision-continuation-wave2-v1/package.py --output-dir /tmp/wave2-a
+          python experiments/tier1-precision-continuation-wave2-v1/package.py --output-dir /tmp/wave2-b
+          diff -ru /tmp/wave2-a /tmp/wave2-b
+
+      - name: Fetch exact merged-main salvage artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p source-metadata
+          gh api "repos/${{ github.repository }}/actions/artifacts/8952843354" > source-metadata/artifact.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('source-metadata/artifact.json').read_text())
+          expected = {
+              'id': 8952843354,
+              'name': 'tier1-wave1-ordinal11-postprocess-salvage',
+              'size_in_bytes': 43224,
+              'expired': False,
+              'digest': 'sha256:0fd662b3420e0162d9580cb30b4859775b3f43feba5b9264d26aed61c163f56b',
+          }
+          stale = {key: (value.get(key), expected_value) for key, expected_value in expected.items() if value.get(key) != expected_value}
+          if stale:
+              raise SystemExit(f'source artifact metadata changed: {stale}')
+          run = value.get('workflow_run') or {}
+          if run.get('id') != 31063167217 or run.get('head_branch') != 'main' or run.get('head_sha') != '4ebc7c0eef2e12562e5a1a9bed857c0fbf2c10f1':
+              raise SystemExit(f'source artifact run binding changed: {run}')
+          PY
+
+      - name: Download exact merged-main salvage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-postprocess-salvage
+          path: source-salvage
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31063167217
+
+      - name: Independently verify salvage payloads and active set
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('source-salvage')
+          paths = {
+              'aggregate': root / 'salvage/aggregate.json',
+              'audit': root / 'salvage/audit.json',
+              'analysis': root / 'salvage/analysis.json',
+              'report': root / 'salvage/salvage-report.json',
+              'before': root / 'source-before.sha256',
+              'after': root / 'source-after.sha256',
+          }
+          expected_hashes = {
+              'aggregate': 'b57477cf68555ec9752d43e817cadaf5e1f2bf33490b09767cad73b341a2ca8e',
+              'audit': '4e37595c348f4f9d8593db20cff5c69ed41068f4f2810934e5e8f93d1df62be5',
+              'analysis': '8c472324573f182f4760e5101fb087d7d10f140e531261e3eeaa1e232a9bdfd4',
+              'report': '5cd623009a1ea1b5e20aa00789ee26fdc66ccdbdc228627ad258ec760a85bb9e',
+              'before': '866ce7a402c785eaa936b85d0f2039fbe464dc52b52b9921efd4c9b253f89495',
+              'after': '866ce7a402c785eaa936b85d0f2039fbe464dc52b52b9921efd4c9b253f89495',
+          }
+          observed = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in paths.items()}
+          if observed != expected_hashes:
+              raise SystemExit(f'source salvage payload hashes changed: {observed}')
+          aggregate = json.loads(paths['aggregate'].read_text())
+          audit = json.loads(paths['audit'].read_text())
+          analysis = json.loads(paths['analysis'].read_text())
+          report = json.loads(paths['report'].read_text())
+          active = [
+              'train-0003', 'train-0007', 'train-0009', 'train-0011',
+              'train-0013', 'train-0015', 'train-0019', 'train-0023',
+              'train-0027', 'train-0029', 'train-0031', 'train-0035',
+              'train-0039', 'train-0041', 'train-0043', 'train-0047',
+          ]
+          if aggregate.get('aggregate', {}).get('status') != 'COMPLETED':
+              raise SystemExit('source aggregate is not complete')
+          if audit.get('audit', {}).get('status') != 'PASSED' or audit.get('audit', {}).get('failures') != []:
+              raise SystemExit('source independent audit is not clean')
+          body = analysis.get('analysis', {})
+          if body.get('status') != 'CONTINUATION_ANALYZED' or body.get('nextWaveGeometryIds') != active:
+              raise SystemExit('source analysis active set changed')
+          if report.get('classificationCounts') != {
+              'ADAPTIVE_CONTINUATION_REQUIRED': 16,
+              'PRECISION_ACCEPTED': 1,
+              'PRECISION_TARGET_MET': 3,
+          }:
+              raise SystemExit('source classification counts changed')
+          if report.get('solverExecutionsPerformedBySalvage') != 0 or report.get('sourceArtifactsModified') is not False:
+              raise SystemExit('source salvage boundary changed')
+          verification = {
+              'schemaVersion': 1,
+              'status': 'MERGED_MAIN_SALVAGE_REVERIFIED',
+              'sourceRunId': 31063167217,
+              'sourceArtifactId': 8952843354,
+              'payloadHashes': observed,
+              'nextWaveGeometryIds': active,
+              'caseCount': 32,
+              'blocks': [5, 6],
+              'scientificExecution': False,
+              'authorizationAllocated': False,
+              'dispatchEnabled': False,
+          }
+          verification['verificationSha256'] = hashlib.sha256(json.dumps(verification, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          Path('source-metadata/verification.json').write_text(json.dumps(verification, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Prove preparation-only boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path('experiments/tier1-precision-continuation-wave2-v1/core.py'),
+              Path('experiments/tier1-precision-continuation-wave2-v1/package.py'),
+              Path('tests/test_tier1_precision_continuation_wave2_v1.py'),
+          ]
+          text = '\n'.join(path.read_text() for path in paths)
+          forbidden = (
+              'subprocess', 'uvspec', 'mc_vroom', 'workflow_dispatch',
+              'solverExecutionAuthorized": True', 'authorizationEnabled": True',
+              'dispatchEnabled": True',
+          )
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'preparation exposed forbidden execution surface: {found}')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-precision-continuation-wave2-v1-contract
+          path: |
+            /tmp/wave2-a
+            source-metadata/artifact.json
+            source-metadata/verification.json
+            evidence/tier1-precision-continuation-wave2-v1/source-salvage.json
+            evidence/tier1-precision-continuation-wave2-v1/seed-plan.json
+            evidence/tier1-precision-continuation-wave2-v1/ordinal12-duplicate-search-snapshot.json
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,170 @@
+name: Tier-1 precision continuation wave 2 trigger v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-precision-continuation-wave2-trigger-v1-contract.yml"
+      - ".github/workflows/tier1-precision-continuation-wave2-ordinal12-execution.yml"
+      - "experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/trigger_case_executor.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/matrix_output.py"
+      - "tests/test_tier1_precision_continuation_wave2_trigger_v1.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-precision-continuation-wave2-trigger-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove transport remains unallocated and inert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test ! -e experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json
+          if gh api "repos/${{ github.repository }}/branches/dispatch%2Ftier1-precision-continuation-wave2-ordinal12-v1" > /tmp/dispatch-branch.json 2>/dev/null; then
+            echo "one-use dispatch branch already exists" >&2
+            exit 1
+          fi
+          if gh api "repos/${{ github.repository }}/branches/authorization%2Ftier1-precision-continuation-wave2-ordinal12-v1" > /tmp/authorization-branch.json 2>/dev/null; then
+            echo "ordinal-12 authorization branch already exists" >&2
+            exit 1
+          fi
+          gh api --method GET --paginate "repos/${{ github.repository }}/actions/runs" -f per_page=100 --slurp > /tmp/all-run-pages.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages = json.loads(Path('/tmp/all-run-pages.json').read_text())
+          title = 'Tier-1 precision continuation wave 2 ordinal 12'
+          matches = [
+              {'id': row['id'], 'event': row['event'], 'status': row['status'], 'attempt': row['run_attempt']}
+              for page in pages
+              for row in page.get('workflow_runs', [])
+              if row.get('display_title') == title
+          ]
+          if matches:
+              raise SystemExit(f'ordinal-12 scientific run already exists: {matches}')
+          PY
+
+      - name: Prove exact one-use workflow trigger and closed gates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/tier1-precision-continuation-wave2-ordinal12-execution.yml')
+          text = path.read_text(encoding='utf-8')
+          required = (
+              'run-name: Tier-1 precision continuation wave 2 ordinal 12',
+              'push:',
+              'dispatch/tier1-precision-continuation-wave2-ordinal12-v1',
+              'test "$GITHUB_RUN_ATTEMPT" = 1',
+              'test "$SOURCE_SHA" = "$LIVE_MAIN"',
+              'experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json',
+              'fail-fast: false',
+              'max-parallel: 8',
+              'trigger_case_executor.py',
+              'source-salvage/salvage/aggregate.json',
+              'source-salvage/salvage/audit.json',
+          )
+          missing = [token for token in required if token not in text]
+          forbidden = (
+              'workflow_' + 'dispatch:',
+              'schedule:',
+              'pull_request:',
+              'repository_dispatch:',
+              'surrogateFitAuthorized' + ': true',
+              'internalHoldoutOpened' + ': true',
+              'tier2Authorized' + ': true',
+              'productionPromotionAuthorized' + ': true',
+          )
+          found = [token for token in forbidden if token in text]
+          if missing or found:
+              raise SystemExit(f'trigger contract changed; missing={missing}; forbidden={found}')
+          if text.count('Execute exactly one syntax check and one solver invocation') != 1:
+              raise SystemExit('solver step cardinality changed')
+          PY
+
+      - name: Run push transport, execution, and preparation tests
+        run: |
+          python -m unittest -v \
+            tests/test_tier1_precision_continuation_wave2_trigger_v1.py \
+            tests/test_tier1_precision_continuation_wave2_execution_v1.py \
+            tests/test_tier1_precision_continuation_wave2_v1.py \
+            tests/test_tier1_precision_continuation_wave1_v5.py \
+            tests/test_tier1_precision_continuation_v2.py
+
+      - name: Compile transport package
+        run: |
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py \
+            experiments/tier1-precision-continuation-wave2-v1/trigger_case_executor.py \
+            experiments/tier1-precision-continuation-wave2-v1/matrix_output.py \
+            tests/test_tier1_precision_continuation_wave2_trigger_v1.py
+
+      - name: Produce sealed transport-review artifact
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from tests.test_tier1_precision_continuation_wave2_trigger_v1 import Wave2TriggerV1Tests
+
+          Wave2TriggerV1Tests.setUpClass()
+          test = Wave2TriggerV1Tests()
+          manifest = test.manifest()
+          matrix = json.loads(test.matrix.matrix_value(manifest))
+          out = Path('review')
+          out.mkdir()
+          manifest_path = out / 'synthetic-push-manifest.json'
+          matrix_path = out / 'synthetic-matrix.json'
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          matrix_path.write_text(json.dumps(matrix, indent=2, sort_keys=True) + '\n')
+          workflow_path = Path('.github/workflows/tier1-precision-continuation-wave2-ordinal12-execution.yml')
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'tier1-precision-continuation-wave2-trigger-v1-contract-review',
+              'status': 'ONE_USE_PUSH_TRANSPORT_REVIEWED_NOT_ALLOCATED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'triggerEvent': 'push',
+              'triggerBranch': 'dispatch/tier1-precision-continuation-wave2-ordinal12-v1',
+              'authorizationBranch': 'authorization/tier1-precision-continuation-wave2-ordinal12-v1',
+              'authorizationFileExists': False,
+              'dispatchBranchExists': False,
+              'scientificRunExists': False,
+              'caseCount': 32,
+              'geometryCount': 16,
+              'blocks': [5, 6],
+              'workflowRawSha256': hashlib.sha256(workflow_path.read_bytes()).hexdigest(),
+              'manifestRawSha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+              'matrixRawSha256': hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
+              'scientificSolverExecutions': 0,
+              'authorizationAllocated': False,
+              'githubRerunAllowed': False,
+              'surrogateTrainingAuthorized': False,
+              'internalHoldoutOpened': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          (out / 'review-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-precision-continuation-wave2-trigger-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

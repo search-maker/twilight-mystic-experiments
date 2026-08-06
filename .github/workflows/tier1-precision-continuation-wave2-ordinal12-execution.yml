@@ -1,0 +1,389 @@
+name: Tier-1 precision continuation wave 2 ordinal 12 execution
+run-name: Tier-1 precision continuation wave 2 ordinal 12
+
+on:
+  push:
+    branches:
+      - dispatch/tier1-precision-continuation-wave2-ordinal12-v1
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-wave2-ordinal12-execution
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse wrong event, trigger, attempt, source, or authorization shape
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = dispatch/tier1-precision-continuation-wave2-ordinal12-v1
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git cat-file -p "$GITHUB_SHA" | grep -c '^parent ')" = 1
+          SOURCE_SHA="$(git rev-parse "$GITHUB_SHA^")"
+          LIVE_MAIN="$(gh api "repos/${{ github.repository }}/branches/main" --jq .commit.sha)"
+          test "$SOURCE_SHA" = "$LIVE_MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json
+          git show "$GITHUB_SHA":experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json > authorization.json
+          SOURCE_SHA="$SOURCE_SHA" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              'authorizationCommit': os.environ['GITHUB_SHA'],
+              'authorizationParent': os.environ['SOURCE_SHA'],
+              'changedFiles': ['experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json'],
+              'parentCount': 1,
+          }
+          Path('authorization-metadata.json').write_text(json.dumps(value, sort_keys=True) + '\n')
+          PY
+
+      - name: Capture complete duplicate-search pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method GET --paginate \
+            "repos/${{ github.repository }}/actions/workflows/tier1-precision-continuation-wave2-ordinal12-execution.yml/runs" \
+            -f per_page=100 --slurp > run-pages.json
+          python experiments/tier1-precision-continuation-wave1-v3/duplicate_pages.py \
+            --pages run-pages.json \
+            --output runs.json
+
+      - name: Fetch exact merged-main salvage artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts/8952843354" > source-artifact.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('source-artifact.json').read_text())
+          expected = {
+              'id': 8952843354,
+              'name': 'tier1-wave1-ordinal11-postprocess-salvage',
+              'size_in_bytes': 43224,
+              'expired': False,
+              'digest': 'sha256:0fd662b3420e0162d9580cb30b4859775b3f43feba5b9264d26aed61c163f56b',
+          }
+          stale = {key: (value.get(key), expected_value) for key, expected_value in expected.items() if value.get(key) != expected_value}
+          if stale:
+              raise SystemExit(f'source salvage artifact metadata changed: {stale}')
+          run = value.get('workflow_run') or {}
+          if run.get('id') != 31063167217 or run.get('head_branch') != 'main' or run.get('head_sha') != '4ebc7c0eef2e12562e5a1a9bed857c0fbf2c10f1':
+              raise SystemExit(f'source salvage run binding changed: {run}')
+          PY
+
+      - name: Download exact merged-main wave-one salvage
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-postprocess-salvage
+          path: source-salvage
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31063167217
+
+      - name: Reverify immutable wave-one source before consuming wave-two seeds
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path('source-salvage')
+          paths = {
+              'aggregate': root / 'salvage/aggregate.json',
+              'audit': root / 'salvage/audit.json',
+              'analysis': root / 'salvage/analysis.json',
+              'report': root / 'salvage/salvage-report.json',
+              'before': root / 'source-before.sha256',
+              'after': root / 'source-after.sha256',
+          }
+          expected = {
+              'aggregate': 'b57477cf68555ec9752d43e817cadaf5e1f2bf33490b09767cad73b341a2ca8e',
+              'audit': '4e37595c348f4f9d8593db20cff5c69ed41068f4f2810934e5e8f93d1df62be5',
+              'analysis': '8c472324573f182f4760e5101fb087d7d10f140e531261e3eeaa1e232a9bdfd4',
+              'report': '5cd623009a1ea1b5e20aa00789ee26fdc66ccdbdc228627ad258ec760a85bb9e',
+              'before': '866ce7a402c785eaa936b85d0f2039fbe464dc52b52b9921efd4c9b253f89495',
+              'after': '866ce7a402c785eaa936b85d0f2039fbe464dc52b52b9921efd4c9b253f89495',
+          }
+          observed = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in paths.items()}
+          if observed != expected:
+              raise SystemExit(f'source salvage payload changed: {observed}')
+          analysis = json.loads(paths['analysis'].read_text())
+          expected_ids = [
+              'train-0003', 'train-0007', 'train-0009', 'train-0011',
+              'train-0013', 'train-0015', 'train-0019', 'train-0023',
+              'train-0027', 'train-0029', 'train-0031', 'train-0035',
+              'train-0039', 'train-0041', 'train-0043', 'train-0047',
+          ]
+          if analysis.get('analysis', {}).get('nextWaveGeometryIds') != expected_ids:
+              raise SystemExit('source active geometry set changed')
+          report = {
+              'status': 'MERGED_MAIN_WAVE_ONE_SOURCE_REVERIFIED_BEFORE_WAVE_TWO',
+              'sourceRunId': 31063167217,
+              'sourceArtifactId': 8952843354,
+              'payloadHashes': observed,
+              'nextWaveGeometryIds': expected_ids,
+              'solverExecutions': 0,
+          }
+          Path('source-verification.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: tier1-wave2-ordinal12
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture runtime identity without solver execution
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+
+      - name: Build exact 32-case attempt-1 manifest
+        run: |
+          SOURCE_SHA="$(git rev-parse "$GITHUB_SHA^")"
+          SOURCE_SHA="$SOURCE_SHA" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              'eventName': os.environ['GITHUB_EVENT_NAME'],
+              'triggerBranch': os.environ['GITHUB_REF_NAME'],
+              'runAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'displayTitle': 'Tier-1 precision continuation wave 2 ordinal 12',
+              'authorizationRef': os.environ['GITHUB_SHA'],
+              'authorizationOrdinal': 12,
+              'executionKey': 'twilight-surrogate-tier-1-v1:numerical:12',
+              'headBranch': 'main',
+              'headSha': os.environ['SOURCE_SHA'],
+              'runId': int(os.environ['GITHUB_RUN_ID']),
+          }
+          Path('context.json').write_text(json.dumps(value, sort_keys=True) + '\n')
+          PY
+          python experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py manifest \
+            --root . \
+            --authorization authorization.json \
+            --context context.json \
+            --runs runs.json \
+            --runtime runtime-report.json \
+            --authorization-metadata authorization-metadata.json \
+            --output execution-manifest.json
+
+      - id: matrix
+        name: Emit exact 32-case matrix
+        run: |
+          python experiments/tier1-precision-continuation-wave2-v1/matrix_output.py \
+            --manifest execution-manifest.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-execution-manifest
+          path: |
+            authorization.json
+            authorization-metadata.json
+            context.json
+            run-pages.json
+            runs.json
+            source-artifact.json
+            source-verification.json
+            runtime-report.json
+            execution-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: tier1-wave2-ordinal12
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-execution-manifest
+
+      - name: Re-prove runtime identity
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output case-runtime.json
+
+      - name: Execute exactly one syntax check and one solver invocation
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/tier1-precision-continuation-wave2-v1/trigger_case_executor.py \
+            --manifest execution-manifest.json \
+            --runtime-report case-runtime.json \
+            --adapter experiments/tier1-precision-continuation-wave2-v1/execution_adapter.py \
+            --case-id '${{ matrix.caseId }}' \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --repository-root . \
+            --uvspec "$(command -v uvspec)" \
+            --output-root output \
+            --timeout-seconds '${{ matrix.timeoutSeconds }}' \
+            --allow-execution
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-case-${{ matrix.caseId }}
+          path: output/${{ matrix.caseId }}
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases.result == 'success' }}
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tier1-wave2-ordinal12-*
+          path: artifacts
+
+      - name: Download exact immutable wave-one source
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-postprocess-salvage
+          path: source-salvage
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31063167217
+
+      - name: Aggregate, independently audit, and analyze both waves
+        run: |
+          python experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py aggregate \
+            --root . \
+            --manifest artifacts/tier1-wave2-ordinal12-execution-manifest/execution-manifest.json \
+            --results-root artifacts \
+            --output aggregate.json
+          python experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py audit \
+            --root . \
+            --manifest artifacts/tier1-wave2-ordinal12-execution-manifest/execution-manifest.json \
+            --results-root artifacts \
+            --aggregate aggregate.json \
+            --output audit.json
+          python experiments/tier1-precision-continuation-wave2-v1/trigger_execution.py analyze \
+            --root . \
+            --manifest artifacts/tier1-wave2-ordinal12-execution-manifest/execution-manifest.json \
+            --source-aggregate source-salvage/salvage/aggregate.json \
+            --source-audit source-salvage/salvage/audit.json \
+            --aggregate aggregate.json \
+            --audit audit.json \
+            --output analysis.json
+
+      - name: Seal terminal closed-gate report
+        run: |
+          python - <<'PY'
+          import collections
+          import hashlib
+          import json
+          from pathlib import Path
+          paths = {name: Path(f'{name}.json') for name in ('aggregate', 'audit', 'analysis')}
+          values = {name: json.loads(path.read_text()) for name, path in paths.items()}
+          if values['aggregate'].get('aggregate', {}).get('status') != 'COMPLETED':
+              raise SystemExit('wave-two aggregate is incomplete')
+          if values['audit'].get('audit', {}).get('status') != 'PASSED' or values['audit'].get('audit', {}).get('failures') != []:
+              raise SystemExit('wave-two independent audit failed')
+          analysis = values['analysis'].get('analysis', {})
+          if analysis.get('status') != 'CONTINUATION_ANALYZED' or len(analysis.get('points', [])) != 20:
+              raise SystemExit('two-wave analysis incomplete')
+          for key in ('additionalExecutionAutomaticallyAuthorized', 'surrogateFitAuthorized', 'internalHoldoutOpened', 'tier2Authorized', 'productionPromotionAuthorized'):
+              if values['analysis'].get(key) is not False:
+                  raise SystemExit(f'closed gate changed: {key}')
+          counts = collections.Counter(point['classification'] for point in analysis['points'])
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'tier1-precision-continuation-wave2-ordinal12-terminal-report',
+              'status': 'AUDITED_TWO_WAVE_ANALYSIS_COMPLETE',
+              'runId': int('${{ github.run_id }}'),
+              'runAttempt': int('${{ github.run_attempt }}'),
+              'authorizationRef': '${{ github.sha }}',
+              'authorizationOrdinal': 12,
+              'executionKey': 'twilight-surrogate-tier-1-v1:numerical:12',
+              'triggerBranch': 'dispatch/tier1-precision-continuation-wave2-ordinal12-v1',
+              'caseCount': 32,
+              'geometryCount': 16,
+              'blocks': [5, 6],
+              'classificationCounts': dict(sorted(counts.items())),
+              'nextWaveGeometryIds': analysis['nextWaveGeometryIds'],
+              'exhaustedGeometryIds': analysis['exhaustedGeometryIds'],
+              'scientificallyEligible': analysis['scientificallyEligible'],
+              'payloadHashes': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()},
+              'githubRerunAllowed': False,
+              'additionalExecutionAutomaticallyAuthorized': False,
+              'surrogateFitAuthorized': False,
+              'internalHoldoutOpened': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          Path('terminal-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-aggregate
+          path: aggregate.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-audit
+          path: audit.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-analysis
+          path: analysis.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-terminal-report
+          path: terminal-report.json
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,164 @@
+name: Tier-1 precision continuation wave 2 execution v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-precision-continuation-wave2-execution-v1-contract.yml"
+      - "experiments/tier1-precision-continuation-wave2-v1/execution.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/execution_adapter.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/case_executor.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/postprocess.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/package.py"
+      - "experiments/tier1-precision-continuation-wave2-v1/core.py"
+      - "tests/test_tier1_precision_continuation_wave2_execution_v1.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-precision-continuation-wave2-execution-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove disabled execution boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test ! -e experiments/tier1-precision-continuation-wave2-v1/authorization.ordinal12.json
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/tier1-precision-continuation-wave2-execution-v1-contract.yml').read_text(encoding='utf-8')
+          forbidden = (
+              'workflow_' + 'dispatch:',
+              'mamba-' + 'org/setup-micromamba',
+              'uv' + 'spec',
+              '--allow-' + 'execution',
+              'solverExecutionAuthorized' + ': true',
+          )
+          found = [token for token in forbidden if token in workflow]
+          if found:
+              raise SystemExit(f'contract exposed scientific execution surface: {found}')
+          PY
+
+      - name: Run manifest, adapter, executor, and postprocess tests
+        run: |
+          python -m unittest -v \
+            tests/test_tier1_precision_continuation_wave2_execution_v1.py \
+            tests/test_tier1_precision_continuation_wave2_v1.py \
+            tests/test_tier1_precision_continuation_wave1_v5.py \
+            tests/test_tier1_precision_continuation_v2.py
+
+      - name: Compile execution package
+        run: |
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave2-v1/core.py \
+            experiments/tier1-precision-continuation-wave2-v1/package.py \
+            experiments/tier1-precision-continuation-wave2-v1/execution.py \
+            experiments/tier1-precision-continuation-wave2-v1/execution_adapter.py \
+            experiments/tier1-precision-continuation-wave2-v1/case_executor.py \
+            experiments/tier1-precision-continuation-wave2-v1/postprocess.py \
+            tests/test_tier1_precision_continuation_wave2_execution_v1.py
+
+      - name: Download exact merged-main wave-one salvage
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave1-ordinal11-postprocess-salvage
+          path: source-salvage
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31063167217
+
+      - name: Run actual-source two-wave integration test
+        env:
+          WAVE2_SOURCE_SALVAGE_ROOT: ${{ github.workspace }}/source-salvage
+        run: |
+          python -m unittest -v \
+            tests.test_tier1_precision_continuation_wave2_execution_v1.Wave2ExecutionV1Tests.test_actual_source_two_wave_analysis_when_available
+
+      - name: Produce sealed execution-review evidence
+        env:
+          WAVE2_SOURCE_SALVAGE_ROOT: ${{ github.workspace }}/source-salvage
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from tests.test_tier1_precision_continuation_wave2_execution_v1 import Wave2ExecutionV1Tests
+
+          root = Path.cwd()
+          source = Path('source-salvage')
+          Wave2ExecutionV1Tests.setUpClass()
+          test = Wave2ExecutionV1Tests()
+          manifest = test.manifest()
+          results = test.fake_results(manifest)
+          aggregate = test.execution.aggregate(root, manifest, results)
+          audit = test.execution.audit(root, manifest, results, aggregate)
+          source_aggregate = test.execution.load_bound_source(
+              source / 'salvage/aggregate.json', test.execution.SOURCE_AGGREGATE_RAW_SHA256
+          )
+          source_audit = test.execution.load_bound_source(
+              source / 'salvage/audit.json', test.execution.SOURCE_AUDIT_RAW_SHA256
+          )
+          analysis = test.execution.analyze(
+              root, manifest, source_aggregate, source_audit, aggregate, audit
+          )
+          out = Path('review')
+          out.mkdir()
+          values = {
+              'synthetic-manifest.json': manifest,
+              'synthetic-wave2-aggregate.json': aggregate,
+              'synthetic-wave2-audit.json': audit,
+              'synthetic-two-wave-analysis.json': analysis,
+          }
+          hashes = {}
+          for name, value in values.items():
+              path = out / name
+              path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+              hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          source_hashes = {
+              name: hashlib.sha256((source / 'salvage' / name).read_bytes()).hexdigest()
+              for name in ('aggregate.json', 'audit.json', 'analysis.json', 'salvage-report.json')
+          }
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'tier1-precision-continuation-wave2-execution-v1-contract-review',
+              'status': 'DISABLED_EXECUTION_CONTRACT_PASSED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'sourceRunId': 31063167217,
+              'sourceArtifactId': 8952843354,
+              'sourcePayloadHashes': source_hashes,
+              'generatedHashes': hashes,
+              'caseCount': 32,
+              'geometryCount': 16,
+              'blocks': [5, 6],
+              'syntheticSolverExecutions': 0,
+              'scientificSolverExecutions': 0,
+              'authorizationAllocated': False,
+              'dispatchEnabled': False,
+              'githubRerunAllowed': False,
+              'surrogateTrainingAuthorized': False,
+              'internalHoldoutOpened': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          (out / 'review-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-precision-continuation-wave2-execution-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

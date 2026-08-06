@@ -4,19 +4,16 @@ on:
   pull_request:
     paths:
       - ".github/workflows/surrogate-training-v2-exploratory-noisy-label-v1-contract.yml"
-      - "modeling/surrogate-training-v2/exploratory_noisy_label_training.py"
-      - "modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py"
-      - "modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py"
+      - "modeling/surrogate-training-v2/exploratory_*.py"
       - "modeling/surrogate-training-v2/_exploratory_terminal_*.py"
       - "modeling/surrogate-training-v2/evidence/ordinal13-terminal-source-binding.json"
-      - "tests/test_surrogate_training_v2_exploratory_noisy_label.py"
-      - "tests/test_surrogate_training_v2_exploratory_role_map.py"
+      - "tests/test_surrogate_training_v2_exploratory_*.py"
       - "tests/exploratory_terminal_training_fixture.py"
-      - "tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py"
       - "tests/test_surrogate_training_v2_ordinal13_terminal_binding.py"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: surrogate-training-v2-exploratory-noisy-label-v1-${{ github.ref }}
@@ -25,7 +22,7 @@ concurrency:
 jobs:
   contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,14 +34,9 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           python - <<'PY'
           from pathlib import Path
-          paths = (
+          paths = tuple(Path('modeling/surrogate-training-v2').glob('*exploratory_terminal*.py')) + (
               Path('modeling/surrogate-training-v2/exploratory_noisy_label_training.py'),
               Path('modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py'),
-              Path('modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py'),
-              Path('modeling/surrogate-training-v2/_exploratory_terminal_core.py'),
-              Path('modeling/surrogate-training-v2/_exploratory_terminal_analysis.py'),
-              Path('modeling/surrogate-training-v2/_exploratory_terminal_inputs.py'),
-              Path('modeling/surrogate-training-v2/_exploratory_terminal_build.py'),
           )
           code = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
           forbidden = (
@@ -76,64 +68,25 @@ jobs:
             modeling/surrogate-training-v2/_exploratory_terminal_analysis.py \
             modeling/surrogate-training-v2/_exploratory_terminal_inputs.py \
             modeling/surrogate-training-v2/_exploratory_terminal_build.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_artifacts.py \
             modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py \
-            tests/test_surrogate_training_v2_exploratory_noisy_label.py \
-            tests/test_surrogate_training_v2_exploratory_role_map.py \
-            tests/exploratory_terminal_training_fixture.py \
-            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py \
-            tests/test_surrogate_training_v2_ordinal13_terminal_binding.py
+            modeling/surrogate-training-v2/exploratory_terminal_real_integration.py \
+            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py
 
-      - name: Produce sealed synthetic training-only dataset and model
+      - name: Build and seal exact real terminal training-only dataset and model
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python - <<'PY'
-          import hashlib
-          import json
-          import tempfile
-          from pathlib import Path
-          from tests.test_surrogate_training_v2_exploratory_terminal_training_dataset import ExploratoryTerminalTrainingDatasetTests
-
-          ExploratoryTerminalTrainingDatasetTests.setUpClass()
-          helper = ExploratoryTerminalTrainingDatasetTests()
-          review = Path('review')
-          review.mkdir()
-          with tempfile.TemporaryDirectory() as raw:
-              source, binding, analysis, results = helper.fixture(Path(raw))
-              source_binding = helper.builder.load(binding)
-              dataset = helper.builder.build(helper.root, source, binding, analysis, results)
-              artifact = helper.model.run(dataset, source_binding)
-          dataset_path = review / 'synthetic-terminal-training-only-dataset.json'
-          artifact_path = review / 'synthetic-exploratory-model.json'
-          dataset_path.write_text(json.dumps(dataset, indent=2, sort_keys=True) + '\n')
-          artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + '\n')
-          report = {
-              'schemaVersion': 1,
-              'stageId': 'surrogate-training-v2-exploratory-noisy-label-v1-contract-review',
-              'status': 'SYNTHETIC_EXPLORATORY_TRAINING_ONLY_CONTRACT_PASSED',
-              'headSha': '${{ github.event.pull_request.head.sha }}',
-              'runId': ${{ github.run_id }},
-              'runAttempt': ${{ github.run_attempt }},
-              'terminalSourceBindingSha256': 'fccdf0d31301b2aa3fe11b5523516070600650f234435ed7a870690296dab004',
-              'trainingGeometryCount': len(artifact['trainingGeometryIds']),
-              'internalHoldoutGeometryCountExcludedAndUnopened': len(artifact['internalHoldoutGeometryIdsExcludedAndUnopened']),
-              'holdoutGeometryIds': artifact['internalHoldoutGeometryIdsExcludedAndUnopened'],
-              'holdoutRecordCount': dataset['holdoutRecordCount'],
-              'holdoutValuesIncluded': dataset['holdoutValuesIncluded'],
-              'holdoutValuesRead': artifact['holdoutValuesRead'],
-              'internalHoldoutOpened': artifact['internalHoldoutOpened'],
-              'hardAnchorsOpened': artifact['hardAnchorsOpened'],
-              'softDiagnosticsOpened': artifact['softDiagnosticsOpened'],
-              'scientificallyEligibleModelClaimed': artifact['scientificallyEligibleModelClaimed'],
-              'productionModelReady': artifact['productionModelReady'],
-              'productionPromotionAuthorized': artifact['productionPromotionAuthorized'],
-              'tier2Authorized': artifact['tier2Authorized'],
-              'datasetRawSha256': hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
-              'artifactRawSha256': hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-              'datasetSha256': dataset['datasetSha256'],
-              'modelHash': artifact['modelHash'],
-          }
-          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-          (review / 'contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
-          PY
+          python modeling/surrogate-training-v2/exploratory_terminal_real_integration.py \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN" \
+            --repository-root . \
+            --work-root review-source \
+            --review-root review \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
 
       - uses: actions/upload-artifact@v4
         with:

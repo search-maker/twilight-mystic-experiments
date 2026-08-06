@@ -27,19 +27,41 @@ x = load(V5 / "case_executor.py", "wave1_v5_test_case_executor")
 
 
 def fake_results(prereg):
-    _, base, _, _, _, _ = p._core().proposal(ROOT)
+    core = p._core()
+    _, base, _, _, _, _ = core.proposal(ROOT)
     node = 1.0 / (6.83002 * sum(base.CIE))
     nodes = [node] * len(base.CIE)
     value = base._photopic_value(nodes)
-    return [{
-        "caseId": case["caseId"], "seed": case["seed"], "role": case["role"], "block": case["block"],
-        "photonHistories": case["photonHistories"], "alisSpectralImportanceSamplingNm": case["alisSpectralImportanceSamplingNm"],
-        "geometrySha256": case["geometrySha256"], "status": "COMPLETED", "syntaxCheckCount": 1,
-        "solverExecutionCount": 1, "syntax": {"exitCode": 0, "timedOut": False},
-        "solver": {"exitCode": 0, "timedOut": False}, "valueCdM2": value,
-        "selectedNodeRadiance": nodes, "artifactSha256": "1" * 64, "inputSha256": "2" * 64,
-        "radianceOutputSha256": "3" * 64, "stdOutputSha256": "4" * 64, "runtimeSha256": "5" * 64,
-    } for case in prereg["cases"]]
+    rows = []
+    for case in prereg["cases"]:
+        row = {
+            "schemaVersion": 1,
+            "stageId": e.STAGE_ID,
+            "status": "COMPLETED",
+            "caseId": case["caseId"],
+            "groupId": case["groupId"],
+            "seed": case["seed"],
+            "role": case["role"],
+            "block": case["block"],
+            "photonHistories": case["photonHistories"],
+            "manifestSha256": "f" * 64,
+            "runtimeReportSha256": "5" * 64,
+            "inputSha256": "2" * 64,
+            "radianceOutputSha256": "3" * 64,
+            "stdOutputSha256": "4" * 64,
+            "syntaxCheckCount": 1,
+            "solverExecutionCount": 1,
+            "selectedNodeRadiance": nodes,
+            "selectedNodeStdRadiance": [0.0] * len(nodes),
+            "selectedPhotopicContributionCdM2": value,
+            "zeroHit": False,
+            "fittingSurfaceExposed": False,
+            "retryAllowed": False,
+            "resumeAllowed": False,
+        }
+        row["contentSha256"] = core.canonical_sha256(row)
+        rows.append(row)
+    return rows
 
 
 class Wave1V5Tests(unittest.TestCase):
@@ -65,6 +87,31 @@ class Wave1V5Tests(unittest.TestCase):
         self.assertFalse(template["enabled"])
         self.assertIsNone(template["authorizationOrdinal"])
         self.assertIsNone(template["authorizationRef"])
+
+    def test_postprocess_translates_exact_v5_result_schema(self):
+        prereg = p.build_preregistration(ROOT)
+        post = load(V5 / "postprocess.py", "wave1_v5_translation_test_postprocess")
+        results = fake_results(prereg)
+        translated = post.translate_results(prereg, results)
+        self.assertEqual(len(translated), 40)
+        for source, row, case in zip(results, translated, prereg["cases"]):
+            self.assertEqual(row["caseId"], case["baseCaseId"])
+            self.assertEqual(row["artifactSha256"], source["contentSha256"])
+            self.assertEqual(row["runtimeSha256"], source["runtimeReportSha256"])
+            self.assertEqual(row["valueCdM2"], source["selectedPhotopicContributionCdM2"])
+            self.assertEqual(row["alisSpectralImportanceSamplingNm"], case["alisSpectralImportanceSamplingNm"])
+            self.assertEqual(row["geometrySha256"], case["geometrySha256"])
+            self.assertEqual(row["syntax"], {"exitCode": 0, "timedOut": False})
+            self.assertEqual(row["solver"], {"exitCode": 0, "timedOut": False})
+            self.assertNotIn("contentSha256", row)
+
+    def test_postprocess_refuses_changed_v5_content_hash(self):
+        prereg = p.build_preregistration(ROOT)
+        post = load(V5 / "postprocess.py", "wave1_v5_hash_refusal_test_postprocess")
+        results = fake_results(prereg)
+        results[0]["contentSha256"] = "0" * 64
+        with self.assertRaisesRegex(Exception, "content hash changed"):
+            post.translate_results(prereg, results)
 
     def test_complete_synthetic_postprocess_path(self):
         prereg = p.build_preregistration(ROOT)

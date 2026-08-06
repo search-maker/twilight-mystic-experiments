@@ -1,0 +1,99 @@
+name: Surrogate training v2 exploratory noisy-label v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-noisy-label-v1-contract.yml"
+      - "modeling/surrogate-training-v2/exploratory_noisy_label_training.py"
+      - "tests/test_surrogate_training_v2_exploratory_noisy_label.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-noisy-label-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exploratory training-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          code = Path('modeling/surrogate-training-v2/exploratory_noisy_label_training.py').read_text(encoding='utf-8')
+          forbidden = (
+              'workflow_' + 'dispatch', 'subprocess', 'uv' + 'spec',
+              'open_internal_' + 'holdout_once', 'evaluate_external(',
+              'productionPromotionAuthorized' + ': True',
+              'tier2Authorized' + ': True',
+          )
+          found = [token for token in forbidden if token in code]
+          if found:
+              raise SystemExit(f'exploratory package exposed forbidden surface: {found}')
+          PY
+
+      - name: Run exploratory noisy-label tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_exploratory_noisy_label.py
+
+      - name: Compile exploratory package
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_noisy_label_training.py \
+            tests/test_surrogate_training_v2_exploratory_noisy_label.py
+
+      - name: Produce sealed synthetic training-only artifact
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from tests.test_surrogate_training_v2_exploratory_noisy_label import ExploratoryNoisyLabelTests
+
+          ExploratoryNoisyLabelTests.setUpClass()
+          helper = ExploratoryNoisyLabelTests()
+          artifact = helper.module.run(helper.dataset(), helper.binding())
+          review = Path('review')
+          review.mkdir()
+          artifact_path = review / 'synthetic-exploratory-model.json'
+          artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + '\n')
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'surrogate-training-v2-exploratory-noisy-label-v1-contract-review',
+              'status': 'SYNTHETIC_EXPLORATORY_TRAINING_ONLY_CONTRACT_PASSED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'trainingGeometryCount': len(artifact['trainingGeometryIds']),
+              'internalHoldoutGeometryCountExcludedAndUnopened': len(artifact['internalHoldoutGeometryIdsExcludedAndUnopened']),
+              'holdoutValuesRead': artifact['holdoutValuesRead'],
+              'internalHoldoutOpened': artifact['internalHoldoutOpened'],
+              'hardAnchorsOpened': artifact['hardAnchorsOpened'],
+              'softDiagnosticsOpened': artifact['softDiagnosticsOpened'],
+              'scientificallyEligibleModelClaimed': artifact['scientificallyEligibleModelClaimed'],
+              'productionModelReady': artifact['productionModelReady'],
+              'productionPromotionAuthorized': artifact['productionPromotionAuthorized'],
+              'tier2Authorized': artifact['tier2Authorized'],
+              'artifactRawSha256': hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+              'modelHash': artifact['modelHash'],
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          (review / 'contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-noisy-label-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

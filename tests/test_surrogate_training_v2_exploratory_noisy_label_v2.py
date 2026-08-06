@@ -24,6 +24,8 @@ spec.loader.exec_module(m)
 class ExploratoryNoisyLabelV2Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if not DATASET_PATH.is_file() or not MODEL_V1_PATH.is_file():
+            raise unittest.SkipTest('frozen v1 training source artifact not mounted')
         cls.dataset = m.load(DATASET_PATH)
         cls.source_model = m.load(MODEL_V1_PATH)
         cls.expected = m.freeze(

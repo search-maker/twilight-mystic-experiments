@@ -1,0 +1,103 @@
+name: Surrogate training v2 exploratory noisy-label v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-noisy-label-v1-contract.yml"
+      - "modeling/surrogate-training-v2/exploratory_*.py"
+      - "modeling/surrogate-training-v2/_exploratory_terminal_*.py"
+      - "modeling/surrogate-training-v2/evidence/ordinal13-terminal-source-binding.json"
+      - "tests/test_surrogate_training_v2_exploratory_*.py"
+      - "tests/exploratory_terminal_training_fixture.py"
+      - "tests/test_surrogate_training_v2_ordinal13_terminal_binding.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-noisy-label-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exploratory training-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          paths = tuple(Path('modeling/surrogate-training-v2').glob('*exploratory_terminal*.py')) + (
+              Path('modeling/surrogate-training-v2/exploratory_noisy_label_training.py'),
+              Path('modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py'),
+          )
+          code = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden = (
+              'workflow_' + 'dispatch', 'subprocess', 'uv' + 'spec',
+              'open_internal_' + 'holdout_once', 'evaluate_external(',
+              'productionPromotionAuthorized' + ': True',
+              'tier2Authorized' + ': True',
+          )
+          found = [token for token in forbidden if token in code]
+          if found:
+              raise SystemExit(f'exploratory package exposed forbidden surface: {found}')
+          PY
+
+      - name: Run exploratory dataset and model tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_exploratory_noisy_label.py \
+            tests/test_surrogate_training_v2_exploratory_role_map.py \
+            tests/exploratory_terminal_training_fixture.py \
+            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py \
+            tests/test_surrogate_training_v2_ordinal13_terminal_binding.py
+
+      - name: Compile exploratory package
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_noisy_label_training.py \
+            modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_core.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_analysis.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_inputs.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_build.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_artifacts.py \
+            modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py \
+            modeling/surrogate-training-v2/exploratory_terminal_real_integration.py \
+            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py
+
+      - name: Build and seal exact real terminal training-only dataset and model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p review
+          set +e
+          python modeling/surrogate-training-v2/exploratory_terminal_real_integration.py \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN" \
+            --repository-root . \
+            --work-root review-source \
+            --review-root review \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            >review/integration-stdout.log 2>review/integration-stderr.log
+          status=$?
+          printf '%s\n' "$status" > review/integration-exit-status.txt
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: surrogate-training-v2-exploratory-noisy-label-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

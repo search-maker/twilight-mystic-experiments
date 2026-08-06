@@ -48,14 +48,15 @@ class Wave2V1Tests(unittest.TestCase):
         self.assertEqual(
             value["internalHoldoutGeometryIds"], ["train-0015", "train-0035"]
         )
-        self.assertEqual(
-            value["geometryIds"], value["sourceWave1NextGeometryIds"]
-        )
+        self.assertEqual(value["geometryIds"], value["sourceWave1NextGeometryIds"])
         self.assertIn("train-0047", value["geometryIds"])
         self.assertEqual({row["block"] for row in value["cases"]}, {5, 6})
         self.assertEqual(len({row["caseId"] for row in value["cases"]}), 32)
         self.assertTrue(
-            all("precision-continuation-wave2-v1" in row["caseId"] for row in value["cases"])
+            all(
+                "precision-continuation-wave2-v1" in row["caseId"]
+                for row in value["cases"]
+            )
         )
 
     def test_seed_proof_covers_every_consumed_and_preserved_universe(self):
@@ -65,7 +66,8 @@ class Wave2V1Tests(unittest.TestCase):
         self.assertEqual(proof["ordinal9WaveSeedCount"], 40)
         self.assertEqual(proof["ordinal10WaveSeedCount"], 40)
         self.assertEqual(proof["ordinal11WaveSeedCount"], 40)
-        self.assertEqual(proof["preservedFutureSeedCount"], 80)
+        self.assertEqual(proof["originalFutureSeedCount"], 80)
+        self.assertEqual(proof["remainingFutureSeedCount"], 48)
         self.assertEqual(proof["wave2SeedCount"], 32)
         self.assertTrue(proof["allWave2SeedsUnique"])
         for key in (
@@ -74,12 +76,14 @@ class Wave2V1Tests(unittest.TestCase):
             "ordinal9Overlap",
             "ordinal10Overlap",
             "ordinal11Overlap",
-            "preservedFutureOverlap",
+            "remainingFutureOverlap",
         ):
             self.assertEqual(proof[key], [], key)
+        self.assertTrue(proof["wave2SubsetOfOriginalPreregistration"])
+        self.assertTrue(proof["proposalShaPreservedAcrossWaveOneAndWaveTwo"])
         self.assertEqual(
             proof["wave2SeedsSha256"],
-            "a2f25e18689d3acbb8f27c112385d608037d8821ffa287b43c2a1830f5aa38b5",
+            "e69bcf733a5c937d7fb01137b62f34997de67d32678d23519b6e80054bdc4f3f",
         )
 
     def test_source_salvage_and_candidate_identity_are_exact_and_closed(self):
@@ -140,7 +144,9 @@ class Wave2V1Tests(unittest.TestCase):
             second_files = {path.name: path.read_bytes() for path in second.iterdir()}
             self.assertEqual(first_files, second_files)
             report = json.loads(first_files["generation-report.json"])
-            self.assertEqual(report["status"], "DETERMINISTIC_REVIEW_ARTIFACTS_GENERATED")
+            self.assertEqual(
+                report["status"], "DETERMINISTIC_REVIEW_ARTIFACTS_GENERATED"
+            )
             self.assertFalse(report["authorizationAllocated"])
             self.assertFalse(report["dispatchEnabled"])
             self.assertFalse(report["scientificExecution"])

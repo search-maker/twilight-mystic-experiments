@@ -1,0 +1,158 @@
+name: Surrogate training v2 final model contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-final-model-contract.yml"
+      - "modeling/surrogate-training-v2/final_model_pipeline.py"
+      - "modeling/surrogate-training-v2/model_runtime.py"
+      - "modeling/surrogate-training-v2/training.py"
+      - "modeling/surrogate-training-v2/adapter.py"
+      - "modeling/surrogate-training-v2/candidate-protocol.json"
+      - "modeling/surrogate-training-v2/continuation_handoff.py"
+      - "tests/test_surrogate_training_v2_final_model.py"
+      - "tests/test_surrogate_training_v2_continuation_handoff.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-final-model-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove synthetic review and production boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path('modeling/surrogate-training-v2/final_model_pipeline.py'),
+              Path('modeling/surrogate-training-v2/model_runtime.py'),
+              Path('tests/test_surrogate_training_v2_final_model.py'),
+              Path('.github/workflows/surrogate-training-v2-final-model-contract.yml'),
+          ]
+          text = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden = (
+              'workflow_' + 'dispatch:',
+              'mamba-' + 'org/setup-micromamba',
+              'uv' + 'spec',
+              '--allow-' + 'execution',
+              'productionPromotionAuthorized' + ': true',
+              'tier2Authorized' + ': true',
+          )
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'final-model contract exposed forbidden execution or promotion surface: {found}')
+          PY
+
+      - name: Run final model and inherited training tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_final_model.py \
+            tests/test_surrogate_training_v2_continuation_handoff.py \
+            tests/test_surrogate_training_v2.py \
+            tests/test_surrogate_training_v2_handoff.py \
+            tests/test_surrogate_training_v2_real_handoff.py
+
+      - name: Compile model pipeline and runtime
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/final_model_pipeline.py \
+            modeling/surrogate-training-v2/model_runtime.py \
+            tests/test_surrogate_training_v2_final_model.py
+
+      - name: Produce two byte-identical synthetic final models
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          from tests.test_surrogate_training_v2_continuation_handoff import ContinuationHandoffTests
+          from tests.test_surrogate_training_v2_final_model import FinalModelPipelineTests
+
+          root = Path.cwd()
+          ContinuationHandoffTests.setUpClass()
+          FinalModelPipelineTests.setUpClass()
+          handoff_helper = ContinuationHandoffTests()
+          model_helper = FinalModelPipelineTests()
+          review = root / 'review'
+          review.mkdir()
+          with tempfile.TemporaryDirectory() as raw:
+              work = Path(raw)
+              _, _, handoff = handoff_helper.build(work / 'handoff')
+              first = model_helper.pipeline.run_pipeline(
+                  handoff['dataset'], handoff['envelope'], handoff['design'],
+                  root / 'modeling/surrogate-training-v2/candidate-protocol.json',
+                  work / 'first', expected_main_sha='0'*40, repository_root=root,
+              )
+              second = model_helper.pipeline.run_pipeline(
+                  handoff['dataset'], handoff['envelope'], handoff['design'],
+                  root / 'modeling/surrogate-training-v2/candidate-protocol.json',
+                  work / 'second', expected_main_sha='0'*40, repository_root=root,
+              )
+              first_bytes = {key: path.read_bytes() for key, path in first.items()}
+              second_bytes = {key: path.read_bytes() for key, path in second.items()}
+              if first_bytes != second_bytes:
+                  raise SystemExit('synthetic final model regeneration is not byte deterministic')
+              dataset = json.loads(handoff['dataset'].read_text())
+              package = json.loads(first['package'].read_text())
+              training_id = package['trainingIds'][0]
+              record = next(row for row in dataset['records'] if row['geometryId'] == training_id)
+              prediction = model_helper.runtime.predict(
+                  first['package'], first['artifact'], first['state'],
+                  {'geometryId': training_id, 'geometry': record['geometry']},
+                  repository_root=root,
+              )
+              for key, path in first.items():
+                  (review / path.name).write_bytes(path.read_bytes())
+              (review / 'sample-prediction.json').write_text(json.dumps(prediction, indent=2, sort_keys=True) + '\n')
+              report = {
+                  'schemaVersion': 1,
+                  'stageId': 'surrogate-training-v2-final-model-contract-review',
+                  'status': 'SYNTHETIC_END_TO_END_MODEL_CONTRACT_PASSED',
+                  'headSha': '${{ github.event.pull_request.head.sha }}',
+                  'runId': ${{ github.run_id }},
+                  'runAttempt': ${{ github.run_attempt }},
+                  'selectedCandidate': package['selectedCandidate'],
+                  'selectedModelFamily': package['selectedModelFamily'],
+                  'trainingGeometryCount': package['trainingGeometryCount'],
+                  'internalHoldoutGeometryCount': package['internalHoldoutGeometryCount'],
+                  'hardAnchorCount': package['hardAnchorCount'],
+                  'softDiagnosticCount': package['softDiagnosticCount'],
+                  'generatedModelHash': package['generatedModelHash'],
+                  'modelPackageSha256': package['modelPackageSha256'],
+                  'outputRawSha256': {
+                      key: hashlib.sha256(path.read_bytes()).hexdigest()
+                      for key, path in first.items()
+                  },
+                  'samplePredictionRawSha256': hashlib.sha256((review/'sample-prediction.json').read_bytes()).hexdigest(),
+                  'syntheticModelFittingPerformed': True,
+                  'realScientificModelFittingPerformed': False,
+                  'realInternalHoldoutOpened': False,
+                  'scientificSolverExecutions': 0,
+                  'observationallyValidated': False,
+                  'productionModelReady': False,
+                  'tier2Authorized': False,
+                  'productionPromotionAuthorized': False,
+              }
+              report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+              (review / 'contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-final-model-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

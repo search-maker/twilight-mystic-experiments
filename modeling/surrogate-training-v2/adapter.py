@@ -4,9 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 STAGE_ID = "twilight-surrogate-tier-1-analysis-v1"
 DATASET_STATUS = "TIER_1_NUMERICAL_DATASET_COMPLETE"
@@ -62,8 +61,7 @@ def finite_number(value: Any, label: str, *, positive: bool = False, nonnegative
     return number
 
 
-@dataclass(frozen=True)
-class PartitionedDataset:
+class PartitionedDataset(NamedTuple):
     source_dataset_hash: str
     exact_main_sha: str
     training: tuple[dict[str, Any], ...]
@@ -81,7 +79,10 @@ def _validate_record(record: dict[str, Any], expected_role_by_id: dict[str, str]
     role = record.get("role")
     if role not in ALLOWED_ROLES or expected_role_by_id.get(geometry_id) != role:
         raise DatasetRefusal(f"role changed or invalid for {geometry_id}")
-    if record.get("classification") not in ELIGIBLE_CLASSIFICATIONS:
+    classification = record.get("classification")
+    if classification == "ADAPTIVE_CONTINUATION_REQUIRED":
+        raise DatasetRefusal(f"adaptive continuation geometry forbidden: {geometry_id}")
+    if classification not in ELIGIBLE_CLASSIFICATIONS:
         raise DatasetRefusal(f"ineligible precision classification: {geometry_id}")
     statistics = record.get("statistics")
     if not isinstance(statistics, dict):

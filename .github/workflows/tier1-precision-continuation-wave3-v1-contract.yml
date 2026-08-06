@@ -1,0 +1,118 @@
+name: Tier-1 precision continuation wave 3 v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-precision-continuation-wave3-v1-contract.yml"
+      - "experiments/tier1-precision-continuation-wave3-v1/**"
+      - "tests/test_tier1_precision_continuation_wave3_v1.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tier1-precision-continuation-wave3-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove review-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test ! -e experiments/tier1-precision-continuation-wave3-v1/authorization.ordinal13.json
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path('experiments/tier1-precision-continuation-wave3-v1/package.py'),
+              Path('tests/test_tier1_precision_continuation_wave3_v1.py'),
+          ]
+          text = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden = (
+              'subprocess', 'workflow_' + 'dispatch', 'uv' + 'spec',
+              'solverExecutionAuthorized' + ': true',
+              'authorizationEnabled' + ': true',
+              'dispatchEnabled' + ': true',
+              'surrogateTrainingAuthorized' + ': true',
+              'internalHoldoutOpeningAuthorized' + ': true',
+              'productionPromotionAuthorized' + ': true',
+          )
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'wave-three preparation exposed forbidden surface: {found}')
+          PY
+
+      - name: Run dynamic wave-three tests
+        run: |
+          python -m unittest -v \
+            tests/test_tier1_precision_continuation_wave3_v1.py \
+            tests/test_tier1_precision_continuation_wave2_v1.py \
+            tests/test_tier1_precision_continuation_wave2_execution_v1.py
+
+      - name: Compile wave-three preparation
+        run: |
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave3-v1/package.py \
+            tests/test_tier1_precision_continuation_wave3_v1.py
+
+      - name: Produce sealed synthetic dynamic package
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          from tests.test_tier1_precision_continuation_wave3_v1 import Wave3V1Tests
+
+          Wave3V1Tests.setUpClass()
+          test = Wave3V1Tests()
+          review = Path('review')
+          review.mkdir()
+          source = review / 'synthetic-wave2-analysis.json'
+          source.write_text(json.dumps(test.analysis(), indent=2, sort_keys=True) + '\n')
+          with tempfile.TemporaryDirectory() as raw:
+              output = Path(raw) / 'generated'
+              test.package.write_generated(source, output, test.root)
+              for path in output.iterdir():
+                  (review / path.name).write_bytes(path.read_bytes())
+          generated = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in review.iterdir()
+          }
+          prereg = json.loads((review / 'preregistration.json').read_text())
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'tier1-precision-continuation-wave3-v1-contract-review',
+              'status': 'DYNAMIC_WAVE3_PREPARATION_CONTRACT_PASSED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'syntheticActiveGeometryIds': prereg['geometryIds'],
+              'syntheticCaseCount': prereg['caseCount'],
+              'blocks': [7, 8],
+              'generatedHashes': generated,
+              'authorizationAllocated': False,
+              'dispatchEnabled': False,
+              'scientificExecution': False,
+              'surrogateTrainingAuthorized': False,
+              'internalHoldoutOpeningAuthorized': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          (review / 'contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-precision-continuation-wave3-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

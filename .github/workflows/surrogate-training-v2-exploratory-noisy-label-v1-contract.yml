@@ -6,8 +6,14 @@ on:
       - ".github/workflows/surrogate-training-v2-exploratory-noisy-label-v1-contract.yml"
       - "modeling/surrogate-training-v2/exploratory_noisy_label_training.py"
       - "modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py"
+      - "modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py"
+      - "modeling/surrogate-training-v2/_exploratory_terminal_*.py"
+      - "modeling/surrogate-training-v2/evidence/ordinal13-terminal-source-binding.json"
       - "tests/test_surrogate_training_v2_exploratory_noisy_label.py"
       - "tests/test_surrogate_training_v2_exploratory_role_map.py"
+      - "tests/exploratory_terminal_training_fixture.py"
+      - "tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py"
+      - "tests/test_surrogate_training_v2_ordinal13_terminal_binding.py"
 
 permissions:
   contents: read
@@ -31,13 +37,16 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           python - <<'PY'
           from pathlib import Path
-          code = '\n'.join(
-              Path(path).read_text(encoding='utf-8')
-              for path in (
-                  'modeling/surrogate-training-v2/exploratory_noisy_label_training.py',
-                  'modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py',
-              )
+          paths = (
+              Path('modeling/surrogate-training-v2/exploratory_noisy_label_training.py'),
+              Path('modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py'),
+              Path('modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_terminal_core.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_terminal_analysis.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_terminal_inputs.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_terminal_build.py'),
           )
+          code = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
           forbidden = (
               'workflow_' + 'dispatch', 'subprocess', 'uv' + 'spec',
               'open_internal_' + 'holdout_once', 'evaluate_external(',
@@ -49,34 +58,52 @@ jobs:
               raise SystemExit(f'exploratory package exposed forbidden surface: {found}')
           PY
 
-      - name: Run exploratory noisy-label tests
+      - name: Run exploratory dataset and model tests
         run: |
           python -m unittest -v \
             tests/test_surrogate_training_v2_exploratory_noisy_label.py \
-            tests/test_surrogate_training_v2_exploratory_role_map.py
+            tests/test_surrogate_training_v2_exploratory_role_map.py \
+            tests/exploratory_terminal_training_fixture.py \
+            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py \
+            tests/test_surrogate_training_v2_ordinal13_terminal_binding.py
 
       - name: Compile exploratory package
         run: |
           python -m py_compile \
             modeling/surrogate-training-v2/exploratory_noisy_label_training.py \
             modeling/surrogate-training-v2/exploratory_noisy_label_training_exact.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_core.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_analysis.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_inputs.py \
+            modeling/surrogate-training-v2/_exploratory_terminal_build.py \
+            modeling/surrogate-training-v2/exploratory_terminal_training_dataset.py \
             tests/test_surrogate_training_v2_exploratory_noisy_label.py \
-            tests/test_surrogate_training_v2_exploratory_role_map.py
+            tests/test_surrogate_training_v2_exploratory_role_map.py \
+            tests/exploratory_terminal_training_fixture.py \
+            tests/test_surrogate_training_v2_exploratory_terminal_training_dataset.py \
+            tests/test_surrogate_training_v2_ordinal13_terminal_binding.py
 
-      - name: Produce sealed synthetic training-only artifact
+      - name: Produce sealed synthetic training-only dataset and model
         run: |
           python - <<'PY'
           import hashlib
           import json
+          import tempfile
           from pathlib import Path
-          from tests.test_surrogate_training_v2_exploratory_role_map import ExploratoryRoleMapTests
+          from tests.test_surrogate_training_v2_exploratory_terminal_training_dataset import ExploratoryTerminalTrainingDatasetTests
 
-          ExploratoryRoleMapTests.setUpClass()
-          helper = ExploratoryRoleMapTests()
-          artifact = helper.module.run(helper.dataset(), helper.binding())
+          ExploratoryTerminalTrainingDatasetTests.setUpClass()
+          helper = ExploratoryTerminalTrainingDatasetTests()
           review = Path('review')
           review.mkdir()
+          with tempfile.TemporaryDirectory() as raw:
+              source, binding, analysis, results = helper.fixture(Path(raw))
+              source_binding = helper.builder.load(binding)
+              dataset = helper.builder.build(helper.root, source, binding, analysis, results)
+              artifact = helper.model.run(dataset, source_binding)
+          dataset_path = review / 'synthetic-terminal-training-only-dataset.json'
           artifact_path = review / 'synthetic-exploratory-model.json'
+          dataset_path.write_text(json.dumps(dataset, indent=2, sort_keys=True) + '\n')
           artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + '\n')
           report = {
               'schemaVersion': 1,
@@ -85,9 +112,12 @@ jobs:
               'headSha': '${{ github.event.pull_request.head.sha }}',
               'runId': ${{ github.run_id }},
               'runAttempt': ${{ github.run_attempt }},
+              'terminalSourceBindingSha256': 'fccdf0d31301b2aa3fe11b5523516070600650f234435ed7a870690296dab004',
               'trainingGeometryCount': len(artifact['trainingGeometryIds']),
               'internalHoldoutGeometryCountExcludedAndUnopened': len(artifact['internalHoldoutGeometryIdsExcludedAndUnopened']),
               'holdoutGeometryIds': artifact['internalHoldoutGeometryIdsExcludedAndUnopened'],
+              'holdoutRecordCount': dataset['holdoutRecordCount'],
+              'holdoutValuesIncluded': dataset['holdoutValuesIncluded'],
               'holdoutValuesRead': artifact['holdoutValuesRead'],
               'internalHoldoutOpened': artifact['internalHoldoutOpened'],
               'hardAnchorsOpened': artifact['hardAnchorsOpened'],
@@ -96,7 +126,9 @@ jobs:
               'productionModelReady': artifact['productionModelReady'],
               'productionPromotionAuthorized': artifact['productionPromotionAuthorized'],
               'tier2Authorized': artifact['tier2Authorized'],
+              'datasetRawSha256': hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
               'artifactRawSha256': hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+              'datasetSha256': dataset['datasetSha256'],
               'modelHash': artifact['modelHash'],
           }
           report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

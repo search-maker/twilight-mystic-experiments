@@ -1,0 +1,126 @@
+name: Surrogate training v2 continuation handoff v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-continuation-handoff-v1-contract.yml"
+      - "modeling/surrogate-training-v2/continuation_handoff.py"
+      - "modeling/surrogate-training-v2/continuation_source_guard.py"
+      - "modeling/surrogate-training-v2/adapter.py"
+      - "tests/test_surrogate_training_v2_continuation_handoff.py"
+      - "tests/test_surrogate_training_v2_continuation_source_guard.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-continuation-handoff-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove handoff-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path('modeling/surrogate-training-v2/continuation_handoff.py'),
+              Path('modeling/surrogate-training-v2/continuation_source_guard.py'),
+              Path('modeling/surrogate-training-v2/adapter.py'),
+          ]
+          text = '\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden = (
+              'subprocess', 'workflow_' + 'dispatch', 'uv' + 'spec',
+              'solverExecutionAuthorized' + ': true',
+              'modelFittingAuthorized' + ': true',
+              'internalHoldoutOpeningAuthorized' + ': true',
+              'productionPromotionAuthorized' + ': true',
+          )
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'handoff exposed forbidden execution or promotion surface: {found}')
+          PY
+
+      - name: Run continuation handoff and source-guard tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_continuation_handoff.py \
+            tests/test_surrogate_training_v2_continuation_source_guard.py \
+            tests/test_surrogate_training_v2_adapter.py \
+            tests/test_surrogate_training_v2_training.py
+
+      - name: Compile handoff package
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/continuation_handoff.py \
+            modeling/surrogate-training-v2/continuation_source_guard.py \
+            modeling/surrogate-training-v2/adapter.py \
+            tests/test_surrogate_training_v2_continuation_handoff.py \
+            tests/test_surrogate_training_v2_continuation_source_guard.py
+
+      - name: Produce sealed synthetic review evidence
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          from tests.test_surrogate_training_v2_continuation_handoff import ContinuationHandoffTests
+
+          ContinuationHandoffTests.setUpClass()
+          test = ContinuationHandoffTests()
+          review = Path('review')
+          review.mkdir()
+          with tempfile.TemporaryDirectory() as raw:
+              _, _, result = test.build(Path(raw))
+              generated = {}
+              for key, path in result.items():
+                  target = review / path.name
+                  target.write_bytes(path.read_bytes())
+                  generated[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
+          code_hashes = {
+              path.as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in (
+                  Path('modeling/surrogate-training-v2/continuation_handoff.py'),
+                  Path('modeling/surrogate-training-v2/continuation_source_guard.py'),
+                  Path('modeling/surrogate-training-v2/adapter.py'),
+              )
+          }
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'surrogate-training-v2-continuation-handoff-v1-contract-review',
+              'status': 'SYNTHETIC_HANDOFF_CONTRACT_PASSED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'geometryCount': 48,
+              'trainingGeometryCount': 39,
+              'internalHoldoutGeometryCount': 9,
+              'allowedFinalBlockCounts': [2, 4, 6, 8],
+              'generatedHashes': generated,
+              'codeHashes': code_hashes,
+              'scientificExecution': False,
+              'modelFittingAuthorized': False,
+              'internalHoldoutOpeningAuthorized': False,
+              'tier2Authorized': False,
+              'productionPromotionAuthorized': False,
+          }
+          report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          (review / 'contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-continuation-handoff-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

@@ -14,6 +14,11 @@ FEATURES = (
 )
 RIDGES = (1e-4, 1e-3, 1e-2, 1e-1)
 FOLDS = 5
+TRAINING_GEOMETRY_IDS = tuple(f'train-{index:04d}' for index in range(1, 40))
+HOLDOUT_GEOMETRY_IDS = tuple(f'train-{index:04d}' for index in range(40, 49))
+ALL_GEOMETRY_IDS = frozenset(TRAINING_GEOMETRY_IDS + HOLDOUT_GEOMETRY_IDS)
+TRAINING_DATASET_STAGE = 'surrogate-training-v2-exploratory-terminal-training-dataset-v1'
+TRAINING_DATASET_STATUS = 'TERMINAL_TRAINING_ONLY_DATASET_HOLDOUT_UNOPENED'
 
 SOURCE_RUN_ID = 31_070_968_611
 SOURCE_RUN_ATTEMPT = 1
@@ -80,10 +85,10 @@ def validate_source_binding(value: dict[str, Any]) -> None:
     if (
         not isinstance(exhausted, list)
         or not exhausted
-        or any(not isinstance(geometry_id, str) or not geometry_id for geometry_id in exhausted)
+        or any(not isinstance(geometry_id, str) or geometry_id not in ALL_GEOMETRY_IDS for geometry_id in exhausted)
         or len(set(exhausted)) != len(exhausted)
     ):
-        raise Refusal('exploratory fallback requires a nonempty unique exhausted geometry set')
+        raise Refusal('exploratory fallback requires a nonempty unique exhausted geometry set in the frozen 48-geometry universe')
     for key in (
         'aggregateRawSha256', 'auditRawSha256', 'analysisRawSha256',
         'terminalReportRawSha256', 'terminalReportSha256',
@@ -224,24 +229,44 @@ def cross_validate(records: list[dict[str, Any]]) -> tuple[dict[str, Any], list[
     return selected, rows
 
 
+def validate_training_dataset(dataset: dict[str, Any], source_binding: dict[str, Any]) -> list[dict[str, Any]]:
+    seal = dataset.get('datasetSha256')
+    payload = {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+    if seal != canonical_sha256(payload):
+        raise Refusal('training-only dataset self-hash changed')
+    expected = {
+        'schemaVersion': 1,
+        'stageId': TRAINING_DATASET_STAGE,
+        'status': TRAINING_DATASET_STATUS,
+        'sourceBindingSha256': source_binding['bindingSha256'],
+        'trainingGeometryIds': list(TRAINING_GEOMETRY_IDS),
+        'internalHoldoutGeometryIdsExcludedAndUnopened': list(HOLDOUT_GEOMETRY_IDS),
+        'holdoutRecordCount': 0,
+        'holdoutValuesIncluded': False,
+    }
+    stale = {key: (dataset.get(key), wanted) for key, wanted in expected.items() if dataset.get(key) != wanted}
+    if stale:
+        raise Refusal(f'training-only dataset boundary changed: {stale}')
+    records = dataset.get('records')
+    if not isinstance(records, list) or len(records) != len(TRAINING_GEOMETRY_IDS):
+        raise Refusal('training-only dataset must contain exactly 39 records')
+    ids = [record.get('geometryId') for record in records if isinstance(record, dict)]
+    if ids != list(TRAINING_GEOMETRY_IDS) or len(set(ids)) != len(TRAINING_GEOMETRY_IDS):
+        raise Refusal('frozen training geometry order or identities changed')
+    if any(record.get('role') != 'surrogate-training' for record in records):
+        raise Refusal('training-only dataset contains a non-training record')
+    return records
+
+
 def run(dataset: dict[str, Any], source_binding: dict[str, Any]) -> dict[str, Any]:
     validate_source_binding(source_binding)
-    records = dataset.get('records')
-    if not isinstance(records, list) or len(records) != 48:
-        raise Refusal('terminal dataset must contain 48 records')
-    ids = [record.get('geometryId') for record in records if isinstance(record, dict)]
-    if len(ids) != 48 or len(set(ids)) != 48:
-        raise Refusal('geometry identities missing or duplicated')
-    training = [record for record in records if record.get('role') == 'surrogate-training']
-    holdout = [record for record in records if record.get('role') == 'internal-holdout']
-    if len(training) != 39 or len(holdout) != 9:
-        raise Refusal('frozen 39/9 partition changed')
+    training = validate_training_dataset(dataset, source_binding)
     exhausted_classifications = {
         'PRECISION_CONTINUATION_EXHAUSTED',
         'PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT',
     }
-    observed_exhausted = []
-    for record in records:
+    observed_training_exhausted = []
+    for record in training:
         classification = record.get('classification')
         if classification not in {
             'PRECISION_TARGET_MET', 'PRECISION_ACCEPTED',
@@ -252,12 +277,13 @@ def run(dataset: dict[str, Any], source_binding: dict[str, Any]) -> dict[str, An
         if record.get('scientificallyEligible') is not (not is_exhausted):
             raise Refusal(f"record eligibility/classification mismatch: {record.get('geometryId')}")
         if is_exhausted:
-            observed_exhausted.append(record['geometryId'])
-    expected_exhausted = sorted(source_binding['exhaustedGeometryIds'])
-    if sorted(observed_exhausted) != expected_exhausted:
-        raise Refusal('dataset exhausted geometry set does not match terminal source binding')
-    # Deliberately record only holdout identities. Their geometry/statistics are never read.
-    holdout_ids = sorted(record['geometryId'] for record in holdout)
+            observed_training_exhausted.append(record['geometryId'])
+    expected_training_exhausted = sorted(
+        geometry_id for geometry_id in source_binding['exhaustedGeometryIds']
+        if geometry_id in TRAINING_GEOMETRY_IDS
+    )
+    if sorted(observed_training_exhausted) != expected_training_exhausted:
+        raise Refusal('training dataset exhausted geometry set does not match terminal source binding')
     selected, cv = cross_validate(training)
     fitted = fit(training, selected['ridge'])
     weights = {record['geometryId']: observation_weight(record) for record in training}
@@ -266,16 +292,18 @@ def run(dataset: dict[str, Any], source_binding: dict[str, Any]) -> dict[str, An
         'stageId': 'surrogate-training-v2-exploratory-noisy-label-model-v1',
         'status': 'EXPLORATORY_MODEL_FROZEN_TRAINING_ONLY_NOT_SCIENTIFICALLY_VALIDATED',
         'sourceBinding': source_binding,
+        'trainingDatasetSha256': dataset['datasetSha256'],
         'featureList': list(FEATURES),
         'targetTransformation': 'natural-log-positive-photopic-luminance',
         'candidateId': 'weighted-fixed-basis-log-ridge',
         'selectedRidge': selected['ridge'],
         'crossValidation': cv,
         'selectedCrossValidation': selected,
-        'trainingGeometryIds': sorted(record['geometryId'] for record in training),
+        'trainingGeometryIds': list(TRAINING_GEOMETRY_IDS),
         'trainingObservationWeights': weights,
         'ineligibleTrainingGeometryIds': sorted(record['geometryId'] for record in training if not record.get('scientificallyEligible', False)),
-        'internalHoldoutGeometryIdsExcludedAndUnopened': holdout_ids,
+        'internalHoldoutGeometryIdsExcludedAndUnopened': list(HOLDOUT_GEOMETRY_IDS),
+        'holdoutRecordCount': 0,
         'normalizationConstants': {'minimums': fitted['lows'], 'maximums': fitted['highs']},
         'modelState': {'coefficients': fitted['coefficients']},
         'weightedResidualRmseLog': fitted['weightedResidualRmseLog'],
@@ -300,7 +328,6 @@ def run(dataset: dict[str, Any], source_binding: dict[str, Any]) -> dict[str, An
         if not math.isclose(left, right, rel_tol=1e-15, abs_tol=1e-15):
             raise Refusal('model restoration prediction changed')
     return artifact
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()

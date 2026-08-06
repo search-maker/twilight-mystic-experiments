@@ -42,7 +42,7 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
             'geometryCount': 15,
             'nextWaveGeometryIds': [],
             'scientificallyEligible': False,
-            'exhaustedGeometryIds': ['g01', 'g07', 'g20'],
+            'exhaustedGeometryIds': ['train-0002', 'train-0008', 'train-0021'],
             'aggregateRawSha256': '1' * 64,
             'auditRawSha256': '2' * 64,
             'analysisRawSha256': '3' * 64,
@@ -58,12 +58,12 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
 
     def dataset(self):
         rows = []
-        for index in range(48):
-            training = index < 39
+        for index in range(39):
+            geometry_id = f'train-{index + 1:04d}'
             exhausted = index in {1, 7, 20}
             rows.append({
-                'geometryId': f'g{index:02d}',
-                'role': 'surrogate-training' if training else 'internal-holdout',
+                'geometryId': geometry_id,
+                'role': 'surrogate-training',
                 'geometry': {
                     'sunDepressionDeg': 1.0 + index * 0.1,
                     'targetAltitudeDeg': 2.0 + (index % 8),
@@ -79,7 +79,19 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
                 'classification': 'PRECISION_CONTINUATION_EXHAUSTED' if exhausted else 'PRECISION_TARGET_MET',
                 'scientificallyEligible': not exhausted,
             })
-        return {'records': rows}
+        value = {
+            'schemaVersion': 1,
+            'stageId': self.module.TRAINING_DATASET_STAGE,
+            'status': self.module.TRAINING_DATASET_STATUS,
+            'sourceBindingSha256': self.binding()['bindingSha256'],
+            'trainingGeometryIds': list(self.module.TRAINING_GEOMETRY_IDS),
+            'internalHoldoutGeometryIdsExcludedAndUnopened': list(self.module.HOLDOUT_GEOMETRY_IDS),
+            'holdoutRecordCount': 0,
+            'holdoutValuesIncluded': False,
+            'records': rows,
+        }
+        value['datasetSha256'] = self.module.canonical_sha256(value)
+        return value
 
     def test_freezes_training_only_model_with_ineligible_training_weights(self):
         artifact = self.module.run(self.dataset(), self.binding())
@@ -91,17 +103,32 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
         self.assertTrue(artifact['ineligibleTrainingGeometryIds'])
         self.assertTrue(all(0 < value <= 1 for value in artifact['trainingObservationWeights'].values()))
 
-    def test_holdout_statistics_are_not_read(self):
+    def test_dataset_contains_no_holdout_records_or_values(self):
         dataset = self.dataset()
-        for record in dataset['records'][39:]:
-            record.pop('statistics')
-            record.pop('geometry')
+        self.assertEqual(len(dataset['records']), 39)
+        self.assertTrue(all(record['role'] == 'surrogate-training' for record in dataset['records']))
         artifact = self.module.run(dataset, self.binding())
+        self.assertEqual(artifact['holdoutRecordCount'], 0)
         self.assertFalse(artifact['holdoutValuesRead'])
+
+    def test_refuses_injected_holdout_record(self):
+        dataset = self.dataset()
+        dataset['records'].append({
+            'geometryId': 'train-0040',
+            'role': 'internal-holdout',
+        })
+        dataset['datasetSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+        )
+        with self.assertRaisesRegex(Exception, 'exactly 39 records'):
+            self.module.run(dataset, self.binding())
 
     def test_refuses_nonterminal_training_record(self):
         dataset = self.dataset()
         dataset['records'][0]['classification'] = 'ADAPTIVE_CONTINUATION_REQUIRED'
+        dataset['datasetSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+        )
         with self.assertRaisesRegex(Exception, 'not terminal'):
             self.module.run(dataset, self.binding())
 
@@ -135,6 +162,9 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
         dataset = self.dataset()
         dataset['records'][20]['classification'] = 'PRECISION_TARGET_MET'
         dataset['records'][20]['scientificallyEligible'] = True
+        dataset['datasetSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+        )
         with self.assertRaisesRegex(Exception, 'does not match terminal source binding'):
             self.module.run(dataset, self.binding())
 
@@ -144,13 +174,20 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
         row['classification'] = 'PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT'
         row['scientificallyEligible'] = False
         row['statistics']['zeroHitBlockCount'] = 1
+        dataset['datasetSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+        )
         binding = self.binding()
-        binding['exhaustedGeometryIds'] = sorted(binding['exhaustedGeometryIds'] + ['g03'])
+        binding['exhaustedGeometryIds'] = sorted(binding['exhaustedGeometryIds'] + ['train-0004'])
         binding['bindingSha256'] = self.module.canonical_sha256(
             {key: value for key, value in binding.items() if key != 'bindingSha256'}
         )
+        dataset['sourceBindingSha256'] = binding['bindingSha256']
+        dataset['datasetSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in dataset.items() if key != 'datasetSha256'}
+        )
         artifact = self.module.run(dataset, binding)
-        self.assertEqual(artifact['trainingObservationWeights']['g03'], 0.025)
+        self.assertEqual(artifact['trainingObservationWeights']['train-0004'], 0.025)
 
 
 if __name__ == '__main__':

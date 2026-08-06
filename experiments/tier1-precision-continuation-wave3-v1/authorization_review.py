@@ -78,7 +78,7 @@ def load_module(path: Path, name: str):
 def modules(root: Path):
     directory = root / DIRECTORY
     trigger = load_module(directory / "trigger_execution.py", "wave3_authorization_review_trigger")
-    package = load_module(directory / "terminal_package.py", "wave3_authorization_review_package")
+    package = load_module(directory / "package.py", "wave3_authorization_review_package")
     binding = load_module(directory / "terminal_binding.py", "wave3_authorization_review_binding")
     return trigger, package, binding
 

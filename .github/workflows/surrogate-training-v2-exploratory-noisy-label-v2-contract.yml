@@ -1,0 +1,176 @@
+name: Surrogate training v2 exploratory noisy-label v2 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-noisy-label-v2-contract.yml"
+      - "modeling/surrogate-training-v2/exploratory_noisy_label_training_v2.py"
+      - "modeling/surrogate-training-v2/_exploratory_v2_core.py"
+      - "modeling/surrogate-training-v2/_exploratory_v2_selection.py"
+      - "tests/test_surrogate_training_v2_exploratory_noisy_label_v2.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-noisy-label-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove attempt-one training-only boundary
+        env:
+          EXPECTED_BASE_SHA: "0749f1645f06519528ad370e05fcd112cae76e8b"
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          paths = (
+              Path('modeling/surrogate-training-v2/exploratory_noisy_label_training_v2.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_v2_core.py'),
+              Path('modeling/surrogate-training-v2/_exploratory_v2_selection.py'),
+          )
+          text='\n'.join(path.read_text(encoding='utf-8') for path in paths)
+          forbidden=(
+              'independent-holdout-evaluation.json',
+              'holdout-result.zip',
+              'INTERNAL_HOLDOUT_GENERALIZATION_' + 'FAILED',
+              '0.44373205161175233',
+              '1.3849136446178125',
+              'workflow_' + 'dispatch',
+              'open_internal_' + 'holdout_once',
+              'productionPromotionAuthorized' + ': true',
+              'tier2Authorized' + ': true',
+          )
+          found=[token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'v2 training-only stack exposed forbidden opened-holdout or execution surface: {found}')
+          PY
+
+      - name: Download exact frozen v1 training source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, os, urllib.parse, urllib.request, zipfile
+          from pathlib import Path
+
+          artifact_id=8960550497
+          expected_name='surrogate-training-v2-exploratory-noisy-label-v1-contract'
+          expected_run=31083768927
+          expected_head='2bd645464e05c4d9533c499a080ca6db8cd190a9'
+          expected_zip='e4f620eb1f94e5554df6c8b07a4ebe20083b96cfc4039f56e9ce580556d3116d'
+          expected_members={
+              'terminal-training-only-dataset.json':'d08df9100b6e806b5ac0056ee07f3e91e1ca78ec54ea3e7705c35de94bfef026',
+              'exploratory-training-only-model.json':'ce575bcd2c40acfa4b1ade48fd70d41cd58cb7d632815db33def079ab172a0fa',
+          }
+          repository=os.environ['REPOSITORY']; token=os.environ['GH_TOKEN']
+          root=f'https://api.github.com/repos/{repository}'
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2022-11-28','User-Agent':'surrogate-training-v2-v2-contract'}
+          class SafeRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, response_headers, newurl):
+                  redirected=super().redirect_request(req,fp,code,msg,response_headers,newurl)
+                  if redirected is not None and urllib.parse.urlparse(req.full_url).netloc != urllib.parse.urlparse(newurl).netloc:
+                      redirected.remove_header('Authorization')
+                  return redirected
+          opener=urllib.request.build_opener(SafeRedirect())
+          def request(url):
+              with opener.open(urllib.request.Request(url,headers=headers),timeout=90) as response:
+                  return response.read()
+          metadata=json.loads(request(f'{root}/actions/artifacts/{artifact_id}'))
+          workflow=metadata.get('workflow_run',{})
+          if metadata.get('name')!=expected_name or workflow.get('id')!=expected_run or workflow.get('head_sha')!=expected_head:
+              raise SystemExit('frozen v1 source artifact identity changed')
+          data=request(metadata['archive_download_url'])
+          digest=hashlib.sha256(data).hexdigest()
+          if digest!=expected_zip or metadata.get('digest','').removeprefix('sha256:')!=expected_zip:
+              raise SystemExit('frozen v1 source artifact ZIP digest changed')
+          output=Path('review-source'); output.mkdir()
+          with zipfile.ZipFile(io.BytesIO(data)) as archive:
+              for name, expected in expected_members.items():
+                  raw=archive.read(name)
+                  if hashlib.sha256(raw).hexdigest()!=expected:
+                      raise SystemExit(f'frozen source member hash changed: {name}')
+                  (output/name).write_bytes(raw)
+          PY
+
+      - name: Rebuild and verify exact v2 model
+        env:
+          V2_SOURCE_DATASET: review-source/terminal-training-only-dataset.json
+          V2_SOURCE_MODEL_V1: review-source/exploratory-training-only-model.json
+        run: |
+          python -m unittest -v tests/test_surrogate_training_v2_exploratory_noisy_label_v2.py
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_noisy_label_training_v2.py \
+            modeling/surrogate-training-v2/_exploratory_v2_core.py \
+            modeling/surrogate-training-v2/_exploratory_v2_selection.py \
+            tests/test_surrogate_training_v2_exploratory_noisy_label_v2.py
+          mkdir -p review
+          python modeling/surrogate-training-v2/exploratory_noisy_label_training_v2.py \
+            --training-dataset "$V2_SOURCE_DATASET" \
+            --source-model-v1 "$V2_SOURCE_MODEL_V1" \
+            --output review/exploratory-training-only-model-v2.json \
+            > review/training-stdout.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          model=json.loads(Path('review/exploratory-training-only-model-v2.json').read_text())
+          if model['modelHash']!='c75971120e778e9ca85ffec81cdd8aa362fd46be364b436c54ef6cdf2a82bcac':
+              raise SystemExit('frozen v2 model hash changed')
+          if model['trainingOnlyCandidateRankingSha256']!='13e5cbd952b47bafe8bf5ac0240f9a349c92f2e0aed98d4546b994f5c4c0e805':
+              raise SystemExit('training-only candidate ranking changed')
+          PY
+
+      - name: Seal exact-head review
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          model_path=Path('review/exploratory-training-only-model-v2.json')
+          model=json.loads(model_path.read_text())
+          value={
+              'schemaVersion':1,
+              'stageId':'surrogate-training-v2-exploratory-noisy-label-v2-review-v1',
+              'status':'EXPLORATORY_MODEL_V2_TRAINING_ONLY_REVIEW_PASSED',
+              'headSha':os.environ['HEAD_SHA'],
+              'baseSha':os.environ['BASE_SHA'],
+              'runId':int(os.environ['RUN_ID']),
+              'runAttempt':int(os.environ['RUN_ATTEMPT']),
+              'modelRawSha256':hashlib.sha256(model_path.read_bytes()).hexdigest(),
+              'modelHash':model['modelHash'],
+              'basis':model['basis'],
+              'selectedRidge':model['selectedRidge'],
+              'openedInternalHoldoutUsed':False,
+              'independentValidationOpened':False,
+              'tier2Authorized':False,
+              'productionModelReady':False,
+              'productionPromotionAuthorized':False,
+          }
+          value['reviewSha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('review/model-v2-review.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-noisy-label-v2-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

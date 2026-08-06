@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import math
 import unittest
@@ -40,6 +41,8 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
             'caseArtifactCount': 30,
             'geometryCount': 15,
             'nextWaveGeometryIds': [],
+            'scientificallyEligible': False,
+            'exhaustedGeometryIds': ['g01', 'g07', 'g20'],
             'aggregateRawSha256': '1' * 64,
             'auditRawSha256': '2' * 64,
             'analysisRawSha256': '3' * 64,
@@ -108,13 +111,45 @@ class ExploratoryNoisyLabelTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, 'self-hash changed'):
             self.module.run(self.dataset(), binding)
 
+
+    def test_refuses_scientifically_eligible_source(self):
+        binding = self.binding()
+        binding['scientificallyEligible'] = True
+        binding['exhaustedGeometryIds'] = []
+        binding['bindingSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in binding.items() if key != 'bindingSha256'}
+        )
+        with self.assertRaisesRegex(Exception, 'terminal source binding changed'):
+            self.module.run(self.dataset(), binding)
+
+    def test_refuses_empty_exhausted_source(self):
+        binding = self.binding()
+        binding['exhaustedGeometryIds'] = []
+        binding['bindingSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in binding.items() if key != 'bindingSha256'}
+        )
+        with self.assertRaisesRegex(Exception, 'nonempty unique exhausted geometry set'):
+            self.module.run(self.dataset(), binding)
+
+    def test_refuses_dataset_exhausted_set_drift(self):
+        dataset = self.dataset()
+        dataset['records'][20]['classification'] = 'PRECISION_TARGET_MET'
+        dataset['records'][20]['scientificallyEligible'] = True
+        with self.assertRaisesRegex(Exception, 'does not match terminal source binding'):
+            self.module.run(dataset, self.binding())
+
     def test_zero_hit_training_point_gets_floor_weight(self):
         dataset = self.dataset()
         row = dataset['records'][3]
         row['classification'] = 'PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT'
         row['scientificallyEligible'] = False
         row['statistics']['zeroHitBlockCount'] = 1
-        artifact = self.module.run(dataset, self.binding())
+        binding = self.binding()
+        binding['exhaustedGeometryIds'] = sorted(binding['exhaustedGeometryIds'] + ['g03'])
+        binding['bindingSha256'] = self.module.canonical_sha256(
+            {key: value for key, value in binding.items() if key != 'bindingSha256'}
+        )
+        artifact = self.module.run(dataset, binding)
         self.assertEqual(artifact['trainingObservationWeights']['g03'], 0.025)
 
 

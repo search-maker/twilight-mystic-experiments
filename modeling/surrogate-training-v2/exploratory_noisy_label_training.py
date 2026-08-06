@@ -67,6 +67,7 @@ def validate_source_binding(value: dict[str, Any]) -> None:
         'caseArtifactCount': 30,
         'geometryCount': 15,
         'nextWaveGeometryIds': [],
+        'scientificallyEligible': False,
         'additionalExecutionAutomaticallyAuthorized': False,
         'internalHoldoutOpened': False,
         'tier2Authorized': False,
@@ -75,6 +76,14 @@ def validate_source_binding(value: dict[str, Any]) -> None:
     stale = {key: (value.get(key), wanted) for key, wanted in expected.items() if value.get(key) != wanted}
     if stale:
         raise Refusal(f'terminal source binding changed: {stale}')
+    exhausted = value.get('exhaustedGeometryIds')
+    if (
+        not isinstance(exhausted, list)
+        or not exhausted
+        or any(not isinstance(geometry_id, str) or not geometry_id for geometry_id in exhausted)
+        or len(set(exhausted)) != len(exhausted)
+    ):
+        raise Refusal('exploratory fallback requires a nonempty unique exhausted geometry set')
     for key in (
         'aggregateRawSha256', 'auditRawSha256', 'analysisRawSha256',
         'terminalReportRawSha256', 'terminalReportSha256',
@@ -227,13 +236,27 @@ def run(dataset: dict[str, Any], source_binding: dict[str, Any]) -> dict[str, An
     holdout = [record for record in records if record.get('role') == 'internal-holdout']
     if len(training) != 39 or len(holdout) != 9:
         raise Refusal('frozen 39/9 partition changed')
+    exhausted_classifications = {
+        'PRECISION_CONTINUATION_EXHAUSTED',
+        'PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT',
+    }
+    observed_exhausted = []
     for record in records:
-        if record.get('classification') not in {
+        classification = record.get('classification')
+        if classification not in {
             'PRECISION_TARGET_MET', 'PRECISION_ACCEPTED',
-            'PRECISION_CONTINUATION_EXHAUSTED',
-            'PRECISION_CONTINUATION_EXHAUSTED_ZERO_HIT',
+            *exhausted_classifications,
         }:
             raise Refusal('record is not terminal')
+        is_exhausted = classification in exhausted_classifications
+        if record.get('scientificallyEligible') is not (not is_exhausted):
+            raise Refusal(f"record eligibility/classification mismatch: {record.get('geometryId')}")
+        if is_exhausted:
+            observed_exhausted.append(record['geometryId'])
+    expected_exhausted = sorted(source_binding['exhaustedGeometryIds'])
+    if sorted(observed_exhausted) != expected_exhausted:
+        raise Refusal('dataset exhausted geometry set does not match terminal source binding')
+    # Deliberately record only holdout identities. Their geometry/statistics are never read.
     holdout_ids = sorted(record['geometryId'] for record in holdout)
     selected, cv = cross_validate(training)
     fitted = fit(training, selected['ridge'])

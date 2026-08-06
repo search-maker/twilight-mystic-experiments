@@ -21,16 +21,23 @@ _close = core._close
 _photopic = core._photopic
 SOURCE_STAGE = core.SOURCE_STAGE
 SOURCE_STATUS = core.SOURCE_STATUS
+SOURCE_DATASET_SHA256 = core.SOURCE_DATASET_SHA256
 TRAINING_IDS = core.TRAINING_IDS
 HOLDOUT_IDS = core.HOLDOUT_IDS
 WAVE3_TRAINING_IDS = core.WAVE3_TRAINING_IDS
 RESULT_STAGE = core.RESULT_STAGE
 
-def validate_source_dataset(value: dict[str, Any]) -> list[dict[str, Any]]:
+def validate_source_dataset(
+    value: dict[str, Any],
+    *,
+    expected_dataset_sha256: str = SOURCE_DATASET_SHA256,
+) -> list[dict[str, Any]]:
     seal = value.get("datasetSha256")
     payload = {key: item for key, item in value.items() if key != "datasetSha256"}
     if seal != canonical_sha256(payload):
         raise Refusal("source training dataset self-hash changed")
+    if seal != expected_dataset_sha256:
+        raise Refusal("exact b1-b6 source training dataset changed")
     expected = {
         "schemaVersion": 1,
         "stageId": SOURCE_STAGE,

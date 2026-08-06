@@ -24,6 +24,8 @@ load = core.load
 raw_sha256 = core.raw_sha256
 canonical_sha256 = core.canonical_sha256
 MODEL_PATH = core.MODEL_PATH
+SOURCE_DATASET_SHA256 = core.SOURCE_DATASET_SHA256
+SOURCE_DATASET_RAW_SHA256 = core.SOURCE_DATASET_RAW_SHA256
 OUTPUT_STAGE = core.OUTPUT_STAGE
 OUTPUT_STATUS = core.OUTPUT_STATUS
 TRAINING_IDS = core.TRAINING_IDS
@@ -59,12 +61,24 @@ def updated_record(source: dict[str, Any], point: dict[str, Any], pair: dict[int
     parsed_values = [float(value) for value in values]
     mean = statistics.fmean(parsed_values)
     sample_std = statistics.stdev(parsed_values)
-    rsem = point.get("relativeStandardErrorOfMean")
-    if isinstance(rsem, bool) or not isinstance(rsem, (int, float)) or not math.isfinite(float(rsem)):
-        raise Refusal(f"terminal RSEM missing: {geometry_id}")
     zero_count = point.get("zeroHitBlockCount")
     if not isinstance(zero_count, int) or isinstance(zero_count, bool) or not 0 <= zero_count <= 8:
         raise Refusal(f"terminal zero-hit count invalid: {geometry_id}")
+    rsem = point.get("relativeStandardErrorOfMean")
+    rsem_status = point.get("relativeStandardErrorStatus")
+    if zero_count:
+        if rsem is not None or rsem_status != "NOT_COMPUTED_ZERO_HIT_PRESENT":
+            raise Refusal(f"terminal zero-hit RSEM semantics changed: {geometry_id}")
+        parsed_rsem: float | None = None
+    else:
+        if (
+            isinstance(rsem, bool)
+            or not isinstance(rsem, (int, float))
+            or not math.isfinite(float(rsem))
+            or rsem_status != "COMPUTED"
+        ):
+            raise Refusal(f"terminal RSEM missing: {geometry_id}")
+        parsed_rsem = float(rsem)
     eligible = classification in ELIGIBLE
     if point.get("scientificallyEligible") is not eligible:
         raise Refusal(f"terminal point eligibility mismatch: {geometry_id}")
@@ -82,14 +96,23 @@ def updated_record(source: dict[str, Any], point: dict[str, Any], pair: dict[int
         "valuesCdM2": parsed_values,
         "meanCdM2": mean,
         "sampleStdCdM2": sample_std,
-        "relativeStandardErrorOfMean": float(rsem),
-        "relativeStandardErrorStatus": point.get("relativeStandardErrorStatus"),
+        "relativeStandardErrorOfMean": parsed_rsem,
+        "relativeStandardErrorStatus": rsem_status,
         "zeroHitBlockCount": zero_count,
         "zeroHitBlockFraction": float(point.get("zeroHitBlockFraction")),
         "nonzeroBlockValuesCdM2": [float(value) for value in nonzero],
         "nodeMeanRadiance": node_mean,
     }
-    record["zeroHitCaseIds"] = [row["caseId"] for row in pair.values() if row.get("zeroHit")]
+    source_zero_ids = source.get("zeroHitCaseIds")
+    if not isinstance(source_zero_ids, list) or any(not isinstance(case_id, str) for case_id in source_zero_ids):
+        raise Refusal(f"source zero-hit case identities changed: {geometry_id}")
+    if len(source_zero_ids) != len(set(source_zero_ids)) or any(case_id not in source["caseIds"] for case_id in source_zero_ids):
+        raise Refusal(f"source zero-hit case identities invalid: {geometry_id}")
+    wave3_zero_ids = [pair[block]["caseId"] for block in (7, 8) if pair[block].get("zeroHit")]
+    combined_zero_ids = list(source_zero_ids) + wave3_zero_ids
+    if len(combined_zero_ids) != len(set(combined_zero_ids)) or len(combined_zero_ids) != zero_count:
+        raise Refusal(f"terminal zero-hit case identity/count mismatch: {geometry_id}")
+    record["zeroHitCaseIds"] = combined_zero_ids
     bindings = dict(record.get("sourceBindings") or {})
     bindings["terminalSourceBindingSha256"] = source_binding["bindingSha256"]
     bindings["terminalAnalysisRawSha256"] = source_binding["analysisRawSha256"]
@@ -98,11 +121,25 @@ def updated_record(source: dict[str, Any], point: dict[str, Any], pair: dict[int
     return record
 
 
-def build(repository_root: Path, source_dataset_path: Path, source_binding_path: Path, analysis_path: Path, results_root: Path) -> dict[str, Any]:
+def build(
+    repository_root: Path,
+    source_dataset_path: Path,
+    source_binding_path: Path,
+    analysis_path: Path,
+    results_root: Path,
+    *,
+    expected_source_dataset_sha256: str = SOURCE_DATASET_SHA256,
+    expected_source_dataset_raw_sha256: str = SOURCE_DATASET_RAW_SHA256,
+) -> dict[str, Any]:
     model = module(repository_root.resolve() / MODEL_PATH, "exploratory_terminal_dataset_model_contract")
     source_binding = load(source_binding_path)
     model.validate_source_binding(source_binding)
-    source_rows = validate_source_dataset(load(source_dataset_path))
+    if raw_sha256(source_dataset_path) != expected_source_dataset_raw_sha256:
+        raise Refusal("exact b1-b6 source training dataset raw hash changed")
+    source_rows = validate_source_dataset(
+        load(source_dataset_path),
+        expected_dataset_sha256=expected_source_dataset_sha256,
+    )
     points = load_training_points(analysis_path, source_binding)
     results = load_wave3_training_results(results_root)
     output_rows: list[dict[str, Any]] = []
@@ -122,6 +159,7 @@ def build(repository_root: Path, source_dataset_path: Path, source_binding_path:
         "status": OUTPUT_STATUS,
         "sourceBindingSha256": source_binding["bindingSha256"],
         "sourceTrainingDatasetRawSha256": raw_sha256(source_dataset_path),
+        "sourceTrainingDatasetSha256": expected_source_dataset_sha256,
         "terminalAnalysisRawSha256": raw_sha256(analysis_path),
         "trainingGeometryIds": list(TRAINING_IDS),
         "internalHoldoutGeometryIdsExcludedAndUnopened": list(HOLDOUT_IDS),

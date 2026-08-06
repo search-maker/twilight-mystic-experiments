@@ -102,7 +102,7 @@ class ContinuationFinalHandoffTests(unittest.TestCase):
             self.fixture_test._dump(paths["final_analysis"], analysis)
         return paths, combined
 
-    def run(self, root: Path, *, with_wave3: bool):
+    def build_final(self, root: Path, *, with_wave3: bool):
         paths, combined = self.combined_fixture(root, with_wave3=with_wave3)
         return self.final.build(
             repository_root=self.root,
@@ -120,7 +120,7 @@ class ContinuationFinalHandoffTests(unittest.TestCase):
 
     def test_accepts_full_b3_b8_evidence_in_one_combined_root(self):
         with tempfile.TemporaryDirectory() as raw:
-            result = self.run(Path(raw), with_wave3=True)
+            result = self.build_final(Path(raw), with_wave3=True)
             dataset = json.loads(result["dataset"].read_text())
             record = next(
                 item for item in dataset["records"] if item["geometryId"] == "train-0003"
@@ -135,7 +135,7 @@ class ContinuationFinalHandoffTests(unittest.TestCase):
 
     def test_same_wrapper_accepts_terminal_b3_b6_without_wave3(self):
         with tempfile.TemporaryDirectory() as raw:
-            result = self.run(Path(raw), with_wave3=False)
+            result = self.build_final(Path(raw), with_wave3=False)
             dataset = json.loads(result["dataset"].read_text())
             record = next(
                 item for item in dataset["records"] if item["geometryId"] == "train-0003"

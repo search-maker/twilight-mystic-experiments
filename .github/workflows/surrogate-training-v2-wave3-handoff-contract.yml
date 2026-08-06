@@ -1,0 +1,118 @@
+name: Surrogate training v2 wave 3 handoff contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-wave3-handoff-contract.yml"
+      - "modeling/surrogate-training-v2/continuation_wave3_handoff.py"
+      - "modeling/surrogate-training-v2/continuation_final_handoff.py"
+      - "modeling/surrogate-training-v2/continuation_handoff.py"
+      - "modeling/surrogate-training-v2/adapter.py"
+      - "tests/test_surrogate_training_v2_wave3_handoff.py"
+      - "tests/test_surrogate_training_v2_continuation_final_handoff.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surrogate-training-v2-wave3-handoff-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove analysis-stage compatibility only
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          text = '\n'.join(path.read_text(encoding='utf-8') for path in (
+              Path('.github/workflows/surrogate-training-v2-wave3-handoff-contract.yml'),
+              Path('modeling/surrogate-training-v2/continuation_wave3_handoff.py'),
+          ))
+          forbidden = (
+              'workflow_' + 'dispatch:',
+              'mamba-' + 'org/setup-micromamba',
+              'uv' + 'spec',
+              '--allow-' + 'execution',
+              'modelFittingAuthorized' + ': true',
+              'internalHoldoutOpeningAuthorized' + ': true',
+              'productionPromotionAuthorized' + ': true',
+          )
+          found = [token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'wave-three analysis-stage adapter exposed forbidden surface: {found}')
+          PY
+
+      - name: Run wave-three analysis-stage and inherited final-handoff tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_wave3_handoff.py \
+            tests/test_surrogate_training_v2_continuation_final_handoff.py \
+            tests/test_surrogate_training_v2_continuation_handoff.py \
+            tests/test_surrogate_training_v2_real_handoff.py \
+            tests/test_surrogate_training_v2_handoff.py
+
+      - name: Compile analysis-stage compatibility layer
+        run: |
+          python -m py_compile \
+            modeling/surrogate-training-v2/continuation_wave3_handoff.py \
+            tests/test_surrogate_training_v2_wave3_handoff.py
+
+      - name: Produce sealed wave-three-stage handoff review
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import tempfile
+          from pathlib import Path
+          from tests.test_surrogate_training_v2_wave3_handoff import Wave3AnalysisStageHandoffTests
+
+          root = Path.cwd()
+          Wave3AnalysisStageHandoffTests.setUpClass()
+          helper = Wave3AnalysisStageHandoffTests()
+          review = root / 'review'
+          review.mkdir()
+          with tempfile.TemporaryDirectory() as raw:
+              _, outputs = helper.build(Path(raw))
+              copied = {}
+              for path in outputs.values():
+                  target = review / path.name
+                  target.write_bytes(path.read_bytes())
+                  copied[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
+              dataset = json.loads(outputs['dataset'].read_text())
+              counts = {record['geometryId']: len(record['caseIds']) for record in dataset['records']}
+              report = {
+                  'schemaVersion': 1,
+                  'stageId': 'surrogate-training-v2-wave3-analysis-stage-handoff-review',
+                  'status': 'AUTHORITATIVE_FINAL_HANDOFF_ACCEPTS_WAVE3_ANALYSIS_STAGE',
+                  'headSha': '${{ github.event.pull_request.head.sha }}',
+                  'runId': ${{ github.run_id }},
+                  'runAttempt': ${{ github.run_attempt }},
+                  'trainingGeometryCount': len(dataset['trainingGeometryIds']),
+                  'internalHoldoutGeometryCount': len(dataset['internalHoldoutGeometryIds']),
+                  'block8GeometryCount': sum(count == 8 for count in counts.values()),
+                  'outputRawSha256': copied,
+                  'modelFittingPerformed': False,
+                  'internalHoldoutOpened': False,
+                  'scientificSolverExecutions': 0,
+                  'tier2Authorized': False,
+                  'productionPromotionAuthorized': False,
+              }
+              report['reportSha256'] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+              (review / 'review-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-wave3-handoff-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

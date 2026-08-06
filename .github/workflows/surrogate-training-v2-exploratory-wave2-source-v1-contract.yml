@@ -1,0 +1,264 @@
+name: Surrogate training v2 exploratory wave2 source v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-wave2-source-v1-contract.yml"
+      - "modeling/surrogate-training-v2/exploratory_wave2_training_dataset.py"
+      - "tests/test_surrogate_training_v2_exploratory_wave2_training_dataset.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-wave2-source-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove attempt-one training-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          code = Path('modeling/surrogate-training-v2/exploratory_wave2_training_dataset.py').read_text(encoding='utf-8')
+          forbidden = (
+              'workflow_' + 'dispatch', 'subprocess', 'uv' + 'spec',
+              'open_internal_' + 'holdout_once', 'evaluate_external(',
+              'productionPromotionAuthorized' + ': True',
+              'tier2Authorized' + ': True',
+          )
+          found = [token for token in forbidden if token in code]
+          if found:
+              raise SystemExit(f'wave2 training-only source exposed forbidden surface: {found}')
+          PY
+
+      - name: Run focused source-builder tests
+        run: |
+          python -m unittest -v \
+            tests/test_surrogate_training_v2_exploratory_wave2_training_dataset.py
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_wave2_training_dataset.py \
+            tests/test_surrogate_training_v2_exploratory_wave2_training_dataset.py
+
+      - name: Download exact ordinal-11 and ordinal-12 training evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import io
+          import json
+          import os
+          import re
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          api_root = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'surrogate-training-v2-wave2-source-contract',
+          }
+          wave1_ids = {
+              'train-0003', 'train-0007', 'train-0009', 'train-0011', 'train-0013',
+              'train-0017', 'train-0019', 'train-0023', 'train-0027', 'train-0029',
+              'train-0031', 'train-0033', 'train-0039', 'train-0041', 'train-0043',
+              'train-0046', 'train-0047',
+          }
+          wave2_ids = {
+              'train-0003', 'train-0007', 'train-0009', 'train-0011', 'train-0013',
+              'train-0019', 'train-0023', 'train-0027', 'train-0029', 'train-0031',
+              'train-0039', 'train-0041', 'train-0043', 'train-0047',
+          }
+
+          def request(url: str) -> bytes:
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+                  return response.read()
+
+          def api_json(url: str):
+              return json.loads(request(url))
+
+          def artifacts(run_id: int) -> list[dict]:
+              rows = []
+              page = 1
+              while True:
+                  value = api_json(f'{api_root}/actions/runs/{run_id}/artifacts?per_page=100&page={page}')
+                  batch = value.get('artifacts', [])
+                  rows.extend(batch)
+                  if len(batch) < 100:
+                      return rows
+                  page += 1
+
+          def download_selected(run_id: int, pattern: re.Pattern[str], expected_ids: set[str], blocks: set[int], output: Path) -> dict[str, str]:
+              selected = []
+              for artifact in artifacts(run_id):
+                  match = pattern.fullmatch(artifact['name'])
+                  if match and match.group('gid') in expected_ids and int(match.group('block')) in blocks:
+                      selected.append(artifact)
+              expected_count = len(expected_ids) * len(blocks)
+              if len(selected) != expected_count:
+                  raise SystemExit(f'run {run_id}: expected {expected_count} selected case artifacts, found {len(selected)}')
+              output.mkdir(parents=True, exist_ok=True)
+              digests = {}
+              identities = set()
+              for artifact in selected:
+                  data = request(artifact['archive_download_url'])
+                  digest = hashlib.sha256(data).hexdigest()
+                  expected = artifact.get('digest', '').removeprefix('sha256:')
+                  if digest != expected:
+                      raise SystemExit(f"artifact ZIP digest changed: {artifact['name']}")
+                  with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                      members = [name for name in archive.namelist() if name.endswith('case-result.json')]
+                      if len(members) != 1:
+                          raise SystemExit(f"artifact case-result universe changed: {artifact['name']}")
+                      result = json.loads(archive.read(members[0]))
+                  identity = (result.get('groupId'), result.get('block'))
+                  if identity in identities:
+                      raise SystemExit(f'duplicate case identity: {identity}')
+                  identities.add(identity)
+                  case_dir = output / artifact['name']
+                  case_dir.mkdir()
+                  (case_dir / 'case-result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+                  digests[artifact['name']] = digest
+              return digests
+
+          review_source = Path('review-source')
+          wave1 = download_selected(
+              31052639692,
+              re.compile(r'tier1-wave1-ordinal11-case-(?P<gid>train-\d{4})-precision-continuation-v5-b(?P<block>[34])'),
+              wave1_ids,
+              {3, 4},
+              review_source / 'wave1',
+          )
+          wave2 = download_selected(
+              31065046524,
+              re.compile(r'tier1-wave2-ordinal12-case-(?P<gid>train-\d{4})-precision-continuation-wave2-v1-b(?P<block>[56])'),
+              wave2_ids,
+              {5, 6},
+              review_source / 'wave2',
+          )
+
+          analysis_artifact_id = 8954776553
+          metadata = api_json(f'{api_root}/actions/artifacts/{analysis_artifact_id}')
+          if metadata.get('workflow_run', {}).get('id') != 31065046524:
+              raise SystemExit('ordinal-12 analysis artifact run binding changed')
+          data = request(metadata['archive_download_url'])
+          digest = hashlib.sha256(data).hexdigest()
+          expected_digest = 'bd60e2ff433aa104ab84a4497310737d0b0d4695c8d454ad125d91f94efabe37'
+          if digest != expected_digest or metadata.get('digest', '').removeprefix('sha256:') != expected_digest:
+              raise SystemExit('ordinal-12 analysis artifact ZIP digest changed')
+          analysis_dir = review_source / 'ordinal12-analysis'
+          analysis_dir.mkdir()
+          with zipfile.ZipFile(io.BytesIO(data)) as archive:
+              candidates = [name for name in archive.namelist() if name.endswith('analysis.json')]
+              if len(candidates) != 1:
+                  raise SystemExit('ordinal-12 analysis member universe changed')
+              (analysis_dir / 'analysis.json').write_bytes(archive.read(candidates[0]))
+          inventory = {
+              'wave1RunId': 31052639692,
+              'wave1SelectedArtifactCount': len(wave1),
+              'wave1ZipSha256ByArtifactName': wave1,
+              'wave2RunId': 31065046524,
+              'wave2SelectedArtifactCount': len(wave2),
+              'wave2ZipSha256ByArtifactName': wave2,
+              'ordinal12AnalysisArtifactId': analysis_artifact_id,
+              'ordinal12AnalysisArtifactZipSha256': digest,
+          }
+          (review_source / 'download-inventory.json').write_text(json.dumps(inventory, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Build exact real b1-b6 training-only dataset
+        run: |
+          mkdir -p review
+          python modeling/surrogate-training-v2/exploratory_wave2_training_dataset.py \
+            --source-dataset evidence/ordinal2-corrected-v2/tier1-numerical-dataset.json \
+            --source-audit evidence/ordinal2-corrected-v2/audit-report.json \
+            --ordinal12-analysis review-source/ordinal12-analysis/analysis.json \
+            --wave1-results-root review-source/wave1 \
+            --wave2-results-root review-source/wave2 \
+            --output review/wave2-training-only-dataset.json
+
+      - name: Seal integration review
+        run: |
+          python - <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          from pathlib import Path
+
+          module_path = Path('modeling/surrogate-training-v2/exploratory_wave2_training_dataset.py')
+          spec = importlib.util.spec_from_file_location('wave2_source_review', module_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit(module_path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          dataset_path = Path('review/wave2-training-only-dataset.json')
+          dataset = json.loads(dataset_path.read_text(encoding='utf-8'))
+          supplied = dataset.get('datasetSha256')
+          payload = {key: item for key, item in dataset.items() if key != 'datasetSha256'}
+          if supplied != module.canonical_sha256(payload):
+              raise SystemExit('real wave2 training-only dataset self-hash changed')
+          ids = [row.get('geometryId') for row in dataset.get('records', [])]
+          if ids != list(module.TRAINING_IDS):
+              raise SystemExit('real wave2 training-only geometry order changed')
+          if any(gid in ids for gid in module.HOLDOUT_IDS):
+              raise SystemExit('holdout record reached real wave2 training-only dataset')
+          if dataset.get('blockCountDistribution') != {'2': 22, '4': 3, '6': 14}:
+              raise SystemExit('real wave2 block-count distribution changed')
+          inventory = json.loads(Path('review-source/download-inventory.json').read_text())
+          report = {
+              'schemaVersion': 1,
+              'stageId': 'surrogate-training-v2-exploratory-wave2-source-v1-contract-review',
+              'status': 'REAL_B1_B6_TRAINING_ONLY_SOURCE_CONTRACT_PASSED',
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runId': ${{ github.run_id }},
+              'runAttempt': ${{ github.run_attempt }},
+              'sourceCorrectedDatasetRawSha256': dataset['sourceCorrectedDatasetRawSha256'],
+              'sourceCorrectedAuditRawSha256': dataset['sourceCorrectedAuditRawSha256'],
+              'ordinal12AnalysisRawSha256': dataset['ordinal12AnalysisRawSha256'],
+              'trainingGeometryCount': len(ids),
+              'internalHoldoutGeometryIdsExcludedAndUnopened': list(module.HOLDOUT_IDS),
+              'holdoutRecordCount': dataset['holdoutRecordCount'],
+              'holdoutValuesIncluded': dataset['holdoutValuesIncluded'],
+              'blockCountDistribution': dataset['blockCountDistribution'],
+              'wave1SelectedArtifactCount': inventory['wave1SelectedArtifactCount'],
+              'wave2SelectedArtifactCount': inventory['wave2SelectedArtifactCount'],
+              'ordinal12AnalysisArtifactId': inventory['ordinal12AnalysisArtifactId'],
+              'ordinal12AnalysisArtifactZipSha256': inventory['ordinal12AnalysisArtifactZipSha256'],
+              'datasetRawSha256': hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
+              'datasetSha256': supplied,
+              'internalHoldoutOpened': False,
+              'holdoutValuesRead': False,
+              'hardAnchorsOpened': False,
+              'softDiagnosticsOpened': False,
+              'scientificallyEligibleModelClaimed': False,
+              'productionModelReady': False,
+              'productionPromotionAuthorized': False,
+              'tier2Authorized': False,
+          }
+          report['reportSha256'] = module.canonical_sha256(report)
+          Path('review/contract-review.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-wave2-source-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

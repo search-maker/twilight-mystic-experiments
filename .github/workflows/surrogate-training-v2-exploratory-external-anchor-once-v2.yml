@@ -1,0 +1,121 @@
+name: Surrogate training v2 exploratory external anchor once v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/surrogate-training-v2-exploratory-external-anchor-once-v2.yml"
+      - "modeling/surrogate-training-v2/exploratory_anchor_real_evaluation.py"
+      - "tests/test_surrogate_training_v2_exploratory_anchor_real_evaluation.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: surrogate-training-v2-exploratory-external-anchor-once-v2
+  cancel-in-progress: false
+
+jobs:
+  evaluate-once:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exact attempt-one anchor-opening boundary
+        env:
+          EXPECTED_BASE_SHA: "21a2181385cbb2c099cba32df0dd93807bb2729e"
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python -m unittest -v tests/test_surrogate_training_v2_exploratory_anchor_real_evaluation.py
+          python -m py_compile \
+            modeling/surrogate-training-v2/exploratory_anchor_evaluation.py \
+            modeling/surrogate-training-v2/exploratory_anchor_real_evaluation.py \
+            tests/test_surrogate_training_v2_exploratory_anchor_real_evaluation.py
+          python - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          path=Path('modeling/surrogate-training-v2/exploratory_anchor_evaluation.py')
+          spec=importlib.util.spec_from_file_location('anchor_protocol_preopen',path)
+          module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+          protocol=json.loads(Path('modeling/surrogate-training-v2/exploratory_anchor_protocol.json').read_text())
+          module.validate_protocol(protocol)
+          PY
+
+      - name: Refuse duplicate external-anchor opening
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python modeling/surrogate-training-v2/exploratory_anchor_real_evaluation.py claim-check \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN"
+
+      - name: Seal irreversible external-anchor opening claim
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p claim
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          value={
+              'schemaVersion':1,
+              'stageId':'surrogate-training-v2-exploratory-external-anchor-opening-claim-v2',
+              'status':'EXTERNAL_ANCHOR_OPENING_CLAIMED_ONCE',
+              'headSha':os.environ['HEAD_SHA'],
+              'baseSha':os.environ['BASE_SHA'],
+              'runId':int(os.environ['RUN_ID']),
+              'runAttempt':int(os.environ['RUN_ATTEMPT']),
+              'modelHash':'c75971120e778e9ca85ffec81cdd8aa362fd46be364b436c54ef6cdf2a82bcac',
+              'protocolSha256':'7ddeb3d0c4e29a8e419513339e50925d09a340d8fe86c651ea7f0e7b277b8a77',
+              'selectionFromAnchorsForbidden':True,
+              'thresholdTuningFromAnchorsForbidden':True,
+              'rerunForbidden':True,
+          }
+          value['claimSha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('claim/external-anchor-opening-claim-v2.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surrogate-training-v2-exploratory-external-anchor-opening-claim-v2
+          path: claim
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Open and evaluate external anchors exactly once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p review
+          cp claim/external-anchor-opening-claim-v2.json review/
+          set +e
+          python modeling/surrogate-training-v2/exploratory_anchor_real_evaluation.py evaluate \
+            --repository "${{ github.repository }}" \
+            --token "$GH_TOKEN" \
+            --repository-root . \
+            --output-root review \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            >review/evaluation-stdout.log 2>review/evaluation-stderr.log
+          status=$?
+          printf '%s\n' "$status" > review/evaluation-exit-status.txt
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: surrogate-training-v2-exploratory-external-anchor-result-v2
+          path: review
+          if-no-files-found: error
+          retention-days: 90

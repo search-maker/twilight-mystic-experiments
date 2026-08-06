@@ -28,11 +28,6 @@ def _modules(root: Path | None = None):
     return repository_root, base, binding
 
 
-def load_json(path: Path, root: Path | None = None) -> dict[str, Any]:
-    _, base, _ = _modules(root)
-    return base.load_json(path)
-
-
 def build_preregistration(
     source_analysis: dict[str, Any], source_analysis_path: Path, root: Path | None = None
 ) -> dict[str, Any]:

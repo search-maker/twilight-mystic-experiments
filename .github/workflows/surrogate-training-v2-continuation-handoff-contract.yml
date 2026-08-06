@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/surrogate-training-v2-continuation-handoff-contract.yml"
       - "modeling/surrogate-training-v2/continuation_handoff.py"
+      - "modeling/surrogate-training-v2/continuation_envelope_compat.py"
       - "modeling/surrogate-training-v2/adapter.py"
       - "tests/test_surrogate_training_v2_continuation_handoff.py"
 
@@ -32,6 +33,7 @@ jobs:
           from pathlib import Path
           paths = [
               Path('modeling/surrogate-training-v2/continuation_handoff.py'),
+              Path('modeling/surrogate-training-v2/continuation_envelope_compat.py'),
               Path('tests/test_surrogate_training_v2_continuation_handoff.py'),
               Path('.github/workflows/surrogate-training-v2-continuation-handoff-contract.yml'),
           ]
@@ -56,6 +58,7 @@ jobs:
         run: |
           python -m py_compile \
             modeling/surrogate-training-v2/continuation_handoff.py \
+            modeling/surrogate-training-v2/continuation_envelope_compat.py \
             tests/test_surrogate_training_v2_continuation_handoff.py
 
       - name: Prove output is accepted by the frozen training adapter
@@ -74,16 +77,27 @@ jobs:
           fixture = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = fixture
           spec.loader.exec_module(fixture)
+
+          compat_path = root / 'modeling/surrogate-training-v2/continuation_envelope_compat.py'
+          spec = importlib.util.spec_from_file_location('continuation_contract_compat', compat_path)
+          assert spec and spec.loader
+          compat = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = compat
+          spec.loader.exec_module(compat)
+
           adapter_path = root / 'modeling/surrogate-training-v2/adapter.py'
           spec = importlib.util.spec_from_file_location('continuation_contract_adapter', adapter_path)
           assert spec and spec.loader
           adapter = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = adapter
           spec.loader.exec_module(adapter)
+
           with tempfile.TemporaryDirectory() as raw:
               work = Path(raw)
               args = fixture.make_fixture(work)
               outputs = fixture.h.build(**args, output_dir=work/'out', exact_main_sha='b'*40)
+              normalized = compat.normalize_file(outputs['envelope'])
+              assert normalized['bindings']['independentAuditRawSha256'] == normalized['bindings']['auditRawSha256']
               partitioned = adapter.read_tier1_dataset(
                   outputs['dataset'], outputs['envelope'], outputs['design'], expected_main_sha='b'*40
               )
@@ -103,6 +117,7 @@ jobs:
                   'hardAnchorCount': len(partitioned.hard_anchors),
                   'softDiagnosticCount': len(partitioned.soft_diagnostics),
                   'sourceDatasetHash': partitioned.source_dataset_hash,
+                  'independentAuditRawSha256': normalized['bindings']['independentAuditRawSha256'],
                   'scientificSolverExecutions': 0,
                   'modelFittingPerformed': False,
                   'internalHoldoutOpened': False,

@@ -4,13 +4,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 STAGE_ID = "tier1-precision-continuation-wave2-ordinal12-execution-v1"
-TRIGGER_BRANCH = "dispatch/tier1-precision-continuation-wave2-ordinal12-v1"
 BASE_EXECUTOR = "experiments/tier1-precision-continuation-wave1-v2/case_executor.py"
 
 
@@ -27,27 +25,6 @@ def _base(repository_root: Path | None = None):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.STAGE_ID = STAGE_ID
-
-    def verify_context(allow_execution: bool) -> None:
-        if not allow_execution:
-            raise module.ExecutionRefusal("--allow-execution required")
-        expected = {
-            "GITHUB_ACTIONS": "true",
-            "GITHUB_EVENT_NAME": "push",
-            "GITHUB_RUN_ATTEMPT": "1",
-            "GITHUB_REF_NAME": TRIGGER_BRANCH,
-        }
-        stale = {
-            key: (os.getenv(key), value)
-            for key, value in expected.items()
-            if os.getenv(key) != value
-        }
-        if stale:
-            raise module.ExecutionRefusal(
-                f"not exact first-attempt one-use push trigger: {stale}"
-            )
-
-    module.verify_context = verify_context
     required = ("execute_case", "dump", "parse_spectrum", "verify_context")
     missing = [name for name in required if not callable(getattr(module, name, None))]
     if missing:

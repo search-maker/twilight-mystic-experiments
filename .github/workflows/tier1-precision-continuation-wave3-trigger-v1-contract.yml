@@ -1,0 +1,131 @@
+name: Tier-1 precision continuation wave 3 trigger v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-precision-continuation-wave3-trigger-v1-contract.yml"
+      - ".github/workflows/tier1-precision-continuation-wave3-ordinal13-execution.yml"
+      - "experiments/tier1-precision-continuation-wave3-v1/terminal_binding.py"
+      - "experiments/tier1-precision-continuation-wave3-v1/terminal_trigger_execution.py"
+      - "experiments/tier1-precision-continuation-wave3-v1/trigger_execution.py"
+      - "experiments/tier1-precision-continuation-wave3-v1/trigger_case_executor.py"
+      - "experiments/tier1-precision-continuation-wave3-v1/trigger_contract.py"
+      - "tests/test_tier1_precision_continuation_wave3_trigger_v1.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tier1-wave3-trigger-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove review-only boundary
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test ! -e experiments/tier1-precision-continuation-wave3-v1/authorization.ordinal13.json
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/tier1-precision-continuation-wave3-trigger-v1-contract.yml').read_text(encoding='utf-8')
+          forbidden = (
+              'mamba-' + 'org/setup-micromamba',
+              'command -v ' + 'uvspec',
+              ' --allow-' + 'execution',
+          )
+          found = [token for token in forbidden if token in workflow]
+          if found:
+              raise SystemExit(f'contract workflow exposed scientific execution: {found}')
+          PY
+
+      - name: Verify exact ordinal-12 terminal artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts/8954776553" > source-artifact.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('source-artifact.json').read_text())
+          expected = {
+              'id': 8954776553,
+              'name': 'tier1-wave2-ordinal12-analysis',
+              'expired': False,
+              'digest': 'sha256:bd60e2ff433aa104ab84a4497310737d0b0d4695c8d454ad125d91f94efabe37',
+          }
+          stale = {key: (value.get(key), expected_value) for key, expected_value in expected.items() if value.get(key) != expected_value}
+          run = value.get('workflow_run') or {}
+          expected_run = {
+              'id': 31065046524,
+              'head_branch': 'dispatch/tier1-precision-continuation-wave2-ordinal12-v1',
+              'head_sha': '18a5746778441d57b722c740a17c94af9b56e9c9',
+          }
+          stale_run = {key: (run.get(key), expected_value) for key, expected_value in expected_run.items() if run.get(key) != expected_value}
+          if stale or stale_run:
+              raise SystemExit(f'terminal source metadata changed: {stale} {stale_run}')
+          PY
+
+      - name: Download exact ordinal-12 terminal analysis
+        uses: actions/download-artifact@v4
+        with:
+          name: tier1-wave2-ordinal12-analysis
+          path: source-analysis
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31065046524
+
+      - name: Capture repository-wide execution history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method GET --paginate \
+            "repos/${{ github.repository }}/actions/runs" \
+            -f per_page=100 --slurp > scientific-run-pages.json
+          python experiments/tier1-precision-continuation-wave1-v3/duplicate_pages.py \
+            --pages scientific-run-pages.json \
+            --output scientific-runs.json
+
+      - name: Run trigger and inherited execution tests
+        run: |
+          python -m unittest -v \
+            tests/test_tier1_precision_continuation_wave3_trigger_v1.py \
+            tests/test_tier1_precision_continuation_wave3_terminal_binding_v1.py \
+            tests/test_tier1_precision_continuation_wave3_execution_v1.py \
+            tests/test_tier1_precision_continuation_wave3_integration_v1.py \
+            tests/test_tier1_precision_continuation_wave3_v1.py \
+            tests/test_tier1_precision_continuation_wave2_execution_v1.py \
+            tests/test_tier1_precision_continuation_wave2_v1.py
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave3-v1/terminal_binding.py \
+            experiments/tier1-precision-continuation-wave3-v1/terminal_trigger_execution.py \
+            experiments/tier1-precision-continuation-wave3-v1/trigger_execution.py \
+            experiments/tier1-precision-continuation-wave3-v1/trigger_case_executor.py \
+            experiments/tier1-precision-continuation-wave3-v1/trigger_contract.py \
+            tests/test_tier1_precision_continuation_wave3_trigger_v1.py
+
+      - name: Build sealed exact-source dry transport
+        run: |
+          python experiments/tier1-precision-continuation-wave3-v1/trigger_contract.py \
+            --root . \
+            --source-analysis source-analysis/analysis.json \
+            --scientific-runs scientific-runs.json \
+            --output-dir review
+          cp source-artifact.json review/source-artifact.json
+          cp scientific-runs.json review/scientific-runs.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-precision-continuation-wave3-trigger-v1-contract
+          path: review
+          if-no-files-found: error
+          retention-days: 90

@@ -15,6 +15,7 @@ MARKER_RE = re.compile(
 )
 POSITIVE_WORDS = r'(?:allocat(?:e|ed|ion)|reserv(?:e|ed|ation)|authoriz(?:e|ed|ation)|consum(?:e|ed|ption)|dispatch(?:ed)?)'
 NEGATIVE = re.compile(r'\b(?:no|not|never|without|unallocated|unreserved|unauthorized|not-authorized|review-only|candidate-only|absent|missing|unpublished)\b', re.I)
+BOOLEAN_FALSE = re.compile(r'(?:[:=]\s*|\bis\s+)(?:\*\*)?false(?:\*\*)?\b', re.I)
 ORDINAL_PATTERNS = [
     re.compile(rf'\b{POSITIVE_WORDS}\b[^\n.;]{{0,80}}\bordinal\s*[-:#]?\s*14\b', re.I),
     re.compile(rf'\bordinal\s*[-:#]?\s*14\b[^\n.;]{{0,80}}\b{POSITIVE_WORDS}\b', re.I),
@@ -44,7 +45,7 @@ def positive_candidate_claims(text: str) -> list[str]:
                 continue
             prefix=line[:m.start()]
             segment=line[max(0,m.start()-36):m.end()+12]
-            if NEGATIVE.search(prefix[-36:]) or NEGATIVE.search(segment):
+            if NEGATIVE.search(prefix[-36:]) or NEGATIVE.search(segment) or BOOLEAN_FALSE.search(line):
                 continue
             claims.append(line)
             break

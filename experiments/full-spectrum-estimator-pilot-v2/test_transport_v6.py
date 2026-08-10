@@ -55,6 +55,30 @@ class FreshnessParserTests(unittest.TestCase):
         self.assertEqual(freshness.positive_candidate_claims('ordinal 14 authorization was not granted.'),[])
         self.assertEqual(freshness.positive_candidate_claims('ordinal 14 allocation never occurred.'),[])
         self.assertEqual(freshness.positive_candidate_claims('authorization for ordinal 14 does not exist.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Authorization for ordinal 14 is pending review.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Authorization request for ordinal 14 is pending.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We discussed authorization for ordinal 14 but did not grant it.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('It is false that ordinal 14 is authorized.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We cannot authorize ordinal 14.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We have yet to authorize ordinal 14.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 may be authorized later.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 will not be authorized.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 authorization was rescinded.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('If ordinal 14 is authorized, do not proceed.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Whether ordinal 14 is authorized remains unknown.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Before ordinal 14 is authorized, refresh the ledger.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('No authorization for ordinal 14 was granted.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('No ordinal 14 allocation occurred.'),[])
+        ops={'allocate':('allocated','allocation'),'reserve':('reserved','reservation'),'authorize':('authorized','authorization'),'consume':('consumed','consumption'),'dispatch':('dispatched','dispatch')}
+        for base,(pp,noun) in ops.items():
+            for text in (
+                f'We did not {base} ordinal 14.', f'We cannot {base} ordinal 14.', f'We may {base} ordinal 14 later.',
+                f'We will {base} ordinal 14 later.', f'We plan to {base} ordinal 14.', f'We have yet to {base} ordinal 14.',
+                f'If ordinal 14 is {pp}, continue.', f'Whether ordinal 14 is {pp} remains unknown.', f'Before ordinal 14 is {pp}, refresh.',
+                f'Ordinal 14 may be {pp} later.', f'Ordinal 14 will not be {pp}.', f'{noun.title()} for ordinal 14 is pending review.',
+                f'{noun.title()} request for ordinal 14 is pending.',
+            ):
+                self.assertEqual(freshness.positive_candidate_claims(text),[],text)
     def test_12_candidate_only_not_positive(self): self.assertEqual(freshness.positive_candidate_claims('ordinal 14 remains candidate-only and not authorized.'),[])
     def test_13_positive_allocated(self):
         self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')),1)
@@ -68,6 +92,21 @@ class FreshnessParserTests(unittest.TestCase):
         self.assertEqual(len(freshness.positive_candidate_claims('No prior authorization existed and we allocated ordinal 14 now.')),1)
         self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 without dispatching it.')),1)
         self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was allocated while dispatch is not authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Not only did we authorize ordinal 14; the branch remains absent.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was authorized, but later revoked.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 provisionally, subject to approval.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 is not authorized but is allocated.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 is allocated but not authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Authorization for ordinal 14 was granted.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 allocation occurred.')),1)
+        ops={'allocate':'allocated','reserve':'reserved','authorize':'authorized','consume':'consumed','dispatch':'dispatched'}
+        for base,pp in ops.items():
+            for text in (
+                f'We {pp} ordinal 14.', f'Ordinal 14 is {pp}.', f'Ordinal 14 was {pp}.',
+                f'Ordinal 14 has been {pp}.', f'Not only did we {base} ordinal 14.',
+                f'We {pp} ordinal 14, but dispatch is not authorized.',
+            ):
+                self.assertEqual(len(freshness.positive_candidate_claims(text)),1,text)
     def test_14_positive_authorized(self): self.assertEqual(len(freshness.positive_candidate_claims('ordinal 14 is authorized for execution.')),1)
     def test_15_marker_positive(self): self.assertEqual(len(freshness.positive_candidate_claims('ORDINAL14_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit='+'b'*40+' parent='+'a'*40+' pr=110')),1)
     def test_16_mixed_ordinals_finds_14(self): self.assertEqual(len(freshness.positive_candidate_claims('ordinal 13 was consumed; we now reserve ordinal 14.')),1)

@@ -13,30 +13,47 @@ MARKER_RE = re.compile(
     r'^ORDINAL14_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED '
     r'commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$', re.I
 )
-POSITIVE_WORDS = r'(?:allocat(?:e|ed|ion)|reserv(?:e|ed|ation)|authoriz(?:e|ed|ation)|consum(?:e|ed|ption)|dispatch(?:ed)?)'
-POSITIVE_TOKEN = re.compile(rf'\b{POSITIVE_WORDS}\b', re.I)
+CLAIM_VERBS = r'(?:allocate(?:d)?|reserve(?:d)?|authorize(?:d)?|consume(?:d)?|dispatch(?:ed)?)'
+CLAIM_VERB = re.compile(rf'\b{CLAIM_VERBS}\b', re.I)
 ORDINAL_TOKEN = re.compile(r'\bordinal\s*[-:#]?\s*14\b', re.I)
-NEGATIVE = re.compile(r'\b(?:no|not|never|without|unallocated|unreserved|unauthorized|not-authorized|review-only|candidate-only|absent|missing|unpublished|refus(?:e|ed|es|ing|al)|prohibit(?:ed|s|ing|ion)?|forbid(?:den|s|ding)?|disallow(?:ed|s|ing)?|block(?:ed|s|ing)?|prevent(?:ed|s|ing)?)\b', re.I)
-BOOLEAN_FALSE = re.compile(r'(?:[:=]\s*|\bis\s+)(?:\*\*)?false(?:\*\*)?\b', re.I)
-# A reset starts a new semantic predicate/list item. Bare "and" only resets when
-# it clearly starts a fresh predicate/subject; this preserves negation scope in
-# phrases such as "do not allocate and reserve ordinal 14".
+# Structural prose guard: only explicit factual predicates count. Bare nouns such
+# as "authorization for ordinal 14" are intentionally non-positive unless paired
+# with a factual completion/state predicate below.
 RESET = re.compile(
-    r'(?:,\s*(?:and|but|then)\b|,\s*(?=ordinal\s*[-:#]?\s*14\b\s+(?:is|was|were|has|have|will|remains|became|becomes)\b)|'
-    r'\b(?:but|however|yet|nevertheless|nonetheless|whereas|then|while)\b|'
-    r'\band\s+(?=(?:we\b|i\b|is|was|were|has|have|will|now|no|not|never|without|ordinal\s*[-:#]?\s*14|authorization\b|allocation\b|reservation\b|dispatch\b)))',
+    r'(?:[.;]\s*|,\s*(?:and|but|then)\b|,\s*(?=ordinal\s*[-:#]?\s*14\b)|\b(?:but|however|yet|nevertheless|nonetheless|whereas|then|while)\b|'
+    r'\band\s+(?=(?:we\b|i\b|they\b|the\b|this\b|is\b|was\b|were\b|has\b|have\b|will\b|now\b|ordinal\s*[-:#]?\s*14\b|authorization\b|allocation\b|reservation\b|dispatch\b)))',
     re.I,
 )
-POST_NEGATIVE = re.compile(
-    r'\b(?:refus(?:e|ed|es|ing|al)|prohibit(?:ed|s|ing|ion)?|forbid(?:den|s|ding)?|'
-    r'disallow(?:ed|s|ing)?|block(?:ed|s|ing)?|prevent(?:ed|s|ing)?|unauthorized|'
-    r'unallocated|unreserved|review-only|candidate-only|absent|missing|unpublished)\b',
+NEGATED_AUX = re.compile(
+    r"\b(?:(?:do|does|did|has|have|had|is|are|was|were|will|would|should|could|can|may|might|must)\s+not|"
+    r"cannot|can't|won't|wouldn't|shouldn't|couldn't|mustn't)\b",
     re.I,
 )
-POST_DENIAL = re.compile(
-    r'\b(?:(?:did|does|do|has|have|had|is|was|were|are)\s+not\s+(?:occur(?:red)?|happen(?:ed)?|exist(?:ed)?|grant(?:ed)?|make|made|create(?:d)?|authorize(?:d)?|allocate(?:d)?|reserve(?:d)?|consume(?:d)?)|'
-    r'(?:not|never)\s+(?:occurred|happened|existed|granted|made|created|authorized|allocated|reserved|consumed)|'
-    r'denied|rejected)\b',
+MODAL_OR_NONFACTUAL = re.compile(
+    r'\b(?:may|might|could|can|would|should|will|plan(?:s|ned)?\s+to|intend(?:s|ed)?\s+to|'
+    r'propose(?:s|d)?\s+to|consider(?:s|ed|ing)?(?:\s+to)?|discuss(?:ed|es|ing)?|'
+    r'request(?:ed|s|ing)?(?:\s+to)?|pending|await(?:s|ed|ing)?|yet\s+to|before|when|whether|if)\b',
+    re.I,
+)
+META_FALSE = re.compile(
+    r'\b(?:false\s+that|no\s+one\s+denied\s+that|nobody\s+denied\s+that|not\s+established\s+that|'
+    r'not\s+proven\s+that|not\s+confirmed\s+that)\b',
+    re.I,
+)
+DIRECT_NEGATIVE = re.compile(r'\b(?:no|not|never|without|unauthorized|unallocated|unreserved|candidate-only|review-only)\b', re.I)
+BOOLEAN_FALSE = re.compile(r'(?:[:=]\s*|\bis\s+)(?:\*\*)?false(?:\*\*)?\b', re.I)
+# Noun forms are admitted only when they have an explicit factual state/completion
+# predicate. This keeps "authorization request/pending review" non-positive.
+NOUN = r'(?:allocation|reservation|authorization|consumption|dispatch)'
+NOUN_FACT_PATTERNS = [
+    re.compile(rf'\b{NOUN}\b(?:\s+(?:of|for))?\s+ordinal\s*[-:#]?\s*14\b[^\n.;]{{0,36}}\b(?:occurred|completed|succeeded|exists|active|granted)\b', re.I),
+    re.compile(rf'\bordinal\s*[-:#]?\s*14\b[^\n.;]{{0,36}}\b{NOUN}\b[^\n.;]{{0,28}}\b(?:occurred|completed|succeeded|exists|active|granted)\b', re.I),
+    re.compile(rf'\b{NOUN}\b[^\n.;]{{0,28}}\b(?:was|is|has\s+been|had\s+been)\s+(?:granted|completed|active)\b[^\n.;]{{0,36}}\bordinal\s*[-:#]?\s*14\b', re.I),
+]
+NOUN_FACT_NEGATIVE = re.compile(
+    r'\b(?:no|not|never|without|pending|requested|request|proposed|proposal|planned|plan|considered|discussion|review|'
+    r'denied|rejected|refused|revoked|rescinded|cancelled|canceled|did\s+not\s+occur|does\s+not\s+exist|'
+    r'has\s+not\s+occurred|was\s+not\s+granted|is\s+not\s+granted)\b',
     re.I,
 )
 
@@ -53,25 +70,65 @@ def _reset_bounds(line: str, pos: int) -> tuple[int, int]:
     after=[m.start() for m in resets if m.start() >= pos]
     return (max(before, default=0), min(after, default=len(line)))
 
-def _token_is_negative(line: str, token: re.Match[str], ordinal: re.Match[str]) -> bool:
+def _boolean_false_for_claim(line: str, token: re.Match[str], ordinal: re.Match[str]) -> bool:
+    lo=min(token.end(), ordinal.end())
+    hi=max(token.start(), ordinal.start())
+    if hi > lo and BOOLEAN_FALSE.search(line[lo:hi]):
+        return True
+    after=max(token.end(), ordinal.end())
+    tail=line[after:after+56]
+    stop=len(tail)
+    for ch in (',',';'):
+        i=tail.find(ch)
+        if i >= 0: stop=min(stop,i)
+    return bool(BOOLEAN_FALSE.search(tail[:stop]))
+
+def _verb_is_factual(line: str, token: re.Match[str], ordinal: re.Match[str]) -> bool:
     seg_start, seg_end = _reset_bounds(line, token.start())
-    # A candidate ordinal may be carried across a reset (e.g. "ordinal 14 was
-    # not reserved, and authorization was granted"). Negation before that reset
-    # must not suppress the fresh predicate.
-    prefix=line[seg_start:token.start()]
-    if NEGATIVE.search(prefix):
-        return True
+    clause=line[seg_start:seg_end]
+    rel=token.start()-seg_start
+    prefix=clause[max(0, rel-52):rel]
+    # "not only ... authorize" is affirmative; remove only this idiom before
+    # applying ordinary negation tests.
+    cleaned_prefix=re.sub(r'\bnot\s+only\b', '', prefix, flags=re.I)
+    if NEGATED_AUX.search(cleaned_prefix) or DIRECT_NEGATIVE.search(cleaned_prefix):
+        return False
+    if MODAL_OR_NONFACTUAL.search(cleaned_prefix) or META_FALSE.search(cleaned_prefix):
+        return False
+    # Bare infinitives are plans/instructions, not evidence of completed state.
+    if re.search(r'\bto\s*$', cleaned_prefix, re.I):
+        return False
+    # Conditional/meta frames tied to the ordinal are non-factual even when the
+    # verb itself looks affirmative.
+    before_token=clause[:rel]
+    if re.search(r'\b(?:if|whether|when|before)\b[^,;]{0,48}$', before_token, re.I):
+        return False
+    # Base-form verbs require an affirmative subject/auxiliary frame. Past forms
+    # (allocated/authorized/...) are factual unless negated above.
+    word=token.group(0).lower()
+    if not word.endswith('ed'):
+        if not re.search(r'\b(?:we|i|they|system|repository|project|candidate)\s+(?:(?:now|hereby)\s+)?$', cleaned_prefix, re.I) \
+           and not re.search(r'\b(?:did|do|does)\s+(?:we|i|they|the\s+system|the\s+repository)\s+$', cleaned_prefix, re.I):
+            return False
+    if _boolean_false_for_claim(line, token, ordinal):
+        return False
+    # Keep association bounded to the explicit candidate ordinal.
+    distance=max(token.start(), ordinal.start())-min(token.end(), ordinal.end())
+    return distance <= 80
 
-    lo=min(token.start(), ordinal.start())
-    hi=max(token.end(), ordinal.end())
-    between=line[lo:hi]
-    if BOOLEAN_FALSE.search(between):
-        return True
-
-    # Status/refusal words immediately after the claim phrase negate it; cap the
-    # tail so a later unrelated negative list item cannot suppress a real claim.
-    tail=line[hi:min(seg_end, hi+48)]
-    if BOOLEAN_FALSE.search(tail) or POST_NEGATIVE.search(tail) or POST_DENIAL.search(tail):
+def _noun_fact_is_positive(line: str) -> bool:
+    for pat in NOUN_FACT_PATTERNS:
+        m=pat.search(line)
+        if not m:
+            continue
+        seg_start, seg_end = _reset_bounds(line, m.start())
+        clause=line[seg_start:seg_end]
+        prefix=clause[:max(0, m.start()-seg_start)]
+        segment=m.group(0)
+        if DIRECT_NEGATIVE.search(prefix) or META_FALSE.search(prefix):
+            continue
+        if NOUN_FACT_NEGATIVE.search(segment):
+            continue
         return True
     return False
 
@@ -87,21 +144,17 @@ def positive_candidate_claims(text: str) -> list[str]:
         ordinals=list(ORDINAL_TOKEN.finditer(line))
         if not ordinals:
             continue
-        tokens=list(POSITIVE_TOKEN.finditer(line))
         found=False
         for ordinal in ordinals:
-            for token in tokens:
-                # Keep the same bounded association as the old parser, but test
-                # every positive token rather than only the first regex match.
-                if max(ordinal.start(), token.start()) - min(ordinal.end(), token.end()) > 80:
-                    continue
-                if _token_is_negative(line, token, ordinal):
-                    continue
-                claims.append(line)
-                found=True
-                break
+            for token in CLAIM_VERB.finditer(line):
+                if _verb_is_factual(line, token, ordinal):
+                    claims.append(line)
+                    found=True
+                    break
             if found:
                 break
+        if not found and _noun_fact_is_positive(line):
+            claims.append(line)
     return claims
 
 def validate_common(ctx: dict[str, Any], dispatch_must_be_absent: bool = True) -> None:

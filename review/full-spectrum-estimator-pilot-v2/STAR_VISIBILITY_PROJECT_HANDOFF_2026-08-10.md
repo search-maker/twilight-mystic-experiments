@@ -21,11 +21,21 @@ The full-spectrum salvage audit is now **complete**, so any earlier section that
 - a complete descriptive geometry diagnostic finds solar depression overwhelmingly associated with numerical noise (Spearman about `0.9495` with log maximum primary-channel RSEM), but this is descriptive because historical continuation/block count was adaptive;
 - **do not fit a new full-spectrum surrogate yet**. Fifteen of 39 training geometries are not full-channel eligible. Do not discard them and do not relax the 8% gate.
 
-A review-only estimator-method pilot is now preregistered locally **before any new solver result exists**. Protocol ID `public-tier1-full-spectrum-estimator-pilot-v1`, SHA-256 `fa4c2dcf80a2bb737b264fa5e4906260ec2bd72fd66ad01c8e702ddaec57c957`. It contains 44 proposed fresh cases / 5.6B configured photon histories over nine training-only representative geometries. It compares the two alternate ALIS importance centers from `{500,550,600}` nm against the immutable historical baseline and adds 1-nm conventional VROOM diagnostics on four representative geometries. No execution, continuation, fitting, validation opening or production action is authorized by this pilot.
+A review-only estimator-method pilot is frozen **before any new solver result exists**. The acquisition protocol is `public-tier1-full-spectrum-estimator-pilot-v2`, SHA-256 `7ca0923204452ab203249dfd060dd5fef5465c48a20ba529c0a20748e0152434`. The acquisition design remains exactly 44 proposed fresh cases / 5.6B configured photon histories over nine training-only representative geometries, using fresh seeds 970001-970044. It compares alternate ALIS importance centers from `{500,550,600}` nm against immutable historical evidence and adds 1-nm conventional VROOM diagnostics on four representative geometries. No execution, continuation, fitting, validation opening or production action is authorized.
 
-The VROOM 1-nm grid was selected only after a 166-spectrum quadrature audit: worst observed integration loss versus the raw 0.05-nm spectra is about 0.112% photopic, 0.203% scotopic and 0.186% Johnson-V. This makes quadrature error small relative to the 5%/8% Monte-Carlo precision targets.
+The initial published review package was opened as Draft PR #109 at commit `bcf815961b3dce7357479662e02f709cbb3cba3e`. Independent review found a **pre-result P0 statistical defect** in analyzer v4: fresh two-block RSEM was compared against historical RSEM after an adaptive 2/4/6/8 blocks. Those are not like-for-like because RSEM mechanically falls with block count. For example, `train-0041` has roughly 40.95% maximum primary-channel RSEM over historical blocks 1-2 but roughly 8.87% after all eight blocks. A fresh 10% two-block method would therefore be a large same-n improvement yet the v4 rule could reject it. No pilot result had been opened, so the analysis was corrected before execution rather than tuned after seeing data.
 
-The exact next engineering step is **not a MYSTIC dispatch yet**. First finish independent review of the pilot input/result contract, repository-global seed/identity collision audit, and the execution transport. Only after those are frozen may a separate one-purpose scientific authorization be considered.
+The replacement screening-analysis protocol is `public-tier1-full-spectrum-estimator-pilot-screening-analysis-v4`, SHA-256 `ad847ecb7f46629787148c572fe0e6d6d26c7eda12837d74de00b28abb64de6f`. It freezes the historical **first two blocks** for every selected geometry/channel and evaluates descriptive variance gain with `(freshTwoBlockRsem / historicalFirstTwoBlockRsem)^2`. Because historical b1/b2 and fresh screening cases use the same two-block count and the same per-block photon histories for every selected geometry, this is a like-for-like nominal variance-efficiency screen. A ratio <=0.5 on every finite historical problem channel is only a screening signal; it is not an inferential claim and still requires four fresh independent confirmation blocks under a separately preregistered confirmation. Full adaptive historical RSEM is context only and is forbidden in the variance-gain threshold.
+
+The VROOM 1-nm grid was selected only after a 166-spectrum quadrature audit: worst observed integration loss versus the raw 0.05-nm spectra is about 0.112% photopic, 0.203% scotopic and 0.186% Johnson-V. This makes quadrature error small relative to the historical 5%/8% block-precision gates.
+
+Independent review also found two additional pre-result blockers at the original PR #109 head. First, analyzer v4 treated a case as zero-hit only when all three derived primary channels were exactly zero; screening v4/analyzer v6 now treats an exact zero in **any** primary channel as a fail-closed candidate blocker. Second, the earlier preauthorization guard checked the pilot execution key and exact branch names but did not independently require a fresh global-ordinal check; preauthorization v4 now requires ordinal 14 to remain the next unused global scientific ordinal immediately before authorization.
+
+The original repository Actions check was green but did not execute the review-directory tests because `.github/workflows/contract.yml` discovered only `tests/`. The corrected publication must add an explicit review-package step that runs `review/full-spectrum-estimator-pilot-v2/run_review_checks.py`. The runner freezes seven exact test modules and currently requires **39/39** tests plus compile success. A green generic repository contract check without this exact review-package step is not sufficient evidence for authorization.
+
+The review package is also being hardened for repository portability. Historical preparation scripts that depended on worker-local `/mnt/data` inputs are preserved under `reference/historical-nonportable/` and are not active builders. Current frozen evidence is checked by repository-relative verifier scripts. The active preauthorization contract is v4, SHA-256 `bb9150f573f20ed0f9daf140f2941e6034876b8d51143ff42ffc001fc5335276`; it binds analyzer v6, the screening-analysis v4 protocol, the exact repository-relative review-check runner, and fresh global-ordinal checks. Candidate ordinal 14 remains review-only, not reserved, not authorized and not consumed. The guard now refuses authorization if ordinal 14 has been reserved/authorized/consumed on any reviewed execution surface or if the latest consumed global ordinal is no longer 13.
+
+The exact next engineering step is **not a MYSTIC dispatch and not a merge of the old PR #109 head**. First publish and independently verify the corrected review package on the same Draft PR, rerun safe static/unit CI, and re-review the exact package bytes. Only after a fresh live-main/control-ledger/seed/run/artifact collision check may a separate one-file authorization even be considered.
 
 ---
 ## 1. What the product is trying to predict
@@ -423,55 +433,37 @@ Only after sky, star and human layers have independent evidence. Production outp
 ## 13. Recommended exact next engineering actions
 
 1. Treat the **166/166, 39/39 full-spectrum audit as closed evidence**. Do not reacquire or rerun those cases unless a cryptographic/provenance defect is discovered.
-2. Review the estimator-pilot preregistration and execution manifest. Verify exact physical invariance and repository-global seed/identity uniqueness before any scientific authorization.
-3. Keep the pilot training-only. Previously opened internal holdout values and external computational anchors are forbidden for estimator selection.
-4. If the pilot shows an alternate importance center materially lowers variance without method-mean disagreement, preregister a separate continuation policy before adding fresh blocks. If severe/zero-hit cases remain unstable, do not brute-force hundreds of identical blocks; diagnose the estimator/rare-event mechanism.
-5. Only after every training geometry has an explicit scientifically justified treatment should model-selection/fitting be frozen and executed.
-6. A future full-spectrum model needs **new independent validation**. The historical opened holdout and computational anchors are not fresh validation for a model whose target definition/estimator changed.
-7. Continue separately toward measured-sky validation with independent AOD/cloud/glare metadata, then human first-seeing validation. Production integration comes last.
+2. Keep Draft PR #109 review-only. Any head that still contains analyzer v4's adaptive-history variance-gain comparison, channel-specific zero fail-open behavior, missing global-ordinal freshness checks, or CI that does not execute the exact review-package runner must not be merged or used for authorization. Publish the corrected screening-analysis v4/analyzer v6/preauthorization-v4 package and re-run only non-scientific review checks.
+3. Preserve the acquisition design exactly: 44 cases, nine training geometries, 5.6B configured histories, seeds 970001-970044, the same methods/geometries/photon counts/runtime, exact zero policy, broad gross-mean ratio screen and four-fresh-block confirmation boundary. The analysis correction must not become a hidden acquisition redesign.
+4. For screening variance gain, compare fresh n=2 only with the frozen historical first-two n=2 baseline at the same per-block photon count. Report final adaptive 2/4/6/8-block historical RSEM as context only. Never use it in the variance-gain threshold.
+5. Keep the pilot training-only. Previously opened internal holdout values and external computational anchors are forbidden for estimator selection.
+6. Immediately before any future authorization, refresh Issue #60 and live `main`, rerun repository-global key/branch/run/artifact/seed collision checks, and independently prove that global scientific ordinal 14 is still the next unused ordinal with zero reservation/authorization/run/terminal-artifact evidence. Candidate ordinal 14 is not reserved by the review package.
+7. If screening nominates a method, preregister a separate confirmation before opening confirmation values. Use exactly four fresh independent confirmation blocks; screening blocks may not enter the final confirmation precision gate.
+8. If severe/zero-hit cases remain unstable, do not brute-force hundreds of identical blocks. Diagnose the estimator/rare-event mechanism and compare independent numerical methods.
+9. Only after every training geometry has an explicit scientifically justified treatment should model-selection/fitting be frozen and executed. A future full-spectrum model needs **new independent validation** because the historical holdout/anchors have already been opened for other targets/models.
+10. Continue separately toward measured-sky validation with independent AOD/cloud/glare metadata, then human first-seeing validation. Production integration comes last.
 
-## 14. Local files a new worker should start with
+## 14. Review-package entry points for a new worker
 
-### Handoff/acquisition
+The current repository review surface lives under `review/full-spectrum-estimator-pilot-v2/`. Start with these files, in this order:
 
-- `/mnt/data/full-spectrum-training-source-ledger-v2.json`
-- `/mnt/data/full-spectrum-derived-channel-handoff-protocol-v2.json`
-- `/mnt/data/build_full_spectrum_training_handoff_v2.py`
-- `/mnt/data/full-spectrum-ordinal11-transport-resolution-v1.json`
-- `/mnt/data/full-spectrum-deferred-transport-resolution-v1.json`
-- `/mnt/data/full-spectrum-training-acquisition-readiness-v1.json`
-- `/mnt/data/full-spectrum-training-acquisition-manifest-local-v1.json`
-- `/mnt/data/full-spectrum-training-handoff-complete-v2.json`
-- `/mnt/data/full-spectrum-training-acquisition-manifest-local-v1.json`
+- `STAR_VISIBILITY_PROJECT_HANDOFF_2026-08-10.md` - this document.
+- `full-spectrum-estimator-pilot-preregistration-v2.json` - frozen acquisition design; 44 cases / 5.6B histories.
+- `full-spectrum-estimator-pilot-screening-analysis-preregistration-v4.json` - corrected pre-result same-n screening rules.
+- `full-spectrum-estimator-pilot-execution-manifest-v4.json` - frozen runtime/case/artifact contract; review-only.
+- `rendered-review-v5/renderer-review-report.json` and the 44 saved input pairs - exact reviewed input surface.
+- `normalize_full_spectrum_estimator_pilot_results_v6.py` - fail-closed raw artifact normalizer; no result exists yet.
+- `analyze_full_spectrum_estimator_pilot_v6.py` - corrected descriptive screening analyzer.
+- `full-spectrum-estimator-pilot-preauthorization-contract-v4.json` and `full_spectrum_estimator_pilot_preauthorization_guard_v4.py` - review-time fail-closed authorization boundary; they require exact-head CI, fresh global-ordinal evidence, seed/runtime/renderer identity and do not authorize execution.
+- `verify_full_spectrum_estimator_pilot_execution_manifest_v4.py`, `verify_full_spectrum_estimator_pilot_acquisition_contract_v4.py`, `verify_full_spectrum_estimator_pilot_seed_collision_audit_v4.py`, `verify_full_spectrum_estimator_pilot_identity_collision_audit_v4.py` - repository-relative verification of frozen evidence. The seed/identity audit verifiers verify the **frozen review evidence only**; a fresh live-GitHub collision audit is still mandatory immediately before authorization.
+- `full-spectrum-training-admission-complete-v1.json` - immutable 39-geometry full-spectrum precision state used to freeze the first-two screening baseline.
+- `reference/` - superseded protocols/analyzers/guards retained for provenance. `reference/historical-nonportable/` contains old worker-local preparation utilities and must not be treated as active build tooling.
 
-### Precision gate
-
-- `/mnt/data/full-spectrum-training-admission-gate-v1.json`
-- `/mnt/data/build_full_spectrum_training_admission_gate_v1.py`
-- `/mnt/data/full-spectrum-training-admission-complete-v1.json`
-
-### Diagnostics
-
-- `/mnt/data/public-tier1-full-spectrum-derived-channel-audit-12blocks.json`
-- `/mnt/data/train-0047-rare-event-spectral-instability-v2.json`
-- `/mnt/data/full-spectrum-estimator-stability-diagnostic-v1.json`
-- `/mnt/data/full-spectrum-precision-geometry-diagnostic-v1.json`
-- `/mnt/data/full-spectrum-grid-resolution-diagnostic-v2.json`
-
-### Estimator pilot (review-only; no execution authorization)
-
-- `/mnt/data/full-spectrum-estimator-pilot-preregistration-v1.json`
-- `/mnt/data/build_full_spectrum_estimator_pilot_preregistration_v1.py`
-- `/mnt/data/validate_full_spectrum_estimator_pilot_preregistration_v1.py`
-- `/mnt/data/full-spectrum-estimator-pilot-execution-manifest-v1.json`
-- `/mnt/data/build_full_spectrum_estimator_pilot_execution_manifest_v1.py`
-- `/mnt/data/normalize_full_spectrum_estimator_pilot_results_v1.py`
-- `/mnt/data/analyze_full_spectrum_estimator_pilot_v1.py`
-- `/mnt/data/full-spectrum-vroom-grid-1nm-v1.dat`
+The safe review test suite is frozen by `run_review_checks.py`: seven exact test modules, currently **39 tests**, plus compile success. It covers protocol invariance, exact physical directive surfaces, artifact contracts, channel-specific zero refusal, same-n/non-degradation analyzer regression, global-ordinal and exact-CI preauthorization refusal behavior, portability and frozen-evidence verifiers. No review test may invoke MYSTIC/libRadtran/uvspec.
 
 ### Control ledger
 
-- public repository Issue #60; latest work is under `MYSTIC-STATE-0066`.
+Public repository Issue #60 remains the authority. At this snapshot the latest directive is still `MYSTIC-STATE-0066`; any newer directive supersedes this document. Refresh it before every authorization/dispatch transition.
 
 ---
 

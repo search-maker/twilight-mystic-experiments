@@ -14,12 +14,31 @@ MARKER_RE = re.compile(
     r'commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$', re.I
 )
 POSITIVE_WORDS = r'(?:allocat(?:e|ed|ion)|reserv(?:e|ed|ation)|authoriz(?:e|ed|ation)|consum(?:e|ed|ption)|dispatch(?:ed)?)'
-NEGATIVE = re.compile(r'\b(?:no|not|never|without|unallocated|unreserved|unauthorized|not-authorized|review-only|candidate-only|absent|missing|unpublished)\b', re.I)
+POSITIVE_TOKEN = re.compile(rf'\b{POSITIVE_WORDS}\b', re.I)
+ORDINAL_TOKEN = re.compile(r'\bordinal\s*[-:#]?\s*14\b', re.I)
+NEGATIVE = re.compile(r'\b(?:no|not|never|without|unallocated|unreserved|unauthorized|not-authorized|review-only|candidate-only|absent|missing|unpublished|refus(?:e|ed|es|ing|al)|prohibit(?:ed|s|ing|ion)?|forbid(?:den|s|ding)?|disallow(?:ed|s|ing)?|block(?:ed|s|ing)?|prevent(?:ed|s|ing)?)\b', re.I)
 BOOLEAN_FALSE = re.compile(r'(?:[:=]\s*|\bis\s+)(?:\*\*)?false(?:\*\*)?\b', re.I)
-ORDINAL_PATTERNS = [
-    re.compile(rf'\b{POSITIVE_WORDS}\b[^\n.;]{{0,80}}\bordinal\s*[-:#]?\s*14\b', re.I),
-    re.compile(rf'\bordinal\s*[-:#]?\s*14\b[^\n.;]{{0,80}}\b{POSITIVE_WORDS}\b', re.I),
-]
+# A reset starts a new semantic predicate/list item. Bare "and" only resets when
+# it clearly starts a fresh predicate/subject; this preserves negation scope in
+# phrases such as "do not allocate and reserve ordinal 14".
+RESET = re.compile(
+    r'(?:,\s*(?:and|but|then)\b|,\s*(?=ordinal\s*[-:#]?\s*14\b\s+(?:is|was|were|has|have|will|remains|became|becomes)\b)|'
+    r'\b(?:but|however|yet|nevertheless|nonetheless|whereas|then|while)\b|'
+    r'\band\s+(?=(?:we\b|i\b|is|was|were|has|have|will|now|no|not|never|without|ordinal\s*[-:#]?\s*14|authorization\b|allocation\b|reservation\b|dispatch\b)))',
+    re.I,
+)
+POST_NEGATIVE = re.compile(
+    r'\b(?:refus(?:e|ed|es|ing|al)|prohibit(?:ed|s|ing|ion)?|forbid(?:den|s|ding)?|'
+    r'disallow(?:ed|s|ing)?|block(?:ed|s|ing)?|prevent(?:ed|s|ing)?|unauthorized|'
+    r'unallocated|unreserved|review-only|candidate-only|absent|missing|unpublished)\b',
+    re.I,
+)
+POST_DENIAL = re.compile(
+    r'\b(?:(?:did|does|do|has|have|had|is|was|were|are)\s+not\s+(?:occur(?:red)?|happen(?:ed)?|exist(?:ed)?|grant(?:ed)?|make|made|create(?:d)?|authorize(?:d)?|allocate(?:d)?|reserve(?:d)?|consume(?:d)?)|'
+    r'(?:not|never)\s+(?:occurred|happened|existed|granted|made|created|authorized|allocated|reserved|consumed)|'
+    r'denied|rejected)\b',
+    re.I,
+)
 
 class FreshnessRefusal(RuntimeError):
     pass
@@ -28,6 +47,34 @@ def require(cond: bool, msg: str) -> None:
     if not cond:
         raise FreshnessRefusal(msg)
 
+def _reset_bounds(line: str, pos: int) -> tuple[int, int]:
+    resets=list(RESET.finditer(line))
+    before=[m.end() for m in resets if m.end() <= pos]
+    after=[m.start() for m in resets if m.start() >= pos]
+    return (max(before, default=0), min(after, default=len(line)))
+
+def _token_is_negative(line: str, token: re.Match[str], ordinal: re.Match[str]) -> bool:
+    seg_start, seg_end = _reset_bounds(line, token.start())
+    # A candidate ordinal may be carried across a reset (e.g. "ordinal 14 was
+    # not reserved, and authorization was granted"). Negation before that reset
+    # must not suppress the fresh predicate.
+    prefix=line[seg_start:token.start()]
+    if NEGATIVE.search(prefix):
+        return True
+
+    lo=min(token.start(), ordinal.start())
+    hi=max(token.end(), ordinal.end())
+    between=line[lo:hi]
+    if BOOLEAN_FALSE.search(between):
+        return True
+
+    # Status/refusal words immediately after the claim phrase negate it; cap the
+    # tail so a later unrelated negative list item cannot suppress a real claim.
+    tail=line[hi:min(seg_end, hi+48)]
+    if BOOLEAN_FALSE.search(tail) or POST_NEGATIVE.search(tail) or POST_DENIAL.search(tail):
+        return True
+    return False
+
 def positive_candidate_claims(text: str) -> list[str]:
     claims=[]
     for raw in re.split(r'[\n]+|(?<=[.;])\s+', text or ''):
@@ -35,20 +82,26 @@ def positive_candidate_claims(text: str) -> list[str]:
         if not line:
             continue
         if MARKER_RE.fullmatch(line):
-            claims.append(line); continue
-        if EXECUTION_KEY in line or TITLE.lower() in line.lower():
-            # identity mention alone is not a positive allocation/authorization claim.
-            pass
-        for pat in ORDINAL_PATTERNS:
-            m=pat.search(line)
-            if not m:
-                continue
-            prefix=line[:m.start()]
-            segment=line[max(0,m.start()-36):m.end()+12]
-            if NEGATIVE.search(prefix[-36:]) or NEGATIVE.search(segment) or BOOLEAN_FALSE.search(line):
-                continue
             claims.append(line)
-            break
+            continue
+        ordinals=list(ORDINAL_TOKEN.finditer(line))
+        if not ordinals:
+            continue
+        tokens=list(POSITIVE_TOKEN.finditer(line))
+        found=False
+        for ordinal in ordinals:
+            for token in tokens:
+                # Keep the same bounded association as the old parser, but test
+                # every positive token rather than only the first regex match.
+                if max(ordinal.start(), token.start()) - min(ordinal.end(), token.end()) > 80:
+                    continue
+                if _token_is_negative(line, token, ordinal):
+                    continue
+                claims.append(line)
+                found=True
+                break
+            if found:
+                break
     return claims
 
 def validate_common(ctx: dict[str, Any], dispatch_must_be_absent: bool = True) -> None:

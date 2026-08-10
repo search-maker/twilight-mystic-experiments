@@ -15,6 +15,12 @@ def main()->int:
     if test.returncode: return test.returncode
     m=re.search(r'Ran (\d+) tests',test.stderr+test.stdout); count=int(m.group(1)) if m else None
     if count!=62: raise SystemExit(f'expected 62 v6 tests, observed {count}')
+    sys.path.insert(0,str(root/'experiments/full-spectrum-estimator-pilot-v2'))
+    import freshness
+    if freshness.positive_candidate_claims('ordinal 14 allocated/reserved/consumed: **false**'):
+        raise SystemExit('boolean-false ordinal-14 status was misclassified as a positive claim')
+    if len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')) != 1:
+        raise SystemExit('positive ordinal-14 allocation claim was not detected')
     for name in MODULES:
         if not compileall.compile_file(str(root/'experiments/full-spectrum-estimator-pilot-v2'/name),quiet=1,force=True): raise SystemExit(f'compile failed: {name}')
     try:
@@ -32,6 +38,6 @@ def main()->int:
     if 'workflow_dispatch:' in sci or 'schedule:' in sci or 'repository_dispatch:' in sci: raise SystemExit('scientific workflow exposes alternate trigger')
     static=subprocess.run([sys.executable,str(root/'experiments/full-spectrum-estimator-pilot-v2/package_evidence.py'),'verify-static','--repository-root',str(root)],cwd=root,text=True,capture_output=True)
     if static.returncode: sys.stderr.write(static.stderr); return static.returncode
-    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False}
+    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True}
     print(json.dumps(summary,indent=2,sort_keys=True)); return 0
 if __name__=='__main__': raise SystemExit(main())

@@ -48,16 +48,13 @@ NONFACTUAL_PREFIX = re.compile(
 # nearby past-tense token as evidence when it actually appears in a question,
 # modal, expectation, negation, review note, or other non-factual frame.
 FACT_PATTERNS = [
-    # Active completed/factual assertions.
     re.compile(rf'\b{SUBJECT}\s+(?:(?:have|has|had)\s+)?(?:(?:now|already|hereby)\s+)?{PAST_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\b{SUBJECT}\s+(?:(?:now|hereby)\s+)?{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\b{SUBJECT}\s+(?:did|do|does)\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\bnot\s+only\s+(?:did|do|does)\s+{SUBJECT}\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\b{SUBJECT}\s+{PAST_VERB}\s+and\s+{PAST_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\b{SUBJECT}\s+{BASE_VERB}\s+and\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
-    # Candidate passive/state assertions.
     re.compile(rf'\b{ORDINAL}\b\s+(?:is|was|were|has\s+been|had\s+been)\s+(?:(?:now|already)\s+)?{PAST_VERB}\b', re.I),
-    # One ordinal mention may carry into a fresh coordinated state predicate.
     re.compile(rf'\b{ORDINAL}\b[^\n.;]{{0,72}}\b(?:and|but|then)\s+(?:is|was|were|has\s+been|had\s+been)\s+(?:(?:now|already)\s+)?{PAST_VERB}\b', re.I),
 ]
 NOUN_FACT_PATTERNS = [
@@ -143,7 +140,9 @@ def validate_common(ctx: dict[str, Any], dispatch_must_be_absent: bool = True) -
 
 def validate_preauthorization(ctx: dict[str, Any]) -> None:
     validate_common(ctx)
-    require(ctx.get('authorizationBranchExists') is False, 'candidate authorization branch already exists')
+    auth_exists=ctx.get('authorizationBranchExists') is True
+    reusable=ctx.get('authorizationBranchReusableAfterFailedReview') is True
+    require((not auth_exists) or reusable, 'candidate authorization branch already exists and is not an unconsumed failed-review ref')
     require(ctx.get('activeAuthorizationPathOnMainExists') is False, 'active authorization file already exists on main')
     require(ctx.get('matchingAuthorizationMarkers') == 0, 'authorization marker already exists')
     require(ctx.get('nextAvailableScientificOrdinal') == CANDIDATE_ORDINAL, 'ordinal 14 is not next available')

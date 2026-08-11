@@ -77,6 +77,12 @@ class FreshnessParserTests(unittest.TestCase):
                 f'If ordinal 14 is {pp}, continue.', f'Whether ordinal 14 is {pp} remains unknown.', f'Before ordinal 14 is {pp}, refresh.',
                 f'Ordinal 14 may be {pp} later.', f'Ordinal 14 will not be {pp}.', f'{noun.title()} for ordinal 14 is pending review.',
                 f'{noun.title()} request for ordinal 14 is pending.',
+                f'Did we {base} ordinal 14?', f'Do we {base} ordinal 14?',
+                f'Was ordinal 14 {pp}?', f'Has ordinal 14 been {pp}?',
+                f"We haven't {pp} ordinal 14.", f"Ordinal 14 isn't {pp}.",
+                f"Ordinal 14 wasn't {pp}.", f"Ordinal 14 hasn't been {pp}.",
+                f'We expect ordinal 14 to be {pp}.', f'Ordinal 14 is expected to be {pp}.',
+                f'We hope ordinal 14 is {pp}.',
             ):
                 self.assertEqual(freshness.positive_candidate_claims(text),[],text)
     def test_12_candidate_only_not_positive(self): self.assertEqual(freshness.positive_candidate_claims('ordinal 14 remains candidate-only and not authorized.'),[])
@@ -104,6 +110,8 @@ class FreshnessParserTests(unittest.TestCase):
             for text in (
                 f'We {pp} ordinal 14.', f'Ordinal 14 is {pp}.', f'Ordinal 14 was {pp}.',
                 f'Ordinal 14 has been {pp}.', f'Not only did we {base} ordinal 14.',
+                f'We did {base} ordinal 14.', f'We do {base} ordinal 14.',
+                f'We have {pp} ordinal 14.',
                 f'We {pp} ordinal 14, but dispatch is not authorized.',
             ):
                 self.assertEqual(len(freshness.positive_candidate_claims(text)),1,text)
@@ -218,7 +226,20 @@ class ExecutorTests(unittest.TestCase):
     def test_54_execution_requires_allow(self):
         with self.assertRaises(Exception): executor.execute_case(REPO,'train-0009-fs-alis-500-r1',Path('/tmp/data'),Path('/tmp/out-x'),Path('/bin/false'),Path('/tmp/no'),1,False)
     def _fake_run(self,case_id,td):
-        case=next(c for c in MANIFEST['cases'] if c['caseId']==case_id); runtime=MANIFEST['runtimeIdentityRequired']; runtime_path=Path(td)/'runtime.json'; runtime_path.write_text(json.dumps(runtime,sort_keys=True)+'\n'); data=Path(td)/'share/libRadtran/data';(data/'atmmod').mkdir(parents=True);(data/'solar_flux').mkdir();(data/'atmmod/afglus.dat').write_text('x');(data/'solar_flux/atlas_plus_modtran').write_text('x'); out=Path(td)/'out'
+        case=next(c for c in MANIFEST['cases'] if c['caseId']==case_id); runtime=MANIFEST['runtimeIdentityRequired']; runtime_path=Path(td)/'runtime.json'; runtime_path.write_text(json.dumps(runtime,sort_keys=True)+'\n'); data=Path('/unused/mock-data-root'); out=Path(td)/'out'
+        def portable_resolve(repository_root, requested_case_id, data_dir, output_root):
+            template=repository_root/executor.REVIEW_REL/'rendered-review-v5'/requested_case_id/'input-template.txt'
+            text=template.read_text()
+            replacements={
+                '${LIBRADTRAN_DATA}':'/portable/share/libRadtran/data',
+                '${ATMOSPHERE_FILE}':'/portable/share/libRadtran/data/atmmod/afglus.dat',
+                '${SOLAR_FLUX_FILE}':'/portable/share/libRadtran/data/solar_flux/atlas_plus_modtran',
+                '${WAVELENGTH_GRID_1NM}':'/portable/review/wavelength-grid-1nm.dat',
+                '${OUTPUT_DIR}':'/portable/output',
+            }
+            for key,value in replacements.items(): text=text.replace(key,value)
+            if '${' in text: raise AssertionError('portable mock left unresolved input placeholder')
+            return text.encode()
         def runner(cmd,text,cwd,timeout):
             if len(cmd)==1:
                 step=1.0 if case['method']=='reference-vroom-1nm' else .05; n=401 if step==1.0 else 8001; spec=''.join(f'{380+i*step:.2f} 1.0e-6\n' for i in range(n))
@@ -227,7 +248,11 @@ class ExecutorTests(unittest.TestCase):
                     (cwd/name).write_text(spec if name in {'mc.rad.spc','mc.rad.std.spc'} else 'x\n')
             return {'exitCode':0,'timedOut':False,'stdout':'','stderr':''}
         env={'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'push','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF_NAME':freshness.DISPATCH_BRANCH}
-        with mock.patch.dict(os.environ,env,clear=False): result=executor.execute_case(REPO,case_id,data,out,Path('/fake/uvspec'),runtime_path,10,True,runner=runner)
+        with mock.patch.dict(os.environ,env,clear=False), mock.patch.object(executor,'resolve_input',side_effect=portable_resolve):
+            result=executor.execute_case(REPO,case_id,data,out,Path('/fake/uvspec'),runtime_path,10,True,runner=runner)
+        resolved=(out/case_id/'input-resolved.txt').read_text().splitlines()
+        data_lines=[line for line in resolved if line.startswith('data_files_path ')]
+        self.assertEqual(data_lines,['data_files_path /portable/share/libRadtran/data'])
         return case,out/case_id,result
     def _parse_zip(self,case,case_dir,td):
         z=Path(td)/'case.zip'
@@ -236,10 +261,10 @@ class ExecutorTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('norm_v6_test',REVIEW/'normalize_full_spectrum_estimator_pilot_results_v6.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
         return mod.parse_case_zip(z,case,MANIFEST['artifactContract']['requiredMembersByMethod'][case['method']])
     def test_55_mock_alis_artifact_contract(self):
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(prefix='fspv2-artifact-', dir='/tmp') as td:
             case,d,r=self._fake_run('train-0009-fs-alis-500-r1',td); parsed=self._parse_zip(case,d,td); self.assertEqual(parsed['caseId'],case['caseId']); self.assertEqual(r['solverExecutionCount'],1)
     def test_56_mock_vroom_artifact_contract(self):
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(prefix='fspv2-artifact-', dir='/tmp') as td:
             case,d,r=self._fake_run('train-0009-fs-vroom-1nm-r1',td); parsed=self._parse_zip(case,d,td); self.assertEqual(parsed['method'],'reference-vroom-1nm')
 
 class WorkflowTests(unittest.TestCase):

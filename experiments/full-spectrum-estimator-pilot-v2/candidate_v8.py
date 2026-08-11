@@ -19,7 +19,11 @@ PRIOR_ORDINAL=15
 SCIENTIFIC_WORKFLOW='.github/workflows/full-spectrum-estimator-pilot-v2-ordinal16-execution-v8.yml'
 AUTHORIZATION_REVIEW_WORKFLOW='.github/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v8.yml'
 MARKER_RE=re.compile(r'^ORDINAL16_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$',re.I)
-PRIOR_TOKEN=re.compile(r'ordinal\s*[-:#]?\s*15\b',re.I)
+PRIOR_MARKER_RE=re.compile(r'^ORDINAL15_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$',re.I)
+# A structured marker uses ORDINAL15_..., so a word-boundary after 15 is not
+# sufficient because underscore is itself a regex word character. Mask every
+# prior ordinal-15 token unless another digit continues the ordinal number.
+PRIOR_TOKEN=re.compile(r'ordinal\s*[-:#]?\s*15(?![0-9])',re.I)
 CANDIDATE_TOKEN=re.compile(r'ordinal\s*[-:#]?\s*16\b',re.I)
 ORDINAL_FROM_DISPATCH=re.compile(r'ordinal[-_]?([0-9]+)',re.I)
 SHA40=re.compile(r'^[0-9a-f]{40}$')
@@ -35,14 +39,22 @@ def selfhash(v:dict[str,Any],field:str)->str:
 
 def positive_candidate_claims(text:str)->list[str]:
     # Reuse the reviewed v7 prose grammar without allowing historical ordinal 15
-    # text to alias the new candidate. First mask every exact prior token, then
-    # map only candidate ordinal 16 onto the v7 parser's candidate token.
+    # text or its consumed structured marker to alias the new candidate. First
+    # preserve only an exact candidate-16 marker, remove an exact prior-15
+    # marker, then mask every prior token and map only candidate ordinal 16 onto
+    # the v7 parser's candidate token.
     source=text or ''
     direct=[]
+    retained=[]
     for raw in source.splitlines():
         line=raw.strip()
-        if MARKER_RE.fullmatch(line): direct.append(line)
-    masked=PRIOR_TOKEN.sub('prior-scientific-ordinal',source)
+        if MARKER_RE.fullmatch(line):
+            direct.append(line)
+            continue
+        if PRIOR_MARKER_RE.fullmatch(line):
+            continue
+        retained.append(raw)
+    masked=PRIOR_TOKEN.sub('prior-scientific-ordinal','\n'.join(retained))
     translated=CANDIDATE_TOKEN.sub('ordinal 15',masked)
     return direct+v7.positive_candidate_claims(translated)
 

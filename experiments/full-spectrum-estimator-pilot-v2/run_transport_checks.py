@@ -14,7 +14,7 @@ def main()->int:
     sys.stdout.write(test.stdout); sys.stderr.write(test.stderr)
     if test.returncode: return test.returncode
     m=re.search(r'Ran (\d+) tests',test.stderr+test.stdout); count=int(m.group(1)) if m else None
-    if count!=62: raise SystemExit(f'expected 62 v6 tests, observed {count}')
+    if count!=67: raise SystemExit(f'expected 67 transport tests, observed {count}')
     sys.path.insert(0,str(root/'experiments/full-spectrum-estimator-pilot-v2'))
     import freshness, github_surface
     if freshness.positive_candidate_claims('ordinal 14 allocated/reserved/consumed: **false**'):

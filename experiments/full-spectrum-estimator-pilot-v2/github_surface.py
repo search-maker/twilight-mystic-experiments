@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, os, re, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, ssl, subprocess, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 from typing import Any
 from freshness import AUTH_BRANCH, DISPATCH_BRANCH, EXECUTION_KEY, TITLE, positive_candidate_claims, matching_marker
@@ -9,10 +9,35 @@ ORDINAL_FROM_DISPATCH = re.compile(r'ordinal[-_]?([0-9]+)', re.I)
 SCIENTIFIC_WORKFLOW = '.github/workflows/full-spectrum-estimator-pilot-v2-ordinal14-execution-v6.yml'
 AUTHORIZATION_REVIEW_WORKFLOW = '.github/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v6.yml'
 
-def _api(url: str, token: str) -> Any:
+def _api_with_urllib(url: str, token: str) -> Any:
     req=urllib.request.Request(url, headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
+
+def _api_with_gh(url: str, token: str) -> Any:
+    parsed=urllib.parse.urlsplit(url)
+    if parsed.scheme!='https' or parsed.netloc!='api.github.com' or parsed.username or parsed.password:
+        raise RuntimeError('refusing non-canonical GitHub API fallback URL')
+    endpoint=parsed.path+(('?'+parsed.query) if parsed.query else '')
+    env=os.environ.copy(); env['GH_TOKEN']=token
+    result=subprocess.run(['gh','api','--method','GET',endpoint],capture_output=True,text=True,timeout=35,env=env)
+    if result.returncode:
+        raise RuntimeError('verified GitHub CLI fallback failed')
+    try: return json.loads(result.stdout)
+    except json.JSONDecodeError as exc: raise RuntimeError('verified GitHub CLI fallback returned invalid JSON') from exc
+
+def _api(url: str, token: str) -> Any:
+    try:
+        return _api_with_urllib(url,token)
+    except ssl.SSLCertVerificationError:
+        return _api_with_gh(url,token)
+    except urllib.error.URLError as exc:
+        # urllib wraps TLS handshake verification failures in URLError. Fall back
+        # only for that exact verified-certificate failure; all other transport
+        # and HTTP semantics continue to propagate fail-closed.
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            return _api_with_gh(url,token)
+        raise
 
 def _pages(base: str, token: str) -> list[Any]:
     out=[]; page=1

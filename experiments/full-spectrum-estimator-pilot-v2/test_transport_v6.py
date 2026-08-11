@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, importlib.util, json, os, subprocess, sys, tempfile, unittest, zipfile
+import hashlib, importlib.util, json, os, ssl, subprocess, sys, tempfile, unittest, urllib.error, zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -266,6 +266,25 @@ class ExecutorTests(unittest.TestCase):
     def test_56_mock_vroom_artifact_contract(self):
         with tempfile.TemporaryDirectory(prefix='fspv2-artifact-', dir='/tmp') as td:
             case,d,r=self._fake_run('train-0009-fs-vroom-1nm-r1',td); parsed=self._parse_zip(case,d,td); self.assertEqual(parsed['method'],'reference-vroom-1nm')
+
+class GitHubApiTransportTests(unittest.TestCase):
+    URL='https://api.github.com/repos/search-maker/twilight-mystic-experiments/branches?page=1'
+    def test_57_tls_failure_uses_verified_fallback(self):
+        with mock.patch.object(github_surface,'_api_with_urllib',side_effect=ssl.SSLCertVerificationError()),mock.patch.object(github_surface,'_api_with_gh',return_value=[{'name':'main'}]) as fallback:
+            self.assertEqual(github_surface._api(self.URL,'secret'),[{'name':'main'}]); fallback.assert_called_once_with(self.URL,'secret')
+    def test_58_successful_paths_normalize_identically(self):
+        payload=[{'name':'main'}]
+        with mock.patch.object(github_surface,'_api_with_urllib',return_value=payload): self.assertEqual(github_surface._api(self.URL,'secret'),payload)
+        with mock.patch.object(github_surface,'_api_with_urllib',side_effect=ssl.SSLCertVerificationError()),mock.patch.object(github_surface,'_api_with_gh',return_value=payload): self.assertEqual(github_surface._api(self.URL,'secret'),payload)
+    def test_59_non_tls_error_is_not_swallowed(self):
+        with mock.patch.object(github_surface,'_api_with_urllib',side_effect=urllib.error.URLError('network')),mock.patch.object(github_surface,'_api_with_gh') as fallback:
+            with self.assertRaises(urllib.error.URLError): github_surface._api(self.URL,'secret')
+            fallback.assert_not_called()
+    def test_60_all_verified_transports_fail_closed(self):
+        with mock.patch.object(github_surface,'_api_with_urllib',side_effect=ssl.SSLCertVerificationError()),mock.patch.object(github_surface,'_api_with_gh',side_effect=RuntimeError('fallback failed')):
+            with self.assertRaisesRegex(RuntimeError,'fallback failed'): github_surface._api(self.URL,'secret')
+    def test_61_fallback_refuses_noncanonical_url(self):
+        with self.assertRaises(RuntimeError): github_surface._api_with_gh('https://example.invalid/x','secret')
 
 class WorkflowTests(unittest.TestCase):
     def wf(self,name): return (REPO/'.github/workflows'/name).read_text()

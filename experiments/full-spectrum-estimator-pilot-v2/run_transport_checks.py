@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, compileall, json, os, re, subprocess, sys
+import argparse, compileall, json, os, re, ssl, subprocess, sys, urllib.error
 from pathlib import Path
+from unittest import mock
 
 HERE=Path(__file__).resolve().parent
 MODULES=['freshness.py','github_surface.py','package_evidence.py','authorization_guard.py','dispatch_guard.py','execution_guard.py','executor.py','run_transport_checks.py','test_transport_v6.py']
@@ -14,9 +15,27 @@ def main()->int:
     sys.stdout.write(test.stdout); sys.stderr.write(test.stderr)
     if test.returncode: return test.returncode
     m=re.search(r'Ran (\d+) tests',test.stderr+test.stdout); count=int(m.group(1)) if m else None
-    if count!=62: raise SystemExit(f'expected 62 v6 tests, observed {count}')
+    if count!=67: raise SystemExit(f'expected 67 transport tests, observed {count}')
     sys.path.insert(0,str(root/'experiments/full-spectrum-estimator-pilot-v2'))
     import freshness, github_surface
+    # Reproduce the exact Python urllib failure shape observed on the hosted
+    # runner: SSLCertVerificationError wrapped as URLError. The verified gh API
+    # fallback must be used for this case, while ordinary URLError remains a
+    # hard failure.
+    wrapped_tls=urllib.error.URLError(ssl.SSLCertVerificationError(1,'certificate verify failed'))
+    sentinel=[{'name':'main'}]
+    with mock.patch.object(github_surface,'_api_with_urllib',side_effect=wrapped_tls), mock.patch.object(github_surface,'_api_with_gh',return_value=sentinel) as fallback:
+        if github_surface._api('https://api.github.com/repos/search-maker/twilight-mystic-experiments/branches?page=1','secret') != sentinel:
+            raise SystemExit('urllib-wrapped TLS verification failure did not use verified fallback')
+        fallback.assert_called_once()
+    with mock.patch.object(github_surface,'_api_with_urllib',side_effect=urllib.error.URLError('network')), mock.patch.object(github_surface,'_api_with_gh') as fallback:
+        try:
+            github_surface._api('https://api.github.com/repos/search-maker/twilight-mystic-experiments/branches?page=1','secret')
+        except urllib.error.URLError:
+            pass
+        else:
+            raise SystemExit('non-TLS URLError was incorrectly swallowed by GitHub API fallback')
+        fallback.assert_not_called()
     if freshness.positive_candidate_claims('ordinal 14 allocated/reserved/consumed: **false**'):
         raise SystemExit('boolean-false ordinal-14 status was misclassified as a positive claim')
     if len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')) != 1:
@@ -84,6 +103,6 @@ def main()->int:
     if 'workflow_dispatch:' in sci or 'schedule:' in sci or 'repository_dispatch:' in sci: raise SystemExit('scientific workflow exposes alternate trigger')
     static=subprocess.run([sys.executable,str(root/'experiments/full-spectrum-estimator-pilot-v2/package_evidence.py'),'verify-static','--repository-root',str(root)],cwd=root,text=True,capture_output=True)
     if static.returncode: sys.stderr.write(static.stderr); return static.returncode
-    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True,'failedAuthorizationRefReuseRegression':True,'markdownExampleIsolationRegression':True}
+    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':67,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True,'failedAuthorizationRefReuseRegression':True,'markdownExampleIsolationRegression':True,'wrappedTlsFallbackRegression':True}
     print(json.dumps(summary,indent=2,sort_keys=True)); return 0
 if __name__=='__main__': raise SystemExit(main())

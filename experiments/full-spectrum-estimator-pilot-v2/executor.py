@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, json, os, subprocess, sys, time
+import argparse, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 from typing import Any, Callable
 
 HERE=Path(__file__).resolve().parent
 REVIEW_REL=Path('review/full-spectrum-estimator-pilot-v2')
+DEFAULT_EXPECTED_DISPATCH_BRANCH='dispatch/full-spectrum-estimator-pilot-v2-ordinal14'
+DISPATCH_BRANCH_RE=re.compile(r'^dispatch/full-spectrum-estimator-pilot-v2-ordinal[1-9][0-9]*$')
 class ExecutionRefusal(RuntimeError): pass
 def require(c,m):
     if not c: raise ExecutionRefusal(m)
@@ -41,10 +43,14 @@ def _run(command:list[str], text:str, cwd:Path, timeout:int)->dict[str,Any]:
 def _canon(v:Any)->str:
     return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
-def execute_case(repository_root:Path, case_id:str, data_dir:Path, output_root:Path, uvspec:Path, runtime_report:Path, timeout:int, allow_execution:bool, runner:Callable[...,dict[str,Any]]|None=None)->dict[str,Any]:
-    require(allow_execution,'--allow-execution required')
+def validate_execution_context(expected_dispatch_branch:str=DEFAULT_EXPECTED_DISPATCH_BRANCH)->None:
+    require(isinstance(expected_dispatch_branch,str) and DISPATCH_BRANCH_RE.fullmatch(expected_dispatch_branch),'invalid expected dispatch branch')
     require(os.getenv('GITHUB_ACTIONS')=='true' and os.getenv('GITHUB_EVENT_NAME')=='push' and os.getenv('GITHUB_RUN_ATTEMPT')=='1','not exact GitHub Actions attempt-1 push context')
-    require(os.getenv('GITHUB_REF_NAME')=='dispatch/full-spectrum-estimator-pilot-v2-ordinal14','not exact dispatch branch')
+    require(os.getenv('GITHUB_REF_NAME')==expected_dispatch_branch,'not exact dispatch branch')
+
+def execute_case(repository_root:Path, case_id:str, data_dir:Path, output_root:Path, uvspec:Path, runtime_report:Path, timeout:int, allow_execution:bool, runner:Callable[...,dict[str,Any]]|None=None, expected_dispatch_branch:str=DEFAULT_EXPECTED_DISPATCH_BRANCH)->dict[str,Any]:
+    require(allow_execution,'--allow-execution required')
+    validate_execution_context(expected_dispatch_branch)
     manifest_path=repository_root/REVIEW_REL/'full-spectrum-estimator-pilot-execution-manifest-v4.json'
     manifest=load(manifest_path); case=case_from_manifest(repository_root,case_id); runtime=load(runtime_report)
     required_runtime=manifest['runtimeIdentityRequired']
@@ -81,7 +87,7 @@ def execute_case(repository_root:Path, case_id:str, data_dir:Path, output_root:P
     return result
 
 def main()->int:
-    ap=argparse.ArgumentParser(); ap.add_argument('--repository-root',type=Path,required=True); ap.add_argument('--case-id',required=True); ap.add_argument('--data-dir',type=Path,required=True); ap.add_argument('--output-root',type=Path,required=True); ap.add_argument('--uvspec',type=Path,required=True); ap.add_argument('--runtime-report',type=Path,required=True); ap.add_argument('--timeout-seconds',type=int,default=1800); ap.add_argument('--allow-execution',action='store_true'); a=ap.parse_args()
-    try: print(json.dumps(execute_case(a.repository_root,a.case_id,a.data_dir,a.output_root,a.uvspec,a.runtime_report,a.timeout_seconds,a.allow_execution),sort_keys=True)); return 0
+    ap=argparse.ArgumentParser(); ap.add_argument('--repository-root',type=Path,required=True); ap.add_argument('--case-id',required=True); ap.add_argument('--data-dir',type=Path,required=True); ap.add_argument('--output-root',type=Path,required=True); ap.add_argument('--uvspec',type=Path,required=True); ap.add_argument('--runtime-report',type=Path,required=True); ap.add_argument('--timeout-seconds',type=int,default=1800); ap.add_argument('--allow-execution',action='store_true'); ap.add_argument('--expected-dispatch-branch',default=DEFAULT_EXPECTED_DISPATCH_BRANCH); a=ap.parse_args()
+    try: print(json.dumps(execute_case(a.repository_root,a.case_id,a.data_dir,a.output_root,a.uvspec,a.runtime_report,a.timeout_seconds,a.allow_execution,expected_dispatch_branch=a.expected_dispatch_branch),sort_keys=True)); return 0
     except Exception as exc: print(json.dumps({'status':'REFUSED','reason':str(exc)},sort_keys=True),file=sys.stderr); return 2
 if __name__=='__main__': raise SystemExit(main())

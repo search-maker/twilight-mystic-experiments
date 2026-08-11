@@ -16,11 +16,25 @@ def main()->int:
     m=re.search(r'Ran (\d+) tests',test.stderr+test.stdout); count=int(m.group(1)) if m else None
     if count!=62: raise SystemExit(f'expected 62 v6 tests, observed {count}')
     sys.path.insert(0,str(root/'experiments/full-spectrum-estimator-pilot-v2'))
-    import freshness
+    import freshness, github_surface
     if freshness.positive_candidate_claims('ordinal 14 allocated/reserved/consumed: **false**'):
         raise SystemExit('boolean-false ordinal-14 status was misclassified as a positive claim')
     if len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')) != 1:
         raise SystemExit('positive ordinal-14 allocation claim was not detected')
+    base={'branches':[{'name':'dispatch/tier1-precision-continuation-wave3-ordinal13-v1','commit':{'sha':'1'*40}}],'pulls':[],'issues':[],'issue60Comments':[],'activeAuthorizationPathOnMainExists':False}
+    pr_title='Authorize '+freshness.TITLE
+    pr_checks=[
+      {'id':101,'event':'pull_request','head_branch':freshness.AUTH_BRANCH,'display_title':pr_title,'name':'Full-spectrum estimator pilot v2 authorization review v6','path':'.github/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v6.yml'},
+      {'id':102,'event':'pull_request','head_branch':freshness.AUTH_BRANCH,'display_title':pr_title,'name':'Full-spectrum estimator pilot v2 transport review v6','path':'.github/workflows/full-spectrum-estimator-pilot-v2-transport-review-v6.yml'},
+      {'id':103,'event':'pull_request','head_branch':freshness.AUTH_BRANCH,'display_title':pr_title,'name':'Corrected spectral convergence contract','path':'.github/workflows/contract.yml'},
+    ]
+    s=github_surface.build_surface({**base,'runs':pr_checks})
+    if s['candidatePriorScientificRunCount'] != 0:
+        raise SystemExit('non-scientific PR checks were misclassified as prior ordinal-14 scientific runs')
+    scientific={'id':104,'event':'push','head_branch':freshness.DISPATCH_BRANCH,'display_title':freshness.TITLE,'name':freshness.TITLE+' execution v6','path':github_surface.SCIENTIFIC_WORKFLOW}
+    s=github_surface.build_surface({**base,'runs':pr_checks+[scientific]},current_run_id=999)
+    if s['candidatePriorScientificRunCount'] != 1:
+        raise SystemExit('real push-only ordinal-14 scientific run was not detected exactly once')
     for name in MODULES:
         if not compileall.compile_file(str(root/'experiments/full-spectrum-estimator-pilot-v2'/name),quiet=1,force=True): raise SystemExit(f'compile failed: {name}')
     try:
@@ -38,6 +52,6 @@ def main()->int:
     if 'workflow_dispatch:' in sci or 'schedule:' in sci or 'repository_dispatch:' in sci: raise SystemExit('scientific workflow exposes alternate trigger')
     static=subprocess.run([sys.executable,str(root/'experiments/full-spectrum-estimator-pilot-v2/package_evidence.py'),'verify-static','--repository-root',str(root)],cwd=root,text=True,capture_output=True)
     if static.returncode: sys.stderr.write(static.stderr); return static.returncode
-    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True}
+    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True}
     print(json.dumps(summary,indent=2,sort_keys=True)); return 0
 if __name__=='__main__': raise SystemExit(main())

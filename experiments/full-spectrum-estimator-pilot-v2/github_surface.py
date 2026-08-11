@@ -6,6 +6,7 @@ from typing import Any
 from freshness import AUTH_BRANCH, DISPATCH_BRANCH, EXECUTION_KEY, TITLE, positive_candidate_claims, matching_marker
 
 ORDINAL_FROM_DISPATCH = re.compile(r'ordinal[-_]?([0-9]+)', re.I)
+SCIENTIFIC_WORKFLOW = '.github/workflows/full-spectrum-estimator-pilot-v2-ordinal14-execution-v6.yml'
 
 def _api(url: str, token: str) -> Any:
     req=urllib.request.Request(url, headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
@@ -28,6 +29,19 @@ def _exists(url: str, token: str) -> tuple[bool, Any|None]:
         if exc.code==404: return False,None
         raise
 
+def _is_candidate_scientific_run(run: dict[str, Any]) -> bool:
+    hb=run.get('head_branch') or ''
+    if hb==DISPATCH_BRANCH:
+        return True
+    # The frozen ordinal-14 solver transport is push-only. Pull-request checks share the PR display title,
+    # so title matching alone must never turn authorization/transport/contract review runs into scientific history.
+    if (run.get('event') or '') != 'push':
+        return False
+    path=run.get('path') or ''
+    title=(run.get('display_title') or '').strip()
+    name=(run.get('name') or '').strip()
+    return path==SCIENTIFIC_WORKFLOW or EXECUTION_KEY in title or title.lower()==TITLE.lower() or name.lower()==(TITLE+' execution v6').lower()
+
 def build_surface(payload: dict[str, Any], current_pr: int|None=None, marker_head: str|None=None, marker_parent: str|None=None, current_run_id: int|None=None) -> dict[str, Any]:
     branches=payload.get('branches',[]); runs=payload.get('runs',[]); prs=payload.get('pulls',[]); issues=payload.get('issues',[]); comments=payload.get('issue60Comments',[])
     branch_names=[b.get('name','') for b in branches]
@@ -48,10 +62,7 @@ def build_surface(payload: dict[str, Any], current_pr: int|None=None, marker_hea
     for r in runs:
         if current_run_id and int(r.get('id') or 0)==int(current_run_id):
             continue
-        hb=r.get('head_branch') or ''
-        title=r.get('display_title') or ''
-        name=r.get('name') or ''
-        if hb==DISPATCH_BRANCH or EXECUTION_KEY in title or TITLE.lower() in title.lower() or TITLE.lower() in name.lower():
+        if _is_candidate_scientific_run(r):
             candidate_runs.append(r)
     positive=[]
     for pr in prs:

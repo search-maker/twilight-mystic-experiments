@@ -27,9 +27,17 @@ def _api_with_gh(url: str, token: str) -> Any:
     except json.JSONDecodeError as exc: raise RuntimeError('verified GitHub CLI fallback returned invalid JSON') from exc
 
 def _api(url: str, token: str) -> Any:
-    try: return _api_with_urllib(url,token)
+    try:
+        return _api_with_urllib(url,token)
     except ssl.SSLCertVerificationError:
         return _api_with_gh(url,token)
+    except urllib.error.URLError as exc:
+        # urllib wraps TLS handshake verification failures in URLError. Fall back
+        # only for that exact verified-certificate failure; all other transport
+        # and HTTP semantics continue to propagate fail-closed.
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            return _api_with_gh(url,token)
+        raise
 
 def _pages(base: str, token: str) -> list[Any]:
     out=[]; page=1

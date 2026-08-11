@@ -1,0 +1,212 @@
+name: Full-spectrum estimator pilot v2 ordinal 15 execution v7
+run-name: Full-spectrum estimator pilot v2 ordinal 15
+
+on:
+  push:
+    branches:
+      - dispatch/full-spectrum-estimator-pilot-v2-ordinal15
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: full-spectrum-estimator-pilot-v2-ordinal15-execution-v7
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse alternate trigger, retry, resume, or wrong authorization shape
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = dispatch/full-spectrum-estimator-pilot-v2-ordinal15
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          AUTH_PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$AUTH_PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/full-spectrum-estimator-pilot-v2/authorization.ordinal15.json
+          git show "$GITHUB_SHA":experiments/full-spectrum-estimator-pilot-v2/authorization.ordinal15.json > authorization.json
+      - name: Resolve the still-open Draft authorization PR and exact zero-runtime v7 review run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=search-maker:authorization/full-spectrum-estimator-pilot-v2-ordinal15&per_page=100" > auth-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v7.yml/runs?branch=authorization/full-spectrum-estimator-pilot-v2-ordinal15&event=pull_request&per_page=100" > auth-review-runs.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.loads(Path('auth-pr.json').read_text()); prs=[p for page in pages for p in page]; prs=[p for p in prs if p.get('head',{}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(prs)!=1: raise SystemExit('expected exactly one ordinal-15 authorization PR on dispatch head')
+          p=prs[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR is not Draft/open/unmerged')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          runs=json.loads(Path('auth-review-runs.json').read_text()).get('workflow_runs',[])
+          good=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('run_attempt')==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(good)!=1: raise SystemExit('expected exactly one successful attempt-1 ordinal-15 authorization-review run')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Capture fresh all-state ordinal-15 surface and exact Issue 60 marker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          AUTH_PARENT="$(git rev-parse "$GITHUB_SHA^")"
+          python experiments/full-spectrum-estimator-pilot-v2/candidate_v7.py surface \
+            --repository "$GITHUB_REPOSITORY" --current-pr "$PR_NUMBER" \
+            --marker-head "$GITHUB_SHA" --marker-parent "$AUTH_PARENT" \
+            --current-run-id "$GITHUB_RUN_ID" --output freshness-v7.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-comments.json
+      - name: Build dispatch and execution guard context
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          head=os.environ['GITHUB_SHA']; parent=subprocess.check_output(['git','rev-parse',head+'^'],text=True).strip()
+          pr=json.loads(Path('auth-pr-selected.json').read_text()); rr=json.loads(Path('auth-review-selected.json').read_text()); fresh=json.loads(Path('freshness-v7.json').read_text()); pages=json.loads(Path('issue60-comments.json').read_text()); comments=[c for page in pages for c in page]
+          marker_re=re.compile(rf'^ORDINAL15_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit={head} parent={parent} pr={pr["number"]}$',re.I)
+          markers=[c.get('body','').strip() for c in comments if marker_re.fullmatch(c.get('body','').strip())]
+          d={'liveMain':parent,'authorizationHead':head,'authorizationParent':parent,'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headBranch':pr['head']['ref'],'headSha':pr['head']['sha']},'authorizationReview':{'headSha':rr['head_sha'],'prNumber':pr['number'],'workflow':'.github/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v7.yml','runAttempt':rr['run_attempt'],'conclusion':rr['conclusion'],'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False},'freshness':fresh,'issue60Markers':markers}
+          outer={'githubActions':True,'eventName':os.environ['GITHUB_EVENT_NAME'],'refName':os.environ['GITHUB_REF_NAME'],'headSha':head,'dispatchBranchHeadSha':head,'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'priorMatchingScientificRuns':fresh['candidatePriorScientificRunCount'],'resumeRequested':False,'retryRequested':False,'automaticDownstreamTransition':False,'dispatchEligibility':d}
+          Path('execution-guard-context-v7.json').write_text(json.dumps(outer,indent=2,sort_keys=True)+'\n')
+          PY
+          python experiments/full-spectrum-estimator-pilot-v2/candidate_v7.py execution-guard --authorization authorization.json --context execution-guard-context-v7.json --output execution-guard-v7.json
+      - name: Verify exact unchanged scientific review bytes and emit exact 44-case matrix
+        run: |
+          python experiments/full-spectrum-estimator-pilot-v2/candidate_v7.py verify-static --repository-root . --output static-binding-v7.json
+          python experiments/full-spectrum-estimator-pilot-v2/candidate_v7.py matrix --repository-root . --output matrix.json
+      - id: matrix
+        name: Export compact single-line matrix to GitHub job output
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          value=json.dumps(json.loads(Path('matrix.json').read_text()),sort_keys=True,separators=(',',':'))
+          if '\n' in value or '\r' in value: raise SystemExit('matrix output serialization is not single-line')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
+              f.write('matrix='+value+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-pilot-v2-ordinal15-preflight
+          path: |
+            authorization.json
+            execution-guard-context-v7.json
+            execution-guard-v7.json
+            freshness-v7.json
+            auth-pr-selected.json
+            auth-review-selected.json
+            static-binding-v7.json
+            matrix.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: full-spectrum-estimator-pilot-v2-ordinal15
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Capture exact runtime identity without solver execution
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+      - name: Execute one frozen case exactly once
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/full-spectrum-estimator-pilot-v2/executor.py \
+            --repository-root . \
+            --case-id '${{ matrix.caseId }}' \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-root case-output \
+            --uvspec "$(command -v uvspec)" \
+            --runtime-report runtime-report.json \
+            --timeout-seconds 3600 \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-pilot-v2-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases.result == 'success' }}
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bind and download exact current-run case ZIP bytes before opening contents
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir artifact-zips
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > artifacts.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          rows=json.loads(Path('artifacts.json').read_text()).get('artifacts',[])
+          wanted=[a for a in rows if a.get('name','').startswith('full-spectrum-estimator-pilot-v2-case-')]
+          if len(wanted)!=44: raise SystemExit(f'expected 44 case artifacts, got {len(wanted)}')
+          for a in wanted:
+              out=Path('artifact-zips')/(a['name']+'.zip')
+              with out.open('wb') as f:
+                  subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{a['id']}/zip"],stdout=f,check=True)
+          PY
+          python experiments/full-spectrum-estimator-pilot-v2/package_evidence.py build-acquisition \
+            --repository-root . --artifacts-json artifacts.json --zip-dir artifact-zips --output acquisition-manifest.json
+      - name: Normalize and analyze the exact 44-case pilot evidence only
+        run: |
+          python review/full-spectrum-estimator-pilot-v2/normalize_full_spectrum_estimator_pilot_results_v6.py \
+            --execution-manifest review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-execution-manifest-v4.json \
+            --acquisition-manifest acquisition-manifest.json \
+            --output normalized-evidence.json
+          python review/full-spectrum-estimator-pilot-v2/analyze_full_spectrum_estimator_pilot_v6.py \
+            --acquisition-protocol review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-preregistration-v2.json \
+            --analysis-protocol review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-screening-analysis-preregistration-v4.json \
+            --admission-report review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json \
+            --evidence normalized-evidence.json \
+            --output screening-analysis.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-pilot-v2-ordinal15-analysis
+          path: |
+            acquisition-manifest.json
+            normalized-evidence.json
+            screening-analysis.json
+          if-no-files-found: error
+          retention-days: 90

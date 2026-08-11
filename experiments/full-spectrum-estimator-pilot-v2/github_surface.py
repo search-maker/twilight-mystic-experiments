@@ -7,6 +7,7 @@ from freshness import AUTH_BRANCH, DISPATCH_BRANCH, EXECUTION_KEY, TITLE, positi
 
 ORDINAL_FROM_DISPATCH = re.compile(r'ordinal[-_]?([0-9]+)', re.I)
 SCIENTIFIC_WORKFLOW = '.github/workflows/full-spectrum-estimator-pilot-v2-ordinal14-execution-v6.yml'
+AUTHORIZATION_REVIEW_WORKFLOW = '.github/workflows/full-spectrum-estimator-pilot-v2-authorization-review-v6.yml'
 
 def _api(url: str, token: str) -> Any:
     req=urllib.request.Request(url, headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
@@ -41,6 +42,22 @@ def _is_candidate_scientific_run(run: dict[str, Any]) -> bool:
     title=(run.get('display_title') or '').strip()
     name=(run.get('name') or '').strip()
     return path==SCIENTIFIC_WORKFLOW or EXECUTION_KEY in title or title.lower()==TITLE.lower() or name.lower()==(TITLE+' execution v6').lower()
+
+def _failed_authorization_ref_reusable(auth_head: str|None, prs: list[dict[str, Any]], runs: list[dict[str, Any]]) -> bool:
+    if not auth_head:
+        return False
+    matching_prs=[]
+    for pr in prs:
+        head=pr.get('head') or {}
+        if head.get('ref')==AUTH_BRANCH and head.get('sha')==auth_head:
+            matching_prs.append(pr)
+    closed_unmerged=[p for p in matching_prs if p.get('state')=='closed' and p.get('merged_at') is None]
+    if len(closed_unmerged)!=1 or any(p.get('state')=='open' for p in matching_prs):
+        return False
+    review_runs=[r for r in runs if (r.get('head_branch') or '')==AUTH_BRANCH and (r.get('head_sha') or '')==auth_head and (r.get('path') or '')==AUTHORIZATION_REVIEW_WORKFLOW and (r.get('event') or '')=='pull_request']
+    failed=[r for r in review_runs if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='failure']
+    successful=[r for r in review_runs if r.get('status')=='completed' and r.get('conclusion')=='success']
+    return len(failed)==1 and not successful
 
 def build_surface(payload: dict[str, Any], current_pr: int|None=None, marker_head: str|None=None, marker_parent: str|None=None, current_run_id: int|None=None) -> dict[str, Any]:
     branches=payload.get('branches',[]); runs=payload.get('runs',[]); prs=payload.get('pulls',[]); issues=payload.get('issues',[]); comments=payload.get('issue60Comments',[])
@@ -90,6 +107,7 @@ def build_surface(payload: dict[str, Any], current_pr: int|None=None, marker_hea
       'candidatePriorScientificRunCount': len(candidate_runs),
       'authorizationBranchExists': AUTH_BRANCH in branch_names,
       'authorizationBranchHeadSha': auth_head,
+      'authorizationBranchReusableAfterFailedReview': _failed_authorization_ref_reusable(auth_head,prs,runs),
       'dispatchBranchExists': DISPATCH_BRANCH in branch_names,
       'dispatchBranchHeadSha': dispatch_head,
       'positiveCandidateClaimsExcludingCurrent': len(positive),

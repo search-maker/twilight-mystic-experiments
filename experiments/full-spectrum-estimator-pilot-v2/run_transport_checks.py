@@ -35,6 +35,24 @@ def main()->int:
     s=github_surface.build_surface({**base,'runs':pr_checks+[scientific]},current_run_id=999)
     if s['candidatePriorScientificRunCount'] != 1:
         raise SystemExit('real push-only ordinal-14 scientific run was not detected exactly once')
+    failed_head='a'*40
+    failed_branch={'name':freshness.AUTH_BRANCH,'commit':{'sha':failed_head}}
+    failed_pr={'number':112,'state':'closed','merged_at':None,'title':'Failed ordinal 14 authorization review','body':'Authorization for ordinal 14 was refused.','head':{'ref':freshness.AUTH_BRANCH,'sha':failed_head}}
+    failed_review={'id':105,'event':'pull_request','head_branch':freshness.AUTH_BRANCH,'head_sha':failed_head,'display_title':'Failed ordinal 14 authorization review','name':'Full-spectrum estimator pilot v2 authorization review v6','path':github_surface.AUTHORIZATION_REVIEW_WORKFLOW,'run_attempt':1,'status':'completed','conclusion':'failure'}
+    stale=github_surface.build_surface({**base,'branches':base['branches']+[failed_branch],'pulls':[failed_pr],'runs':[failed_review]})
+    if stale['authorizationBranchReusableAfterFailedReview'] is not True:
+        raise SystemExit('exact failed-review authorization ref was not recognized as reusable')
+    freshness.validate_preauthorization(stale)
+    success_review={**failed_review,'id':106,'conclusion':'success'}
+    not_reusable=github_surface.build_surface({**base,'branches':base['branches']+[failed_branch],'pulls':[failed_pr],'runs':[failed_review,success_review]})
+    if not_reusable['authorizationBranchReusableAfterFailedReview'] is not False:
+        raise SystemExit('authorization ref with a successful review was incorrectly reusable')
+    try:
+        freshness.validate_preauthorization(not_reusable)
+    except freshness.FreshnessRefusal:
+        pass
+    else:
+        raise SystemExit('preauthorization accepted a ref with prior successful authorization review')
     for name in MODULES:
         if not compileall.compile_file(str(root/'experiments/full-spectrum-estimator-pilot-v2'/name),quiet=1,force=True): raise SystemExit(f'compile failed: {name}')
     try:
@@ -52,6 +70,6 @@ def main()->int:
     if 'workflow_dispatch:' in sci or 'schedule:' in sci or 'repository_dispatch:' in sci: raise SystemExit('scientific workflow exposes alternate trigger')
     static=subprocess.run([sys.executable,str(root/'experiments/full-spectrum-estimator-pilot-v2/package_evidence.py'),'verify-static','--repository-root',str(root)],cwd=root,text=True,capture_output=True)
     if static.returncode: sys.stderr.write(static.stderr); return static.returncode
-    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True}
+    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True,'failedAuthorizationRefReuseRegression':True}
     print(json.dumps(summary,indent=2,sort_keys=True)); return 0
 if __name__=='__main__': raise SystemExit(main())

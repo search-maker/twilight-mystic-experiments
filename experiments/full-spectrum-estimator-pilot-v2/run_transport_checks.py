@@ -21,6 +21,20 @@ def main()->int:
         raise SystemExit('boolean-false ordinal-14 status was misclassified as a positive claim')
     if len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')) != 1:
         raise SystemExit('positive ordinal-14 allocation claim was not detected')
+    markdown_examples=(
+      'false negative: `Although no dispatch exists, ordinal 14 is authorized.`',
+      'regression fixture: `We allocated ordinal 14 for this run.`',
+      '> Ordinal 14 is authorized.',
+      '```text\nOrdinal 14 is authorized.\n```',
+      '~~~\nWe allocated ordinal 14 for this run.\n~~~',
+    )
+    for example in markdown_examples:
+        if freshness.positive_candidate_claims(example):
+            raise SystemExit(f'Markdown quotation/example was misclassified as live ordinal-14 state: {example!r}')
+    if len(freshness.positive_candidate_claims('Although no dispatch exists, ordinal 14 is authorized.')) != 1:
+        raise SystemExit('plain live positive ordinal-14 state was hidden by Markdown-example filtering')
+    if len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')) != 1:
+        raise SystemExit('plain live positive ordinal-14 allocation was hidden by Markdown-example filtering')
     base={'branches':[{'name':'dispatch/tier1-precision-continuation-wave3-ordinal13-v1','commit':{'sha':'1'*40}}],'pulls':[],'issues':[],'issue60Comments':[],'activeAuthorizationPathOnMainExists':False}
     pr_title='Authorize '+freshness.TITLE
     pr_checks=[
@@ -70,6 +84,6 @@ def main()->int:
     if 'workflow_dispatch:' in sci or 'schedule:' in sci or 'repository_dispatch:' in sci: raise SystemExit('scientific workflow exposes alternate trigger')
     static=subprocess.run([sys.executable,str(root/'experiments/full-spectrum-estimator-pilot-v2/package_evidence.py'),'verify-static','--repository-root',str(root)],cwd=root,text=True,capture_output=True)
     if static.returncode: sys.stderr.write(static.stderr); return static.returncode
-    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True,'failedAuthorizationRefReuseRegression':True}
+    summary={'status':'TRANSPORT_V6_CHECKS_PASS','testsPassed':62,'pythonCompile':True,'workflowYamlParsed':3,'reviewWorkflowScientificExecutionSurface':False,'authorizationReviewScientificExecutionSurface':False,'scientificExecutionPerformed':False,'authorizationCreated':False,'dispatchCreated':False,'ordinalAllocatedReservedOrConsumed':False,'freshnessBooleanFalseRegression':True,'scientificRunClassificationRegression':True,'failedAuthorizationRefReuseRegression':True,'markdownExampleIsolationRegression':True}
     print(json.dumps(summary,indent=2,sort_keys=True)); return 0
 if __name__=='__main__': raise SystemExit(main())

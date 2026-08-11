@@ -20,8 +20,6 @@ PAST_VERB = r'(?:allocated|reserved|authorized|consumed|dispatched)'
 NOUN = r'(?:allocation|reservation|authorization|consumption|dispatch)'
 ORDINAL_TOKEN = re.compile(rf'\b{ORDINAL}\b', re.I)
 
-# Split contrastive/list clauses only for local prefix interpretation. The
-# positive grammar itself remains explicit and finite below.
 RESET = re.compile(
     r'(?:[.;]\s*|,\s*(?:and|but|then)\b|,\s*(?=ordinal\s*[-:#]?\s*14\b)|'
     r'\b(?:but|however|yet|nevertheless|nonetheless|whereas|then|while)\b|'
@@ -44,9 +42,6 @@ NONFACTUAL_PREFIX = re.compile(
     re.I,
 )
 
-# Positive prose is intentionally a finite whitelist. This avoids treating a
-# nearby past-tense token as evidence when it actually appears in a question,
-# modal, expectation, negation, review note, or other non-factual frame.
 FACT_PATTERNS = [
     re.compile(rf'\b{SUBJECT}\s+(?:(?:have|has|had)\s+)?(?:(?:now|already|hereby)\s+)?{PAST_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
     re.compile(rf'\b{SUBJECT}\s+(?:(?:now|hereby)\s+)?{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
@@ -91,9 +86,32 @@ def _match_is_nonfactual(line: str, match: re.Match[str]) -> bool:
         return True
     return False
 
+def _assertive_markdown_prose(text: str) -> str:
+    """Remove Markdown regions that quote or display examples rather than assert ledger state."""
+    out=[]
+    in_fence=False
+    fence_token=None
+    for raw in (text or '').splitlines():
+        stripped=raw.lstrip()
+        if stripped.startswith('```') or stripped.startswith('~~~'):
+            token=stripped[:3]
+            if not in_fence:
+                in_fence=True; fence_token=token
+            elif token==fence_token:
+                in_fence=False; fence_token=None
+            continue
+        if in_fence or stripped.startswith('>'):
+            continue
+        # Inline code is used throughout the ledger for parser fixtures, identifiers and quoted examples.
+        # It is evidence about text, not a state assertion. Real state markers are required as plain lines.
+        line=re.sub(r'`[^`\n]*`',' ',raw)
+        out.append(line)
+    return '\n'.join(out)
+
 def positive_candidate_claims(text: str) -> list[str]:
     claims=[]
-    for raw in re.split(r'[\n]+|(?<=[.;])\s+', text or ''):
+    prose=_assertive_markdown_prose(text)
+    for raw in re.split(r'[\n]+|(?<=[.;])\s+', prose):
         line=raw.strip()
         if not line:
             continue

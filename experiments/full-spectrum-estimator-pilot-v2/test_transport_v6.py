@@ -43,9 +43,78 @@ class StaticBindingTests(unittest.TestCase):
     def test_10_new_identity_not_v5(self): self.assertTrue(CONTRACT['contractId'].endswith('-v6')); self.assertNotEqual(CONTRACT['contractSha256'],'fb4c003aad2f0655c7d4faadc65e6c6664b7306cd87b134a5eee772f31839fdd')
 
 class FreshnessParserTests(unittest.TestCase):
-    def test_11_negative_allocation_not_positive(self): self.assertEqual(freshness.positive_candidate_claims('No ordinal 14 allocation, reservation, authorization, or consumption occurred.'),[])
+    def test_11_negative_allocation_not_positive(self):
+        self.assertEqual(freshness.positive_candidate_claims('No ordinal 14 allocation, reservation, authorization, or consumption occurred.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('No authorization commit/branch, dispatch branch, pilot result, fitting/model selection, holdout/validation opening, or ordinal-14 allocation/reservation/consumption occurred.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('control-ledger parsing ignores negative mentions and additionally refuses explicit positive ordinal-14 allocation/authorization claims.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Do not allocate and reserve ordinal 14.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Authorization for ordinal 14 was refused.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('ordinal 14 authorization is blocked.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('ordinal 14 allocation did not occur.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('authorization for ordinal 14 was denied.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('ordinal 14 authorization was not granted.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('ordinal 14 allocation never occurred.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('authorization for ordinal 14 does not exist.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Authorization for ordinal 14 is pending review.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Authorization request for ordinal 14 is pending.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We discussed authorization for ordinal 14 but did not grant it.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('It is false that ordinal 14 is authorized.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We cannot authorize ordinal 14.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('We have yet to authorize ordinal 14.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 may be authorized later.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 will not be authorized.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Ordinal 14 authorization was rescinded.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('If ordinal 14 is authorized, do not proceed.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Whether ordinal 14 is authorized remains unknown.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('Before ordinal 14 is authorized, refresh the ledger.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('No authorization for ordinal 14 was granted.'),[])
+        self.assertEqual(freshness.positive_candidate_claims('No ordinal 14 allocation occurred.'),[])
+        ops={'allocate':('allocated','allocation'),'reserve':('reserved','reservation'),'authorize':('authorized','authorization'),'consume':('consumed','consumption'),'dispatch':('dispatched','dispatch')}
+        for base,(pp,noun) in ops.items():
+            for text in (
+                f'We did not {base} ordinal 14.', f'We cannot {base} ordinal 14.', f'We may {base} ordinal 14 later.',
+                f'We will {base} ordinal 14 later.', f'We plan to {base} ordinal 14.', f'We have yet to {base} ordinal 14.',
+                f'If ordinal 14 is {pp}, continue.', f'Whether ordinal 14 is {pp} remains unknown.', f'Before ordinal 14 is {pp}, refresh.',
+                f'Ordinal 14 may be {pp} later.', f'Ordinal 14 will not be {pp}.', f'{noun.title()} for ordinal 14 is pending review.',
+                f'{noun.title()} request for ordinal 14 is pending.',
+                f'Did we {base} ordinal 14?', f'Do we {base} ordinal 14?',
+                f'Was ordinal 14 {pp}?', f'Has ordinal 14 been {pp}?',
+                f"We haven't {pp} ordinal 14.", f"Ordinal 14 isn't {pp}.",
+                f"Ordinal 14 wasn't {pp}.", f"Ordinal 14 hasn't been {pp}.",
+                f'We expect ordinal 14 to be {pp}.', f'Ordinal 14 is expected to be {pp}.',
+                f'We hope ordinal 14 is {pp}.',
+            ):
+                self.assertEqual(freshness.positive_candidate_claims(text),[],text)
     def test_12_candidate_only_not_positive(self): self.assertEqual(freshness.positive_candidate_claims('ordinal 14 remains candidate-only and not authorized.'),[])
-    def test_13_positive_allocated(self): self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')),1)
+    def test_13_positive_allocated(self):
+        self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 for this run.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('No authorization existed previously, but we allocated ordinal 14 now.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('We did not reserve ordinal 14 before, but ordinal 14 is now authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was not reserved, and authorization was granted for ordinal 14.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was not reserved initially, then ordinal 14 was authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was not reserved and is now authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 is authorized, and no dispatch has occurred yet.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Although no dispatch exists, ordinal 14 is authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('No prior authorization existed and we allocated ordinal 14 now.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 without dispatching it.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was allocated while dispatch is not authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Not only did we authorize ordinal 14; the branch remains absent.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 was authorized, but later revoked.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('We allocated ordinal 14 provisionally, subject to approval.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 is not authorized but is allocated.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 is allocated but not authorized.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Authorization for ordinal 14 was granted.')),1)
+        self.assertEqual(len(freshness.positive_candidate_claims('Ordinal 14 allocation occurred.')),1)
+        ops={'allocate':'allocated','reserve':'reserved','authorize':'authorized','consume':'consumed','dispatch':'dispatched'}
+        for base,pp in ops.items():
+            for text in (
+                f'We {pp} ordinal 14.', f'Ordinal 14 is {pp}.', f'Ordinal 14 was {pp}.',
+                f'Ordinal 14 has been {pp}.', f'Not only did we {base} ordinal 14.',
+                f'We did {base} ordinal 14.', f'We do {base} ordinal 14.',
+                f'We have {pp} ordinal 14.',
+                f'We {pp} ordinal 14, but dispatch is not authorized.',
+            ):
+                self.assertEqual(len(freshness.positive_candidate_claims(text)),1,text)
     def test_14_positive_authorized(self): self.assertEqual(len(freshness.positive_candidate_claims('ordinal 14 is authorized for execution.')),1)
     def test_15_marker_positive(self): self.assertEqual(len(freshness.positive_candidate_claims('ORDINAL14_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit='+'b'*40+' parent='+'a'*40+' pr=110')),1)
     def test_16_mixed_ordinals_finds_14(self): self.assertEqual(len(freshness.positive_candidate_claims('ordinal 13 was consumed; we now reserve ordinal 14.')),1)
@@ -157,7 +226,20 @@ class ExecutorTests(unittest.TestCase):
     def test_54_execution_requires_allow(self):
         with self.assertRaises(Exception): executor.execute_case(REPO,'train-0009-fs-alis-500-r1',Path('/tmp/data'),Path('/tmp/out-x'),Path('/bin/false'),Path('/tmp/no'),1,False)
     def _fake_run(self,case_id,td):
-        case=next(c for c in MANIFEST['cases'] if c['caseId']==case_id); runtime=MANIFEST['runtimeIdentityRequired']; runtime_path=Path(td)/'runtime.json'; runtime_path.write_text(json.dumps(runtime,sort_keys=True)+'\n'); data=Path(td)/'share/libRadtran/data';(data/'atmmod').mkdir(parents=True);(data/'solar_flux').mkdir();(data/'atmmod/afglus.dat').write_text('x');(data/'solar_flux/atlas_plus_modtran').write_text('x'); out=Path(td)/'out'
+        case=next(c for c in MANIFEST['cases'] if c['caseId']==case_id); runtime=MANIFEST['runtimeIdentityRequired']; runtime_path=Path(td)/'runtime.json'; runtime_path.write_text(json.dumps(runtime,sort_keys=True)+'\n'); data=Path('/unused/mock-data-root'); out=Path(td)/'out'
+        def portable_resolve(repository_root, requested_case_id, data_dir, output_root):
+            template=repository_root/executor.REVIEW_REL/'rendered-review-v5'/requested_case_id/'input-template.txt'
+            text=template.read_text()
+            replacements={
+                '${LIBRADTRAN_DATA}':'/portable/share/libRadtran/data',
+                '${ATMOSPHERE_FILE}':'/portable/share/libRadtran/data/atmmod/afglus.dat',
+                '${SOLAR_FLUX_FILE}':'/portable/share/libRadtran/data/solar_flux/atlas_plus_modtran',
+                '${WAVELENGTH_GRID_1NM}':'/portable/review/wavelength-grid-1nm.dat',
+                '${OUTPUT_DIR}':'/portable/output',
+            }
+            for key,value in replacements.items(): text=text.replace(key,value)
+            if '${' in text: raise AssertionError('portable mock left unresolved input placeholder')
+            return text.encode()
         def runner(cmd,text,cwd,timeout):
             if len(cmd)==1:
                 step=1.0 if case['method']=='reference-vroom-1nm' else .05; n=401 if step==1.0 else 8001; spec=''.join(f'{380+i*step:.2f} 1.0e-6\n' for i in range(n))
@@ -166,7 +248,11 @@ class ExecutorTests(unittest.TestCase):
                     (cwd/name).write_text(spec if name in {'mc.rad.spc','mc.rad.std.spc'} else 'x\n')
             return {'exitCode':0,'timedOut':False,'stdout':'','stderr':''}
         env={'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'push','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF_NAME':freshness.DISPATCH_BRANCH}
-        with mock.patch.dict(os.environ,env,clear=False): result=executor.execute_case(REPO,case_id,data,out,Path('/fake/uvspec'),runtime_path,10,True,runner=runner)
+        with mock.patch.dict(os.environ,env,clear=False), mock.patch.object(executor,'resolve_input',side_effect=portable_resolve):
+            result=executor.execute_case(REPO,case_id,data,out,Path('/fake/uvspec'),runtime_path,10,True,runner=runner)
+        resolved=(out/case_id/'input-resolved.txt').read_text().splitlines()
+        data_lines=[line for line in resolved if line.startswith('data_files_path ')]
+        self.assertEqual(data_lines,['data_files_path /portable/share/libRadtran/data'])
         return case,out/case_id,result
     def _parse_zip(self,case,case_dir,td):
         z=Path(td)/'case.zip'
@@ -175,10 +261,10 @@ class ExecutorTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('norm_v6_test',REVIEW/'normalize_full_spectrum_estimator_pilot_results_v6.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
         return mod.parse_case_zip(z,case,MANIFEST['artifactContract']['requiredMembersByMethod'][case['method']])
     def test_55_mock_alis_artifact_contract(self):
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(prefix='fspv2-artifact-', dir='/tmp') as td:
             case,d,r=self._fake_run('train-0009-fs-alis-500-r1',td); parsed=self._parse_zip(case,d,td); self.assertEqual(parsed['caseId'],case['caseId']); self.assertEqual(r['solverExecutionCount'],1)
     def test_56_mock_vroom_artifact_contract(self):
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(prefix='fspv2-artifact-', dir='/tmp') as td:
             case,d,r=self._fake_run('train-0009-fs-vroom-1nm-r1',td); parsed=self._parse_zip(case,d,td); self.assertEqual(parsed['method'],'reference-vroom-1nm')
 
 class WorkflowTests(unittest.TestCase):

@@ -13,13 +13,63 @@ MARKER_RE = re.compile(
     r'^ORDINAL14_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED '
     r'commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$', re.I
 )
-POSITIVE_WORDS = r'(?:allocat(?:e|ed|ion)|reserv(?:e|ed|ation)|authoriz(?:e|ed|ation)|consum(?:e|ed|ption)|dispatch(?:ed)?)'
-NEGATIVE = re.compile(r'\b(?:no|not|never|without|unallocated|unreserved|unauthorized|not-authorized|review-only|candidate-only|absent|missing|unpublished)\b', re.I)
-BOOLEAN_FALSE = re.compile(r'(?:[:=]\s*|\bis\s+)(?:\*\*)?false(?:\*\*)?\b', re.I)
-ORDINAL_PATTERNS = [
-    re.compile(rf'\b{POSITIVE_WORDS}\b[^\n.;]{{0,80}}\bordinal\s*[-:#]?\s*14\b', re.I),
-    re.compile(rf'\bordinal\s*[-:#]?\s*14\b[^\n.;]{{0,80}}\b{POSITIVE_WORDS}\b', re.I),
+ORDINAL = r'ordinal\s*[-:#]?\s*14'
+SUBJECT = r'(?:we|i|they|(?:the\s+)?(?:system|repository|project|candidate))'
+BASE_VERB = r'(?:allocate|reserve|authorize|consume|dispatch)'
+PAST_VERB = r'(?:allocated|reserved|authorized|consumed|dispatched)'
+NOUN = r'(?:allocation|reservation|authorization|consumption|dispatch)'
+ORDINAL_TOKEN = re.compile(rf'\b{ORDINAL}\b', re.I)
+
+# Split contrastive/list clauses only for local prefix interpretation. The
+# positive grammar itself remains explicit and finite below.
+RESET = re.compile(
+    r'(?:[.;]\s*|,\s*(?:and|but|then)\b|,\s*(?=ordinal\s*[-:#]?\s*14\b)|'
+    r'\b(?:but|however|yet|nevertheless|nonetheless|whereas|then|while)\b|'
+    r'\band\s+(?=(?:we\b|i\b|they\b|the\b|this\b|is\b|was\b|were\b|has\b|have\b|will\b|now\b|ordinal\s*[-:#]?\s*14\b|authorization\b|allocation\b|reservation\b|dispatch\b)))',
+    re.I,
+)
+INTERROGATIVE = re.compile(
+    rf'^\s*(?:(?:did|do|does)\s+{SUBJECT}\b|'
+    rf'(?:is|are|was|were|has|have|had|can|could|would|should|will|may|might|must)\s+'
+    rf'(?:{ORDINAL}|{SUBJECT}|{NOUN})\b|(?:who|what|when|where|why|how)\b)',
+    re.I,
+)
+DIRECT_NEGATIVE = re.compile(
+    r'\b(?:no|not|never|without|unauthorized|unallocated|unreserved|candidate-only|review-only)\b', re.I
+)
+NONFACTUAL_PREFIX = re.compile(
+    r'\b(?:if|whether|when|before|hope(?:d|s)?|wish(?:ed|es)?|want(?:ed|s)?|'
+    r'expect(?:ed|s)?|plan(?:ned|s)?|intend(?:ed|s)?|propose(?:d|s)?|'
+    r'false\s+that|not\s+established\s+that|not\s+proven\s+that|not\s+confirmed\s+that)\b',
+    re.I,
+)
+
+# Positive prose is intentionally a finite whitelist. This avoids treating a
+# nearby past-tense token as evidence when it actually appears in a question,
+# modal, expectation, negation, review note, or other non-factual frame.
+FACT_PATTERNS = [
+    # Active completed/factual assertions.
+    re.compile(rf'\b{SUBJECT}\s+(?:(?:have|has|had)\s+)?(?:(?:now|already|hereby)\s+)?{PAST_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    re.compile(rf'\b{SUBJECT}\s+(?:(?:now|hereby)\s+)?{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    re.compile(rf'\b{SUBJECT}\s+(?:did|do|does)\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    re.compile(rf'\bnot\s+only\s+(?:did|do|does)\s+{SUBJECT}\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    re.compile(rf'\b{SUBJECT}\s+{PAST_VERB}\s+and\s+{PAST_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    re.compile(rf'\b{SUBJECT}\s+{BASE_VERB}\s+and\s+{BASE_VERB}\s+(?:the\s+)?{ORDINAL}\b', re.I),
+    # Candidate passive/state assertions.
+    re.compile(rf'\b{ORDINAL}\b\s+(?:is|was|were|has\s+been|had\s+been)\s+(?:(?:now|already)\s+)?{PAST_VERB}\b', re.I),
+    # One ordinal mention may carry into a fresh coordinated state predicate.
+    re.compile(rf'\b{ORDINAL}\b[^\n.;]{{0,72}}\b(?:and|but|then)\s+(?:is|was|were|has\s+been|had\s+been)\s+(?:(?:now|already)\s+)?{PAST_VERB}\b', re.I),
 ]
+NOUN_FACT_PATTERNS = [
+    re.compile(rf'\b{NOUN}\b(?:\s+(?:of|for))?\s+{ORDINAL}\b[^\n.;]{{0,28}}\b(?:occurred|completed|succeeded|exists|is\s+active|was\s+active|is\s+granted|was\s+granted|has\s+been\s+granted|had\s+been\s+granted)\b', re.I),
+    re.compile(rf'\b{ORDINAL}\b\s+{NOUN}\b[^\n.;]{{0,28}}\b(?:occurred|completed|succeeded|exists|is\s+active|was\s+active|is\s+granted|was\s+granted|has\s+been\s+granted|had\s+been\s+granted)\b', re.I),
+    re.compile(rf'\b{NOUN}\b\s+(?:was|is|has\s+been|had\s+been)\s+(?:granted|completed|active)\b[^\n.;]{{0,36}}\b(?:for|of)\s+{ORDINAL}\b', re.I),
+]
+NOUN_MATCH_NEGATIVE = re.compile(
+    r'\b(?:no|not|never|without|pending|requested|request|proposed|proposal|planned|plan|considered|discussion|review|'
+    r'denied|rejected|refused|revoked|rescinded|cancelled|canceled|unauthorized|unallocated|unreserved)\b',
+    re.I,
+)
 
 class FreshnessRefusal(RuntimeError):
     pass
@@ -28,6 +78,22 @@ def require(cond: bool, msg: str) -> None:
     if not cond:
         raise FreshnessRefusal(msg)
 
+def _reset_bounds(line: str, pos: int) -> tuple[int, int]:
+    resets=list(RESET.finditer(line))
+    before=[m.end() for m in resets if m.end() <= pos]
+    after=[m.start() for m in resets if m.start() >= pos]
+    return (max(before, default=0), min(after, default=len(line)))
+
+def _match_is_nonfactual(line: str, match: re.Match[str]) -> bool:
+    seg_start, seg_end = _reset_bounds(line, match.start())
+    clause=line[seg_start:seg_end]
+    prefix=line[seg_start:match.start()]
+    if clause.rstrip().endswith('?') or INTERROGATIVE.match(clause):
+        return True
+    if DIRECT_NEGATIVE.search(prefix) or NONFACTUAL_PREFIX.search(prefix):
+        return True
+    return False
+
 def positive_candidate_claims(text: str) -> list[str]:
     claims=[]
     for raw in re.split(r'[\n]+|(?<=[.;])\s+', text or ''):
@@ -35,20 +101,31 @@ def positive_candidate_claims(text: str) -> list[str]:
         if not line:
             continue
         if MARKER_RE.fullmatch(line):
-            claims.append(line); continue
-        if EXECUTION_KEY in line or TITLE.lower() in line.lower():
-            # identity mention alone is not a positive allocation/authorization claim.
-            pass
-        for pat in ORDINAL_PATTERNS:
-            m=pat.search(line)
-            if not m:
-                continue
-            prefix=line[:m.start()]
-            segment=line[max(0,m.start()-36):m.end()+12]
-            if NEGATIVE.search(prefix[-36:]) or NEGATIVE.search(segment) or BOOLEAN_FALSE.search(line):
-                continue
             claims.append(line)
-            break
+            continue
+        if not ORDINAL_TOKEN.search(line):
+            continue
+        found=False
+        for pat in FACT_PATTERNS:
+            for match in pat.finditer(line):
+                if _match_is_nonfactual(line, match):
+                    continue
+                claims.append(line)
+                found=True
+                break
+            if found:
+                break
+        if found:
+            continue
+        for pat in NOUN_FACT_PATTERNS:
+            for match in pat.finditer(line):
+                if _match_is_nonfactual(line, match) or NOUN_MATCH_NEGATIVE.search(match.group(0)):
+                    continue
+                claims.append(line)
+                found=True
+                break
+            if found:
+                break
     return claims
 
 def validate_common(ctx: dict[str, Any], dispatch_must_be_absent: bool = True) -> None:

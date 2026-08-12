@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, json, os, re, subprocess, sys
+import argparse, hashlib, importlib.util, json, os, re, subprocess, sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,6 +39,20 @@ def resolve_template(template_raw:bytes, *, data_dir:Path, output_root:Path)->by
     require('${' not in text,'unresolved confirmation input placeholder')
     return text.encode()
 
+def load_pilot_normalizer(repository_root:Path):
+    p=repository_root/'review/full-spectrum-estimator-pilot-v2/normalize_full_spectrum_estimator_pilot_results_v6.py'
+    spec=importlib.util.spec_from_file_location('confirmation_executor_pilot_normalizer_v6',p)
+    require(spec is not None and spec.loader is not None,'cannot load frozen pilot normalizer')
+    m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+def validate_resolved_input(repository_root:Path, raw:bytes, case:dict[str,Any])->None:
+    norm=load_pilot_normalizer(repository_root)
+    directives=norm.parse_directives(raw)
+    norm.verify_exact_directive_surface(raw,case)
+    norm.verify_input(directives,case)
+    expected=norm.PHYSICAL_FINGERPRINTS.get(case['geometryId'])
+    require(expected is not None and norm.physical_fingerprint(raw)==expected,'resolved confirmation physical fingerprint drift')
+
 def _run(command:list[str],text:str,cwd:Path,timeout:int)->dict[str,Any]:
     try:
         r=subprocess.run(command,input=text,text=True,capture_output=True,cwd=cwd,timeout=timeout,check=False)
@@ -61,7 +75,7 @@ def execute_case(*,repository_root:Path,manifest_path:Path,render_report_path:Pa
     template=template_root/case_id/'input-template.txt'; require(template.is_file(),f'confirmation input template missing: {case_id}')
     template_raw=template.read_bytes(); require(hashlib.sha256(template_raw).hexdigest()==rrows[0].get('confirmationTemplateSha256'),f'confirmation input template hash drift: {case_id}')
     case_dir=output_root/case_id; case_dir.mkdir(parents=True,exist_ok=False)
-    inp=resolve_template(template_raw,data_dir=data_dir,output_root=output_root); (case_dir/'input-resolved.txt').write_bytes(inp)
+    inp=resolve_template(template_raw,data_dir=data_dir,output_root=output_root); validate_resolved_input(repository_root,inp,case); (case_dir/'input-resolved.txt').write_bytes(inp)
     require(f'mc_randomseed {case["seed"]}'.encode() in inp,'resolved seed drift')
     require(f'mc_photons {case["photonHistories"]}'.encode() in inp,'resolved photon count drift')
     (case_dir/'runtime-report.json').write_bytes(runtime_report.read_bytes()); (case_dir/'randomseed').write_text(f'{case["seed"]}\n')

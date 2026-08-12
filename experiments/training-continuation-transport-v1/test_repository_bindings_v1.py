@@ -7,4 +7,6 @@ def run(v,p):
         out=Path(td)/'m.json'; cmd=[sys.executable,str(HERE/'build_execution_manifest_v1.py'),'--repository-root',str(REPO),'--variant',v,'--preregistration',str(REPO/p),'--contract',str(HERE/'transport-contract.v1.json'),'--analysis-contract',str(HERE/'analysis-contract.v1.json'),'--output',str(out)]; r=subprocess.run(cmd,capture_output=True,text=True); assert r.returncode==0,(r.stdout,r.stderr); m=json.loads(out.read_text()); return m
 m1=run('train0014','review/train-0014-fresh-training-acquisition-v1/train-0014-fresh-training-acquisition-preregistration-v1.json'); assert m1['caseCount']==4 and m1['totalPhotonHistories']==200000000
 m2=run('train0037','review/train-0037-targeted-estimator-comparison-v1/train-0037-targeted-estimator-comparison-preregistration-v1.json'); assert m2['caseCount']==12 and m2['totalPhotonHistories']==1200000000
-print('PASS: exact merged preregistration/template binding')
+src=(HERE/'build_execution_manifest_v1.py').read_text(); assert 'path.relative_to(repo).as_posix()' in src and 'str(path.relative_to(repo))' not in src and "write_bytes((json.dumps(m,indent=2,sort_keys=True)+'\\n').encode('utf-8'))" in src
+assert all('\\' not in c['templatePath'] for m in (m1,m2) for c in m['cases'])
+print('PASS: exact merged preregistration/template binding with portable POSIX manifest paths')

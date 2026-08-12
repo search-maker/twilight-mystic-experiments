@@ -9,5 +9,5 @@ Review-only transport for the two continuation-required geometries after PR #134
 - no workflow in this package invokes `executor_v1.py` or a solver.
 - after merge, repository-global preauthorization must be repeated; a separate activation/authorization lifecycle is required.
 
-Transport contract SHA-256: `103266ce52879245a7ce175f74ad29ab0f8713c7cfc1d9c6931ef0e33969abb6`
-Analysis contract SHA-256: `31218e4263603aef3b676a82e07180076a9fc67b71c60dc861104b90bf0ac885`
+Transport contract SHA-256: `eb66408e40776aadc18440ff20c25308ac3a8b099fd6d6ff0249f46b70c5bfcf`
+Analysis contract SHA-256: `1f7dc8cc71beeb2b56a15a137f377317ae0de90de088ea429fc2eafedcc89c0c`

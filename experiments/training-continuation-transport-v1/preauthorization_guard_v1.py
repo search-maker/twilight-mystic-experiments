@@ -44,6 +44,39 @@ def verify_confirmation_prereg(contract,prereg,path):
     require(len(seeds)==24,'ordinal17 confirmation seed universe drift')
     return seeds
 
+VARIANT_DISPLAY={'train0014':'train-0014','train0037':'train-0037'}
+
+def is_verified_activation_review_artifact(variant,nexto,artifact,runs):
+    expected_artifact=f'training-continuation-{variant}-ordinal{nexto}-activation-review'
+    if artifact.get('name')!=expected_artifact:
+        return False
+    workflow_run=artifact.get('workflow_run')
+    if not isinstance(workflow_run,dict):
+        return False
+    run_id=workflow_run.get('id')
+    if not isinstance(run_id,int) or run_id<=0:
+        return False
+    linked=[x for x in runs if x.get('id')==run_id]
+    if len(linked)!=1:
+        return False
+    run=linked[0]
+    expected_branch=f'agent/{variant}-ordinal{nexto}-activation-v1'
+    expected_name=f"Training continuation {VARIANT_DISPLAY[variant]} ordinal{nexto} activation review"
+    expected_path=f'.github/workflows/training-continuation-{variant}-ordinal{nexto}-activation-review.yml'
+    head_sha=run.get('head_sha')
+    return (
+        run.get('name')==expected_name
+        and run.get('path')==expected_path
+        and run.get('event')=='pull_request'
+        and run.get('run_attempt')==1
+        and run.get('status')=='completed'
+        and run.get('conclusion')=='success'
+        and run.get('head_branch')==expected_branch
+        and isinstance(head_sha,str) and re.fullmatch(r'[0-9a-f]{40}',head_sha) is not None
+        and workflow_run.get('head_branch')==expected_branch
+        and workflow_run.get('head_sha')==head_sha
+    )
+
 def build(contract,variant,branches,runs,artifacts,issue_comments,source_audit,source_audit_path,confirmation_prereg,confirmation_prereg_path):
     verify_self(contract,'contractSha256'); require(contract.get('status')=='REVIEW_ONLY_DISABLED_TRANSPORT_NOT_AUTHORIZED','transport contract boundary drift')
     spec=contract['sourcePreregistrations'][variant]; ords=consumed(branches,runs); require(ords,'no consumed ordinal history found'); latest=max(ords); nexto=latest+1
@@ -65,13 +98,21 @@ def build(contract,variant,branches,runs,artifacts,issue_comments,source_audit,s
     ref_collisions=sorted(n for n in branch_names if n.startswith(auth_prefix) or n.startswith(dispatch_prefix)); require(not ref_collisions,f'authorization/dispatch ref collision already exists: {ref_collisions}')
     scientific_runs=[int(x.get('id') or 0) for x in runs if x.get('event')=='push' and str(x.get('head_branch') or '').startswith(dispatch_prefix)]; require(not scientific_runs,f'prior scientific push run exists: {scientific_runs}')
     artifact_prefix=f'training-continuation-{variant}-'
-    scientific_artifacts=[{'id':x.get('id'),'name':x.get('name')} for x in artifacts if str(x.get('name') or '').lower().startswith(artifact_prefix)]; require(not scientific_artifacts,f'prior scientific artifact exists: {scientific_artifacts}')
+    scientific_artifacts=[]
+    for x in artifacts:
+        if not str(x.get('name') or '').lower().startswith(artifact_prefix):
+            continue
+        if is_verified_activation_review_artifact(variant,nexto,x,runs):
+            continue
+        scientific_artifacts.append({'id':x.get('id'),'name':x.get('name')})
+    require(not scientific_artifacts,f'prior scientific artifact exists: {scientific_artifacts}')
+    marker_re=re.compile(rf'^ORDINAL{nexto}_{variant.upper()}_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=([0-9a-f]{{40}}) parent=([0-9a-f]{{40}}) pr=([1-9][0-9]*)$',re.I)
     issue_markers=[]
     for x in issue_comments:
-        body=str(x.get('body') or '')
-        if auth_prefix in body or dispatch_prefix in body:
+        body=str(x.get('body') or '').strip()
+        if marker_re.fullmatch(body):
             issue_markers.append(int(x.get('id') or 0))
-    require(not issue_markers,f'prior Issue #60 authorization/dispatch marker exists: {issue_markers}')
+    require(not issue_markers,f'prior Issue #60 exact authorization-allocation marker exists: {issue_markers}')
 
     out={'schemaVersion':1,'reportId':f'public-tier1-training-continuation-{variant}-preauthorization-review-v2','status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED','variant':variant,'transportContractSha256':contract['contractSha256'],'candidateSeedCount':len(seeds),'candidateSeedRange':[min(seeds),max(seeds)],'source166SeedCount':len(source_seeds),'pilotSeedCount':len(pilot_seeds),'ordinal17ConfirmationSeedCount':len(confirmation_seeds),'otherFrozenContinuationSeedCount':len(other_seeds),'seedCollisions':collisions,'latestConsumedScientificOrdinal':latest,'nextAvailableScientificOrdinalIfAllocatedLater':nexto,'authorizationOrdinalAllocated':False,'authorizationRefAllocated':False,'executionKeyAllocated':False,'dispatchBranchAllocated':False,'scientificExecutionAuthorized':False,'dispatchAuthorized':False,'repositoryGlobalBranchesInspected':True,'repositoryGlobalActionsRunsInspected':True,'repositoryGlobalActionsArtifactsInspected':True,'controlIssue60CommentsInspected':True,'source166SeedAuditVerified':True,'ordinal17ConfirmationSeedLedgerVerified':True,'note':'Fresh report only. It does not allocate the reported ordinal and must be repeated after transport merge immediately before authorization.'}; out['reportSha256']=canon(out); return out
 

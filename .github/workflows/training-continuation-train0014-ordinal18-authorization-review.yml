@@ -1,0 +1,82 @@
+name: Training continuation train-0014 ordinal18 authorization review
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/training-continuation-train0014-ordinal18-activation-v1/authorization.ordinal18.json'
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse wrong branch, retry, merge ref, or multi-file authorization
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = authorization/training-continuation-train0014-ordinal18
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "$HEAD_SHA" = '${{ github.event.pull_request.head.sha }}'
+          mapfile -t PARENTS < <(git cat-file -p "$HEAD_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$HEAD_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/training-continuation-train0014-ordinal18-activation-v1/authorization.ordinal18.json
+      - name: Capture live global authorization surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" > /tmp/live-main.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/artifacts.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments.json
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/experiments/training-continuation-train0014-ordinal18-activation-v1/authorization.ordinal18.json?ref=main" >/dev/null 2>&1; then echo true >/tmp/main-auth.txt; else echo false >/tmp/main-auth.txt; fi
+          python - <<'PY2'
+          import json,os,subprocess
+          from pathlib import Path
+          event=json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()); pr=event['pull_request']; head=pr['head']['sha']
+          checkout=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          if checkout!=head: raise SystemExit('authorization checkout is not exact PR head')
+          pages=json.load(open('/tmp/branches.json'))
+          matches=[b for page in pages for b in page if b.get('name')=='authorization/training-continuation-train0014-ordinal18']
+          if len(matches)!=1 or (matches[0].get('commit') or {}).get('sha')!=head: raise SystemExit('current authorization branch/head is not exact and unique')
+          if any(b.get('name')=='dispatch/training-continuation-train0014-ordinal18' for page in pages for b in page): raise SystemExit('dispatch branch already exists')
+          filtered=[]
+          for page in pages:
+              filtered.append([b for b in page if b.get('name')!='authorization/training-continuation-train0014-ordinal18'])
+          Path('/tmp/branches-preauth.json').write_text(json.dumps(filtered,indent=2,sort_keys=True)+'\n')
+          PY2
+          python experiments/training-continuation-transport-v1/preauthorization_guard_v1.py --contract experiments/training-continuation-transport-v1/transport-contract.v1.json --variant train0014 --branches-pages /tmp/branches-preauth.json --runs-pages /tmp/runs.json --artifacts-pages /tmp/artifacts.json --issue-comments-pages /tmp/comments.json --source-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json --confirmation-preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json --output /tmp/fresh-preauth.json
+          python - <<'PY2'
+          import json,os,subprocess
+          from pathlib import Path
+          event=json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()); pr=event['pull_request']; head=pr['head']['sha']
+          checkout=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          if checkout!=head: raise SystemExit('authorization checkout head drift')
+          live=json.load(open('/tmp/live-main.json'))['object']['sha']; parent=subprocess.check_output(['git','rev-parse',head+'^'],text=True).strip()
+          def flat_list(p): return [x for page in json.load(open(p)) for x in page]
+          def flat_obj(p,k): return [x for page in json.load(open(p)) for x in page.get(k,[])]
+          ctx={'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'headBranch':os.environ['GITHUB_HEAD_REF'],'headSha':head,'liveMain':live,'authorizationParent':parent,'changedFiles':subprocess.check_output(['git','diff-tree','--no-commit-id','--name-only','-r',head],text=True).splitlines(),'freshPreauthorization':json.load(open('/tmp/fresh-preauth.json')),'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headSha':pr['head']['sha'],'headBranch':pr['head']['ref'],'baseSha':pr['base']['sha']},'branches':flat_list('/tmp/branches.json'),'runs':flat_obj('/tmp/runs.json','workflow_runs'),'artifacts':flat_obj('/tmp/artifacts.json','artifacts'),'issue60Comments':flat_list('/tmp/comments.json'),'currentRunId':int(os.environ['GITHUB_RUN_ID']),'mainAuthorizationPathPresent':Path('/tmp/main-auth.txt').read_text().strip()=='true'}
+          Path('/tmp/context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          PY2
+          python experiments/training-continuation-train0014-ordinal18-activation-v1/authorization_guard_v1.py --authorization experiments/training-continuation-train0014-ordinal18-activation-v1/authorization.ordinal18.json --contract experiments/training-continuation-train0014-ordinal18-activation-v1/activation-contract.v1.json --context /tmp/context.json --output /tmp/authorization-review.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: training-continuation-train0014-ordinal18-authorization-review
+          path: |
+            /tmp/fresh-preauth.json
+            /tmp/authorization-review.json
+          if-no-files-found: error
+          retention-days: 90

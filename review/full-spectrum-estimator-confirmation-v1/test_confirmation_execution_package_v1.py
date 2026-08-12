@@ -40,7 +40,7 @@ def main()->int:
             out_path=templates/row['caseId']/'input-template.txt'
             assert norm_template(source_path.read_bytes())==norm_template(out_path.read_bytes()), f'unexpected template change: {row["caseId"]}'
         ex=load_module('confirmation_executor_v1',executor_path)
-        data_dir=t/'fake-libradtran-data'; output_root=t/'resolved-output'
+        data_dir=t/'fake-prefix/share/libRadtran/data'; output_root=t/'resolved-output'
         for row in m['cases']:
             template_raw=(templates/row['caseId']/'input-template.txt').read_bytes()
             resolved=ex.resolve_template(template_raw,data_dir=data_dir,output_root=output_root)

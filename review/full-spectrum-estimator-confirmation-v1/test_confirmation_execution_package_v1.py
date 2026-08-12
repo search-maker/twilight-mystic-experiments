@@ -40,6 +40,11 @@ def main()->int:
             out_path=templates/row['caseId']/'input-template.txt'
             assert norm_template(source_path.read_bytes())==norm_template(out_path.read_bytes()), f'unexpected template change: {row["caseId"]}'
         ex=load_module('confirmation_executor_v1',executor_path)
+        data_dir=t/'fake-libradtran-data'; output_root=t/'resolved-output'
+        for row in m['cases']:
+            template_raw=(templates/row['caseId']/'input-template.txt').read_bytes()
+            resolved=ex.resolve_template(template_raw,data_dir=data_dir,output_root=output_root)
+            ex.validate_resolved_input(root,resolved,row)
         old=dict(os.environ)
         try:
             os.environ['GITHUB_ACTIONS']='true'; os.environ['GITHUB_EVENT_NAME']='push'; os.environ['GITHUB_RUN_ATTEMPT']='1'; os.environ['GITHUB_REF_NAME']='dispatch/full-spectrum-estimator-confirmation-v1-ordinal999999'

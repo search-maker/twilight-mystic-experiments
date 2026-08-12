@@ -1,0 +1,285 @@
+name: Full-spectrum estimator confirmation v1 ordinal 17 execution
+run-name: Full-spectrum estimator confirmation v1 ordinal 17
+
+on:
+  push:
+    branches:
+      - dispatch/full-spectrum-estimator-confirmation-v1-ordinal17
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: full-spectrum-estimator-confirmation-v1-ordinal17-execution
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse alternate trigger, retry, resume, or wrong authorization shape
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = dispatch/full-spectrum-estimator-confirmation-v1-ordinal17
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json
+          cp experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json /tmp/authorization.ordinal17.json
+          python -m py_compile \
+            experiments/full-spectrum-estimator-confirmation-v1/execution_guard_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/package_confirmation_evidence_v1.py \
+            review/full-spectrum-estimator-confirmation-v1/build_confirmation_execution_manifest_v1.py \
+            review/full-spectrum-estimator-confirmation-v1/render_confirmation_inputs_v1.py \
+            review/full-spectrum-estimator-confirmation-v1/executor_confirmation_v1.py \
+            review/full-spectrum-estimator-confirmation-analysis-v1/normalize_confirmation_results_v1.py \
+            review/full-spectrum-estimator-confirmation-analysis-v1/analyze_confirmation_v1.py
+      - name: Resolve exact live main, Draft authorization PR, and successful attempt-1 review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" > /tmp/live-main.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=search-maker:authorization/full-spectrum-estimator-confirmation-v1-ordinal17&per_page=100" > /tmp/auth-pr-pages.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/full-spectrum-estimator-confirmation-v1-authorization-review-v1.yml/runs?branch=authorization/full-spectrum-estimator-confirmation-v1-ordinal17&event=pull_request&per_page=100" > /tmp/auth-review-runs.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.loads(Path('/tmp/auth-pr-pages.json').read_text())
+          prs=[p for page in pages for p in page if p.get('head',{}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(prs)!=1: raise SystemExit('expected exactly one authorization PR on dispatch head')
+          p=prs[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain open Draft and unmerged')
+          Path('/tmp/auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          runs=json.loads(Path('/tmp/auth-review-runs.json').read_text()).get('workflow_runs',[])
+          good=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('run_attempt')==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(good)!=1: raise SystemExit('expected exactly one successful attempt-1 authorization-review run')
+          Path('/tmp/auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Capture fresh repository-global execution surface and Issue 60 marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/artifacts-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments-pages.json
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json?ref=main" >/tmp/main-auth.json 2>/dev/null; then
+            echo true > /tmp/main-auth-present.txt
+          else
+            echo false > /tmp/main-auth-present.txt
+          fi
+      - name: Build and run exact execution guard
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          def flat_list(path):
+              pages=json.loads(Path(path).read_text()); return [x for page in pages for x in page]
+          def flat_obj(path,key):
+              pages=json.loads(Path(path).read_text()); return [x for page in pages for x in page.get(key,[])]
+          live=json.loads(Path('/tmp/live-main.json').read_text())['object']['sha']
+          parent=subprocess.check_output(['git','rev-parse',os.environ['GITHUB_SHA']+'^'],text=True).strip()
+          if parent!=live: raise SystemExit('authorization parent is no longer live main')
+          pr=json.loads(Path('/tmp/auth-pr-selected.json').read_text())
+          rr=json.loads(Path('/tmp/auth-review-selected.json').read_text())
+          changed=subprocess.check_output(['git','diff-tree','--no-commit-id','--name-only','-r',os.environ['GITHUB_SHA']],text=True).splitlines()
+          ctx={
+            'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'refName':os.environ['GITHUB_REF_NAME'],'headSha':os.environ['GITHUB_SHA'],'dispatchBranchHeadSha':os.environ['GITHUB_SHA'],
+            'liveMain':live,'authorizationParent':parent,'changedFiles':changed,
+            'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,
+                  'headSha':pr['head']['sha'],'headBranch':pr['head']['ref'],'baseSha':pr['base']['sha']},
+            'authorizationReview':{'workflow':'.github/workflows/full-spectrum-estimator-confirmation-v1-authorization-review-v1.yml',
+                  'headSha':rr['head_sha'],'prNumber':pr['number'],'runAttempt':rr['run_attempt'],'status':rr['status'],'conclusion':rr['conclusion'],
+                  'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False},
+            'branches':flat_list('/tmp/branches-pages.json'),'runs':flat_obj('/tmp/runs-pages.json','workflow_runs'),
+            'artifacts':flat_obj('/tmp/artifacts-pages.json','artifacts'),'issue60Comments':flat_list('/tmp/comments-pages.json'),
+            'currentRunId':int(os.environ['GITHUB_RUN_ID']),
+            'mainAuthorizationPathPresent':Path('/tmp/main-auth-present.txt').read_text().strip()=='true',
+          }
+          Path('/tmp/execution-guard-context-v1.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          PY
+          python experiments/full-spectrum-estimator-confirmation-v1/execution_guard_v1.py \
+            --authorization /tmp/authorization.ordinal17.json \
+            --contract experiments/full-spectrum-estimator-confirmation-v1/transport-contract.ordinal17.v1.json \
+            --context /tmp/execution-guard-context-v1.json \
+            --output /tmp/execution-guard-v1.json
+      - name: Rebuild exact reviewed 24-case manifest and rendered templates
+        shell: bash
+        run: |
+          mkdir -p preflight
+          python review/full-spectrum-estimator-confirmation-v1/build_confirmation_execution_manifest_v1.py \
+            --repository-root . \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --pilot-manifest review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-execution-manifest-v4.json \
+            --output preflight/execution-manifest-v1.json
+          python review/full-spectrum-estimator-confirmation-v1/render_confirmation_inputs_v1.py \
+            --repository-root . \
+            --execution-manifest preflight/execution-manifest-v1.json \
+            --output-dir preflight/rendered-templates \
+            --report preflight/render-report-v1.json
+          python - <<'PY'
+          import json
+          m=json.load(open('preflight/execution-manifest-v1.json')); r=json.load(open('preflight/render-report-v1.json'))
+          if m.get('manifestSha256')!='9344ed18cfa93849d730cf080fe9f6c4c57f0cc5ea7b1be7ba9aa15d501c3fa8': raise SystemExit('confirmation execution manifest identity drift')
+          if r.get('renderSha256')!='230f7fd5e8cba7ea51caf42573d6842a28ef1c111b1cdd299c7efea70261399f': raise SystemExit('confirmation render identity drift')
+          if m.get('caseCount')!=24 or r.get('caseCount')!=24: raise SystemExit('confirmation case-count drift')
+          PY
+          cp /tmp/authorization.ordinal17.json preflight/authorization.ordinal17.json
+          cp /tmp/execution-guard-context-v1.json preflight/execution-guard-context-v1.json
+          cp /tmp/execution-guard-v1.json preflight/execution-guard-v1.json
+          cp /tmp/auth-pr-selected.json preflight/auth-pr-selected.json
+          cp /tmp/auth-review-selected.json preflight/auth-review-selected.json
+      - id: matrix
+        name: Export exact compact 24-case matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads(Path('preflight/execution-manifest-v1.json').read_text())
+          matrix={'include':[{'caseId':c['caseId']} for c in m['cases']]}
+          value=json.dumps(matrix,sort_keys=True,separators=(',',':'))
+          if '\n' in value or '\r' in value or len(matrix['include'])!=24: raise SystemExit('invalid confirmation matrix serialization')
+          Path('preflight/matrix.json').write_text(json.dumps(matrix,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f: f.write('matrix='+value+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-preflight
+          path: preflight
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-preflight
+          path: preflight
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: full-spectrum-estimator-confirmation-v1-ordinal17
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Capture exact runtime identity without solver execution
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+      - name: Execute one frozen confirmation case exactly once
+        shell: micromamba-shell {0}
+        run: |
+          python review/full-spectrum-estimator-confirmation-v1/executor_confirmation_v1.py \
+            --repository-root . \
+            --execution-manifest preflight/execution-manifest-v1.json \
+            --render-report preflight/render-report-v1.json \
+            --template-root preflight/rendered-templates \
+            --case-id '${{ matrix.caseId }}' \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-root case-output \
+            --uvspec "$(command -v uvspec)" \
+            --runtime-report runtime-report.json \
+            --timeout-seconds 3600 \
+            --expected-dispatch-branch dispatch/full-spectrum-estimator-confirmation-v1-ordinal17 \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-preflight
+          path: preflight
+      - name: Bind and download exact current-run 24 case ZIPs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p artifact-zips
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > artifacts.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          rows=json.loads(Path('artifacts.json').read_text()).get('artifacts',[])
+          wanted=[a for a in rows if str(a.get('name') or '').startswith('full-spectrum-estimator-confirmation-v1-case-')]
+          if len(wanted)!=24: raise SystemExit(f'expected 24 confirmation case artifacts, got {len(wanted)}')
+          if len({a['name'] for a in wanted})!=24: raise SystemExit('duplicate confirmation case artifact names')
+          for a in wanted:
+              out=Path('artifact-zips')/(a['name']+'.zip')
+              with out.open('wb') as f:
+                  subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{a['id']}/zip"],stdout=f,check=True)
+          PY
+          python experiments/full-spectrum-estimator-confirmation-v1/package_confirmation_evidence_v1.py \
+            --execution-manifest preflight/execution-manifest-v1.json \
+            --artifacts-json artifacts.json \
+            --zip-dir artifact-zips \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --source-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-ordinal 17 \
+            --source-head-sha "$GITHUB_SHA" \
+            --output acquisition-manifest-v1.json
+      - name: Normalize exact confirmation artifacts and run frozen four-block analysis
+        run: |
+          python review/full-spectrum-estimator-confirmation-analysis-v1/normalize_confirmation_results_v1.py \
+            --execution-manifest preflight/execution-manifest-v1.json \
+            --acquisition-manifest acquisition-manifest-v1.json \
+            --zip-dir artifact-zips \
+            --analysis-contract review/full-spectrum-estimator-confirmation-analysis-v1/analysis-contract.v1.json \
+            --output normalized-confirmation-evidence-v1.json
+          python review/full-spectrum-estimator-confirmation-analysis-v1/analyze_confirmation_v1.py \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --evidence normalized-confirmation-evidence-v1.json \
+            --analysis-contract review/full-spectrum-estimator-confirmation-analysis-v1/analysis-contract.v1.json \
+            --output confirmation-analysis-v1.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-analysis
+          path: |
+            acquisition-manifest-v1.json
+            normalized-confirmation-evidence-v1.json
+            confirmation-analysis-v1.json
+            preflight/execution-manifest-v1.json
+            preflight/render-report-v1.json
+          if-no-files-found: error
+          retention-days: 90

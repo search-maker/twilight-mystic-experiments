@@ -1,0 +1,72 @@
+name: Full-spectrum estimator confirmation v1 preauthorization review
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/full-spectrum-estimator-confirmation-v1/**'
+      - 'review/full-spectrum-estimator-confirmation-v1/**'
+      - 'review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-preauthorization-review.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile and test preauthorization guard
+        run: |
+          python -m py_compile \
+            experiments/full-spectrum-estimator-confirmation-v1/preauthorization_guard_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/test_preauthorization_guard_v1.py
+          python experiments/full-spectrum-estimator-confirmation-v1/test_preauthorization_guard_v1.py
+      - name: Capture fresh repository-global branches, runs, and artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/confirmation-branches-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/confirmation-runs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/confirmation-artifacts-pages.json
+      - name: Verify fresh preauthorization surface without allocating an ordinal
+        run: |
+          python experiments/full-spectrum-estimator-confirmation-v1/preauthorization_guard_v1.py \
+            --contract experiments/full-spectrum-estimator-confirmation-v1/preauthorization_contract.v1.json \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --source-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json \
+            --pilot-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json \
+            --branches-pages /tmp/confirmation-branches-pages.json \
+            --runs-pages /tmp/confirmation-runs-pages.json \
+            --artifacts-pages /tmp/confirmation-artifacts-pages.json \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --output /tmp/confirmation-preauthorization-review-v1.json
+      - name: Prove package is review-only and non-dispatching
+        shell: bash
+        run: |
+          test ! -e .github/workflows/full-spectrum-estimator-confirmation-v1-execution.yml
+          test ! -e .github/workflows/full-spectrum-estimator-confirmation-v1-ordinal17-execution.yml
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('experiments/full-spectrum-estimator-confirmation-v1/preauthorization_contract.v1.json').read_text())
+          if contract['status']!='REVIEW_ONLY_NOT_ALLOCATED': raise SystemExit('preauthorization contract status drift')
+          if contract['ordinalPolicy']['authorizationOrdinalAllocated'] is not False: raise SystemExit('static ordinal allocation forbidden')
+          if contract['authorizationBoundary']['scientificExecutionAuthorized'] is not False: raise SystemExit('science authorization forbidden')
+          text=Path('.github/workflows/full-spectrum-estimator-confirmation-v1-preauthorization-review.yml').read_text()
+          for forbidden in ('\n  push:', '\n  workflow_dispatch:', '\n  schedule:'):
+              if forbidden in text: raise SystemExit(f'preauthorization review has forbidden trigger: {forbidden.strip()}')
+          if '\n  pull_request:' not in text: raise SystemExit('preauthorization workflow is not PR-only')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-preauthorization-review-v1
+          path: /tmp/confirmation-preauthorization-review-v1.json
+          if-no-files-found: error

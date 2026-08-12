@@ -1,0 +1,75 @@
+name: Training continuation disabled transport v1 review
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/training-continuation-transport-v1/**'
+      - '.github/workflows/training-continuation-transport-v1-review.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile and deterministic contract tests
+        run: |
+          python -m py_compile experiments/training-continuation-transport-v1/*.py
+          python experiments/training-continuation-transport-v1/test_transport_and_analysis_v1.py
+          python experiments/training-continuation-transport-v1/test_repository_bindings_v1.py
+          python experiments/training-continuation-transport-v1/test_preauthorization_guard_v1.py
+      - name: Repository-global preauthorization preview only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/training-continuation-preauth
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/training-continuation-preauth/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/training-continuation-preauth/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/training-continuation-preauth/artifacts.json
+          for variant in train0014 train0037; do
+            python experiments/training-continuation-transport-v1/preauthorization_guard_v1.py \
+              --contract experiments/training-continuation-transport-v1/transport-contract.v1.json \
+              --variant "$variant" \
+              --branches-pages /tmp/training-continuation-preauth/branches.json \
+              --runs-pages /tmp/training-continuation-preauth/runs.json \
+              --artifacts-pages /tmp/training-continuation-preauth/artifacts.json \
+              --output "/tmp/training-continuation-preauth/${variant}.json"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for variant in ('train0014','train0037'):
+              r=json.loads(Path(f'/tmp/training-continuation-preauth/{variant}.json').read_text())
+              assert r['status']=='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'
+              assert r['authorizationOrdinalAllocated'] is False
+              assert r['scientificExecutionAuthorized'] is False
+              assert r['dispatchAuthorized'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: training-continuation-transport-v1-preauthorization-preview
+          path: /tmp/training-continuation-preauth/*.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Prove review workflow cannot execute science
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('experiments/training-continuation-transport-v1')
+          c=json.loads((p/'transport-contract.v1.json').read_text())
+          assert c['status']=='REVIEW_ONLY_DISABLED_TRANSPORT_NOT_AUTHORIZED'
+          assert all(v is False for v in c['transportBoundary'].values())
+          text=Path('.github/workflows/training-continuation-transport-v1-review.yml').read_text()
+          assert '\n  pull_'+'request:' in text
+          for forbidden in ('\n  pu'+'sh:', '\n  workflow_'+'dispatch:', '\n  sche'+'dule:', 'executor_'+'v1.py --', 'uv'+'spec'):
+              assert forbidden not in text, forbidden
+          assert not list(Path('.github/workflows').glob('training-continuation-*-execution*.yml'))
+          PY

@@ -1,0 +1,119 @@
+name: Full-spectrum estimator pilot v2 ordinal 16 postprocess v8
+run-name: Full-spectrum estimator pilot v2 ordinal 16 postprocess v8
+
+on:
+  push:
+    branches:
+      - postprocess/full-spectrum-estimator-pilot-v2-ordinal16-v8
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: full-spectrum-estimator-pilot-v2-ordinal16-postprocess-v8
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse wrong trigger, retry, or source identity drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = postprocess/full-spectrum-estimator-pilot-v2-ordinal16-v8
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31546667072" > source-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31546667072/jobs?per_page=100" > source-jobs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31554217669" > prior-postprocess-v7-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31554217669/jobs?per_page=100" > prior-postprocess-v7-jobs.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          run=json.loads(Path('source-run.json').read_text())
+          if run.get('status')!='completed' or run.get('conclusion')!='failure': raise SystemExit('source scientific run is not the exact terminal postprocess failure')
+          if run.get('run_attempt')!=1 or run.get('head_sha')!='183188bdbe5a899f5dcd1bc4e423fa385d26e3af': raise SystemExit('source scientific identity drift')
+          if run.get('head_branch')!='dispatch/full-spectrum-estimator-pilot-v2-ordinal16': raise SystemExit('source dispatch branch drift')
+          if run.get('path')!='.github/workflows/full-spectrum-estimator-pilot-v2-ordinal16-execution-v8.yml': raise SystemExit('source scientific workflow drift')
+          jobs=json.loads(Path('source-jobs.json').read_text()).get('jobs',[])
+          pre=[j for j in jobs if j.get('name')=='preflight']
+          cases=[j for j in jobs if (j.get('name') or '').startswith('cases (')]
+          agg=[j for j in jobs if j.get('name')=='aggregate']
+          if len(pre)!=1 or pre[0].get('conclusion')!='success': raise SystemExit('source preflight evidence drift')
+          if len(cases)!=44 or any(j.get('conclusion')!='success' for j in cases): raise SystemExit('source case-job evidence drift')
+          if len(agg)!=1 or agg[0].get('id')!=93975118074 or agg[0].get('conclusion')!='failure': raise SystemExit('source aggregate refusal evidence drift')
+
+          prior=json.loads(Path('prior-postprocess-v7-run.json').read_text())
+          if prior.get('status')!='completed' or prior.get('conclusion')!='failure': raise SystemExit('prior postprocess v7 run is not exact terminal failure')
+          if prior.get('run_attempt')!=1 or prior.get('head_sha')!='2abd77f5a3786e4d6b8d8b96abd34263a8108843': raise SystemExit('prior postprocess v7 identity drift')
+          if prior.get('head_branch')!='postprocess/full-spectrum-estimator-pilot-v2-ordinal16-v7': raise SystemExit('prior postprocess v7 branch drift')
+          if prior.get('path')!='.github/workflows/full-spectrum-estimator-pilot-v2-ordinal16-postprocess-v7.yml': raise SystemExit('prior postprocess v7 workflow drift')
+          prior_jobs=json.loads(Path('prior-postprocess-v7-jobs.json').read_text()).get('jobs',[])
+          replay=[j for j in prior_jobs if j.get('name')=='replay']
+          if len(replay)!=1 or replay[0].get('conclusion')!='failure': raise SystemExit('prior postprocess v7 replay evidence drift')
+          steps={s.get('name'):s.get('conclusion') for s in replay[0].get('steps',[])}
+          if steps.get('Bind and download exact immutable ordinal-16 case artifacts')!='success': raise SystemExit('prior v7 artifact binding did not succeed')
+          if steps.get('Normalize existing evidence with v7 and run frozen v6 analysis')!='failure': raise SystemExit('prior v7 analyzer refusal evidence drift')
+          PY
+      - name: Bind and download exact immutable ordinal-16 case artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir artifact-zips
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31546667072/artifacts?per_page=100" > artifacts.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          rows=json.loads(Path('artifacts.json').read_text()).get('artifacts',[])
+          wanted=[a for a in rows if (a.get('name') or '').startswith('full-spectrum-estimator-pilot-v2-case-')]
+          if len(wanted)!=44: raise SystemExit(f'expected 44 source case artifacts, got {len(wanted)}')
+          if any(a.get('expired') for a in wanted): raise SystemExit('source case artifact expired')
+          if any((a.get('workflow_run') or {}).get('id')!=31546667072 or (a.get('workflow_run') or {}).get('head_sha')!='183188bdbe5a899f5dcd1bc4e423fa385d26e3af' for a in wanted): raise SystemExit('source artifact identity drift')
+          for a in wanted:
+              out=Path('artifact-zips')/(a['name']+'.zip')
+              with out.open('wb') as handle:
+                  subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{a['id']}/zip"],stdout=handle,check=True)
+          PY
+          python experiments/full-spectrum-estimator-pilot-v2/package_evidence.py build-acquisition \
+            --repository-root . --artifacts-json artifacts.json --zip-dir artifact-zips --output acquisition-manifest.json
+      - name: Normalize existing evidence with v7 and run frozen-v6 compatibility analysis
+        shell: bash
+        run: |
+          python review/full-spectrum-estimator-pilot-v2/normalize_full_spectrum_estimator_pilot_results_v7.py \
+            --execution-manifest review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-execution-manifest-v4.json \
+            --acquisition-manifest acquisition-manifest.json \
+            --postprocess-contract experiments/full-spectrum-estimator-pilot-v2/postprocess-contract.ordinal16.v7.json \
+            --output normalized-evidence-v7.json
+          python review/full-spectrum-estimator-pilot-v2/analyze_full_spectrum_estimator_pilot_v7_compat.py \
+            --acquisition-protocol review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-preregistration-v2.json \
+            --analysis-protocol review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-screening-analysis-preregistration-v4.json \
+            --admission-report review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json \
+            --evidence normalized-evidence-v7.json \
+            --postprocess-contract-v7 experiments/full-spectrum-estimator-pilot-v2/postprocess-contract.ordinal16.v7.json \
+            --compatibility-contract experiments/full-spectrum-estimator-pilot-v2/postprocess-analyzer-contract.ordinal16.v8.json \
+            --output screening-analysis-v8.json
+      - name: Upload immutable postprocess evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-pilot-v2-ordinal16-postprocess-v8
+          path: |
+            source-run.json
+            source-jobs.json
+            prior-postprocess-v7-run.json
+            prior-postprocess-v7-jobs.json
+            artifacts.json
+            acquisition-manifest.json
+            normalized-evidence-v7.json
+            screening-analysis-v8.json
+          if-no-files-found: error
+          retention-days: 90

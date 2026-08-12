@@ -1,0 +1,59 @@
+name: Full-spectrum estimator confirmation v1 review
+
+on:
+  pull_request:
+    paths:
+      - 'review/full-spectrum-estimator-confirmation-v1/**'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-review.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile confirmation validator
+        run: python -m py_compile review/full-spectrum-estimator-confirmation-v1/validate_confirmation_preregistration_v1.py
+      - name: Rebind exact immutable ordinal-16 screening artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31556854044" > /tmp/postprocess-v8-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/31556854044/artifacts" > /tmp/postprocess-v8-artifacts.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/postprocess-v8-run.json'))
+          if r.get('status')!='completed' or r.get('conclusion')!='success' or r.get('run_attempt')!=1: raise SystemExit('postprocess v8 source run drift')
+          if r.get('head_sha')!='7b43c5c8ea78e2cccd290e4b46fc6496ea2bfa55' or r.get('head_branch')!='postprocess/full-spectrum-estimator-pilot-v2-ordinal16-v8': raise SystemExit('postprocess v8 source identity drift')
+          a=json.load(open('/tmp/postprocess-v8-artifacts.json')).get('artifacts',[])
+          a=[x for x in a if x.get('id')==9126300230]
+          if len(a)!=1 or a[0].get('name')!='full-spectrum-estimator-pilot-v2-ordinal16-postprocess-v8' or a[0].get('digest')!='sha256:263505300e994364874b06b2137ad5fd6b1fa57f0a45629a1410f684a81c880b' or a[0].get('expired'): raise SystemExit('postprocess v8 artifact identity drift')
+          PY
+          mkdir -p /tmp/confirmation-source
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9126300230/zip" > /tmp/confirmation-source.zip
+          unzip -q /tmp/confirmation-source.zip -d /tmp/confirmation-source
+      - name: Verify mechanically-derived confirmation preregistration
+        run: |
+          python review/full-spectrum-estimator-confirmation-v1/validate_confirmation_preregistration_v1.py \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --screening-analysis /tmp/confirmation-source/screening-analysis-v8.json \
+            --normalized-evidence /tmp/confirmation-source/normalized-evidence-v7.json \
+            --pilot-preregistration review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-preregistration-v2.json \
+            --source-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json
+      - name: Prove review package cannot execute science
+        shell: bash
+        run: |
+          test ! -e .github/workflows/full-spectrum-estimator-confirmation-v1-execution.yml
+          if grep -REiq 'uvspec|libRadtran|micromamba|rte_solver|mc_photons' review/full-spectrum-estimator-confirmation-v1; then
+            echo 'review-only confirmation package contains a solver/runtime surface' >&2
+            exit 1
+          fi

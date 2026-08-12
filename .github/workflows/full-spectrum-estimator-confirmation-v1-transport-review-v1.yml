@@ -1,0 +1,121 @@
+name: Full-spectrum estimator confirmation v1 ordinal 17 transport review
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/full-spectrum-estimator-confirmation-v1/**'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-authorization-review-v1.yml'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-ordinal17-execution-v1.yml'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-transport-review-v1.yml'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-review.yml'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-execution-package-review.yml'
+      - '.github/workflows/full-spectrum-estimator-confirmation-v1-preauthorization-review.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile and run transport regressions
+        run: |
+          python -m py_compile \
+            experiments/full-spectrum-estimator-confirmation-v1/authorization_guard_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/execution_guard_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/package_confirmation_evidence_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/test_transport_v1.py
+          python experiments/full-spectrum-estimator-confirmation-v1/test_transport_v1.py
+      - name: Rebuild exact reviewed confirmation manifest and render identity
+        run: |
+          mkdir -p /tmp/confirmation-transport-review
+          python review/full-spectrum-estimator-confirmation-v1/build_confirmation_execution_manifest_v1.py \
+            --repository-root . \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --pilot-manifest review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-execution-manifest-v4.json \
+            --output /tmp/confirmation-transport-review/execution-manifest-v1.json
+          python review/full-spectrum-estimator-confirmation-v1/render_confirmation_inputs_v1.py \
+            --repository-root . \
+            --execution-manifest /tmp/confirmation-transport-review/execution-manifest-v1.json \
+            --output-dir /tmp/confirmation-transport-review/rendered-templates \
+            --report /tmp/confirmation-transport-review/render-report-v1.json
+          python - <<'PY'
+          import json
+          m=json.load(open('/tmp/confirmation-transport-review/execution-manifest-v1.json'))
+          r=json.load(open('/tmp/confirmation-transport-review/render-report-v1.json'))
+          if m.get('manifestSha256')!='9344ed18cfa93849d730cf080fe9f6c4c57f0cc5ea7b1be7ba9aa15d501c3fa8': raise SystemExit('confirmation execution manifest identity drift')
+          if r.get('renderSha256')!='230f7fd5e8cba7ea51caf42573d6842a28ef1c111b1cdd299c7efea70261399f': raise SystemExit('confirmation render identity drift')
+          PY
+      - name: Capture and verify fresh repository-global preauthorization surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/artifacts-pages.json
+          python experiments/full-spectrum-estimator-confirmation-v1/preauthorization_guard_v1.py \
+            --contract experiments/full-spectrum-estimator-confirmation-v1/preauthorization_contract.v1.json \
+            --preregistration review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json \
+            --source-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json \
+            --pilot-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json \
+            --branches-pages /tmp/branches-pages.json \
+            --runs-pages /tmp/runs-pages.json \
+            --artifacts-pages /tmp/artifacts-pages.json \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --output /tmp/confirmation-transport-review/preauthorization-review-v1.json
+          python - <<'PY'
+          import json
+          v=json.load(open('/tmp/confirmation-transport-review/preauthorization-review-v1.json'))
+          if v.get('reportSha256')!='800a58790dda05155ef73729d61845fa02b49bcfb650c98a40c983b8de3cea97': raise SystemExit('fresh preauthorization report identity drift')
+          if v.get('latestConsumedScientificOrdinal')!=16 or v.get('nextAvailableScientificOrdinalIfAllocatedLater')!=17: raise SystemExit('next ordinal drift')
+          if v.get('authorizationOrdinalAllocated') is not False or v.get('scientificExecutionAuthorized') is not False: raise SystemExit('transport review must not allocate/authorize science')
+          PY
+      - name: Verify disabled template and exact workflow topology
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('experiments/full-spectrum-estimator-confirmation-v1/transport-contract.ordinal17.v1.json').read_text())
+          template=json.loads(Path('experiments/full-spectrum-estimator-confirmation-v1/authorization-template.ordinal17.json').read_text())
+          if contract.get('contractSha256')!='cab2d3d2d3bd92727f104b0fc906a51dbde293e0baa5678058ced7305b888c77': raise SystemExit('transport contract identity drift')
+          if contract.get('status')!='REVIEW_ONLY_TRANSPORT_NOT_AUTHORIZED' or any(contract['transportBoundary'].values()): raise SystemExit('transport review boundary drift')
+          if template.get('status')!='TEMPLATE_NOT_AUTHORIZED' or template.get('enabled') is not False or template.get('authorizationOrdinal')!=17: raise SystemExit('authorization template boundary drift')
+          if template.get('solverExecutionAuthorized') is not False or template.get('dispatchAuthorized') is not False: raise SystemExit('authorization template unexpectedly authorizes execution')
+          if Path('experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json').exists(): raise SystemExit('transport PR must not contain actual authorization file')
+          wfdir=Path('.github/workflows')
+          names={p.name for p in wfdir.glob('full-spectrum-estimator-confirmation-v1-*.yml')}
+          expected={
+            'full-spectrum-estimator-confirmation-v1-review.yml','full-spectrum-estimator-confirmation-v1-execution-package-review.yml',
+            'full-spectrum-estimator-confirmation-v1-preauthorization-review.yml','full-spectrum-estimator-confirmation-v1-authorization-review-v1.yml',
+            'full-spectrum-estimator-confirmation-v1-transport-review-v1.yml','full-spectrum-estimator-confirmation-v1-ordinal17-execution-v1.yml'}
+          if names!=expected: raise SystemExit(f'unexpected confirmation workflow topology: {sorted(names)}')
+          execution=wfdir/'full-spectrum-estimator-confirmation-v1-ordinal17-execution-v1.yml'
+          for path in sorted(wfdir.glob('full-spectrum-estimator-confirmation-v1-*.yml')):
+              text=path.read_text()
+              if path==execution:
+                  if '\n  push:' not in text or '      - dispatch/full-spectrum-estimator-confirmation-v1-ordinal17' not in text: raise SystemExit('execution workflow exact push branch missing')
+                  for forbidden in ('\n  workflow_'+'dispatch:', '\n  sche'+'dule:', '\n  pull_'+'request:'):
+                      if forbidden in text: raise SystemExit(f'execution workflow has forbidden trigger: {forbidden.strip()}')
+                  for required in ('rubin-libradtran=2.0.6=py312pl5321he9373c2_1','executor_confirmation_v1.py','package_confirmation_evidence_v1.py','normalize_confirmation_results_v1.py','analyze_confirmation_v1.py','--expected-dispatch-branch dispatch/full-spectrum-estimator-confirmation-v1-ordinal17'):
+                      if required not in text: raise SystemExit(f'execution workflow missing frozen surface: {required}')
+              else:
+                  if '\n  pull_request:' not in text: raise SystemExit(f'non-execution confirmation workflow is not PR-only: {path}')
+                  for forbidden in ('\n  pu'+'sh:', '\n  workflow_'+'dispatch:', '\n  sche'+'dule:'):
+                      if forbidden in text: raise SystemExit(f'PR-only workflow has forbidden trigger: {path} {forbidden.strip()}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-transport-review
+          path: /tmp/confirmation-transport-review
+          if-no-files-found: error
+          retention-days: 90

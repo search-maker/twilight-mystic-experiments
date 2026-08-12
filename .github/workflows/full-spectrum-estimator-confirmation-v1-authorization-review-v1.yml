@@ -1,0 +1,106 @@
+name: Full-spectrum estimator confirmation v1 authorization review
+run-name: Full-spectrum estimator confirmation v1 ordinal 17 authorization review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, converted_to_draft]
+    paths:
+      - 'experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      AUTH_HEAD: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse alternate review context and prove zero scientific runtime
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = authorization/full-spectrum-estimator-confirmation-v1-ordinal17
+          test "$(git rev-parse HEAD)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_HEAD")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json
+          python -m py_compile \
+            experiments/full-spectrum-estimator-confirmation-v1/authorization_guard_v1.py \
+            experiments/full-spectrum-estimator-confirmation-v1/execution_guard_v1.py
+      - name: Capture exact fresh repository-global authorization surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" > /tmp/live-main.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > /tmp/auth-pr.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > /tmp/artifacts-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments-pages.json
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json?ref=main" >/tmp/main-auth.json 2>/dev/null; then
+            echo true > /tmp/main-auth-present.txt
+          else
+            echo false > /tmp/main-auth-present.txt
+          fi
+      - name: Build authorization-review context
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          def flat_list(path):
+              pages=json.loads(Path(path).read_text()); return [x for page in pages for x in page]
+          def flat_obj(path,key):
+              pages=json.loads(Path(path).read_text()); return [x for page in pages for x in page.get(key,[])]
+          live=json.loads(Path('/tmp/live-main.json').read_text())['object']['sha']
+          head=os.environ['AUTH_HEAD']
+          parent=subprocess.check_output(['git','rev-parse',head+'^'],text=True).strip()
+          pr=json.loads(Path('/tmp/auth-pr.json').read_text())
+          changed=subprocess.check_output(['git','diff-tree','--no-commit-id','--name-only','-r',head],text=True).splitlines()
+          ctx={
+            'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'headBranch':os.environ['GITHUB_HEAD_REF'],'headSha':head,'liveMain':live,'authorizationParent':parent,
+            'changedFiles':changed,
+            'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,
+                  'headSha':pr['head']['sha'],'headBranch':pr['head']['ref'],'baseSha':pr['base']['sha']},
+            'branches':flat_list('/tmp/branches-pages.json'),'runs':flat_obj('/tmp/runs-pages.json','workflow_runs'),
+            'artifacts':flat_obj('/tmp/artifacts-pages.json','artifacts'),'issue60Comments':flat_list('/tmp/comments-pages.json'),
+            'currentRunId':int(os.environ['GITHUB_RUN_ID']),
+            'mainAuthorizationPathPresent':Path('/tmp/main-auth-present.txt').read_text().strip()=='true',
+          }
+          Path('/tmp/auth-review-context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Run exact zero-runtime authorization guard
+        run: |
+          cp experiments/full-spectrum-estimator-confirmation-v1/authorization.ordinal17.json /tmp/authorization.ordinal17.json
+          python experiments/full-spectrum-estimator-confirmation-v1/authorization_guard_v1.py \
+            --authorization /tmp/authorization.ordinal17.json \
+            --contract experiments/full-spectrum-estimator-confirmation-v1/transport-contract.ordinal17.v1.json \
+            --context /tmp/auth-review-context.json \
+            --output /tmp/authorization-review-v1.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-spectrum-estimator-confirmation-v1-ordinal17-authorization-review
+          path: |
+            /tmp/authorization.ordinal17.json
+            /tmp/auth-review-context.json
+            /tmp/authorization-review-v1.json
+          if-no-files-found: error
+          retention-days: 90

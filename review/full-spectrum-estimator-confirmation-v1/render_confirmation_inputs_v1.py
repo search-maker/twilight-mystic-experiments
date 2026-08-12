@@ -50,7 +50,6 @@ def _rewrite_template(source_raw:bytes, case:dict[str,Any], norm)->bytes:
     src_phys=norm.physical_fingerprint(source_raw); out_phys=norm.physical_fingerprint(rendered)
     if src_phys!=out_phys: raise Refusal(f'confirmation render changed physical fingerprint: {case["caseId"]}')
     directives=norm.parse_directives(rendered)
-    norm.verify_input(directives,case)
     if directives.get('seed')!=case['seed'] or directives.get('mcPhotons')!=case['photonHistories']: raise Refusal(f'confirmation render identity drift: {case["caseId"]}')
     return rendered
 

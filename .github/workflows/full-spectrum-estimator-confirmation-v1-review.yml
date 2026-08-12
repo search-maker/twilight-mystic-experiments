@@ -49,11 +49,40 @@ jobs:
             --normalized-evidence /tmp/confirmation-source/normalized-evidence-v7.json \
             --pilot-preregistration review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-preregistration-v2.json \
             --source-seed-audit review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-seed-collision-audit-v4.json
-      - name: Prove review package cannot execute science
+      - name: Prove review surface remains non-dispatching
         shell: bash
         run: |
           test ! -e .github/workflows/full-spectrum-estimator-confirmation-v1-execution.yml
-          if grep -REiq 'uvspec|libRadtran|micromamba|rte_solver|mc_photons' review/full-spectrum-estimator-confirmation-v1; then
-            echo 'review-only confirmation package contains a solver/runtime surface' >&2
-            exit 1
-          fi
+          test ! -e .github/workflows/full-spectrum-estimator-confirmation-v1-ordinal17-execution.yml
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          prereg = json.loads(Path('review/full-spectrum-estimator-confirmation-v1/full-spectrum-estimator-confirmation-preregistration-v1.json').read_text())
+          boundary = prereg.get('executionBoundary') or {}
+          required_false = (
+              'scientificExecutionAuthorized',
+              'workflowDispatchAuthorized',
+              'authorizationOrdinalAllocated',
+          )
+          for key in required_false:
+              if boundary.get(key) is not False:
+                  raise SystemExit(f'confirmation preregistration execution boundary drift: {key}')
+
+          allowed = {
+              'full-spectrum-estimator-confirmation-v1-review.yml',
+              'full-spectrum-estimator-confirmation-v1-execution-package-review.yml',
+          }
+          workflows = list(Path('.github/workflows').glob('full-spectrum-estimator-confirmation-v1-*.yml'))
+          unexpected = sorted(path.name for path in workflows if path.name not in allowed)
+          if unexpected:
+              raise SystemExit(f'unexpected confirmation workflow surface: {unexpected}')
+          for path in workflows:
+              text = path.read_text()
+              for trigger in ('\n  push:', '\n  workflow_dispatch:', '\n  schedule:'):
+                  if trigger in text:
+                      raise SystemExit(f'confirmation review workflow has execution-capable trigger {trigger.strip()}: {path}')
+              if '\n  pull_request:' not in text:
+                  raise SystemExit(f'confirmation workflow is not pull-request-only: {path}')
+          print('confirmation review surface remains PR-only; disabled executor source is permitted but not dispatchable')
+          PY

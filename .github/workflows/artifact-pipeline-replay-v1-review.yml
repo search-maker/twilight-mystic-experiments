@@ -1,0 +1,135 @@
+name: Artifact pipeline replay v1 review
+run-name: Artifact pipeline replay v1 review
+
+on:
+  pull_request:
+    paths:
+      - review/artifact-pipeline-replay-v1/artifact-pipeline-replay-protocol-v1.json
+      - review/artifact-pipeline-replay-v1/replay_existing_real_artifacts_v1.py
+      - review/artifact-pipeline-replay-v1/test_artifact_pipeline_replay_v1.py
+      - review/artifact-pipeline-replay-v1/test_workflow_surface_v1.py
+      - .github/workflows/artifact-pipeline-replay-v1-review.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  replay-existing-real-artifacts:
+    if: github.head_ref == 'review/artifact-pipeline-replay-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+
+      - name: Refuse wrong review context or execution surface
+        env:
+          EXPECTED_BASE_SHA: 0afd0691c1e1508c52273325e07f0cd4b044aa27
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/artifact-pipeline-replay-v1
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/artifact-pipeline-replay-v1-review.yml').read_text(encoding='utf-8').lower()
+          forbidden=('workflow_'+'dispatch','uv'+'spec','librad'+'tran','mc_'+'vroom','mc_'+'spectral_is','--allow-'+'execution','executor_'+'v1.py')
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'forbidden solver/dispatch surface: {found}')
+          PY
+
+      - name: Bind merged Tier2 contract and historical replay engine
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json')
+          d=json.loads(p.read_text())
+          assert d['campaignContractId']=='public-tier2-v1-core-campaign-contract-v1'
+          assert d['contractSha256']=='5043929fdf13aaf90c9face0c380b514999a52a7226079807969a74469764f93'
+          assert d['artifactPipelineReplayGate']['status']=='REQUIRED_NOT_YET_SATISFIED'
+          assert d['artifactPipelineReplayGate']['mustUseExistingRealArtifactsOnly'] is True
+          assert d['decisionSemantics']['newScientificExecutionAuthorized'] is False
+          assert d['decisionSemantics']['scientificOrdinalAllocated'] is False
+          PY
+          test "$(git rev-parse HEAD:review/full-spectrum-estimator-pilot-v2/build_full_spectrum_training_handoff.py)" = 9bc53956fc4a49935ba2957087d8bf4203b7e8be
+          test "$(git rev-parse HEAD:review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json)" = c136f23f7df68b1481cb5ff939646198a3e336fe
+
+      - name: Run fail-closed local replay contract tests
+        run: |
+          python review/artifact-pipeline-replay-v1/test_artifact_pipeline_replay_v1.py
+          python review/artifact-pipeline-replay-v1/test_workflow_surface_v1.py
+
+      - name: Replay exact existing real training artifacts
+        id: replay
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPLAY_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p replay-diagnostic
+          set -o pipefail
+          python review/artifact-pipeline-replay-v1/replay_existing_real_artifacts_v1.py \
+            --protocol review/artifact-pipeline-replay-v1/artifact-pipeline-replay-protocol-v1.json \
+            --builder review/full-spectrum-estimator-pilot-v2/build_full_spectrum_training_handoff.py \
+            --historical-admission review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json \
+            --output-dir replay-output \
+            2>&1 | tee replay-diagnostic/replay.log
+          status=${PIPESTATUS[0]}
+          printf '{"exitCode":%s}\n' "$status" > replay-diagnostic/status.json
+          exit "$status"
+
+      - name: Upload replay diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-pipeline-replay-v1-diagnostic
+          path: replay-diagnostic/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Prove candidate remains non-authorizing
+        if: steps.replay.outcome == 'success'
+        env:
+          REPLAY_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads(Path('replay-output/artifact-pipeline-replay-attestation.json').read_text())
+          assert a['status']=='CANDIDATE_REPLAY_PASS_REQUIRES_SEPARATE_VERSIONED_RESULT_BINDING'
+          assert a['replayHeadSha']==os.environ['REPLAY_SOURCE_HEAD_SHA']
+          assert a['allRequiredReplaySurfacesPassed'] is True
+          assert a['trainingCaseArtifactCount']==166
+          assert a['trainingGeometryCount']==39
+          assert a['internalHoldoutGeometryCountExcluded']==9
+          assert a['holdoutValuesRead'] is False
+          assert a['decisionSemantics']['newScientificExecutionPerformed'] is False
+          assert a['decisionSemantics']['solverInvoked'] is False
+          assert a['decisionSemantics']['campaignAuthorizationIssued'] is False
+          assert a['decisionSemantics']['scientificOrdinalAllocated'] is False
+          assert a['nextBoundary']['replayGateSatisfiedByThisCandidateAlone'] is False
+          assert a['nextBoundary']['separateVersionedResultBindingPRRequired'] is True
+          PY
+
+      - name: Upload mechanical replay candidate
+        if: steps.replay.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-pipeline-replay-v1-candidate
+          path: replay-output/*.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Fail closed if replay failed
+        if: steps.replay.outcome != 'success'
+        run: |
+          echo "Mechanical replay failed; diagnostic artifact was preserved."
+          exit 1

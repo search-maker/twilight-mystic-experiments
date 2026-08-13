@@ -36,6 +36,7 @@ mutations=[
  (['validationContract','perCaseCeilingRequired'],False),
  (['seedLedger','firstSeed'],1700000001),
  (['seedLedger','globalCollisionAuditStillRequiredBeforeAuthorization'],False),
+ (['seedLedger','selfLedgerMatchesIgnored'],False),
  (['legacyExclusions','train0037Status'],'ACTIVE'),
  (['legacyExclusions','ordinal19AllocatedOrPreassigned'],True),
  (['legacyExclusions','precisionExhaustedRescueOrContinuationAuthorized'],True),

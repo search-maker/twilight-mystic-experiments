@@ -1,0 +1,72 @@
+name: Artifact pipeline replay result v1 review
+run-name: Artifact pipeline replay result v1 review
+on:
+  pull_request:
+    paths:
+      - review/artifact-pipeline-replay-result-v1/**
+      - .github/workflows/artifact-pipeline-replay-result-v1-review.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    if: github.head_ref == 'review/artifact-pipeline-replay-result-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse wrong context and bind merged preregistration
+        env:
+          EXPECTED_BASE_SHA: 17117e4120eac2bcefcefea7fa3c19d88712b063
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/artifact-pipeline-replay-result-v1
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('review/artifact-pipeline-replay-v1/artifact-pipeline-replay-protocol-v1.json').read_text())
+          assert p['protocolSha256']=='7e7ba291fc633be96cb51dc36dae7b0ad6fb9eda0ae90d839f915f591aca608d'
+          assert p['decisionSemantics']['newScientificExecutionAuthorized'] is False
+          assert p['outputContract']['separateVersionedResultBindingPRRequired'] is True
+          PY
+      - name: Validate frozen result
+        run: |
+          python review/artifact-pipeline-replay-result-v1/validate_artifact_pipeline_replay_result_v1.py --result review/artifact-pipeline-replay-result-v1/artifact-pipeline-replay-result-v1.json
+          python review/artifact-pipeline-replay-result-v1/test_artifact_pipeline_replay_result_v1.py
+          python review/artifact-pipeline-replay-result-v1/test_workflow_surface_v1.py
+      - name: Reverify exact GitHub run and artifact metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          base='https://api.github.com/repos/search-maker/twilight-mystic-experiments'
+          h={'Authorization':'Bearer '+os.environ['GITHUB_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'replay-result-v1'}
+          def get(path):
+            with urllib.request.urlopen(urllib.request.Request(base+path,headers=h),timeout=30) as r:return json.loads(r.read())
+          r=get('/actions/runs/31699141872')
+          assert r['head_sha']=='dda9170a902b04b365d3602484b01b3dfac34528' and r['run_attempt']==1 and r['event']=='pull_request' and r['status']=='completed' and r['conclusion']=='success' and r['path']=='.github/workflows/artifact-pipeline-replay-v1-review.yml'
+          a=get('/actions/artifacts/9180525837')
+          assert a['name']=='artifact-pipeline-replay-v1-candidate' and a['size_in_bytes']==68996 and a['expired'] is False and a['digest']=='sha256:cbfe39fc05da10509a419b6d619f5387110aa47992e4fcc69ae6df1c64190dd1'
+          assert a['workflow_run']['id']==31699141872 and a['workflow_run']['head_sha']=='dda9170a902b04b365d3602484b01b3dfac34528'
+          PY
+      - name: Prove result closes replay only
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('review/artifact-pipeline-replay-result-v1/artifact-pipeline-replay-result-v1.json').read_text())
+          assert d['decisionSemantics']['artifactReplayGateSatisfied'] is True
+          assert d['decisionSemantics']['campaignAuthorizationIssued'] is False
+          assert d['decisionSemantics']['newScientificExecutionAuthorized'] is False
+          assert d['decisionSemantics']['scientificOrdinalAllocated'] is False
+          assert d['decisionSemantics']['protectedHoldoutOpeningAuthorized'] is False
+          assert d['nextBoundary']['globalSeedCollisionAuditRequiredBeforeAnyAuthorization'] is True
+          PY

@@ -8,7 +8,7 @@ assert "if: github.head_ref == 'review/train0014-fresh-training-admission-decisi
 assert "test \"$GITHUB_RUN_ATTEMPT\" = 1" in text
 assert '31662184272' in text and '9166569024' in text
 assert '98d78438add36b7aaebefe53a26af8ee1b5f2ead5ba6507eb49faa95420d4838' in text
-assert 'a5c73eeac21c7db40ded50842653d03f0ec0ee63287fcf5694083ee3692c8135' in text
+assert '439f11900d82148e3af61be46071f1ae5910a73ae552f33949e6cdc58eabe10c' in text
 for forbidden in ('workflow_'+'dispatch','mamba-'+'org/setup-micromamba','uv'+'spec','mys'+'tic','libRad'+'tran','executor_'+'v1.py','--allow-'+'execution'):
     assert forbidden.lower() not in text.lower(), forbidden
 assert 'actions/upload-artifact' not in text

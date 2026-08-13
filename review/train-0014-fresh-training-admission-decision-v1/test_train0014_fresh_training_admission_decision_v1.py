@@ -38,6 +38,7 @@ def main():
     x=copy.deepcopy(d); x['frozenInterpretation']['currentUniverseAfterDecision']['remainingContinuationRequiredGeometryIds']=[]; mutations.append(x)
     x=copy.deepcopy(d); x['nextBoundary']['freshScientificOrdinal19Allocated']=True; mutations.append(x)
     x=copy.deepcopy(d); x['sourceBindings']['salvageV2Artifact']['artifactId']=9166569025; mutations.append(x)
+    x=copy.deepcopy(d); x['sourceBindings']['sourceScientificHeadSha']='0'*40; mutations.append(x)
     x=copy.deepcopy(d); x['sourceBindings']['analysisSha256']='1'*64; mutations.append(x)
     for m in mutations: must_refuse(rehash(m))
     print(json.dumps({'status':'PASS','mutationRefusals':len(mutations),'decisionSha256':d['decisionSha256']},sort_keys=True))

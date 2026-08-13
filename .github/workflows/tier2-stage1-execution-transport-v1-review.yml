@@ -1,0 +1,99 @@
+name: Tier2 stage1 execution transport v1 review
+run-name: Tier2 stage1 execution transport v1 review
+
+on:
+  pull_request:
+    paths:
+      - experiments/tier2-stage1-execution-v1/**
+      - review/tier2-stage1-execution-transport-v1/**
+      - .github/workflows/tier2-stage1-execution-transport-v1-review.yml
+      - .github/workflows/tier2-stage1-authorization-review-v1.yml
+      - .github/workflows/tier2-stage1-execution-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  review:
+    if: github.head_ref == 'review/tier2-stage1-execution-transport-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse wrong review context, base, attempt, diff, or authorization presence
+        env:
+          EXPECTED_BASE_SHA: d3d9de3c1e46ae8fb1c1f9a4e03ade68973da19a
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/tier2-stage1-execution-transport-v1
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test "$(git merge-base HEAD "$EXPECTED_BASE_SHA")" = "$EXPECTED_BASE_SHA"
+          test ! -e experiments/tier2-stage1-execution-v1/authorization.json
+          mapfile -t CHANGED < <(git diff --name-only "$EXPECTED_BASE_SHA" HEAD | sort)
+          EXPECTED=(
+            .github/workflows/tier2-stage1-authorization-review-v1.yml
+            .github/workflows/tier2-stage1-execution-transport-v1-review.yml
+            .github/workflows/tier2-stage1-execution-v1.yml
+            experiments/tier2-stage1-execution-v1/adapter_v1.py
+            experiments/tier2-stage1-execution-v1/aggregate_v1.py
+            experiments/tier2-stage1-execution-v1/audit_v1.py
+            experiments/tier2-stage1-execution-v1/build_manifest_v1.py
+            experiments/tier2-stage1-execution-v1/execution_guard_v1.py
+            experiments/tier2-stage1-execution-v1/executor_v1.py
+            experiments/tier2-stage1-execution-v1/handoff_v1.py
+            experiments/tier2-stage1-execution-v1/preauthorization_guard_v1.py
+            experiments/tier2-stage1-execution-v1/seed_audit_v1.py
+            experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json
+            review/tier2-stage1-execution-transport-v1/test_contract_mutations_v1.py
+            review/tier2-stage1-execution-transport-v1/test_guards_v1.py
+            review/tier2-stage1-execution-transport-v1/test_transport_v1.py
+            review/tier2-stage1-execution-transport-v1/test_workflow_surface_v1.py
+            review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json
+            review/tier2-stage1-execution-transport-v1/validate_transport_v1.py
+          )
+          test "${#CHANGED[@]}" = "${#EXPECTED[@]}"
+          diff -u <(printf '%s\n' "${EXPECTED[@]}") <(printf '%s\n' "${CHANGED[@]}")
+      - name: Bind merged campaign, replay, implementation, and replay-proven source blobs
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json)" = dc69f67829cf7412e8e9374f005d92842bd500ca
+          test "$(git rev-parse HEAD:review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json)" = 276b9fb82eeb1564ae7f406c85d03a80a8373b8a
+          test "$(git rev-parse HEAD:review/artifact-pipeline-replay-result-v1/artifact-pipeline-replay-result-v1.json)" = 4dd550f6a9b31c3a67a213feb51a4209a0b25f40
+          test "$(git rev-parse HEAD:review/full-spectrum-estimator-pilot-v2/build_full_spectrum_training_handoff.py)" = 9bc53956fc4a49935ba2957087d8bf4203b7e8be
+          test "$(git rev-parse HEAD:review/full-spectrum-estimator-pilot-v2/full-spectrum-estimator-pilot-execution-manifest-v4.json)" = 5dedb40f21f474ef42a5bf20933ad876c648439f
+          test "$(git rev-parse HEAD:experiments/full-spectrum-estimator-pilot-v2/executor.py)" = 4d4ee9af433157182185784ded162fb139c9fa2d
+          test "$(git rev-parse HEAD:experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py)" = b00252709ca9ea41c6bf8b3ab59f8cdb8a2fc7bd
+          test "$(git rev-parse HEAD:experiments/mystic-batch-v1/cross_geometry_adapter.py)" = 8d4416fceb323876b24fb98bfa6192cb235a6d4b
+          test "$(git rev-parse HEAD:experiments/mystic-batch-v1/runtime_probe.py)" = 519115a4dd382b8ae82ae4c820398c9f4388a139
+          test "$(git rev-parse HEAD:experiments/mystic-batch-v1/runtime-lock.micromamba.json)" = 8573f62829371a0eb866976a5062ea61dc0767b1
+      - name: Validate contract and deterministically regenerate exact stage1 manifest
+        run: |
+          set -euo pipefail
+          python review/tier2-stage1-execution-transport-v1/validate_transport_v1.py --contract review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json --repo-root .
+          python experiments/tier2-stage1-execution-v1/build_manifest_v1.py \
+            --campaign review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json \
+            --implementation review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json \
+            --output /tmp/tier2-stage1-manifest.json
+          cmp /tmp/tier2-stage1-manifest.json experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json
+      - name: Run fail-closed transport tests with no solver
+        run: |
+          set -euo pipefail
+          python -m py_compile experiments/tier2-stage1-execution-v1/*.py review/tier2-stage1-execution-transport-v1/*.py
+          python review/tier2-stage1-execution-transport-v1/test_contract_mutations_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_guards_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_transport_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_workflow_surface_v1.py

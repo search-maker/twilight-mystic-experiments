@@ -1,0 +1,108 @@
+name: Tier2 stage1 authorization review v1
+run-name: Tier2 stage1 authorization review v1
+
+on:
+  pull_request:
+    paths:
+      - experiments/tier2-stage1-execution-v1/authorization.json
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  authorization-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse non-one-file, moved-main, non-draft, or retry context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_PATH: experiments/tier2-stage1-execution-v1/authorization.json
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_DRAFT" = true
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git cat-file -p HEAD | grep -c '^parent ')" = 1
+          test "$(git rev-parse HEAD^)" = "$PR_BASE"
+          LIVE_MAIN="$(gh api "repos/${{ github.repository }}/branches/main" --jq .commit.sha)"
+          test "$LIVE_MAIN" = "$PR_BASE"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH_PATH"
+          test -f "$AUTH_PATH"
+          if git cat-file -e "$LIVE_MAIN:$AUTH_PATH" 2>/dev/null; then echo 'authorization already exists on main'; exit 1; fi
+      - name: Rebuild and bind exact frozen transport/manifest
+        run: |
+          set -euo pipefail
+          python review/tier2-stage1-execution-transport-v1/validate_transport_v1.py --contract review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json --repo-root .
+          python experiments/tier2-stage1-execution-v1/build_manifest_v1.py \
+            --campaign review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json \
+            --implementation review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json \
+            --output /tmp/tier2-stage1-manifest.json
+          cmp /tmp/tier2-stage1-manifest.json experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json
+      - name: Run exact-head tracked-tree 100-seed collision audit
+        run: |
+          python experiments/tier2-stage1-execution-v1/seed_audit_v1.py \
+            --repo-root . \
+            --contract review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json \
+            --authorization-path experiments/tier2-stage1-execution-v1/authorization.json \
+            --output tracked-seed-audit.json
+      - name: Capture complete repository-global branches, runs, artifacts, and Issue 60
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${{ github.repository }}/branches?per_page=100" > branch-pages.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/actions/runs?per_page=100" > run-pages.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/actions/artifacts?per_page=100" > artifact-pages.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/issues/60/comments?per_page=100" > issue-pages.json
+      - name: Build exact authorization review context and fail closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_PATH: experiments/tier2-stage1-execution-v1/authorization.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          def load(p): return json.loads(Path(p).read_text())
+          def flatten(pages,key=None):
+              out=[]
+              for page in pages:
+                  rows=page.get(key,[]) if key else page
+                  out.extend(rows)
+              return out
+          event=load(os.environ['GITHUB_EVENT_PATH']); branches=flatten(load('branch-pages.json')); runs=flatten(load('run-pages.json'),'workflow_runs'); artifacts=flatten(load('artifact-pages.json'),'artifacts'); comments=flatten(load('issue-pages.json'))
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip(); live=subprocess.check_output(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/branches/main",'--jq','.commit.sha'],text=True).strip(); auth=load(os.environ['AUTH_PATH']); seed=load('tracked-seed-audit.json')
+          ctx={'schemaVersion':1,'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'currentRunId':int(os.environ['GITHUB_RUN_ID']),'headBranch':os.environ['GITHUB_HEAD_REF'],'headSha':head,'parentSha':parent,'liveMain':live,'changedFiles':[os.environ['AUTH_PATH']],'authorization':auth,'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'branches':branches,'runs':runs,'artifacts':artifacts,'issue60Comments':comments,'pr':{'number':event['pull_request']['number'],'draft':event['pull_request']['draft'],'state':event['pull_request']['state'],'headSha':event['pull_request']['head']['sha'],'baseSha':event['pull_request']['base']['sha']}}
+          Path('authorization-review-context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          PY
+          python experiments/tier2-stage1-execution-v1/preauthorization_guard_v1.py \
+            --contract review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json \
+            --manifest experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json \
+            --context authorization-review-context.json \
+            --output preauthorization-guard.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier2-stage1-authorization-review-${{ github.event.pull_request.head.sha }}
+          path: |
+            tracked-seed-audit.json
+            authorization-review-context.json
+            preauthorization-guard.json
+          if-no-files-found: error
+          retention-days: 90

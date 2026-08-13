@@ -6,6 +6,7 @@ for text,name in ((act,'activation'),(auth,'authorization')):
  assert 'pull_request:' in text and 'workflow_dispatch:' not in text and 'schedule:' not in text, name
  assert '--allow-execution' not in text and 'executor_v1.py' not in text, name
  assert '${{ GITHUB_REPOSITORY }}' not in text, name
+assert "if: ${{ github.head_ref == 'agent/train0014-ordinal18-activation-v1' }}" in act
 assert 'ref: ${{ github.event.pull_request.head.sha }}' in auth
 assert '$GITHUB_SHA' not in auth and "os.environ['GITHUB_SHA']" not in auth
 assert '/tmp/branches-preauth.json' in auth and "!='authorization/training-continuation-train0014-ordinal18'" in auth

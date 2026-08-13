@@ -46,6 +46,39 @@ def verify_confirmation_prereg(contract,prereg,path):
 
 VARIANT_DISPLAY={'train0014':'train-0014','train0037':'train-0037'}
 
+LEGACY_PR137_ACTIVATION_ARTIFACT={
+    'variant':'train0014','nextOrdinal':18,
+    'artifactId':9163137456,'artifactName':'training-continuation-train0014-ordinal18-activation-review',
+    'artifactDigest':'sha256:d00d4977894faeeb345f05db702ea61b7a5a686f43cacad10ac8724b9c875f32','artifactSize':2791,
+    'runId':31652512386,'workflowName':'Training continuation train-0014 ordinal18 activation review',
+    'workflowPath':'.github/workflows/training-continuation-train0014-ordinal18-activation-review.yml',
+    'event':'pull_request','runAttempt':1,'status':'completed','conclusion':'success',
+    'headBranch':'codex/github-mention-prepare-train-0014-ordinal-18-activation-wit',
+    'headSha':'abf5da606f8094d8eebcb76dcdac906bf45b9acf',
+}
+
+def is_pr137_legacy_activation_review_artifact(variant,nexto,artifact,runs):
+    e=LEGACY_PR137_ACTIVATION_ARTIFACT
+    if variant!=e['variant'] or nexto!=e['nextOrdinal']:
+        return False
+    if (artifact.get('id')!=e['artifactId'] or artifact.get('name')!=e['artifactName']
+            or artifact.get('digest')!=e['artifactDigest'] or artifact.get('size_in_bytes')!=e['artifactSize']):
+        return False
+    workflow_run=artifact.get('workflow_run')
+    if not isinstance(workflow_run,dict) or workflow_run.get('id')!=e['runId']:
+        return False
+    linked=[x for x in runs if x.get('id')==e['runId']]
+    if len(linked)!=1:
+        return False
+    run=linked[0]
+    return (
+        run.get('name')==e['workflowName'] and run.get('path')==e['workflowPath']
+        and run.get('event')==e['event'] and run.get('run_attempt')==e['runAttempt']
+        and run.get('status')==e['status'] and run.get('conclusion')==e['conclusion']
+        and run.get('head_branch')==e['headBranch'] and run.get('head_sha')==e['headSha']
+        and workflow_run.get('head_branch')==e['headBranch'] and workflow_run.get('head_sha')==e['headSha']
+    )
+
 def is_verified_activation_review_artifact(variant,nexto,artifact,runs):
     expected_artifact=f'training-continuation-{variant}-ordinal{nexto}-activation-review'
     if artifact.get('name')!=expected_artifact:
@@ -102,7 +135,8 @@ def build(contract,variant,branches,runs,artifacts,issue_comments,source_audit,s
     for x in artifacts:
         if not str(x.get('name') or '').lower().startswith(artifact_prefix):
             continue
-        if is_verified_activation_review_artifact(variant,nexto,x,runs):
+        if (is_verified_activation_review_artifact(variant,nexto,x,runs)
+                or is_pr137_legacy_activation_review_artifact(variant,nexto,x,runs)):
             continue
         scientific_artifacts.append({'id':x.get('id'),'name':x.get('name')})
     require(not scientific_artifacts,f'prior scientific artifact exists: {scientific_artifacts}')

@@ -54,6 +54,42 @@ def main():
         combined=build(c,'train0014',branches,review_runs,[review_artifact],discussion,source,p1,conf,p2)
         assert combined['status']=='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'
 
+        # PR #137's one known Codex-branch activation artifact is non-scientific only
+        # when every immutable artifact, run, head, and workflow-run linkage agrees.
+        legacy_head='abf5da606f8094d8eebcb76dcdac906bf45b9acf'
+        legacy_branch='codex/github-mention-prepare-train-0014-ordinal-18-activation-wit'
+        legacy_run={'id':31652512386,'name':'Training continuation train-0014 ordinal18 activation review','path':'.github/workflows/training-continuation-train0014-ordinal18-activation-review.yml','event':'pull_request','run_attempt':1,'status':'completed','conclusion':'success','head_branch':legacy_branch,'head_sha':legacy_head}
+        legacy_artifact={'id':9163137456,'name':'training-continuation-train0014-ordinal18-activation-review','digest':'sha256:d00d4977894faeeb345f05db702ea61b7a5a686f43cacad10ac8724b9c875f32','size_in_bytes':2791,'workflow_run':{'id':31652512386,'head_branch':legacy_branch,'head_sha':legacy_head}}
+        lr=build(c,'train0014',branches,runs+[legacy_run],[legacy_artifact],[],source,p1,conf,p2)
+        assert lr['status']=='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'
+
+        def refuse_legacy_case(label,artifact=None,run=None):
+            a=legacy_artifact if artifact is None else artifact
+            rr=legacy_run if run is None else run
+            try: build(c,'train0014',branches,runs+[rr],[a],[],source,p1,conf,p2); raise AssertionError(label+' accepted')
+            except Refusal: pass
+
+        for field,value,label in [
+            ('id',9163137457,'legacy artifact id drift'),
+            ('digest','sha256:'+'0'*64,'legacy artifact digest drift'),
+            ('size_in_bytes',2792,'legacy artifact size drift'),
+        ]:
+            a=json.loads(json.dumps(legacy_artifact)); a[field]=value; refuse_legacy_case(label,artifact=a)
+        for field,value,label in [
+            ('id',31652512387,'legacy run id drift'),
+            ('event','push','legacy event drift'),
+            ('run_attempt',2,'legacy attempt drift'),
+            ('status','in_progress','legacy status drift'),
+            ('conclusion','failure','legacy conclusion drift'),
+            ('name','Training continuation train-0014 ordinal18 execution','legacy workflow name drift'),
+            ('path','.github/workflows/training-continuation-train0014-ordinal18-execution.yml','legacy workflow path drift'),
+            ('head_branch','codex/other','legacy head branch drift'),
+            ('head_sha','b'*40,'legacy head SHA drift'),
+        ]:
+            rr=json.loads(json.dumps(legacy_run)); rr[field]=value; refuse_legacy_case(label,run=rr)
+        a=json.loads(json.dumps(legacy_artifact)); a['workflow_run']['head_branch']='codex/other'; refuse_legacy_case('legacy workflow_run branch linkage drift',artifact=a)
+        a=json.loads(json.dumps(legacy_artifact)); a['workflow_run']['head_sha']='b'*40; refuse_legacy_case('legacy workflow_run SHA linkage drift',artifact=a)
+
         def refuse_review_case(label,artifact=None,run=None,extra_runs=None):
             a=review_artifact if artifact is None else artifact
             rs=runs+([review_run if run is None else run])+(extra_runs or [])

@@ -48,8 +48,8 @@ def test_adapter_and_executor():
                     if n in {'case-result.json','input-resolved.txt','runtime-report.json','prepared.json','randomseed','syntax-stdout.txt','syntax-stderr.txt','solver-stdout.txt','solver-stderr.txt','mc.rad.spc','mc.rad.std.spc'}: continue
                     (cwd/n).write_text('raw\n')
             return {'exitCode':0,'timedOut':False,'stdout':'','stderr':''}
-        old={k:os.environ.get(k) for k in ['GITHUB_ACTIONS','GITHUB_EVENT_NAME','GITHUB_RUN_ATTEMPT','GITHUB_REF_NAME']}; os.environ.update({'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'push','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF_NAME':'dispatch/tier2-stage1-ordinal19-v1'})
-        try:r=X.execute_case(E/'stage1-execution-manifest-v1.json',rp,E/'adapter_v1.py',case['caseId'],data,repo,u,out2,900,True,'dispatch/tier2-stage1-ordinal19-v1',runner)
+        old={k:os.environ.get(k) for k in ['GITHUB_ACTIONS','GITHUB_EVENT_NAME','GITHUB_RUN_ATTEMPT','GITHUB_REF_NAME']}; os.environ.update({'GITHUB_ACTIONS':'true','GITHUB_EVENT_NAME':'push','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF_NAME':'dispatch/tier2-stage1-ordinal19-v2'})
+        try:r=X.execute_case(E/'stage1-execution-manifest-v1.json',rp,E/'adapter_v1.py',case['caseId'],data,repo,u,out2,900,True,'dispatch/tier2-stage1-ordinal19-v2',runner)
         finally:
             for k,v in old.items():
                 if v is None: os.environ.pop(k,None)
@@ -79,7 +79,7 @@ def test_full_training_postprocess():
         ap=t/'aggregate.json'; up=t/'audit.json'; hp=t/'handoff.json'; ap.write_text(json.dumps(agg)); up.write_text(json.dumps(audit)); import subprocess; subprocess.check_call(['python',str(E/'handoff_v1.py'),'--manifest',str(E/'stage1-execution-manifest-v1.json'),'--aggregate',str(ap),'--audit',str(up),'--output',str(hp)]); h=json.loads(hp.read_text()); assert h['trainingGeometryCount']==19 and h['protectedHoldoutRecordCount']==0 and h['modelFittingAuthorized'] is False
 
 def test_context_refusal():
-    try:X.validate_context(True,'dispatch/tier2-stage1-ordinal19-v1')
+    try:X.validate_context(True,'dispatch/tier2-stage1-ordinal19-v2')
     except Exception: pass
     else: raise AssertionError('non-GitHub context accepted')
 if __name__=='__main__':

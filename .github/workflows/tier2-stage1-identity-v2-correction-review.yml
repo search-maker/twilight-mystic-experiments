@@ -1,0 +1,98 @@
+name: Tier2 stage1 identity v2 correction review
+run-name: Tier2 stage1 identity v2 correction review
+
+on:
+  pull_request:
+    paths:
+      - experiments/tier2-stage1-execution-v1/preauthorization_guard_v1.py
+      - experiments/tier2-stage1-execution-v1/execution_guard_v1.py
+      - experiments/tier2-stage1-execution-v1/executor_v1.py
+      - review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json
+      - review/tier2-stage1-execution-transport-v1/test_guards_v1.py
+      - review/tier2-stage1-execution-transport-v1/test_transport_v1.py
+      - .github/workflows/tier2-stage1-identity-v2-correction-review.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review:
+    if: github.head_ref == 'review/tier2-stage1-identity-v2-correction'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse wrong correction context or diff
+        env:
+          EXPECTED_BASE_SHA: 9e56f9d03469639a07dbcb16ae83106f04f0f251
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/tier2-stage1-identity-v2-correction
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test "$(git merge-base HEAD "$EXPECTED_BASE_SHA")" = "$EXPECTED_BASE_SHA"
+          test ! -e experiments/tier2-stage1-execution-v1/authorization.json
+          mapfile -t CHANGED < <(git diff --name-only "$EXPECTED_BASE_SHA" HEAD | sort)
+          EXPECTED=(
+            .github/workflows/tier2-stage1-identity-v2-correction-review.yml
+            experiments/tier2-stage1-execution-v1/execution_guard_v1.py
+            experiments/tier2-stage1-execution-v1/executor_v1.py
+            experiments/tier2-stage1-execution-v1/preauthorization_guard_v1.py
+            review/tier2-stage1-execution-transport-v1/test_guards_v1.py
+            review/tier2-stage1-execution-transport-v1/test_transport_v1.py
+            review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json
+          )
+          test "${#CHANGED[@]}" = "${#EXPECTED[@]}"
+          diff -u <(printf '%s\n' "${EXPECTED[@]}") <(printf '%s\n' "${CHANGED[@]}")
+      - name: Bind preserved v1 refusal evidence without mutating it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/${{ github.repository }}/actions/runs/31742055624 --jq .run_attempt)" = 1
+          test "$(gh api repos/${{ github.repository }}/actions/runs/31742055624 --jq .head_sha)" = 56aa4af8a2818bb1c605af0e46c5d64d49bee922
+          test "$(gh api repos/${{ github.repository }}/actions/runs/31742055624 --jq .conclusion)" = failure
+          gh api repos/${{ github.repository }}/issues/comments/5285605573 --jq .body | grep -F 'dispatch/tier2-stage1-ordinal19-v1' >/dev/null
+      - name: Prove identity-only correction and unchanged science payload
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json').read_text())
+          m=json.loads(Path('experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json').read_text())
+          assert c['authorization']['authorizationBranchTemplate'].endswith('-v2')
+          assert c['authorization']['dispatchBranchTemplate'].endswith('-v2')
+          assert c['authorization']['executionKeyTemplate'].startswith('tier2-core-stage1-v2:')
+          assert m['manifestSha256']=='7351a47582ca0a328059256566b24ce10c0e6ff5d802f53ff35e133540a83819'
+          assert c['frozenStage1']['caseCount']==76
+          assert c['frozenStage1']['configuredPhotonHistories']==2120000000
+          assert c['seedAudit']['candidateFirstSeed']==1900000001
+          assert c['seedAudit']['candidateLastSeed']==1900000100
+          assert c['executionBoundary']['solverExecutionPerformed'] is False
+          assert c['executionBoundary']['protectedHoldoutOpeningAuthorized'] is False
+          assert c['executionBoundary']['stage2Authorized'] is False
+          PY
+      - name: Run full fail-closed transport regression with no solver
+        run: |
+          set -euo pipefail
+          python review/tier2-stage1-execution-transport-v1/validate_transport_v1.py --contract review/tier2-stage1-execution-transport-v1/tier2-stage1-execution-transport-v1.json --repo-root .
+          python review/tier2-stage1-execution-transport-v1/test_contract_mutations_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_guards_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_transport_v1.py
+          python review/tier2-stage1-execution-transport-v1/test_workflow_surface_v1.py
+          python -m py_compile experiments/tier2-stage1-execution-v1/*.py review/tier2-stage1-execution-transport-v1/*.py

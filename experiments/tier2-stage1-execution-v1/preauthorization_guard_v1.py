@@ -32,7 +32,7 @@ def evaluate(contract,manifest,ctx):
     req(ctx.get('eventName')=='pull_request' and ctx.get('runAttempt')==1,'authorization review must be attempt-1 PR')
     auth=ctx.get('authorization') or {}; req(set(auth)==set(contract['authorization']['expectedFieldNames']),'authorization exact field surface drift'); latest_expected=contract['sourceBindings']['latestConsumedScientificOrdinal']; ords=consumed_ordinals(ctx.get('branches',[]),ctx.get('runs',[])); req(ords and max(ords)==latest_expected,'latest consumed scientific ordinal drift')
     candidate=max(ords)+1; req(auth.get('scientificOrdinal')==candidate,'authorization ordinal is not fresh next ordinal')
-    expected_branch=f'authorization/tier2-stage1-ordinal{candidate}-v1'; dispatch=f'dispatch/tier2-stage1-ordinal{candidate}-v1'; key=f'tier2-core-stage1-v1:numerical:{candidate}'
+    expected_branch=contract['authorization']['authorizationBranchTemplate'].format(scientificOrdinal=candidate); dispatch=contract['authorization']['dispatchBranchTemplate'].format(scientificOrdinal=candidate); key=contract['authorization']['executionKeyTemplate'].format(scientificOrdinal=candidate)
     req(auth.get('schemaVersion')==1 and auth.get('status')=='AUTHORIZED_PENDING_SEPARATE_DISPATCH' and auth.get('enabled') is True,'authorization header drift')
     req(auth.get('authorizationBranch')==expected_branch and auth.get('dispatchBranch')==dispatch and auth.get('executionKey')==key,'authorization identity drift')
     req(auth.get('manifestSha256')==manifest['manifestSha256'] and auth.get('transportContractSha256')==contract['contractSha256'],'authorization payload binding drift')

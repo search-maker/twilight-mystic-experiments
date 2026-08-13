@@ -11,7 +11,7 @@ def load(p):
 def evaluate(contract,manifest,auth,review_guard,ctx):
     req(set(auth)==set(contract['authorization']['expectedFieldNames']),'authorization exact field surface drift')
     ordinal=auth.get('scientificOrdinal'); req(isinstance(ordinal,int) and ordinal>0,'authorization ordinal invalid')
-    dispatch=f'dispatch/tier2-stage1-ordinal{ordinal}-v1'; auth_branch=f'authorization/tier2-stage1-ordinal{ordinal}-v1'; key=f'tier2-core-stage1-v1:numerical:{ordinal}'
+    dispatch=contract['authorization']['dispatchBranchTemplate'].format(scientificOrdinal=ordinal); auth_branch=contract['authorization']['authorizationBranchTemplate'].format(scientificOrdinal=ordinal); key=contract['authorization']['executionKeyTemplate'].format(scientificOrdinal=ordinal)
     req(ctx.get('eventName')=='push' and ctx.get('runAttempt')==1 and ctx.get('refName')==dispatch,'not exact attempt-1 dispatch push')
     req(ctx.get('headSha')==ctx.get('authorizationCommitSha'),'dispatch head must equal reviewed authorization commit')
     req(ctx.get('parentSha')==ctx.get('liveMain')==auth.get('exactAuthorizationParentCommit'),'live main moved since authorization parent')

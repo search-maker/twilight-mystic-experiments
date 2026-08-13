@@ -1,0 +1,103 @@
+name: Tier2 stage1 authorization implementation v1 review
+run-name: Tier2 stage1 authorization implementation v1 review
+
+on:
+  pull_request:
+    paths:
+      - review/tier2-stage1-authorization-implementation-v1/**
+      - .github/workflows/tier2-stage1-authorization-implementation-v1-review.yml
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: github.head_ref == 'review/tier2-stage1-authorization-implementation-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+
+      - name: Refuse wrong context, moved base, or unexpected source surface
+        env:
+          EXPECTED_BASE_SHA: 3b5cf241b72be90d8908f7b1fc72b7fcd799ec8d
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/tier2-stage1-authorization-implementation-v1
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          git diff --name-only "$ACTUAL_BASE_SHA" "$PR_HEAD_SHA" | sort > /tmp/actual-files.txt
+          cat > /tmp/expected-files.txt <<'EOF'
+          .github/workflows/tier2-stage1-authorization-implementation-v1-review.yml
+          review/tier2-stage1-authorization-implementation-v1/audit_tier2_stage1_seed_collisions_v1.py
+          review/tier2-stage1-authorization-implementation-v1/test_seed_collision_audit_v1.py
+          review/tier2-stage1-authorization-implementation-v1/test_tier2_stage1_authorization_implementation_v1.py
+          review/tier2-stage1-authorization-implementation-v1/test_workflow_surface_v1.py
+          review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json
+          review/tier2-stage1-authorization-implementation-v1/validate_tier2_stage1_authorization_implementation_v1.py
+          EOF
+          diff -u /tmp/expected-files.txt /tmp/actual-files.txt
+
+      - name: Bind reviewed campaign contract and successful replay result
+        run: |
+          test "$(git rev-parse HEAD:review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json)" = dc69f67829cf7412e8e9374f005d92842bd500ca
+          test "$(git rev-parse HEAD:review/artifact-pipeline-replay-result-v1/artifact-pipeline-replay-result-v1.json)" = 4dd550f6a9b31c3a67a213feb51a4209a0b25f40
+          python review/tier2-core-campaign-contract-v1/validate_tier2_core_campaign_contract_v1.py --contract review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json
+          python review/artifact-pipeline-replay-result-v1/validate_artifact_pipeline_replay_result_v1.py --result review/artifact-pipeline-replay-result-v1/artifact-pipeline-replay-result-v1.json
+
+      - name: Validate review-only stage1 implementation and fail-closed tests
+        run: |
+          python review/tier2-stage1-authorization-implementation-v1/validate_tier2_stage1_authorization_implementation_v1.py --review review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json
+          python review/tier2-stage1-authorization-implementation-v1/test_tier2_stage1_authorization_implementation_v1.py
+          python review/tier2-stage1-authorization-implementation-v1/test_seed_collision_audit_v1.py
+          python review/tier2-stage1-authorization-implementation-v1/test_workflow_surface_v1.py
+
+      - name: Run exact-head tracked-tree candidate seed collision audit
+        run: |
+          python review/tier2-stage1-authorization-implementation-v1/audit_tier2_stage1_seed_collisions_v1.py \
+            --repo-root . \
+            --review review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json \
+            --output /tmp/tier2-stage1-seed-audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/tier2-stage1-seed-audit.json').read_text())
+          assert d['status']=='PASSED_EXACT_HEAD_TRACKED_TREE_NEGATIVE_COLLISION_CHECK'
+          assert d['repoHead'] == __import__('subprocess').check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert d['candidateSeedCount']==100
+          assert d['externalCollisionCount']==0
+          assert d['authorizationPermitted'] is False
+          assert d['artifactRunHistoryRecheckStillRequired'] is True
+          PY
+
+      - name: Prove authorization, dispatch, science, and holdouts remain closed
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('review/tier2-stage1-authorization-implementation-v1/tier2-stage1-authorization-implementation-v1.json').read_text())
+          a=d['authorizationTemplate']; n=d['nextBoundary']; s=d['stage1Scope']
+          assert a['templateOnly'] is True and a['enabled'] is False
+          assert a['campaignAuthorizationIssued'] is False
+          assert a['scientificExecutionAuthorized'] is False
+          assert a['scientificOrdinal'] is None and a['authorizationRef'] is None and a['executionKey'] is None
+          assert a['workflowDispatchEnabled'] is False and a['campaignDispatchIssued'] is False
+          assert a['solverExecutionPerformed'] is False and a['modelFittingAuthorized'] is False and a['modelSelectionAuthorized'] is False
+          assert a['protectedHoldoutOpeningAuthorized'] is False and a['productionPromotionAuthorized'] is False
+          assert s['protectedHoldoutValuesReadable'] is False and s['protectedHoldoutExecutionAuthorized'] is False
+          assert n['separateAuthorizationTransitionRequired'] is True
+          assert n['freshSeedAndIdentityCollisionAuditRequiredAtAuthorizationHead'] is True
+          assert n['completeRunHistoryArtifactDuplicateGuardRequiredAtAuthorizationHead'] is True
+          assert n['ordinal19AllocationAllowedByThisImplementation'] is False
+          assert n['stage2RemainsClosed'] is True
+          PY

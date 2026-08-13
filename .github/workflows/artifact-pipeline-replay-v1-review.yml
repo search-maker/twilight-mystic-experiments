@@ -66,16 +66,35 @@ jobs:
           python review/artifact-pipeline-replay-v1/test_workflow_surface_v1.py
 
       - name: Replay exact existing real training artifacts
+        id: replay
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p replay-diagnostic
+          set -o pipefail
           python review/artifact-pipeline-replay-v1/replay_existing_real_artifacts_v1.py \
             --protocol review/artifact-pipeline-replay-v1/artifact-pipeline-replay-protocol-v1.json \
             --builder review/full-spectrum-estimator-pilot-v2/build_full_spectrum_training_handoff.py \
             --historical-admission review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json \
-            --output-dir replay-output
+            --output-dir replay-output \
+            2>&1 | tee replay-diagnostic/replay.log
+          status=${PIPESTATUS[0]}
+          printf '{"exitCode":%s}\n' "$status" > replay-diagnostic/status.json
+          exit "$status"
+
+      - name: Upload replay diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-pipeline-replay-v1-diagnostic
+          path: replay-diagnostic/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
 
       - name: Prove candidate remains non-authorizing
+        if: steps.replay.outcome == 'success'
         run: |
           python - <<'PY'
           import json
@@ -96,6 +115,7 @@ jobs:
           PY
 
       - name: Upload mechanical replay candidate
+        if: steps.replay.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: artifact-pipeline-replay-v1-candidate
@@ -103,3 +123,9 @@ jobs:
           if-no-files-found: error
           retention-days: 90
           compression-level: 9
+
+      - name: Fail closed if replay failed
+        if: steps.replay.outcome != 'success'
+        run: |
+          echo "Mechanical replay failed; diagnostic artifact was preserved."
+          exit 1

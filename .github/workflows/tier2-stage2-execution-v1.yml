@@ -34,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.4'
+      - name: Install frozen preflight dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
       - id: identity
         name: Refuse wrong event, retry, moved main, commit shape, or authorization
         shell: bash
@@ -65,7 +67,6 @@ jobs:
       - name: Rebuild exact frozen Stage2 payload
         run: |
           set -euo pipefail
-          python "$CONTRACT" >/dev/null 2>&1 || true
           python review/tier2-stage2-protected-holdout-v1/stage2_v1.py validate --contract "$CONTRACT" --repo-root .
           python experiments/tier2-stage2-execution-v1/build_manifest_v1.py --repo-root . --contract "$CONTRACT" --output stage2-manifest.json
       - name: Resolve exact successful attempt-1 Draft authorization review
@@ -109,13 +110,15 @@ jobs:
             for x in json.load(open(path)): out.extend(x.get(key,[]) if key else x)
             return out
           a=json.load(open(os.environ['AUTH_PATH']));p=json.load(open(os.environ['CONTRACT']));branches=flat('branch-pages.json');runs=flat('run-pages.json','workflow_runs');arts=flat('artifact-pages.json','artifacts');comments=flat('issue-pages.json');rx=re.compile(r'^dispatch/.*ordinal([1-9][0-9]*)',re.I)
+          prior_refusal=p['authorization']['priorDispatchRefusal']; assert prior_refusal['scientificOrdinal']==21 and prior_refusal['scientificOrdinalConsumed'] is True and prior_refusal['reservedSeedsConsumed'] is False and prior_refusal['holdoutValuesRead'] is False and prior_refusal['scientificSolverExecutionPerformed'] is False
           prior=[]
           for n in [str(x.get('name') or '') for x in branches if x.get('name')!=a['dispatchBranch']]+[str(x.get('head_branch') or '') for x in runs if x.get('event')=='push' and not (x.get('head_branch')==a['dispatchBranch'] and int(x.get('id') or 0)==int(os.environ['GITHUB_RUN_ID']))]:
             m=rx.match(n)
             if m:prior.append(int(m.group(1)))
-          assert prior and max(prior)==20 and a['scientificOrdinal']==21
+          assert prior and max(prior)==prior_refusal['scientificOrdinal'] and a['scientificOrdinal']==prior_refusal['scientificOrdinal']+1
           current=[r for r in runs if r.get('head_branch')==a['dispatchBranch'] and r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('event')=='push']
           assert len(current)==1 and int(current[0]['id'])==int(os.environ['GITHUB_RUN_ID']) and int(current[0]['run_attempt'])==1
+          old=[r for r in runs if int(r.get('id') or 0)==prior_refusal['dispatchRunId']]; assert len(old)==1 and old[0].get('head_branch')==prior_refusal['dispatchBranch'] and old[0].get('head_sha')==prior_refusal['authorizationCommitSha'] and old[0].get('conclusion')=='failure' and int(old[0].get('run_attempt') or 0)==1
           ledger=json.load(open('ordinal20-salvage/consumed-training-seed-ledger.json'));reserved={int(s) for g in p['stage2Scope']['geometries'] for s in g['reservedSeeds']};used={int(x['seed']) for x in ledger['entries']};assert ledger['ledgerSha256']==p['sourceBindings']['consumedTrainingSeedLedgerSha256'] and not(reserved&used)
           external=[]
           for c in comments:

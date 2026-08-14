@@ -26,6 +26,31 @@ def seed_literals(text,candidates):
         s=token.replace('_','')
         if s.isdigit() and int(s) in candidates: out.append(int(s))
     return sorted(set(out))
+
+def validate_recovery_evidence(contract,ctx):
+    rec=((contract.get('recovery') or {}).get('priorFailedPresolverDispatch') or {})
+    req(rec,'presolver recovery evidence missing')
+    rr=[r for r in ctx.get('runs',[]) if int(r.get('id') or 0)==int(rec.get('runId') or 0)]
+    req(len(rr)==1,'prior failed dispatch run evidence missing/drifted')
+    r=rr[0]
+    req(r.get('event')=='push' and r.get('head_branch')==rec.get('branch') and r.get('head_sha')==rec.get('headSha'),'prior failed dispatch identity drift')
+    req(int(r.get('run_attempt') or 0)==rec.get('runAttempt') and r.get('status')=='completed' and r.get('conclusion')==rec.get('conclusion'),'prior failed dispatch terminal evidence drift')
+    prefixes=('tier2-stage1-case-','tier2-stage1-preflight-','tier2-stage1-aggregate-','tier2-stage1-audit-','tier2-stage1-handoff-')
+    arts=[a for a in ctx.get('artifacts',[]) if str(a.get('name') or '').startswith(prefixes)]
+    allowed_specs=rec.get('allowedArtifacts') or []; allowed={x.get('name'):x for x in allowed_specs}
+    req(len(allowed)==len(allowed_specs) and all(allowed),'duplicate/invalid recovery artifact specification')
+    req(not any(str(a.get('name') or '').startswith('tier2-stage1-case-') for a in arts),'prior Tier2 stage1 case artifact exists')
+    req(len(arts)==len(allowed),f'unexpected prior Tier2 stage1 scientific artifact set: {[(a.get("id"),a.get("name")) for a in arts[:8]]}')
+    seen=set()
+    for a in arts:
+        name=str(a.get('name') or ''); spec=allowed.get(name); req(spec is not None,f'unapproved prior scientific artifact: {name}')
+        wr=a.get('workflow_run') or {}
+        req(int(a.get('id') or 0)==spec.get('artifactId') and a.get('digest')==spec.get('digest'),'recovery artifact id/digest drift')
+        req(int(wr.get('id') or 0)==rec.get('runId') and wr.get('head_branch')==rec.get('branch') and wr.get('head_sha')==rec.get('headSha'),'recovery artifact provenance drift')
+        seen.add(name)
+    req(seen==set(allowed),'required recovery artifact missing')
+    req(rec.get('caseJobCount')==0 and rec.get('caseArtifactCount')==0 and rec.get('solverExecutionCount')==0,'recovery is not a proven pre-solver failure')
+
 def evaluate(contract,manifest,ctx):
     req(contract.get('contractSha256')==selfhash(contract,'contractSha256'),'transport contract selfhash drift')
     req(manifest.get('manifestSha256')==selfhash(manifest,'manifestSha256'),'manifest selfhash drift')
@@ -47,8 +72,7 @@ def evaluate(contract,manifest,ctx):
     branches=ctx.get('branches',[]); auth_matches=[b for b in branches if b.get('name')==expected_branch]; req(len(auth_matches)==1 and (auth_matches[0].get('commit') or {}).get('sha')==ctx.get('headSha'),'authorization branch/head not exact unique'); req(not any(b.get('name')==dispatch for b in branches),'dispatch branch already exists')
     current=int(ctx.get('currentRunId') or 0); runs=ctx.get('runs',[]); hist_auth=[r for r in runs if r.get('head_branch')==expected_branch and r.get('head_sha')!=ctx.get('headSha')]; req(not hist_auth,f'prior authorization-branch identity reuse exists: {[r.get("id") for r in hist_auth]}')
     prior_dispatch=[r for r in runs if r.get('head_branch')==dispatch]; req(not prior_dispatch,f'prior dispatch run exists: {[r.get("id") for r in prior_dispatch]}')
-    scientific_prefixes=('tier2-stage1-case-','tier2-stage1-preflight','tier2-stage1-aggregate','tier2-stage1-audit','tier2-stage1-handoff')
-    prior_art=[{'id':a.get('id'),'name':a.get('name')} for a in ctx.get('artifacts',[]) if str(a.get('name') or '').startswith(scientific_prefixes)]; req(not prior_art,f'prior Tier2 stage1 scientific artifact exists: {prior_art[:8]}')
+    validate_recovery_evidence(contract,ctx)
     tracked=ctx.get('trackedSeedAudit') or {}; req(tracked.get('status')=='PASSED_EXACT_HEAD_TRACKED_TREE_100_SEED_NEGATIVE_COLLISION_CHECK' and tracked.get('repoHead')==ctx.get('headSha') and tracked.get('externalCollisionCount')==0,'tracked-tree seed audit incomplete')
     first=contract['seedAudit']['candidateFirstSeed']; last=contract['seedAudit']['candidateLastSeed']; candidates=set(range(first,last+1)); allowed_issue_ids=set(contract['seedAudit'].get('allowedIssue60SelfLedgerCommentIds') or [])
     issue_external=[]; allowed_seen=set()

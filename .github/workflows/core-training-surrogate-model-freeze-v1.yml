@@ -1,0 +1,126 @@
+name: Level-B core surrogate model freeze v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/core-training-surrogate-model-freeze-v1.yml'
+      - 'review/core-training-surrogate-model-freeze-v1/**'
+  push:
+    branches:
+      - 'postprocess/core-training-surrogate-model-freeze-v1'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen numerical dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Validate pre-holdout protocol
+        run: python review/core-training-surrogate-model-freeze-v1/train_v1.py validate --protocol review/core-training-surrogate-model-freeze-v1/protocol-v1.json
+      - name: Run synthetic and mutation tests only
+        run: |
+          python review/core-training-surrogate-model-freeze-v1/test_v1.py -v
+          python review/core-training-surrogate-model-freeze-v1/train_v1.py synthetic --protocol review/core-training-surrogate-model-freeze-v1/protocol-v1.json
+      - name: Prove PR cannot fit real model or open holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/core-training-surrogate-model-freeze-v1/activation.json
+          ! grep -R -n -E 'uvspec|mc_basename' review/core-training-surrogate-model-freeze-v1
+          test "$(python - <<'PY'
+          import json
+          p=json.load(open('review/core-training-surrogate-model-freeze-v1/protocol-v1.json'))
+          print(str(p['boundaries']['protectedHoldoutOpeningAuthorized']).lower())
+          PY
+          )" = false
+
+  analyze:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen numerical dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Refuse wrong activation, retry, moved main, or duplicate activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.run_attempt }}" = 1
+          test "${{ github.ref_name }}" = postprocess/core-training-surrogate-model-freeze-v1
+          git fetch origin main --no-tags
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          changed="$(git diff --name-only HEAD^ HEAD)"
+          test "$changed" = review/core-training-surrogate-model-freeze-v1/activation.json
+          python - <<'PY'
+          import json, subprocess
+          a=json.load(open('review/core-training-surrogate-model-freeze-v1/activation.json'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          assert a == {
+            'schemaVersion': 1,
+            'status': 'AUTHORIZED_TRAINING_ONLY_MODEL_SELECTION_AND_FREEZE_V1',
+            'protocolId': 'level-b-v1-core-surrogate-model-freeze-v1',
+            'activationParentMainSha': parent,
+            'sourceRepresentationArtifactId': 9208203541,
+            'trainingGeometryCount': 44,
+            'protectedHoldoutOpeningAuthorized': False,
+            'holdoutValuesMayBeRead': False,
+            'newScientificSolverExecutionAuthorized': False,
+            'productionPromotionAuthorized': False,
+          }
+          PY
+      - name: Re-prove protocol and synthetic tests before real training-only fit
+        run: |
+          python review/core-training-surrogate-model-freeze-v1/train_v1.py validate --protocol review/core-training-surrogate-model-freeze-v1/protocol-v1.json
+          python review/core-training-surrogate-model-freeze-v1/test_v1.py -v
+      - name: Execute frozen 44-geometry training-only CV and model freeze
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf model-freeze-output
+          python review/core-training-surrogate-model-freeze-v1/train_v1.py execute \
+            --repo-root . \
+            --protocol review/core-training-surrogate-model-freeze-v1/protocol-v1.json \
+            --output model-freeze-output
+      - name: Independently verify no holdout and frozen outputs
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib
+          root=pathlib.Path('model-freeze-output')
+          def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          m=json.load(open(root/'model-artifact-v1.json'))
+          s=json.load(open(root/'training-selection-v1.json'))
+          r=json.load(open(root/'model-freeze-result-v1.json'))
+          assert m['modelSha256']==canon({k:v for k,v in m.items() if k!='modelSha256'})
+          assert s['selectionSha256']==canon({k:v for k,v in s.items() if k!='selectionSha256'})
+          assert r['resultSha256']==canon({k:v for k,v in r.items() if k!='resultSha256'})
+          assert m['trainingGeometryCount']==44 and len(m['targetNames'])==13
+          assert len(s['candidates'])==23
+          assert m['holdoutValuesRead'] is False and m['protectedHoldoutRecordCount']==0
+          assert r['holdoutValuesRead'] is False and r['protectedHoldoutOpeningAuthorized'] is False
+          assert r['newScientificExecutionAuthorized'] is False and r['productionPromotionAuthorized'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-core-surrogate-model-freeze-v1-${{ github.sha }}
+          path: model-freeze-output/
+          if-no-files-found: error
+          retention-days: 90

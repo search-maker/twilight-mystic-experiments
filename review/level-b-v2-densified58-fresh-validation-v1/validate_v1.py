@@ -19,6 +19,7 @@ OLD_STAGE2 = ROOT / 'review/tier2-stage2-protected-holdout-v1/contract-v1.json'
 CORE = ROOT / 'review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json'
 REF_ADAPTER = ROOT / 'experiments/tier2-stage2-execution-v1/adapter_v1.py'
 FEATURES = ('sunDepressionDeg','targetAltitudeDeg','relativeAzimuthDeg','observerElevationM','aod550')
+CHANNELS = ('photopicLuminanceCdM2','scotopicLuminanceScotCdM2','johnsonVEffectiveRadiance_mW_m2_nm_sr')
 DATASET_FILE_SHA256 = '1cf31f1a80ce4ae1f39b9e750616093f6cfa927d10e258f81fe9fc0e58f0ea69'
 DATASET_CANONICAL_SHA256 = '58c977acf84b6ce17717765c2052f7f9fd64e2965e5bf447eba5cc4accb30435'
 
@@ -34,10 +35,7 @@ def load(path: Path) -> dict[str, Any]:
     return value
 
 
-def canonical_sha(value: Any, drop: str | None = None) -> str:
-    if drop is not None:
-        value = dict(value)
-        value.pop(drop, None)
+def canonical_sha(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
@@ -88,7 +86,7 @@ def main() -> int:
     req(c['contractId'] == 'level-b-v2-densified58-fresh-protected-validation-v1', 'contract id')
     req(c['status'] == 'REVIEW_ONLY_FRESH_PROTECTED_VALIDATION_PREREGISTRATION_NO_AUTHORIZATION_NO_VALUES_OPENED', 'status')
     req(c['governance'] == 'MYSTIC-STATE-0070', 'governance')
-    req(canonical_sha(c, 'contractSha256') == c['contractSha256'] == '5a769740c196540079700a2665dafe278769677e262466be254978b6ee9dc1f6', 'contract self hash')
+    req('contractSha256' not in c, 'unsupported contract self-hash field present')
     req(c['sourceMainAtFreeze'] == '147eaca24e51fe7e2e0d8c3fb329055f28d1c586', 'source main')
 
     bindings = c['sourceBindings']
@@ -198,9 +196,12 @@ def main() -> int:
     ]
     for key in identical:
         req(me[key] == oldme[key], f'DoD threshold drift: {key}')
-    req(me['frozenTrainingMeanBaselinePrimaryMale'] == 2.5719584663680646, 'training baseline drift')
-    req(me['aggregatePrimaryMeanAbsoluteLogErrorMax'] == 1.800370926457645, 'aggregate max drift')
-    req(close(me['aggregatePrimaryMeanAbsoluteLogErrorMax'], 0.7 * me['frozenTrainingMeanBaselinePrimaryMale']), 'aggregate fraction arithmetic')
+    req('aggregatePrimaryMeanAbsoluteLogErrorMax' not in me and 'frozenTrainingMeanBaselinePrimaryMale' not in me, 'incorrect scalar baseline semantics retained')
+    req(me['frozenTrainingMeanBaselineDefinition'] == 'MEAN_OF_58_TRAINING_PRIMARY_LOG_TARGETS_FROZEN_BEFORE_PROTECTED_OPENING_THEN_EVALUATED_AS_A_PREDICTOR_ON_THE_SAME_SIX_HOLDOUT_TRUTHS', 'baseline definition drift')
+    baseline = [sum(math.log(float(r['integratedChannels'][channel]['mean'])) for r in dataset['records']) / 58.0 for channel in CHANNELS]
+    frozen_baseline = me['frozenTrainingMeanBaselineTransformedPrimary']
+    req(len(frozen_baseline) == 3 and all(close(x,y,1e-14) for x,y in zip(baseline,frozen_baseline)), 'frozen training-mean transformed baseline drift')
+    req(all(close(x,y,1e-14) for x,y in zip(frozen_baseline,[0.3993901995212697,1.7062844994448103,-3.8475190646906268])), 'frozen baseline vector identity drift')
     req(me['epsilonSubstitutionAllowed'] is False and me['exactZeroSemanticsPreserved'] is True, 'zero/epsilon semantics')
     req(me['selectedFamilyId'] == 'ridge-primary-physical-compact-shape-idw-cos' and me['selectedPrimaryRidge'] == 1e-05 and me['selectedShapeNeighbors'] == 4 and me['selectedShapePower'] == 1.0, 'selected model spec drift')
 
@@ -212,7 +213,7 @@ def main() -> int:
         req(value is False, f'prereg boundary opened: {key}')
     req(c['failureSemantics']['openedValuesBecomeDiagnosticOnlyOnFailure'] is True and c['failureSemantics']['futureRetunedGenerationRequiresAnotherCompletelyFreshUntouchedValidationSource'] is True, 'failure semantics drift')
 
-    print(json.dumps({'status':'PASS','contractSha256':c['contractSha256'],'eligibleGeometryOnlyCandidateCount':len(candidates),'selectedGeometryCount':len(frozen),'candidateScientificOrdinal':24,'reservedSeedCount':24,'protectedValuesRead':False,'scientificSolverExecutionAuthorized':False}, sort_keys=True))
+    print(json.dumps({'status':'PASS','contractGitBlobSha':blob(CONTRACT),'eligibleGeometryOnlyCandidateCount':len(candidates),'selectedGeometryCount':len(frozen),'candidateScientificOrdinal':24,'reservedSeedCount':24,'frozenTrainingMeanBaselineTransformedPrimary':frozen_baseline,'protectedValuesRead':False,'scientificSolverExecutionAuthorized':False}, sort_keys=True))
     return 0
 
 

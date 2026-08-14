@@ -29,11 +29,11 @@ def validate(require_review_inert:bool)->dict[str,Any]:
     t=load(TRANSPORT)
     req((t.get('schemaVersion'),t.get('transportId'),t.get('status'),t.get('governance'),t.get('sourceMainAtTransportFreeze'))==(1,'level-b-v2-densified58-fresh-validation-ordinal27-transport-v1','REVIEW_ONLY_ORDINAL27_AUTHORIZATION_LOCK_AND_DISPATCH_TRANSPORT_NO_AUTHORIZATION_NO_ALLOCATION','MYSTIC-STATE-0070','18b0036ce5d4fc38c812f90cacb521f5338cd6c1'),'transport identity drift')
     rb=t['recoveryBindings'];expected={
-      'recoveryPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/recovery-v4.json','6b22421d0f030c947fe9c29c38d7da02362076f3'),
-      'contractPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/contract-v4.json','ce0edbfa40848fd04ee545c0b3047a5cb2fbcd76'),
-      'evaluatorPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/fresh_validation_v4.py','fccabb0a8b426cff033fc4b7d9b101b331fef2c7'),
-      'manifestBuilderPath':('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/build_manifest_v4.py','d6205ab89edf308ebc8d04b1dfc28d0e3fa445f2'),
-      'executorPath':('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/executor_v4.py','7f789ab13b3371dfc07590395b3ed458c07ad92d'),
+      'recoveryPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/recovery-v4.json','6b22421db81da4610a09256e5c8014c6a5bf0511'),
+      'contractPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/contract-v4.json','ce0edbfa73cde9c792d0e5a69ec33d384cd19e03'),
+      'evaluatorPath':('review/level-b-v2-densified58-fresh-validation-recovery-v4/fresh_validation_v4.py','fccabb0aa3d780573843be11a79f76bf50f4261b'),
+      'manifestBuilderPath':('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/build_manifest_v4.py','d6205ab8ce15a1879e18519c6bb64ed00209c481'),
+      'executorPath':('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/executor_v4.py','7f789ab14439c4154b7367c991f329f623003b3e'),
       'adapterPath':('experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py','5cd736d78c5b82d124b5b95548063677dbfe0ce9')}
     for k,(p,sha) in expected.items():
         sk=k.replace('Path','GitBlobSha');req(rb[k]==p and rb[sk]==sha,f'{k} binding drift');req(blob(p)==sha,f'live blob drift: {p}')

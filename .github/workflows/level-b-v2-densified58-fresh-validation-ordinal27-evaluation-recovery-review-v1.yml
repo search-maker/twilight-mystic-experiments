@@ -1,0 +1,100 @@
+name: Level-B densified-58 ordinal27 evaluation-only recovery v1 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1/**'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-review-v1.yml'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-authorization-review-v1.yml'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RECOVERY: review/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1/recovery-v1.json
+      EVALUATOR: review/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1/fresh_validation_evaluation_recovery_v1.py
+      SCI_RECOVERY: review/level-b-v2-densified58-fresh-validation-recovery-v4/recovery-v4.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+      - name: Prove exact review branch and inert PR surface
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,subprocess
+          e=json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          assert e['pull_request']['base']['ref']=='main'
+          assert e['pull_request']['head']['ref']=='review/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1'
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==e['pull_request']['head']['sha']
+          assert not pathlib.Path('review/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1/evaluation-authorization.json').exists()
+          PY
+          test -z "$(git ls-remote --heads origin 'refs/heads/authorization/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1')"
+          test -z "$(git ls-remote --heads origin 'refs/heads/evaluation/level-b-v2-densified58-fresh-validation-ordinal27-recovery-v1')"
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Validate recovery descriptor without protected artifacts
+        run: |
+          python - <<'PY'
+          import importlib.util,json,os,pathlib,subprocess
+          p=pathlib.Path(os.environ['EVALUATOR']);s=importlib.util.spec_from_file_location('er',p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          r=m.load(pathlib.Path(os.environ['RECOVERY']));m.validate_eval_recovery(r)
+          expected={
+            'review/level-b-v2-densified58-fresh-validation-implementation-v1/fresh_validation_v1.py':'085f040caa6aec53aace00381035115358b21239',
+            'review/level-b-v2-densified58-fresh-validation-recovery-v4/fresh_validation_v4.py':'fccabb0aa3d780573843be11a79f76bf50f4261b',
+            'review/level-b-v2-training-implementation-v3-densified58/train_v3.py':'013768b9cb32050e698bc7b884921cbd5f1674e2',
+            'review/level-b-v2-training-implementation-v2/train_v2.py':'bd0d20ebaaf77a8780dbfa021cfaa49bf3e2d0be',
+            'review/level-b-v2-densified58-fresh-validation-v1/contract-v1.json':'aad11350311ce3768488e64ed72edc3e48646ff9'}
+          for path,sha in expected.items():
+            got=subprocess.check_output(['git','rev-parse',f'HEAD:{path}'],text=True).strip();assert got==sha,(path,got,sha)
+          assert all(v is False for v in r['reviewSurface'].values())
+          print(json.dumps({'status':'PASS','caseArtifactMetadataBindings':len(r['immutableCaseArtifacts']),'protectedNumericValuesRead':False,'solverExecutionCount':0},sort_keys=True))
+          PY
+      - name: Prove source run terminal shape and exact immutable artifact metadata
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api/actions/runs/31848052825" > /tmp/source-run.json
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api/actions/runs/31848052825/jobs?per_page=100" > /tmp/source-jobs.json
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api/actions/runs/31848052825/artifacts?per_page=100" > /tmp/source-artifacts.json
+          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api/actions/jobs/94920097388/logs" > /tmp/evaluator.log
+          grep -F '"reason": "model object kind drift", "status": "REFUSED"' /tmp/evaluator.log
+          python - <<'PY'
+          import json,os
+          r=json.load(open(os.environ['RECOVERY']));run=json.load(open('/tmp/source-run.json'));jobs=json.load(open('/tmp/source-jobs.json'))['jobs'];arts=json.load(open('/tmp/source-artifacts.json'))['artifacts']
+          assert (run['id'],run['run_attempt'],run['head_sha'],run['status'],run['conclusion'])==(31848052825,1,'44ef4dee635745a8d9cabab25a5e01638307bdc9','completed','failure')
+          pre=[j for j in jobs if j['name']=='preflight'];cases=[j for j in jobs if j['name'].startswith('cases (')];ev=[j for j in jobs if j['name']=='evaluate']
+          assert len(pre)==1 and pre[0]['conclusion']=='success';assert len(cases)==24 and all(j['conclusion']=='success' for j in cases);assert len(ev)==1 and ev[0]['id']==94920097388 and ev[0]['conclusion']=='failure'
+          assert len(arts)==25
+          actual={a['id']:(a['name'],a.get('digest')) for a in arts if a['name'].startswith('level-b-v2-v0070-o27-case-')};assert len(actual)==24
+          for x in r['immutableCaseArtifacts']:
+            name='level-b-v2-v0070-o27-case-'+x['caseId'];assert actual[x['artifactId']]==(name,x['digest']),(x,actual.get(x['artifactId']))
+          assert not any(a['name'].startswith('level-b-v2-v0070-o27-evaluation') for a in arts)
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 31827007009
+          artifact-ids: 9229229366
+          path: /tmp/v0070-model
+          merge-multiple: true
+      - name: Validate frozen nested model schema and exact prediction engine without holdout truths
+        run: python "$EVALUATOR" validate-model --evaluation-recovery "$RECOVERY" --scientific-recovery "$SCI_RECOVERY" --model-dir /tmp/v0070-model --repo-root .
+      - name: Prove future recovery workflows cannot execute science
+        run: |
+          for f in .github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-authorization-review-v1.yml .github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1.yml; do
+            test -f "$f"
+            ! grep -Eiq 'micromamba|rubin-libradtran|uvspec|executor_v[0-9]+\.py|build_manifest_v[0-9]+\.py|workflow_dispatch:|schedule:' "$f"
+          done
+          grep -F 'evaluation/level-b-v2-densified58-fresh-validation-ordinal27-recovery-v1' .github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-evaluation-recovery-v1.yml

@@ -67,7 +67,8 @@ def main():
     req(r['scientificBoundaries']['protectedValidationAuthorized'] is False and r['scientificBoundaries']['newMysticSolverExecutionAuthorized'] is False,'training result boundary drift')
     for wf in (REVIEW_WF,AUTH_WF,EXEC_WF): req(wf.is_file(),f'missing workflow: {wf}')
     rt=REVIEW_WF.read_text(); at=AUTH_WF.read_text(); et=EXEC_WF.read_text()
-    req('workflow_dispatch:' not in rt+at+et and '\nschedule:' not in rt+at+et,'manual/scheduled trigger introduced')
+    trigger_headers=[text.split('jobs:',1)[0] for text in (rt,at,et)]
+    req(all('workflow_dispatch:' not in header and '\nschedule:' not in header for header in trigger_headers),'manual/scheduled trigger introduced')
     req("'authorization/level-b-v2-densified58-fresh-validation-ordinal24-v1'" in at and 'pull_request:' in at and 'push:' not in at.split('jobs:',1)[0],'authorization workflow trigger drift')
     req("'dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v1'" in et and 'push:' in et.split('jobs:',1)[0] and 'pull_request:' not in et.split('jobs:',1)[0],'execution workflow trigger drift')
     req(AUTH_REL in at and AUTH_REL in et,'authorization path missing from future workflows')

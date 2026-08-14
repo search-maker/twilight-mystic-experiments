@@ -10,7 +10,10 @@ C=json.loads((R/'tier2-stage1-execution-transport-v1.json').read_text()); M=json
 ORD=C['sourceBindings']['latestConsumedScientificOrdinal']+1; AUTH=C['authorization']['authorizationBranchTemplate'].format(scientificOrdinal=ORD); DISP=C['authorization']['dispatchBranchTemplate'].format(scientificOrdinal=ORD); KEY=C['authorization']['executionKeyTemplate'].format(scientificOrdinal=ORD); HEAD='a'*40; BASE='b'*40
 A={'schemaVersion':1,'status':'AUTHORIZED_PENDING_SEPARATE_DISPATCH','enabled':True,'scientificOrdinal':ORD,'authorizationBranch':AUTH,'dispatchBranch':DISP,'executionKey':KEY,'manifestSha256':M['manifestSha256'],'transportContractSha256':C['contractSha256'],'exactAuthorizationParentCommit':BASE,'scientificExecutionAuthorized':True,'dispatchAuthorized':True,'automaticDispatch':False,'githubRerunAllowed':False,'retryAllowed':False,'resumeAllowed':False,'solverExecutionPerformed':False,'protectedHoldoutOpeningAuthorized':False,'modelFittingAuthorized':False,'modelSelectionAuthorized':False,'productionPromotionAuthorized':False,'stage2Authorized':False}
 seed={'status':'PASSED_EXACT_HEAD_TRACKED_TREE_100_SEED_NEGATIVE_COLLISION_CHECK','repoHead':HEAD,'externalCollisionCount':0}
-ctx={'eventName':'pull_request','runAttempt':1,'currentRunId':100,'headBranch':AUTH,'headSha':HEAD,'parentSha':BASE,'liveMain':BASE,'changedFiles':[C['authorization']['path']],'authorization':A,'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'branches':[{'name':'dispatch/legacy-ordinal18-v1','commit':{'sha':'1'*40}},{'name':AUTH,'commit':{'sha':HEAD}}],'runs':[{'id':1,'event':'push','head_branch':'dispatch/legacy-ordinal18-v1','head_sha':'1'*40},{'id':100,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD},{'id':101,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD,'path':'.github/workflows/contract.yml'}],'artifacts':[],'issue60Comments':[{'id':5279964834,'body':f"candidate ledger {C['sourceBindings']['campaignContractSha256']} {C['seedAudit']['candidateFirstSeed']}..{C['seedAudit']['candidateLastSeed']}"}],'pr':{'number':1,'draft':True,'state':'open','headSha':HEAD,'baseSha':BASE}}
+REC=C['recovery']['priorFailedPresolverDispatch']
+recovery_run={'id':REC['runId'],'event':'push','head_branch':REC['branch'],'head_sha':REC['headSha'],'run_attempt':REC['runAttempt'],'status':'completed','conclusion':REC['conclusion']}
+recovery_artifacts=[{'id':x['artifactId'],'name':x['name'],'digest':x['digest'],'workflow_run':{'id':REC['runId'],'head_branch':REC['branch'],'head_sha':REC['headSha']}} for x in REC['allowedArtifacts']]
+ctx={'eventName':'pull_request','runAttempt':1,'currentRunId':100,'headBranch':AUTH,'headSha':HEAD,'parentSha':BASE,'liveMain':BASE,'changedFiles':[C['authorization']['path']],'authorization':A,'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'branches':[{'name':REC['branch'],'commit':{'sha':REC['headSha']}},{'name':AUTH,'commit':{'sha':HEAD}}],'runs':[recovery_run,{'id':100,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD},{'id':101,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD,'path':'.github/workflows/contract.yml'}],'artifacts':recovery_artifacts,'issue60Comments':[{'id':5279964834,'body':f"candidate ledger {C['sourceBindings']['campaignContractSha256']} {C['seedAudit']['candidateFirstSeed']}..{C['seedAudit']['candidateLastSeed']}"}],'pr':{'number':1,'draft':True,'state':'open','headSha':HEAD,'baseSha':BASE}}
 o=P.evaluate(C,M,ctx); assert o['candidateScientificOrdinal']==ORD and o['status'].startswith('AUTHORIZATION_IDENTITY_REVIEW_PASSED')
 # Regression for the preserved failed v1 authorization review: the old negative-check
 # comment consumed the old dispatch string, but must not contaminate a newer versioned
@@ -19,9 +22,6 @@ o=P.evaluate(C,M,ctx); assert o['candidateScientificOrdinal']==ORD and o['status
 legacy_identity_comment=copy.deepcopy(ctx)
 legacy_identity_comment['issue60Comments'].append({'id':5285605573,'body':'early warning: no authorization/tier2-stage1-ordinal19-v1 or dispatch/tier2-stage1-ordinal19-v1 branch identity'})
 legacy_o=P.evaluate(C,M,legacy_identity_comment); assert legacy_o['dispatchBranch']==DISP
-failed_v2_history=copy.deepcopy(ctx)
-failed_v2_history['runs'].append({'id':31754924218,'event':'pull_request','head_branch':'authorization/tier2-stage1-ordinal19-v2','head_sha':'393fb39615f146e20129963fc7d2700255ccbd27'})
-failed_v2_o=P.evaluate(C,M,failed_v2_history); assert failed_v2_o['authorizationBranch']==AUTH
 current_identity_comment=copy.deepcopy(ctx)
 current_identity_comment['issue60Comments'].append({'id':5285605573,'body':f'early warning: no {DISP} branch identity'})
 try:P.evaluate(C,M,current_identity_comment)
@@ -51,8 +51,21 @@ for mutate in ('prior_dispatch','external_seed','prior_artifact'):
     try:P.evaluate(C,M,c)
     except P.Refusal: pass
     else: raise AssertionError(f'preauthorization accepted {mutate}')
+# Recovery exception is exact: any case artifact, missing allowed artifact, or run-attempt drift is refused.
+case_art=copy.deepcopy(ctx); case_art['artifacts'].append({'id':999,'name':'tier2-stage1-case-historical','digest':'sha256:'+'0'*64,'workflow_run':{'id':REC['runId'],'head_branch':REC['branch'],'head_sha':REC['headSha']}})
+try:P.evaluate(C,M,case_art)
+except P.Refusal: pass
+else: raise AssertionError('preauthorization accepted historical case artifact')
+missing_art=copy.deepcopy(ctx); missing_art['artifacts']=missing_art['artifacts'][:-1]
+try:P.evaluate(C,M,missing_art)
+except P.Refusal: pass
+else: raise AssertionError('preauthorization accepted missing recovery artifact')
+rerun=copy.deepcopy(ctx); rerun['runs'][0]['run_attempt']=2
+try:P.evaluate(C,M,rerun)
+except P.Refusal: pass
+else: raise AssertionError('preauthorization accepted rerun recovery evidence')
 review=o
-xc={'eventName':'push','runAttempt':1,'refName':DISP,'headSha':HEAD,'authorizationCommitSha':HEAD,'parentSha':BASE,'liveMain':BASE,'changedFiles':[C['authorization']['path']],'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'currentRunId':200,'runs':[{'id':1,'event':'push','head_branch':'dispatch/legacy-ordinal18-v1'},{'id':200,'event':'push','head_branch':DISP}],'artifacts':[],'issue60Comments':[],'authorizationReview':{'headSha':HEAD,'headBranch':AUTH,'runAttempt':1,'status':'completed','conclusion':'success','runId':100},'authorizationPr':{'number':1,'state':'open','draft':True,'headSha':HEAD,'headBranch':AUTH,'merged':False}}
+xc={'eventName':'push','runAttempt':1,'refName':DISP,'headSha':HEAD,'authorizationCommitSha':HEAD,'parentSha':BASE,'liveMain':BASE,'changedFiles':[C['authorization']['path']],'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'currentRunId':200,'runs':[recovery_run,{'id':200,'event':'push','head_branch':DISP}],'artifacts':copy.deepcopy(recovery_artifacts),'issue60Comments':[],'authorizationReview':{'headSha':HEAD,'headBranch':AUTH,'runAttempt':1,'status':'completed','conclusion':'success','runId':100},'authorizationPr':{'number':1,'state':'open','draft':True,'headSha':HEAD,'headBranch':AUTH,'merged':False}}
 xo=X.evaluate(C,M,A,review,xc); assert xo['status']=='EXACT_ONE_USE_STAGE1_DISPATCH_AUTHORIZED' and xo['solverExecutionPermittedNow'] is True and xo['stage2Authorized'] is False
 bad_review=copy.deepcopy(review); bad_review['transportContractSha256']='0'*64
 try:X.evaluate(C,M,A,bad_review,xc)

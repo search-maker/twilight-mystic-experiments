@@ -8,6 +8,31 @@ def req(c,m):
 def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 def load(p):
     x=json.loads(Path(p).read_text()); req(isinstance(x,dict),f'object required: {p}'); return x
+
+def validate_recovery_evidence(contract,ctx):
+    rec=((contract.get('recovery') or {}).get('priorFailedPresolverDispatch') or {})
+    req(rec,'presolver recovery evidence missing')
+    rr=[r for r in ctx.get('runs',[]) if int(r.get('id') or 0)==int(rec.get('runId') or 0)]
+    req(len(rr)==1,'prior failed dispatch run evidence missing/drifted')
+    r=rr[0]
+    req(r.get('event')=='push' and r.get('head_branch')==rec.get('branch') and r.get('head_sha')==rec.get('headSha'),'prior failed dispatch identity drift')
+    req(int(r.get('run_attempt') or 0)==rec.get('runAttempt') and r.get('status')=='completed' and r.get('conclusion')==rec.get('conclusion'),'prior failed dispatch terminal evidence drift')
+    prefixes=('tier2-stage1-case-','tier2-stage1-preflight-','tier2-stage1-aggregate-','tier2-stage1-audit-','tier2-stage1-handoff-')
+    arts=[a for a in ctx.get('artifacts',[]) if str(a.get('name') or '').startswith(prefixes)]
+    allowed_specs=rec.get('allowedArtifacts') or []; allowed={x.get('name'):x for x in allowed_specs}
+    req(len(allowed)==len(allowed_specs) and all(allowed),'duplicate/invalid recovery artifact specification')
+    req(not any(str(a.get('name') or '').startswith('tier2-stage1-case-') for a in arts),'prior Tier2 stage1 case artifact exists')
+    req(len(arts)==len(allowed),f'unexpected prior Tier2 stage1 scientific artifact set: {[(a.get("id"),a.get("name")) for a in arts[:8]]}')
+    seen=set()
+    for a in arts:
+        name=str(a.get('name') or ''); spec=allowed.get(name); req(spec is not None,f'unapproved prior scientific artifact: {name}')
+        wr=a.get('workflow_run') or {}
+        req(int(a.get('id') or 0)==spec.get('artifactId') and a.get('digest')==spec.get('digest'),'recovery artifact id/digest drift')
+        req(int(wr.get('id') or 0)==rec.get('runId') and wr.get('head_branch')==rec.get('branch') and wr.get('head_sha')==rec.get('headSha'),'recovery artifact provenance drift')
+        seen.add(name)
+    req(seen==set(allowed),'required recovery artifact missing')
+    req(rec.get('caseJobCount')==0 and rec.get('caseArtifactCount')==0 and rec.get('solverExecutionCount')==0,'recovery is not a proven pre-solver failure')
+
 def evaluate(contract,manifest,auth,review_guard,ctx):
     req(set(auth)==set(contract['authorization']['expectedFieldNames']),'authorization exact field surface drift')
     ordinal=auth.get('scientificOrdinal'); req(isinstance(ordinal,int) and ordinal>0,'authorization ordinal invalid')
@@ -26,8 +51,7 @@ def evaluate(contract,manifest,auth,review_guard,ctx):
     tracked=ctx.get('trackedSeedAudit') or {}; req(tracked.get('status')=='PASSED_EXACT_HEAD_TRACKED_TREE_100_SEED_NEGATIVE_COLLISION_CHECK' and tracked.get('repoHead')==ctx.get('headSha') and tracked.get('externalCollisionCount')==0,'fresh dispatch seed audit failed')
     req(ctx.get('mainAuthorizationPathPresent') is False,'authorization path unexpectedly exists on main')
     current=int(ctx.get('currentRunId') or 0); runs=ctx.get('runs',[]); prior=[r for r in runs if r.get('head_branch')==dispatch and int(r.get('id') or 0)!=current]; req(not prior,f'prior dispatch run exists: {[r.get("id") for r in prior]}')
-    prefixes=('tier2-stage1-case-','tier2-stage1-preflight','tier2-stage1-aggregate','tier2-stage1-audit','tier2-stage1-handoff')
-    arts=[a for a in ctx.get('artifacts',[]) if str(a.get('name') or '').startswith(prefixes)]; req(not arts,f'prior scientific artifact exists: {[(a.get("id"),a.get("name")) for a in arts[:8]]}')
+    validate_recovery_evidence(contract,ctx)
     marker=re.compile(rf'^ORDINAL{ordinal}_TIER2_STAGE1_DISPATCH_CONSUMED\b',re.I); req(not any(marker.search(str(c.get('body') or '').strip()) for c in ctx.get('issue60Comments',[])),'dispatch consumed marker already exists')
     out={'schemaVersion':1,'guardId':'public-tier2-v1-core-stage1-execution-guard-v1','status':'EXACT_ONE_USE_STAGE1_DISPATCH_AUTHORIZED','scientificOrdinal':ordinal,'executionKey':key,'authorizationCommitSha':ctx['headSha'],'manifestSha256':manifest['manifestSha256'],'transportContractSha256':contract['contractSha256'],'workflowRunAttempt':1,'stage1CaseCount':76,'configuredPhotonHistories':2_120_000_000,'scientificExecutionAuthorized':True,'dispatchAuthorized':True,'solverExecutionPermittedNow':True,'protectedHoldoutOpeningAuthorized':False,'stage2Authorized':False,'retryAllowed':False,'resumeAllowed':False,'githubRerunAllowed':False}
     out['guardSha256']=canon(out); return out

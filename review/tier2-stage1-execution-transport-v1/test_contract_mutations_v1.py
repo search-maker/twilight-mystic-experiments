@@ -10,11 +10,12 @@ def mutate(path,value):
     for k in path[:-1]: x=x[k]
     x[path[-1]]=value; d['contractSha256']=None; d['contractSha256']=v.selfhash(d); return d
 M=[
- (['sourceBindings','latestConsumedScientificOrdinal'],19),(['sourceBindings','campaignContractSha256'],'0'*64),(['sourceBindings','stage1ImplementationSha256'],'0'*64),(['sourceBindings','artifactReplayResultSha256'],'0'*64),
+ (['sourceBindings','latestConsumedScientificOrdinal'],20),(['sourceBindings','campaignContractSha256'],'0'*64),(['sourceBindings','stage1ImplementationSha256'],'0'*64),(['sourceBindings','artifactReplayResultSha256'],'0'*64),
  (['runtimeIdentityRequired','uvspecSha256'],'0'*64),(['runtimeIdentityRequired','exactPackageSpec'],'latest'),(['frozenStage1','geometryCount'],20),(['frozenStage1','caseCount'],100),(['frozenStage1','configuredPhotonHistories'],1),(['frozenStage1','manifestSha256'],'0'*64),(['frozenStage1','protectedHoldoutValuesReadable'],True),(['frozenStage1','stage2Included'],True),
  (['seedAudit','candidateFirstSeed'],1),(['seedAudit','candidateLastSeed'],2),(['seedAudit','candidateSeedCount'],99),(['seedAudit','all100MustBeRecheckedAtAuthorizationAndDispatch'],False),
  (['authorization','separateOneFileAuthorizationCommitRequired'],False),(['authorization','repositoryGlobalBranchesRunsArtifactsIssue60RecheckRequired'],False),(['authorization','trackedTreeAll100SeedRecheckRequired'],False),
- (['workflows','workflowDispatchAllowed'],True),(['workflows','githubRerunAllowed'],True),(['executionBoundary','transportMergeAuthorizesScience'],True),(['executionBoundary','scientificOrdinalAllocated'],True),(['executionBoundary','authorizationIssued'],True),(['executionBoundary','dispatchIssued'],True),(['executionBoundary','protectedHoldoutOpeningAuthorized'],True),(['executionBoundary','stage2Authorized'],True),(['executionBoundary','modelFittingAuthorized'],True),(['nextBoundary','ordinal19AllocationAllowedByTransport'],True),(['nextBoundary','automaticDispatchAfterTransportMerge'],True)]
+ (['recovery','priorFailedPresolverDispatch','runId'],0),(['recovery','priorFailedPresolverDispatch','caseJobCount'],1),(['recovery','priorFailedPresolverDispatch','solverExecutionCount'],1),(['recovery','priorFailedPresolverDispatch','allowedArtifacts'],[]),
+ (['workflows','workflowDispatchAllowed'],True),(['workflows','githubRerunAllowed'],True),(['executionBoundary','transportMergeAuthorizesScience'],True),(['executionBoundary','scientificOrdinalAllocated'],True),(['executionBoundary','authorizationIssued'],True),(['executionBoundary','dispatchIssued'],True),(['executionBoundary','protectedHoldoutOpeningAuthorized'],True),(['executionBoundary','stage2Authorized'],True),(['executionBoundary','modelFittingAuthorized'],True),(['nextBoundary','ordinal20AllocationAllowedByTransport'],True),(['nextBoundary','automaticDispatchAfterTransportMerge'],True)]
 for path,value in M:
     try:v.validate(mutate(path,value))
     except v.Refusal: pass

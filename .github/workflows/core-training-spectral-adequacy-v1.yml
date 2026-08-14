@@ -1,0 +1,167 @@
+name: Level-B core training spectral adequacy v1
+run-name: Level-B core training spectral adequacy v1
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/core-training-spectral-adequacy-v1.yml
+      - review/core-training-spectral-adequacy-v1/**
+  push:
+    branches:
+      - postprocess/core-training-spectral-adequacy-v1
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: level-b-core-training-spectral-adequacy-v1
+  cancel-in-progress: false
+
+env:
+  DIR: review/core-training-spectral-adequacy-v1
+  PROTOCOL: review/core-training-spectral-adequacy-v1/protocol-v1.json
+  ANALYZER: review/core-training-spectral-adequacy-v1/analyze_v1.py
+  ACTIVATION: review/core-training-spectral-adequacy-v1/activation.json
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Install frozen numerical dependency
+        run: python -m pip install --disable-pip-version-check numpy==2.1.0
+      - name: Refuse wrong review context or execution surface
+        env:
+          EXPECTED_BASE_SHA: 9246223fa11c8b76a916cf3cadd92fc952add4fb
+          ACTUAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_HEAD_REF" = review/core-training-spectral-adequacy-v1
+          test "$GITHUB_BASE_REF" = main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ACTUAL_BASE_SHA" = "$EXPECTED_BASE_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/core-training-spectral-adequacy-v1.yml').read_text(encoding='utf-8').lower()
+          forbidden=('workflow_'+'dispatch','uv'+'spec','librad'+'tran','mc_'+'photons','mc_'+'vroom','--allow-'+'execution')
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'forbidden scientific-execution surface: {found}')
+          PY
+      - name: Validate frozen universe and adequacy contract
+        run: |
+          set -euo pipefail
+          python "$ANALYZER" validate --protocol "$PROTOCOL"
+          (cd "$DIR" && python -m unittest -v test_v1.py)
+          test "$(git rev-parse HEAD:review/full-spectrum-training-admission-readiness-v2/full-spectrum-training-admission-readiness-v2.json)" = 4bc66c732952d38cbee2615b3db8727bcdcfb0c4
+          test "$(git rev-parse HEAD:review/train-0014-fresh-training-admission-decision-v1/train-0014-fresh-training-admission-decision-v1.json)" = 78a7f7c1b894dbde45c2e1b452bf98834634ea54
+          test "$(git rev-parse HEAD:review/tier2-stage1-ordinal20-artifact-salvage-result-v1/result-v1.json)" = 8cc8f4245ccb04cab70a1cf00546a1e43981e0d9
+      - name: Reconstruct exact source identities from reviewed evidence without reading raw spectra
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,sys
+          sys.path.insert(0,'review/core-training-spectral-adequacy-v1')
+          import analyze_v1 as a
+          p=json.load(open('review/core-training-spectral-adequacy-v1/protocol-v1.json'))
+          src,_=a.derive_sources(p,__import__('os').environ['GITHUB_TOKEN'])
+          assert len(src)==138
+          assert len({x['geometryId'] for x in src})==44
+          assert sum(x['cohort']=='historical-admitted' for x in src)==58
+          assert sum(x['cohort']=='train0014-fresh-admitted' for x in src)==4
+          assert sum(x['cohort']=='tier2-ordinal20-recovered' for x in src)==76
+          excluded=set(p['trainingUniverse']['explicitlyExcludedGeometryIds'])
+          assert not excluded.intersection(x['geometryId'] for x in src)
+          PY
+
+  analyze:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Install frozen numerical dependency
+        run: python -m pip install --disable-pip-version-check numpy==2.1.0
+      - name: Refuse wrong activation, retry, moved main, or duplicate activation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = postprocess/core-training-spectral-adequacy-v1
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git cat-file -p "$GITHUB_SHA" | grep -c '^parent ')" = 1
+          SOURCE_SHA="$(git rev-parse "$GITHUB_SHA^")"
+          LIVE_MAIN="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .commit.sha)"
+          test "$SOURCE_SHA" = "$LIVE_MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$ACTIVATION"
+          python - <<'PY'
+          import json,os,subprocess
+          a=json.load(open(os.environ['ACTIVATION']))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          expected={'schemaVersion':1,'status':'AUTHORIZED_TRAINING_ONLY_SPECTRAL_ADEQUACY','sourceMainSha':parent,'protectedHoldoutOpeningAuthorized':False,'modelFittingAuthorized':False,'newScientificExecutionAuthorized':False}
+          stale={k:(a.get(k),v) for k,v in expected.items() if a.get(k)!=v}
+          if stale: raise SystemExit(f'activation drift: {stale}')
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > activation-runs.json
+          python - <<'PY'
+          import json,os
+          runs=json.load(open('activation-runs.json')).get('workflow_runs',[])
+          hits=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('head_branch')==os.environ['GITHUB_REF_NAME'] and r.get('event')=='push']
+          if len(hits)!=1 or int(hits[0].get('id') or 0)!=int(os.environ['GITHUB_RUN_ID']): raise SystemExit(f'activation identity count drift: {[r.get("id") for r in hits]}')
+          PY
+      - name: Re-prove frozen protocol and unit tests
+        run: |
+          set -euo pipefail
+          python "$ANALYZER" validate --protocol "$PROTOCOL"
+          (cd "$DIR" && python -m unittest -v test_v1.py)
+      - name: Execute training-only spectral adequacy analysis
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python "$ANALYZER" execute --repo-root . --protocol "$PROTOCOL" --output adequacy-output
+      - name: Independently verify package boundaries and PCA orthogonality
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,numpy as np
+          u=json.load(open('adequacy-output/training-universe-v1.json'))
+          r=json.load(open('adequacy-output/spectral-adequacy-result-v1.json'))
+          assert u['geometryCount']==44 and u['sourceCaseArtifactCount']==138
+          assert u['holdoutValuesRead'] is False and u['protectedHoldoutRecordCount']==0
+          assert r['holdoutValuesRead'] is False and r['protectedHoldoutRecordCount']==0
+          assert r['modelFittingAuthorized'] is False and r['modelSelectionAuthorized'] is False and r['stage2Authorized'] is False
+          raw=open('adequacy-output/spectral-representation-v1.npz','rb').read()
+          assert hashlib.sha256(raw).hexdigest()==r['representationPackageSha256']
+          p=np.load('adequacy-output/spectral-representation-v1.npz')
+          W=p['integration_weights']; C=p['selected_nullspace_pca_components']
+          if C.size: assert np.max(np.abs(W@C.T)) < 1e-9
+          assert C.shape[0]==r['resolvedNullspacePcaComponentCount']
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-core-training-spectral-adequacy-v1-${{ github.sha }}
+          path: adequacy-output/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9

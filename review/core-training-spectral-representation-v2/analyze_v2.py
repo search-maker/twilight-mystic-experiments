@@ -37,6 +37,9 @@ def validate_protocol(p:dict[str,Any])->None:
     req(q.get('decision')=='RETAIN_ALL_TRAINING_RESOLVED_NULLSPACE_COMPONENTS_OBSERVED_BY_V1','representation decision drift')
     req((q.get('mandatoryIntegratedChannelCount'),q.get('expectedResolvedNullspacePcaComponentCount'),q.get('totalRepresentationFeatureCount'))==(3,10,13),'representation dimensionality drift')
     req(q.get('componentSnrThreshold')==1.0 and q.get('numericalRankRule')=='FLOAT64_SVD_MAX_DIMENSION_EPS_LEADING_SINGULAR_VALUE','scientific resolution rule drift')
+    req(q.get('coefficientDefinition')=='PROJECT_EACH_BLOCK_LOST_SHAPE_MINUS_FROZEN_TRAINING_GRAND_MEAN_RESIDUAL_ONTO_EACH_SELECTED_COMPONENT','coefficient definition drift')
+    req(q.get('reconstructionDefinition')=='ROWSPACE_FROM_THREE_NORMALIZED_INTEGRATED_CHANNELS_PLUS_FROZEN_GRAND_MEAN_RESIDUAL_PLUS_SUM_OF_CENTERED_PCA_COEFFICIENT_TIMES_COMPONENT','reconstruction definition drift')
+    req(q.get('zeroCoefficientRelativeUncertaintyEncoding')=='NULL_NOT_INFINITY','zero coefficient uncertainty encoding drift')
     req(q.get('wavelengthTokenGridSha256')==GRID_SHA,'grid hash drift')
     for k in ('rawResamplingAllowed','rawSmoothingAllowed','epsilonSubstitutionAllowed','protectedHoldoutMayInfluenceRepresentation'):
         req(q.get(k) is False,f'forbidden representation operation opened: {k}')
@@ -62,9 +65,10 @@ def prepared_inputs(raw:bytes)->dict[str,Any]:
     sigs={(tuple(float(x[k]) for k in FEATURES),str(x.get('groupId') or x.get('geometryId'))) for x in candidates}
     req(len(sigs)==1,'prepared geometry input ambiguity')
     vals,gid=next(iter(sigs)); return {'geometryId':gid,'geometry':{k:float(v) for k,v in zip(FEATURES,vals,strict=True)}}
-def stats(xs:list[float])->dict[str,float]:
+def stats(xs:list[float])->dict[str,Any]:
     req(xs and all(math.isfinite(x) for x in xs),'finite statistics required'); a=np.asarray(xs,dtype=np.float64); n=len(xs); mean=float(np.mean(a)); sd=float(np.std(a,ddof=1)) if n>1 else 0.0; sem=sd/math.sqrt(n) if n else math.nan
-    return {'mean':mean,'sampleStd':sd,'standardError':sem,'relativeStandardError':(abs(sem/mean) if mean!=0 else math.inf)}
+    rse=abs(sem/mean) if mean!=0 else None
+    return {'mean':mean,'sampleStd':sd,'standardError':sem,'relativeStandardError':rse}
 
 def execute(root:Path,protocol_path:Path,out:Path)->None:
     token=os.environ.get('GITHUB_TOKEN',''); req(token,'GITHUB_TOKEN required'); p=load_json(protocol_path); validate_protocol(p)
@@ -90,7 +94,7 @@ def execute(root:Path,protocol_path:Path,out:Path)->None:
     for gid in sorted(blocks):
         channel_rows=[]; coeff_rows=[]
         for y in blocks[gid]:
-            residual,ch=v1.projection_residual(y,W); channel_rows.append(ch); coeff_rows.append(residual@C.T)
+            residual,ch=v1.projection_residual(y,W); channel_rows.append(ch); coeff_rows.append((residual-r['grandMeanResidual'])@C.T)
         ca=np.vstack(channel_rows); pa=np.vstack(coeff_rows)
         records.append({'geometryId':gid,'geometry':inputs[gid],'blockCount':len(blocks[gid]),'integratedChannels':{
             'photopicLuminanceCdM2':stats(ca[:,0].tolist()),
@@ -99,7 +103,7 @@ def execute(root:Path,protocol_path:Path,out:Path)->None:
             'nullspacePcaCoefficients':[stats(pa[:,j].tolist()) for j in range(10)]})
     out.mkdir(parents=True,exist_ok=True)
     npz=out/'spectral-representation-v2.npz'; np.savez_compressed(npz,wavelength_nm=wl0,integration_weights=W,grand_mean_nullspace_residual=r['grandMeanResidual'],selected_nullspace_pca_components=C,resolved_pca_indices=np.asarray(r['resolvedIndices'],dtype=np.int64))
-    universe={'schemaVersion':2,'stageId':'level-b-v1-core-training-representation-dataset-v2','status':'FROZEN_44_GEOMETRY_TRAINING_REPRESENTATION_NO_HOLDOUT','protocolId':p['protocolId'],'geometryCount':44,'sourceCaseArtifactCount':138,'representationFeatureCount':13,'mandatoryIntegratedChannelCount':3,'nullspacePcaComponentCount':10,'featureNames':list(FEATURES),'records':records,'sourceCases':inventory,'protectedHoldoutRecordCount':0,'holdoutValuesRead':False,'scientificSolverExecutionPerformed':False}; universe['datasetSha256']=canon(universe); write_json(out/'training-representation-dataset-v2.json',universe)
+    universe={'schemaVersion':2,'stageId':'level-b-v1-core-training-representation-dataset-v2','status':'FROZEN_44_GEOMETRY_TRAINING_REPRESENTATION_NO_HOLDOUT','protocolId':p['protocolId'],'geometryCount':44,'sourceCaseArtifactCount':138,'representationFeatureCount':13,'mandatoryIntegratedChannelCount':3,'nullspacePcaComponentCount':10,'featureNames':list(FEATURES),'nullspacePcaCoefficientDefinition':p['representation']['coefficientDefinition'],'reconstructionDefinition':p['representation']['reconstructionDefinition'],'records':records,'sourceCases':inventory,'protectedHoldoutRecordCount':0,'holdoutValuesRead':False,'scientificSolverExecutionPerformed':False}; universe['datasetSha256']=canon(universe); write_json(out/'training-representation-dataset-v2.json',universe)
     result={'schemaVersion':2,'stageId':'level-b-v1-core-training-spectral-representation-result-v2','status':'TRAINING_ONLY_REPRESENTATION_FROZEN_PENDING_REVIEWED_RESULT_BINDING','protocolId':p['protocolId'],'priorV1RefusalRunId':31769561806,'priorV1RefusalReason':p['priorAdequacyRefusal']['exactRefusalReason'],'geometryCount':44,'sourceCaseArtifactCount':138,'mandatoryIntegratedChannelCount':3,'resolvedNullspacePcaComponentCount':10,'totalRepresentationFeatureCount':13,'resolvedPcaIndices':r['resolvedIndices'],'numericalRank':r['numericalRank'],'numericalRankTolerance':r['numericalRankTolerance'],'componentSnrThreshold':1.0,'singularValues':[float(x) for x in r['singularValues']],'betweenGeometryScoreVariance':[float(x) for x in r['betweenVariance']],'noiseFloorVariance':[float(x) for x in r['noiseVariance']],'componentSnr':[('Infinity' if math.isinf(float(x)) else float(x)) for x in r['snr']],'trainingDatasetSha256':universe['datasetSha256'],'representationPackageSha256':sha_bytes(npz.read_bytes()),'wavelengthTokenGridSha256':GRID_SHA,'holdoutValuesRead':False,'protectedHoldoutRecordCount':0,'modelFittingAuthorized':False,'modelSelectionAuthorized':False,'stage2Authorized':False,'newScientificExecutionAuthorized':False,'sourceArtifactsModified':False}; result['resultSha256']=canon(result); write_json(out/'spectral-representation-result-v2.json',result)
 
 def main()->int:

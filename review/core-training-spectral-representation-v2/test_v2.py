@@ -16,8 +16,14 @@ class SpectralRepresentationV2Tests(unittest.TestCase):
         p=json.loads((HERE/'protocol-v2.json').read_text()); a.validate_protocol(p)
         q=copy.deepcopy(p); q['representation']['expectedResolvedNullspacePcaComponentCount']=9
         with self.assertRaises(a.Refusal): a.validate_protocol(q)
+        q=copy.deepcopy(p); q['representation']['coefficientDefinition']='DRIFT'
+        with self.assertRaises(a.Refusal): a.validate_protocol(q)
         q=copy.deepcopy(p); q['boundaries']['protectedHoldoutOpeningAuthorized']=True
         with self.assertRaises(a.Refusal): a.validate_protocol(q)
+    def test_zero_mean_coefficient_uncertainty_is_json_safe_null(self):
+        s=a.stats([0.0,0.0,0.0,0.0])
+        self.assertEqual(s['mean'],0.0); self.assertIsNone(s['relativeStandardError'])
+        json.dumps(s,allow_nan=False)
     def test_v1_refuses_same_ten_component_fixture_and_v2_rule_retains_all_ten(self):
         v1=load_v1(); W=np.zeros((3,13),dtype=np.float64); W[0,0]=W[1,1]=W[2,2]=1.0
         blocks={}
@@ -28,7 +34,12 @@ class SpectralRepresentationV2Tests(unittest.TestCase):
             blocks[f'g{i:02d}']=[mean-noise,mean+noise]
         with self.assertRaises(v1.Refusal): v1.spectral_pca(blocks,W,max_components=8,threshold=1.0)
         r=v1.spectral_pca(blocks,W,max_components=10,threshold=1.0)
-        self.assertEqual(r['numericalRank'],10); self.assertEqual(r['resolvedIndices'],list(range(10))); self.assertEqual(r['components'].shape,(10,13))
+        self.assertEqual(r['numericalRank'],10); self.assertEqual(len(r['resolvedIndices']),10); self.assertEqual(r['components'].shape,(10,13))
         self.assertLess(float(np.max(np.abs(W@r['components'].T))),1e-12)
+        grand=r['grandMeanResidual']; centered=[]
+        for gid in sorted(blocks):
+            mean_res=np.mean(np.vstack([v1.projection_residual(y,W)[0] for y in blocks[gid]]),axis=0)
+            centered.append((mean_res-grand)@r['components'].T)
+        self.assertTrue(np.allclose(np.mean(np.vstack(centered),axis=0),0.0,atol=1e-12))
 
 if __name__=='__main__': unittest.main()

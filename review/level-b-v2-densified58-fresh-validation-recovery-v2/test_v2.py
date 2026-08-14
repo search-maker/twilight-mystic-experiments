@@ -9,11 +9,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RECOVERY = ROOT / 'review/level-b-v2-densified58-fresh-validation-recovery-v2/recovery-v2.json'
+CONTRACT_V2 = ROOT / 'review/level-b-v2-densified58-fresh-validation-recovery-v2/contract-v2.json'
 CORE = ROOT / 'review/level-b-v2-densified58-fresh-validation-recovery-v2/fresh_validation_v2.py'
 MANIFEST = ROOT / 'experiments/level-b-v2-densified58-fresh-validation-recovery-v2/build_manifest_v2.py'
 BASE_CONTRACT = ROOT / 'review/level-b-v2-densified58-fresh-validation-v1/contract-v1.json'
 ADAPTER = ROOT / 'experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py'
-EXECUTOR = ROOT / 'experiments/level-b-v2-densified58-fresh-validation-v1/executor_v1.py'
+BASE_EXECUTOR = ROOT / 'experiments/level-b-v2-densified58-fresh-validation-v1/executor_v1.py'
+VERSIONED_EXECUTOR = ROOT / 'experiments/level-b-v2-densified58-fresh-validation-recovery-v2/executor_v2.py'
 
 
 def mod(name: str, path: Path):
@@ -27,13 +29,15 @@ def mod(name: str, path: Path):
 core = mod('fresh_validation_recovery_v2_test', CORE)
 manifest_mod = mod('fresh_validation_recovery_manifest_v2_test', MANIFEST)
 adapter = mod('fresh_validation_adapter_v1_reuse_test', ADAPTER)
-executor = mod('fresh_validation_executor_v1_reuse_test', EXECUTOR)
+base_executor = mod('fresh_validation_executor_v1_regression_test', BASE_EXECUTOR)
+versioned_executor = mod('fresh_validation_executor_v2_recovery_test', VERSIONED_EXECUTOR)
 
 
 class Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.recovery = json.loads(RECOVERY.read_text(encoding='utf-8'))
+        cls.contract_v2 = json.loads(CONTRACT_V2.read_text(encoding='utf-8'))
         cls.base = json.loads(BASE_CONTRACT.read_text(encoding='utf-8'))
         cls.contract = core.effective_contract(cls.recovery, ROOT)
 
@@ -57,10 +61,26 @@ class Tests(unittest.TestCase):
         self.assertTrue(all(row['caseId'].startswith('v0070-o25-holdout-') for row in rows))
         self.assertEqual([row['block'] for row in rows[:4]], [1,2,3,4])
 
-    def test_frozen_executor_accepts_ordinal25_v1_and_refuses_old_ordinal24_v3(self):
-        self.assertIsNotNone(executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1'))
-        self.assertIsNone(executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v3'))
-        self.assertEqual(executor.BRANCH_RE.pattern, r'^dispatch/level-b-v2-densified58-fresh-validation-ordinal[1-9][0-9]*-v1$')
+    def test_versioned_executor_is_exact_ordinal25_guard(self):
+        self.assertEqual(base_executor.BRANCH_RE.pattern, r'^dispatch/level-b-v2-densified58-fresh-validation-ordinal[1-9][0-9]*-v1$')
+        self.assertIsNone(base_executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v3'))
+        self.assertEqual(versioned_executor.BASE_EXECUTOR_GIT_BLOB_SHA, '5bf0477f0d5100dcb73da8027233e8415ce9021c')
+        self.assertEqual(versioned_executor.BRANCH_RE.pattern, r'^dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1$')
+        self.assertIsNotNone(versioned_executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1'))
+        self.assertIsNone(versioned_executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v3'))
+        self.assertIsNone(versioned_executor.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v2'))
+
+    def test_versioned_recovery_contract_binds_only_identity_transport_change(self):
+        c = self.contract_v2
+        self.assertEqual((c['schemaVersion'], c['contractId'], c['governance']), (2, 'level-b-v2-densified58-fresh-protected-validation-v2-ordinal25-recovery', 'MYSTIC-STATE-0070'))
+        self.assertEqual(c['baseScientificContract']['gitBlobSha'], 'aad11350311ce3768488e64ed72edc3e48646ff9')
+        self.assertEqual(c['scientificIdentityCandidate']['scientificOrdinal'], 25)
+        self.assertEqual(c['scientificIdentityCandidate']['reservedSeeds'], list(range(2101000025,2101000049)))
+        self.assertFalse(c['scientificIdentityCandidate']['allocated'])
+        self.assertFalse(c['scientificIdentityCandidate']['consumed'])
+        self.assertEqual(c['versionedExecutionSurface']['executorPath'], 'experiments/level-b-v2-densified58-fresh-validation-recovery-v2/executor_v2.py')
+        self.assertEqual(c['versionedExecutionSurface']['exactAllowedDispatchBranch'], 'dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1')
+        self.assertTrue(all(v is False for v in c['closedBoundaries'].values()))
 
     def test_manifest_reuses_adapter_contract_and_is_review_only(self):
         manifest = manifest_mod.build(ROOT, self.recovery)
@@ -92,6 +112,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(prior['solverExecutionCount'], 0)
         self.assertFalse(prior['protectedValuesRead'])
         self.assertEqual(prior['evaluationConclusion'], 'skipped')
+
+    def test_recovery_binds_versioned_executor_instead_of_reusing_executor_identity(self):
+        vr = self.recovery['versionedRecoveryBindings']
+        self.assertEqual(vr['contractGitBlobSha'], '1370e53bd33cff442be9c4525e7a7dcb7710084f')
+        self.assertEqual(vr['executorGitBlobSha'], '661f3c3bf4fef94c46eca096fd059f1a124a8e3c')
+        self.assertEqual(vr['exactAllowedDispatchBranch'], 'dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1')
+        self.assertNotIn('sameExecutorBlob', self.recovery['frozenScience'])
+        self.assertTrue(self.recovery['frozenScience']['baseExecutorScientificLogicReused'])
+        self.assertTrue(self.recovery['frozenScience']['executorVersionedOnlyForDispatchIdentityGuard'])
 
     def test_review_surface_remains_inert(self):
         self.assertTrue(all(value is False for value in self.recovery['reviewSurface'].values()))

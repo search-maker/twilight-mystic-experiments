@@ -1,0 +1,158 @@
+name: Level-B densified-58 fresh validation ordinal27 authorization review v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-ordinal27-transport-v1/authorization.json'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_PATH: review/level-b-v2-densified58-fresh-validation-ordinal27-transport-v1/authorization.json
+  RECOVERY: review/level-b-v2-densified58-fresh-validation-recovery-v4/recovery-v4.json
+  AUTH_BRANCH: authorization/level-b-v2-densified58-fresh-validation-ordinal27-v1
+  LOCK_BRANCH: allocation/level-b-v2-densified58-fresh-validation-ordinal27-v1
+  DISPATCH_BRANCH: dispatch/level-b-v2-densified58-fresh-validation-ordinal27-v1
+
+jobs:
+  authorization-review-v1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Refuse retry, non-draft, non-one-file, wrong branch, moved main, or merge-ref identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.pull_request.draft }}' = true
+          test "$GITHUB_HEAD_REF" = "$AUTH_BRANCH"
+          test "$GITHUB_BASE_REF" = main
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "$HEAD_SHA" = '${{ github.event.pull_request.head.sha }}'
+          test "$(git cat-file -p HEAD | grep -c '^parent ')" = 1
+          PARENT="$(git rev-parse HEAD^)"
+          test "$PARENT" = '${{ github.event.pull_request.base.sha }}'
+          test "$PARENT" = "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH_PATH"
+          test -f "$AUTH_PATH"
+          if git cat-file -e "$PARENT:$AUTH_PATH" 2>/dev/null; then echo authorization-already-on-main; exit 1; fi
+      - name: Revalidate merged ordinal27 transport, recovery and exact manifest
+        run: |
+          python review/level-b-v2-densified58-fresh-validation-ordinal27-transport-v1/validate_transport_v1.py
+          python review/level-b-v2-densified58-fresh-validation-recovery-v4/fresh_validation_v4.py validate --recovery "$RECOVERY" --repo-root .
+          python experiments/level-b-v2-densified58-fresh-validation-recovery-v4/build_manifest_v4.py --repo-root . --recovery "$RECOVERY" --output /tmp/o27-manifest.json
+          python - <<'PY'
+          import importlib.util,json
+          m=json.load(open('/tmp/o27-manifest.json'))
+          assert (m['scientificOrdinalCandidate'],m['geometryCount'],m['caseCount'],m['configuredPhotonHistories'])==(27,6,24,960_000_000)
+          assert [x['seed'] for x in m['cases']]==list(range(2101000073,2101000097))
+          assert all(v is False for v in m['closedUntilAuthorization'].values())
+          s=importlib.util.spec_from_file_location('adapter','experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py');a=importlib.util.module_from_spec(s);s.loader.exec_module(a);a.validate_manifest(m)
+          PY
+      - name: Audit exact authorization payload against parent-main blobs
+        run: |
+          python - <<'PY'
+          import json,os,subprocess
+          a=json.load(open(os.environ['AUTH_PATH']));parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          def b(p):return subprocess.check_output(['git','rev-parse',f'HEAD^:{p}'],text=True).strip()
+          expected={
+            'schemaVersion':1,
+            'status':'AUTHORIZED_FRESH_PROTECTED_VALIDATION_ORDINAL27_ATTEMPT1',
+            'governance':'MYSTIC-STATE-0070',
+            'scientificOrdinal':27,
+            'authorizationBranch':os.environ['AUTH_BRANCH'],
+            'allocationLockBranch':os.environ['LOCK_BRANCH'],
+            'dispatchBranch':os.environ['DISPATCH_BRANCH'],
+            'executionKey':'level-b-v2-densified58:fresh-protected-validation:27',
+            'authorizationParentMainSha':parent,
+            'transportGitBlobSha':b('review/level-b-v2-densified58-fresh-validation-ordinal27-transport-v1/transport-v1.json'),
+            'recoveryGitBlobSha':b('review/level-b-v2-densified58-fresh-validation-recovery-v4/recovery-v4.json'),
+            'contractV4GitBlobSha':b('review/level-b-v2-densified58-fresh-validation-recovery-v4/contract-v4.json'),
+            'evaluatorV4GitBlobSha':b('review/level-b-v2-densified58-fresh-validation-recovery-v4/fresh_validation_v4.py'),
+            'manifestBuilderV4GitBlobSha':b('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/build_manifest_v4.py'),
+            'executorV4GitBlobSha':b('experiments/level-b-v2-densified58-fresh-validation-recovery-v4/executor_v4.py'),
+            'adapterV1GitBlobSha':b('experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py'),
+            'allocationGuardGitBlobSha':b('review/level-b-v2-densified58-fresh-validation-ordinal27-transport-v1/allocation_guard_v1.py'),
+            'authorizationReviewWorkflowGitBlobSha':b('.github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-authorization-review-v1.yml'),
+            'executionWorkflowGitBlobSha':b('.github/workflows/level-b-v2-densified58-fresh-validation-ordinal27-execution-v1.yml'),
+            'modelSha256':'91ae5811e55b3d4ef872ab672f006c4b383c6581a53de67cd018b6eb2666f9a7',
+            'representationPackageSha256':'2491ac91ed924f2ba69b37ea20f48d63f51d41146cd9fe50e0bd63bfb315a763',
+            'reservedSeeds':list(range(2101000073,2101000097)),
+            'retiredOrdinal24Seeds':list(range(2101000001,2101000025)),
+            'retiredOrdinal25Seeds':list(range(2101000025,2101000049)),
+            'retiredOrdinal26Seeds':list(range(2101000049,2101000073)),
+            'runAttemptRequired':1,
+            'scientificExecutionAuthorized':True,
+            'protectedValidationAuthorized':True,
+            'protectedValuesMayBeRead':True,
+            'automaticDispatch':False,
+            'atomicAllocationLockRequired':True,
+            'duplicateByteIdenticalMarkerCopiesAllowed':True,
+            'distinctAllocationMarkerBodyAllowed':False,
+            'artifactDownloadedManifestPath':'/tmp/v0070-o27-preflight/tmp/o27-manifest.json',
+            'githubRerunAllowed':False,
+            'retryAllowed':False,
+            'resumeAllowed':False,
+            'solverExecutionPerformed':False,
+            'modelRetuningAuthorized':False,
+            'productionPromotionAuthorized':False,
+            'workerBLaneReactivated':False,
+            'workerCLaneReactivated':False
+          }
+          assert a==expected,(a,expected)
+          PY
+      - name: Prove ordinal27 is fresh and unallocated during authorization review
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/branches?per_page=100' > /tmp/branches.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/actions/runs?per_page=100' > /tmp/runs.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/issues/60/comments?per_page=100' > /tmp/comments.json
+          HEAD_SHA="$(git rev-parse HEAD)"
+          python - "$HEAD_SHA" <<'PY'
+          import json,os,sys
+          head=sys.argv[1]
+          def flat(p,key=None):
+            out=[]
+            for page in json.load(open(p)):out.extend(page.get(key,[]) if key else page)
+            return out
+          branches=flat('/tmp/branches.json');runs=flat('/tmp/runs.json','workflow_runs');comments=flat('/tmp/comments.json')
+          assert len([b for b in branches if b.get('name')==os.environ['AUTH_BRANCH'] and (b.get('commit') or {}).get('sha')==head])==1
+          for prefix in ('allocation/level-b-v2-densified58-fresh-validation-ordinal27-','dispatch/level-b-v2-densified58-fresh-validation-ordinal27-'):
+            assert not [b.get('name') for b in branches if str(b.get('name') or '').startswith(prefix)]
+          assert not [r for r in runs if r.get('event')=='push' and str(r.get('head_branch') or '').startswith('dispatch/level-b-v2-densified58-fresh-validation-ordinal27-')]
+          assert not [c for c in comments if 'ALLOCATED-SCIENCE-IDENTITY | MYSTIC-STATE-0070 | ordinal=27 | ' in str(c.get('body') or '')]
+          PY
+      - name: Prove review did not allocate, dispatch or open protected values
+        run: |
+          python - <<'PY'
+          import json,os
+          a=json.load(open(os.environ['AUTH_PATH']))
+          assert a['automaticDispatch'] is False and a['solverExecutionPerformed'] is False
+          assert a['atomicAllocationLockRequired'] is True
+          assert a['artifactDownloadedManifestPath']=='/tmp/v0070-o27-preflight/tmp/o27-manifest.json'
+          assert a['modelRetuningAuthorized'] is False and a['productionPromotionAuthorized'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v0070-o27-authorization-review-${{ github.event.pull_request.head.sha }}
+          path: /tmp/o27-manifest.json
+          if-no-files-found: error
+          retention-days: 90

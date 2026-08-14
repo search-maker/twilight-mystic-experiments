@@ -8,11 +8,13 @@ CON=ROOT/'review/level-b-v2-densified58-fresh-validation-recovery-v3/contract-v3
 CORE=ROOT/'review/level-b-v2-densified58-fresh-validation-recovery-v3/fresh_validation_v3.py'
 MAN=ROOT/'experiments/level-b-v2-densified58-fresh-validation-recovery-v3/build_manifest_v3.py'
 EXE=ROOT/'experiments/level-b-v2-densified58-fresh-validation-recovery-v3/executor_v3.py'
+ADAPTER=ROOT/'experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py'
+BASE_EXE=ROOT/'experiments/level-b-v2-densified58-fresh-validation-v1/executor_v1.py'
 BASE=ROOT/'review/level-b-v2-densified58-fresh-validation-v1/contract-v1.json'
 
 def mod(n,p):
     s=importlib.util.spec_from_file_location(n,p);assert s and s.loader;m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
-core=mod('fv3',CORE); man=mod('mv3',MAN); exe=mod('ev3',EXE)
+core=mod('fv3',CORE);man=mod('mv3',MAN);exe=mod('ev3',EXE);adapter=mod('av1_for_o26',ADAPTER);base_exe=mod('base_exe_for_o26',BASE_EXE)
 
 class Tests(unittest.TestCase):
     @classmethod
@@ -32,9 +34,13 @@ class Tests(unittest.TestCase):
         n=self.r['nextScientificIdentity'];self.assertEqual((n['scientificOrdinal'],n['authorizationBranch'],n['allocationLockBranch'],n['dispatchBranch']),(26,'authorization/level-b-v2-densified58-fresh-validation-ordinal26-v1','allocation/level-b-v2-densified58-fresh-validation-ordinal26-v1','dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1'));self.assertEqual(n['reservedSeeds'],list(range(2101000049,2101000073)))
         rows=core.expected_cases(self.e,self.r,ROOT);self.assertEqual(len(rows),24);self.assertEqual([x['seed'] for x in rows],list(range(2101000049,2101000073)));self.assertEqual(len({x['caseId'] for x in rows}),24);self.assertTrue(all(x['caseId'].startswith('v0070-o26-holdout-') for x in rows))
     def test_executor_v3_exact_branch(self):
-        self.assertEqual(exe.BASE_EXECUTOR_GIT_BLOB_SHA,'5bf0477f0d5100dcb73da8027233e8415ce9021c');self.assertEqual(exe.BRANCH_RE.pattern,r'^dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1$');self.assertIsNotNone(exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1'));self.assertIsNone(exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1'))
-    def test_manifest_is_inert_and_exact(self):
-        m=man.build(ROOT,self.r);self.assertEqual((m['schemaVersion'],m['scientificOrdinalCandidate'],m['geometryCount'],m['caseCount'],m['configuredPhotonHistories']),(3,26,6,24,960_000_000));self.assertEqual([x['seed'] for x in m['cases']],list(range(2101000049,2101000073)));self.assertFalse(m['priorRefusals']['ordinal25ProtectedValuesRead']);self.assertEqual(m['priorRefusals']['ordinal25SolverExecutionCount'],0);self.assertTrue(all(v is False for v in m['closedUntilAuthorization'].values()));b=copy.deepcopy(m);h=b['manifestSha256'];b['manifestSha256']=None;self.assertEqual(h,man.canon(b))
+        self.assertEqual(exe.BASE_EXECUTOR_GIT_BLOB_SHA,'5bf0477f0d5100dcb73da8027233e8415ce9021c');self.assertEqual(exe.BRANCH_RE.pattern,r'^dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1$');self.assertIsNotNone(exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1'));self.assertIsNone(exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1'));self.assertIsNone(exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v2'))
+        self.assertIsNotNone(base_exe.BRANCH_RE.fullmatch('dispatch/level-b-v2-densified58-fresh-validation-ordinal26-v1'))
+    def test_manifest_is_adapter_compatible_inert_and_exact(self):
+        m=man.build(ROOT,self.r);adapter.validate_manifest(m)
+        self.assertEqual(m['manifestId'],'level-b-v2-densified58-fresh-validation-execution-manifest-v1');self.assertEqual((m['schemaVersion'],m['scientificOrdinalCandidate'],m['geometryCount'],m['caseCount'],m['configuredPhotonHistories']),(3,26,6,24,960_000_000));self.assertEqual([x['seed'] for x in m['cases']],list(range(2101000049,2101000073)));self.assertFalse(m['priorRefusals']['ordinal25ProtectedValuesRead']);self.assertEqual(m['priorRefusals']['ordinal25SolverExecutionCount'],0);self.assertTrue(all(v is False for v in m['closedUntilAuthorization'].values()));b=copy.deepcopy(m);h=b['manifestSha256'];b['manifestSha256']=None;self.assertEqual(h,man.canon(b))
+    def test_prior_seed_ranges_disjoint(self):
+        a=set(self.r['ordinal24Refusal']['retiredSeeds']);b=set(self.r['ordinal25Refusal']['retiredSeeds']);c=set(self.r['nextScientificIdentity']['reservedSeeds']);self.assertFalse(a&b);self.assertFalse(a&c);self.assertFalse(b&c)
     def test_review_surface_closed(self):
         self.assertTrue(all(v is False for v in self.r['reviewSurface'].values()));self.assertTrue(all(v is False for v in self.c['closedBoundaries'].values()))
 

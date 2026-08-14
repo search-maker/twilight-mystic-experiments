@@ -13,11 +13,15 @@ seed={'status':'PASSED_EXACT_HEAD_TRACKED_TREE_100_SEED_NEGATIVE_COLLISION_CHECK
 ctx={'eventName':'pull_request','runAttempt':1,'currentRunId':100,'headBranch':AUTH,'headSha':HEAD,'parentSha':BASE,'liveMain':BASE,'changedFiles':[C['authorization']['path']],'authorization':A,'mainAuthorizationPathPresent':False,'trackedSeedAudit':seed,'branches':[{'name':'dispatch/legacy-ordinal18-v1','commit':{'sha':'1'*40}},{'name':AUTH,'commit':{'sha':HEAD}}],'runs':[{'id':1,'event':'push','head_branch':'dispatch/legacy-ordinal18-v1','head_sha':'1'*40},{'id':100,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD},{'id':101,'event':'pull_request','head_branch':AUTH,'head_sha':HEAD,'path':'.github/workflows/contract.yml'}],'artifacts':[],'issue60Comments':[{'id':5279964834,'body':f"candidate ledger {C['sourceBindings']['campaignContractSha256']} {C['seedAudit']['candidateFirstSeed']}..{C['seedAudit']['candidateLastSeed']}"}],'pr':{'number':1,'draft':True,'state':'open','headSha':HEAD,'baseSha':BASE}}
 o=P.evaluate(C,M,ctx); assert o['candidateScientificOrdinal']==ORD and o['status'].startswith('AUTHORIZATION_IDENTITY_REVIEW_PASSED')
 # Regression for the preserved failed v1 authorization review: the old negative-check
-# comment consumed the old dispatch string, but must not contaminate a versioned v2
-# identity. Conversely, publishing the current dispatch identity early must still fail.
+# comment consumed the old dispatch string, but must not contaminate a newer versioned
+# identity. The failed v2 authorization review is immutable history and likewise must not
+# contaminate v3. Conversely, publishing the current dispatch identity early must still fail.
 legacy_identity_comment=copy.deepcopy(ctx)
 legacy_identity_comment['issue60Comments'].append({'id':5285605573,'body':'early warning: no authorization/tier2-stage1-ordinal19-v1 or dispatch/tier2-stage1-ordinal19-v1 branch identity'})
 legacy_o=P.evaluate(C,M,legacy_identity_comment); assert legacy_o['dispatchBranch']==DISP
+failed_v2_history=copy.deepcopy(ctx)
+failed_v2_history['runs'].append({'id':31754924218,'event':'pull_request','head_branch':'authorization/tier2-stage1-ordinal19-v2','head_sha':'393fb39615f146e20129963fc7d2700255ccbd27'})
+failed_v2_o=P.evaluate(C,M,failed_v2_history); assert failed_v2_o['authorizationBranch']==AUTH
 current_identity_comment=copy.deepcopy(ctx)
 current_identity_comment['issue60Comments'].append({'id':5285605573,'body':f'early warning: no {DISP} branch identity'})
 try:P.evaluate(C,M,current_identity_comment)

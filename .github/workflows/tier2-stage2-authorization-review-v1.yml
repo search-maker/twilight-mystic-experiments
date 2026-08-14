@@ -1,0 +1,119 @@
+name: Tier2 Stage2 authorization review v1
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/tier2-stage2-execution-v1/authorization.json'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  authorization-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse non-one-file, moved-main, non-draft, or retry context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_PATH: experiments/tier2-stage2-execution-v1/authorization.json
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.pull_request.draft }}' = true
+          test "$(git cat-file -p HEAD | grep -c '^parent ')" = 1
+          PARENT="$(git rev-parse HEAD^)"
+          test "$PARENT" = '${{ github.event.pull_request.base.sha }}'
+          test "$PARENT" = "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH_PATH"
+          test -f "$AUTH_PATH"
+          if git cat-file -e "$PARENT:$AUTH_PATH" 2>/dev/null; then echo authorization-already-on-main; exit 1; fi
+      - name: Rebuild frozen Stage2 payload and audit exact authorization identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_PATH: experiments/tier2-stage2-execution-v1/authorization.json
+        run: |
+          set -euo pipefail
+          python review/tier2-stage2-protected-holdout-v1/stage2_v1.py validate --contract review/tier2-stage2-protected-holdout-v1/contract-v1.json --repo-root .
+          python experiments/tier2-stage2-execution-v1/build_manifest_v1.py --repo-root . --contract review/tier2-stage2-protected-holdout-v1/contract-v1.json --output /tmp/stage2-manifest.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/branches?per_page=100 > /tmp/branch-pages.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100 > /tmp/run-pages.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100 > /tmp/artifact-pages.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100 > /tmp/issue-pages.json
+          python - <<'PY'
+          import json,os,re,subprocess
+          def flat(p,key=None):
+            out=[]
+            for x in json.load(open(p)): out.extend(x.get(key,[]) if key else x)
+            return out
+          event=json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          auth=json.load(open(os.environ['AUTH_PATH'])); parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip(); head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); blob=subprocess.check_output(['git','rev-parse','HEAD^:review/tier2-stage2-protected-holdout-v1/contract-v1.json'],text=True).strip()
+          branches=flat('/tmp/branch-pages.json');runs=flat('/tmp/run-pages.json','workflow_runs');arts=flat('/tmp/artifact-pages.json','artifacts');comments=flat('/tmp/issue-pages.json')
+          rx=re.compile(r'^dispatch/.*ordinal([1-9][0-9]*)',re.I); vals=[]
+          for n in [str(x.get('name') or '') for x in branches]+[str(x.get('head_branch') or '') for x in runs if x.get('event')=='push']:
+            m=rx.match(n)
+            if m: vals.append(int(m.group(1)))
+          assert vals and max(vals)==20,('latest consumed ordinal drift',max(vals) if vals else None)
+          candidate=21; abr=f'authorization/tier2-stage2-ordinal{candidate}-v1'; dbr=f'dispatch/tier2-stage2-ordinal{candidate}-v1'; key=f'tier2-core-stage2-v1:protected-validation:{candidate}'
+          expected={'schemaVersion':1,'status':'AUTHORIZED_PENDING_SEPARATE_DISPATCH','enabled':True,'scientificOrdinal':candidate,'authorizationBranch':abr,'dispatchBranch':dbr,'executionKey':key,'executionContractGitBlobSha':blob,'exactAuthorizationParentCommit':parent,'scientificExecutionAuthorized':True,'dispatchAuthorized':True,'automaticDispatch':False,'githubRerunAllowed':False,'retryAllowed':False,'resumeAllowed':False,'solverExecutionPerformed':False,'protectedHoldoutOpeningAuthorized':True,'holdoutValuesMayBeRead':True,'stage2Authorized':True,'modelRetuningAuthorized':False,'productionPromotionAuthorized':False}
+          assert auth==expected,(auth,expected)
+          assert os.environ['GITHUB_HEAD_REF']==abr and head==event['pull_request']['head']['sha']
+          assert sum(1 for b in branches if b.get('name')==abr and (b.get('commit') or {}).get('sha')==head)==1
+          assert not any(b.get('name')==dbr for b in branches)
+          assert not any(r.get('head_branch')==dbr for r in runs)
+          text=json.dumps({'runs':runs,'artifacts':arts,'comments':comments},sort_keys=True)
+          assert key not in text and dbr not in text
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: tier2-stage1-ordinal20-artifact-salvage-v1-e5e3454866b6fd2f7ca940955816af2fe2d3c98f
+          path: ordinal20-salvage
+          repository: ${{ github.repository }}
+          run-id: 31767381839
+          github-token: ${{ github.token }}
+      - name: Recheck reserved seeds against consumed ledger, tracked tree, Issue 60, and metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,re,subprocess
+          p=json.load(open('review/tier2-stage2-protected-holdout-v1/contract-v1.json')); ledger=json.load(open('ordinal20-salvage/consumed-training-seed-ledger.json'))
+          reserved={int(s) for g in p['stage2Scope']['geometries'] for s in g['reservedSeeds']}; used={int(x['seed']) for x in ledger['entries']}
+          assert ledger['ledgerSha256']==p['sourceBindings']['consumedTrainingSeedLedgerSha256'] and len(reserved)==24 and not(reserved&used)
+          allowed_prefixes=('review/tier2-core-campaign-contract-v1/','experiments/tier2-stage1-execution-v1/','review/tier2-stage1-','review/tier2-stage2-protected-holdout-v1/')
+          hits=[]; token_rx=re.compile(r'(?<![0-9_])[0-9_]{7,20}(?![0-9_])')
+          for f in subprocess.check_output(['git','ls-files'],text=True).splitlines():
+            text=open(f,errors='ignore').read(); vals={int(x.replace('_','')) for x in token_rx.findall(text) if x.replace('_','').isdigit() and int(x.replace('_','')) in reserved}
+            if vals and not f.startswith(allowed_prefixes): hits.append((f,sorted(vals)))
+          assert not hits,hits
+          pages=json.load(open('/tmp/issue-pages.json')); comments=[c for page in pages for c in page]; external=[]
+          for c in comments:
+            vals={s for s in reserved if str(s) in str(c.get('body') or '')}
+            if vals and int(c.get('id') or 0)!=5279964834: external.append((c.get('id'),sorted(vals)))
+          assert not external,external
+          meta=open('/tmp/branch-pages.json').read()+open('/tmp/run-pages.json').read()+open('/tmp/artifact-pages.json').read()
+          assert not any(str(s) in meta for s in reserved)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier2-stage2-authorization-review-${{ github.event.pull_request.head.sha }}
+          path: /tmp/stage2-manifest.json
+          if-no-files-found: error
+          retention-days: 90

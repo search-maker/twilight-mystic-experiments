@@ -1,0 +1,107 @@
+name: Tier2 Stage2 protected holdout v1 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tier2-stage2-protected-holdout-v1-review.yml'
+      - '.github/workflows/tier2-stage2-authorization-review-v1.yml'
+      - '.github/workflows/tier2-stage2-execution-v1.yml'
+      - 'review/tier2-stage2-protected-holdout-v1/**'
+      - 'experiments/tier2-stage2-execution-v1/**'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Install frozen evaluator dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Refuse retry, authorization file, or moved source main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.sha }}" = 7ce21ec9c13be9bf901784992a7b6c7e82f3c364
+          test "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)" = 7ce21ec9c13be9bf901784992a7b6c7e82f3c364
+          test ! -e experiments/tier2-stage2-execution-v1/authorization.json
+      - name: Validate exact reviewed sources and deterministic Stage2 payload
+        run: |
+          set -euo pipefail
+          python review/tier2-stage2-protected-holdout-v1/stage2_v1.py validate --contract review/tier2-stage2-protected-holdout-v1/contract-v1.json --repo-root .
+          python experiments/tier2-stage2-execution-v1/build_manifest_v1.py --repo-root . --contract review/tier2-stage2-protected-holdout-v1/contract-v1.json --output /tmp/stage2-manifest.json
+          python - <<'PY'
+          import json
+          m=json.load(open('/tmp/stage2-manifest.json'))
+          assert (m['geometryCount'],m['caseCount'],m['configuredPhotonHistories'])==(6,24,720_000_000)
+          assert len({c['seed'] for c in m['cases']})==24
+          assert all(c['role']=='protected-holdout' for c in m['cases'])
+          print('manifestSha256='+m['manifestSha256'])
+          PY
+          python -m unittest -v review/tier2-stage2-protected-holdout-v1/test_v1.py
+      - name: Verify immutable model and representation artifacts without holdout values
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9208482214 > /tmp/model-meta.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9208203541 > /tmp/rep-meta.json
+          python - <<'PY'
+          import json
+          assert json.load(open('/tmp/model-meta.json'))['digest']=='sha256:f8fc1290d16ebd6d5712706fafadd10d8a67af0b6bc18944349868d2c07fabf1'
+          assert json.load(open('/tmp/rep-meta.json'))['digest']=='sha256:2fe50ed674155f440322c92d28877f5c022f0cc5fa13e1e601596a9902482815'
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: level-b-core-surrogate-model-freeze-v1-fe7a19431f71566be2c797601a4189eebe89700f
+          path: frozen-model
+          repository: ${{ github.repository }}
+          run-id: 31772063894
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: level-b-core-training-spectral-representation-v2-source-binding-fix-v1-9dff6961cbdc318e9b4b65880aac469f9a4a4a38
+          path: frozen-representation
+          repository: ${{ github.repository }}
+          run-id: 31771224298
+          github-token: ${{ github.token }}
+      - name: Verify frozen model hash, DoD and representation package
+        run: |
+          python - <<'PY'
+          import importlib.util,json,pathlib
+          p=json.load(open('review/tier2-stage2-protected-holdout-v1/contract-v1.json'))
+          s=importlib.util.spec_from_file_location('core','review/tier2-stage2-protected-holdout-v1/stage2_v1.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          model=json.load(open('frozen-model/model-artifact-v1.json'));m.verify_model(model,p)
+          assert m.sha_file(pathlib.Path('frozen-representation/spectral-representation-v2.npz'))==p['sourceBindings']['representationPackageSha256']
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: tier2-stage1-ordinal20-artifact-salvage-v1-e5e3454866b6fd2f7ca940955816af2fe2d3c98f
+          path: ordinal20-salvage
+          repository: ${{ github.repository }}
+          run-id: 31767381839
+          github-token: ${{ github.token }}
+      - name: Prove all 24 reserved holdout seeds remain outside the consumed ordinal20 ledger
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('review/tier2-stage2-protected-holdout-v1/contract-v1.json'))
+          x=json.load(open('ordinal20-salvage/consumed-training-seed-ledger.json'))
+          assert x['ledgerSha256']==p['sourceBindings']['consumedTrainingSeedLedgerSha256']
+          used={int(r['seed']) for r in x['entries']}; reserved={int(s) for g in p['stage2Scope']['geometries'] for s in g['reservedSeeds']}
+          assert len(used)==76 and len(reserved)==24 and not (used & reserved)
+          assert x['holdoutValuesRead'] is False and x['reuseAuthorized'] is False
+          PY

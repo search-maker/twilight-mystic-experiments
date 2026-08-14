@@ -119,7 +119,7 @@ def evaluate_candidate(recs:list[dict[str,Any]],spec:dict[str,Any],p:dict[str,An
         prim=[]; sing=[]; raw=[]; ua=[]; uasing=[]; basep=[]
         for i in f['val']:
             truth,u=targets_and_shape_se(recs[i],scales); pred=predict(model,recs[i]['geometry']); pe=np.abs(pred[:3]-truth[:3]); se=pred[3:]-truth[3:]; denom=np.sqrt(1.0+u*u)
-            prim.append(float(np.mean(pe))); sing.append(float(np.max(pe))); raw.append(float(np.sqrt(np.mean(se*se)))); ua.append(float(np.sqrt(np.mean((se/denom)**2)))); uasing.append(float(np.max(np.abs(se)/denom)); basep.append(float(np.mean(np.abs(base[:3]-truth[:3]))))
+            prim.append(float(np.mean(pe))); sing.append(float(np.max(pe))); raw.append(float(np.sqrt(np.mean(se*se)))); ua.append(float(np.sqrt(np.mean((se/denom)**2)))); uasing.append(float(np.max(np.abs(se)/denom))); basep.append(float(np.mean(np.abs(base[:3]-truth[:3]))))
         row={'fold':f['name'],'kind':f['kind'],'count':len(f['val']),'primaryMale':float(np.mean(prim)),'worstSinglePrimaryLogError':max(sing),'rawShapeNrmse':float(np.mean(raw)),'uncertaintyAdjustedShapeNrmse':float(np.mean(ua)),'worstUncertaintyAdjustedSingleCoefficientError':max(uasing)}; rows.append(row)
         if f['kind']=='loo': loo_primary+=prim; loo_single+=sing; loo_raw+=raw; loo_ua+=ua; loo_uasing+=uasing; loo_base+=basep
     req(len(loo_primary)==44,'LOO count drift'); b=[x for x in rows if x['kind']=='boundary']; baseline=float(np.mean(loo_base)); lm=float(np.mean(loo_primary)); lraw=float(np.mean(loo_raw)); imp=1.0-lm/baseline

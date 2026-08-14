@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse, hashlib, importlib.util, json, math, os, re, sys, tempfile
 from pathlib import Path
 from typing import Any, Callable
-STAGE_ID='public-tier2-v1-core-stage1-execution-v1'; BRANCH_RE=re.compile(r'^dispatch/tier2-stage1-ordinal[1-9][0-9]*-v2$'); HIST_REL=Path('experiments/full-spectrum-estimator-pilot-v2/executor.py')
+STAGE_ID='public-tier2-v1-core-stage1-execution-v1'; BRANCH_RE=re.compile(r'^dispatch/tier2-stage1-ordinal[1-9][0-9]*-v3$'); HIST_REL=Path('experiments/full-spectrum-estimator-pilot-v2/executor.py')
 class Refusal(RuntimeError):pass
 def req(c:bool,m:str)->None:
     if not c:raise Refusal(m)

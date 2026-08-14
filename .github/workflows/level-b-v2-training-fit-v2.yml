@@ -1,0 +1,123 @@
+name: Level-B v2 training-only fit v2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/level-b-v2-training-fit-v2.yml'
+      - 'review/level-b-v2-training-implementation-v2/**'
+  push:
+    branches:
+      - 'postprocess/level-b-v2-training-fit-v2'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Revalidate merged generation-2 pre-fit freeze
+        run: python review/level-b-v2-training-prefit-freeze-v2/validate_v2.py validate --protocol review/level-b-v2-training-prefit-freeze-v2/protocol-v2.json
+      - name: Validate implementation and compile
+        run: |
+          python review/level-b-v2-training-implementation-v2/validate_impl_v2.py
+          python -m py_compile review/level-b-v2-training-implementation-v2/train_v2.py
+      - name: Run synthetic and mutation tests only
+        run: |
+          python review/level-b-v2-training-implementation-v2/test_v2.py -v
+          python review/level-b-v2-training-implementation-v2/train_v2.py synthetic --protocol review/level-b-v2-training-prefit-freeze-v2/protocol-v2.json
+      - name: Prove PR cannot access real training or protected data
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/level-b-v2-training-implementation-v2/activation.json
+          ! grep -R -n -E '9209494627|stage2-evaluation|tier2-stage2-ordinal22|uvspec|mc_basename' review/level-b-v2-training-implementation-v2
+
+  train:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Refuse wrong activation, retry, moved main or broad diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.run_attempt }}" = 1
+          test "${{ github.ref_name }}" = postprocess/level-b-v2-training-fit-v2
+          git fetch origin main --no-tags
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          changed="$(git diff --name-only HEAD^ HEAD)"
+          test "$changed" = review/level-b-v2-training-implementation-v2/activation.json
+          python - <<'PY'
+          import json, subprocess
+          a=json.load(open('review/level-b-v2-training-implementation-v2/activation.json'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          assert a == {
+            'schemaVersion': 2,
+            'status': 'AUTHORIZED_LEVEL_B_V2_TRAINING_ONLY_FIT_V2',
+            'governance': 'MYSTIC-STATE-0068',
+            'activationParentMainSha': parent,
+            'protocolId': 'level-b-v2-training-only-prefit-freeze-v2',
+            'sourceTrainingRepresentationArtifactId': 9208203541,
+            'trainingGeometryCount': 44,
+            'generation1ResultRemainsFailed': True,
+            'ordinal22ValuesMayBeRead': False,
+            'protectedValidationAuthorized': False,
+            'newMysticSolverExecutionAuthorized': False,
+            'productionPromotionAuthorized': False,
+          }
+          PY
+      - name: Revalidate freeze and implementation before fitting
+        run: |
+          python review/level-b-v2-training-prefit-freeze-v2/validate_v2.py validate --protocol review/level-b-v2-training-prefit-freeze-v2/protocol-v2.json
+          python review/level-b-v2-training-implementation-v2/validate_impl_v2.py
+          python review/level-b-v2-training-implementation-v2/test_v2.py -v
+      - name: Execute frozen generation-2 training-only selection and fit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf level-b-v2-training-output-v2
+          python review/level-b-v2-training-implementation-v2/train_v2.py execute --protocol review/level-b-v2-training-prefit-freeze-v2/protocol-v2.json --output level-b-v2-training-output-v2
+      - name: Independently verify output hashes and closed boundaries
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib
+          root=pathlib.Path('level-b-v2-training-output-v2')
+          def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          s=json.load(open(root/'training-selection-v2-generation2.json')); r=json.load(open(root/'training-fit-result-v2-generation2.json'))
+          assert s['candidateCount']==230 and s['trainingGeometryCount']==44 and s['generation1ResultRemainsFailed'] is True
+          assert s['ordinal22ValuesRead'] is False and s['protectedValidationOpened'] is False
+          assert s['selectionSha256']==canon({k:v for k,v in s.items() if k!='selectionSha256'})
+          assert r['resultSha256']==canon({k:v for k,v in r.items() if k!='resultSha256'})
+          assert r['generation1ResultRemainsFailed'] is True and r['ordinal22ValuesRead'] is False and r['protectedValidationAuthorized'] is False and r['productionPromotionAuthorized'] is False
+          if r['modelArtifactWritten']:
+              m=json.load(open(root/'model-artifact-v2-generation2.json')); assert m['trainingGeometryCount']==44 and m['generation1ResultRemainsFailed'] is True and m['holdoutValuesRead'] is False and m['protectedHoldoutRecordCount']==0; assert m['modelSha256']==canon({k:v for k,v in m.items() if k!='modelSha256'})
+          else:
+              assert r['status']=='NO_GENERATION2_CANDIDATE_PASSES_TRAINING_ONLY_READINESS'; assert not (root/'model-artifact-v2-generation2.json').exists()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-v2-training-fit-v2-${{ github.sha }}
+          path: level-b-v2-training-output-v2/
+          if-no-files-found: error
+          retention-days: 90

@@ -34,12 +34,8 @@ expected_blobs={
 for path,sha in expected_blobs.items(): req(git_blob(path)==sha,f'git blob drift: {path}')
 req(s['ordinal23PreregistrationGitBlobSha']==expected_blobs[PREREG],'prereg blob binding')
 req(s['ordinal23PreregistrationProtocolSelfSha256']=='e8ae35255147312c04f29f49d19e7599c1eeb5b2d3f035d2e93c93753cc5f022','prereg self-hash binding')
-for candidate in ('protocolSha256','protocolSelfSha256','selfSha256'):
-    if candidate in r:
-        req(canon_sha(r,candidate)==s['ordinal23PreregistrationProtocolSelfSha256'],'prereg canonical self-hash drift')
-        req(r[candidate]==s['ordinal23PreregistrationProtocolSelfSha256'],'prereg embedded self-hash drift')
-        break
-else: raise SystemExit('REFUSED: prereg self-hash field missing')
+prereg_canonical_sha=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+req(prereg_canonical_sha==s['ordinal23PreregistrationProtocolSelfSha256'],'prereg canonical self-hash drift')
 
 req(t['status']=='TRAINING_ONLY_GENERATION2_NO_ELIGIBLE_CANDIDATE_NO_MODEL_FROZEN','terminal status drift')
 req(t['selectionOutcome']['candidateCount']==230 and t['selectionOutcome']['eligibleCandidateCount']==0,'terminal outcome drift')

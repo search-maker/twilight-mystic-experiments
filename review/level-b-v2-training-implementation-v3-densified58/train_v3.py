@@ -148,7 +148,7 @@ def evaluate_candidate58(recs: list[dict[str, Any]], spec: dict[str, Any], p: di
             primary.append(float(np.mean(pe)))
             single.append(float(np.max(pe)))
             raw.append(float(np.sqrt(np.mean(se * se))))
-            ua.append(float(np.sqrt(np.mean((se / denom) ** 2)))
+            ua.append(float(np.sqrt(np.mean((se / denom) ** 2))))
             uasing.append(float(np.max(np.abs(se) / denom)))
             basep.append(float(np.mean(np.abs(base[:3] - truth[:3]))))
         row = {

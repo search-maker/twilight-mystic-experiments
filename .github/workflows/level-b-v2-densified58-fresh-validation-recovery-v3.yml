@@ -1,0 +1,135 @@
+name: Level-B densified-58 fresh validation ordinal26 recovery v3 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-recovery-v3/**'
+      - 'experiments/level-b-v2-densified58-fresh-validation-recovery-v3/**'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-recovery-v3.yml'
+  push:
+    branches: ['review/level-b-v2-densified58-fresh-validation-ordinal26-recovery-v3']
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-recovery-v3/**'
+      - 'experiments/level-b-v2-densified58-fresh-validation-recovery-v3/**'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-recovery-v3.yml'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review-only-ordinal26-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Prove frozen base science and run recovery tests
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:review/level-b-v2-densified58-fresh-validation-v1/contract-v1.json)" = aad11350311ce3768488e64ed72edc3e48646ff9
+          test "$(git rev-parse HEAD:review/level-b-v2-densified58-fresh-validation-implementation-v1/fresh_validation_v1.py)" = 085f040caa6aec53aace00381035115358b21239
+          test "$(git rev-parse HEAD:experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py)" = 5cd736d78c5b82d124b5b95548063677dbfe0ce9
+          test "$(git rev-parse HEAD:experiments/level-b-v2-densified58-fresh-validation-v1/executor_v1.py)" = 5bf0477f0d5100dcb73da8027233e8415ce9021c
+          python review/level-b-v2-densified58-fresh-validation-implementation-v1/test_v1.py -v
+          python review/level-b-v2-densified58-fresh-validation-recovery-v3/test_v3.py -v
+      - name: Validate ordinal26 effective contract and exact manifest
+        run: |
+          python review/level-b-v2-densified58-fresh-validation-recovery-v3/fresh_validation_v3.py validate --recovery review/level-b-v2-densified58-fresh-validation-recovery-v3/recovery-v3.json --repo-root .
+          python review/level-b-v2-densified58-fresh-validation-recovery-v3/fresh_validation_v3.py cases --recovery review/level-b-v2-densified58-fresh-validation-recovery-v3/recovery-v3.json --repo-root . > /tmp/o26-cases.json
+          python experiments/level-b-v2-densified58-fresh-validation-recovery-v3/build_manifest_v3.py --repo-root . --recovery review/level-b-v2-densified58-fresh-validation-recovery-v3/recovery-v3.json --output /tmp/o26-manifest.json
+          python - <<'PY'
+          import json
+          c=json.load(open('/tmp/o26-cases.json'));m=json.load(open('/tmp/o26-manifest.json'))
+          assert len(c)==24 and len(m['cases'])==24
+          assert [x['seed'] for x in c]==list(range(2101000049,2101000073))
+          assert [x['seed'] for x in m['cases']]==list(range(2101000049,2101000073))
+          assert all(x['caseId'].startswith('v0070-o26-holdout-') for x in c)
+          assert (m['scientificOrdinalCandidate'],m['geometryCount'],m['caseCount'],m['configuredPhotonHistories'])==(26,6,24,960_000_000)
+          assert m['priorRefusals']['ordinal25ProtectedValuesRead'] is False and m['priorRefusals']['ordinal25SolverExecutionCount']==0
+          assert all(v is False for v in m['closedUntilAuthorization'].values())
+          PY
+      - name: Prove ordinal25 duplicate-marker refusal from live evidence
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/pulls/198 > /tmp/pr198.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/31842836008 > /tmp/auth25.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/31842973699 > /tmp/run25.json
+          gh api 'repos/'${GITHUB_REPOSITORY}'/actions/runs/31842973699/jobs?per_page=100' > /tmp/jobs25.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/issues/60/comments?per_page=100' > /tmp/comments.json
+          python - <<'PY'
+          import json
+          pr=json.load(open('/tmp/pr198.json'));auth=json.load(open('/tmp/auth25.json'));run=json.load(open('/tmp/run25.json'));jobs=json.load(open('/tmp/jobs25.json'))['jobs']
+          assert pr['state']=='closed' and pr['merged_at'] is None and pr['head']['sha']=='a6992ef0e4d98f8fb2f9853e23a60331d1aa4d83'
+          assert auth['run_attempt']==1 and auth['conclusion']=='success'
+          assert run['head_branch']=='dispatch/level-b-v2-densified58-fresh-validation-ordinal25-v1' and run['head_sha']=='a6992ef0e4d98f8fb2f9853e23a60331d1aa4d83' and run['run_attempt']==1 and run['conclusion']=='failure'
+          pre=[j for j in jobs if j['name']=='preflight'];cases=[j for j in jobs if j['name']=='cases'];ev=[j for j in jobs if j['name']=='evaluate']
+          assert len(pre)==1 and pre[0]['id']==94903598797 and pre[0]['conclusion']=='failure'
+          assert len(cases)==1 and cases[0]['conclusion']=='skipped'
+          assert len(ev)==1 and ev[0]['conclusion']=='skipped'
+          comments=[]
+          for page in json.load(open('/tmp/comments.json')):comments.extend(page)
+          body='ALLOCATED-SCIENCE-IDENTITY | MYSTIC-STATE-0070 | ordinal=25 | authHead=a6992ef0e4d98f8fb2f9853e23a60331d1aa4d83 | seeds=2101000025-2101000048'
+          exact=[c for c in comments if str(c.get('body') or '').strip()==body]
+          assert sorted(c['id'] for c in exact)==[5298386381,5298387062]
+          assert len({str(c['body']).strip() for c in exact})==1
+          PY
+      - name: Prove ordinal26 identities, lock and marker are absent during review
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/branches?per_page=100' > /tmp/branches.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/actions/runs?per_page=100' > /tmp/runs.json
+          python - <<'PY'
+          import json
+          def flat(path,key=None):
+            out=[]
+            for page in json.load(open(path)):out.extend(page.get(key,[]) if key else page)
+            return out
+          b=flat('/tmp/branches.json');r=flat('/tmp/runs.json','workflow_runs')
+          for prefix in ('authorization/level-b-v2-densified58-fresh-validation-ordinal26-','allocation/level-b-v2-densified58-fresh-validation-ordinal26-','dispatch/level-b-v2-densified58-fresh-validation-ordinal26-'):
+            assert not [x['name'] for x in b if str(x.get('name') or '').startswith(prefix)]
+          assert not [x for x in r if x.get('event')=='push' and str(x.get('head_branch') or '').startswith('dispatch/level-b-v2-densified58-fresh-validation-ordinal26-')]
+          PY
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/issues/60/comments?per_page=100' > /tmp/o26-comments.json
+          python - <<'PY'
+          import json
+          comments=[]
+          for page in json.load(open('/tmp/o26-comments.json')):comments.extend(page)
+          assert not [c for c in comments if 'ALLOCATED-SCIENCE-IDENTITY | MYSTIC-STATE-0070 | ordinal=26 | authHead=' in str(c.get('body') or '')]
+          PY
+      - name: Prove logical marker semantics are review-only and fail-closed
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.load(open('review/level-b-v2-densified58-fresh-validation-recovery-v3/recovery-v3.json'));a=r['allocationSemantics']
+          assert a['atomicLockRequiredBeforeMarkerWrite'] is True
+          assert a['allocationLockMustPointToExactAuthorizationHead'] is True
+          assert a['duplicateByteIdenticalMarkerCommentsAllowed'] is True
+          assert a['minimumExactMarkerCopies']==1
+          assert a['distinctMarkerBodiesForSameOrdinalAllowed'] is False
+          assert a['dispatchRequiresLockAndLogicalMarker'] is True
+          assert all(v is False for v in r['reviewSurface'].values())
+          workflow=Path('.github/workflows/level-b-v2-densified58-fresh-validation-recovery-v3.yml').read_text()
+          manual_trigger='workflow' + '_dispatch:'
+          assert manual_trigger not in workflow
+          PY
+          ! grep -R -F -- '--allow-execution' review/level-b-v2-densified58-fresh-validation-recovery-v3 experiments/level-b-v2-densified58-fresh-validation-recovery-v3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v0070-ordinal26-recovery-v3-review-${{ github.sha }}
+          path: |
+            /tmp/o26-cases.json
+            /tmp/o26-manifest.json
+          if-no-files-found: error
+          retention-days: 90

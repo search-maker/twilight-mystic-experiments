@@ -1,0 +1,150 @@
+name: Level-B v2 densified-58 training-only fit v3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/level-b-v2-training-fit-v3-densified58.yml'
+      - 'review/level-b-v2-training-implementation-v3-densified58/**'
+  push:
+    branches:
+      - 'postprocess/level-b-v2-training-fit-v3-densified58'
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Revalidate merged densified-58 pre-fit freeze
+        run: python review/level-b-v2-training-prefit-freeze-v3-densified58/validate_v3.py
+      - name: Validate implementation and compile
+        run: |
+          python review/level-b-v2-training-implementation-v3-densified58/validate_impl_v3.py
+          python -m py_compile review/level-b-v2-training-implementation-v3-densified58/train_v3.py
+      - name: Run synthetic and mutation tests only
+        run: |
+          test -z "${GITHUB_TOKEN:-}"
+          python review/level-b-v2-training-implementation-v3-densified58/test_v3.py -v
+          python review/level-b-v2-training-implementation-v3-densified58/train_v3.py synthetic --protocol review/level-b-v2-training-prefit-freeze-v3-densified58/protocol-v3.json
+      - name: Prove PR has no activation or real output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/level-b-v2-training-implementation-v3-densified58/activation.json
+          test ! -e training-representation-dataset-v3-densified58.json
+          test ! -e training-selection-v3-densified58.json
+          test ! -e model-artifact-v3-densified58.json
+          test ! -e training-fit-result-v3-densified58.json
+
+  train:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Refuse wrong activation, retry, moved main or broad diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = postprocess/level-b-v2-training-fit-v3-densified58
+          git fetch origin main --no-tags
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          changed="$(git diff --name-only HEAD^ HEAD)"
+          test "$changed" = review/level-b-v2-training-implementation-v3-densified58/activation.json
+          python - <<'PY'
+          import json, subprocess
+          a=json.load(open('review/level-b-v2-training-implementation-v3-densified58/activation.json'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          assert a == {
+            'schemaVersion': 3,
+            'status': 'AUTHORIZED_DENSIFIED58_TRAINING_ONLY_SELECTION_V3',
+            'governance': 'MYSTIC-STATE-0069',
+            'activationParentMainSha': parent,
+            'protocolId': 'level-b-v2-training-only-prefit-freeze-v3-densified58',
+            'protocolSha256': 'eaf8d1d047fa5a336027a18b3cddd015943f4a28fd58c568fac233f819baaf73',
+            'legacyRepresentationArtifactId': 9208203541,
+            'ordinal23WorkflowRunId': 31814698818,
+            'ordinal23InventoryArtifactId': 9224754905,
+            'trainingGeometryCount': 58,
+            'sourceCaseCount': 166,
+            'candidateCount': 230,
+            'cvFoldCount': 73,
+            'generation2ResultRemainsFailed': True,
+            'ordinal22ValuesMayBeRead': False,
+            'protectedValidationAuthorized': False,
+            'newMysticSolverExecutionAuthorized': False,
+            'productionPromotionAuthorized': False,
+          }
+          PY
+      - name: Revalidate freeze and implementation before opening ordinal23 training values
+        run: |
+          python review/level-b-v2-training-prefit-freeze-v3-densified58/validate_v3.py
+          python review/level-b-v2-training-implementation-v3-densified58/validate_impl_v3.py
+          python review/level-b-v2-training-implementation-v3-densified58/test_v3.py -v
+      - name: Execute frozen densified-58 derivation, selection and conditional fit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf level-b-v2-training-output-v3-densified58
+          python review/level-b-v2-training-implementation-v3-densified58/train_v3.py execute \
+            --protocol review/level-b-v2-training-prefit-freeze-v3-densified58/protocol-v3.json \
+            --output level-b-v2-training-output-v3-densified58
+      - name: Independently verify output hashes and closed boundaries
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib
+          root=pathlib.Path('level-b-v2-training-output-v3-densified58')
+          def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          d=json.load(open(root/'training-representation-dataset-v3-densified58.json'))
+          s=json.load(open(root/'training-selection-v3-densified58.json'))
+          r=json.load(open(root/'training-fit-result-v3-densified58.json'))
+          db=dict(d); dh=db.pop('datasetSha256'); assert dh==canon(db)
+          sb=dict(s); sh=sb.pop('selectionSha256'); assert sh==canon(sb)
+          rb=dict(r); rh=rb.pop('resultSha256'); assert rh==canon(rb)
+          assert d['geometryCount']==58 and d['sourceCaseArtifactCount']==166 and len(d['records'])==58 and len(d['sourceCases'])==166
+          assert d['ordinal22ValuesRead'] is False and d['ordinal23TrainingValuesRead'] is True and d['protectedHoldoutRecordCount']==0
+          assert d['representationBasisRefitPerformed'] is False and d['integrationWeightRecomputationPerformed'] is False and d['pcaRecomputationPerformed'] is False and d['scientificSolverExecutionPerformedByThisStage'] is False
+          assert s['candidateCount']==230 and s['cvFoldCount']==73 and s['trainingGeometryCount']==58 and s['generation2ResultRemainsFailed'] is True
+          assert s['ordinal22ValuesRead'] is False and s['protectedValidationOpened'] is False
+          assert r['generation2ResultRemainsFailed'] is True and r['ordinal22ValuesRead'] is False and r['protectedValidationAuthorized'] is False and r['freshProtectedValidationSourceRequired'] is True
+          assert r['newMysticSolverExecutionAuthorized'] is False and r['productionPromotionAuthorized'] is False and r['workerBLaneReactivated'] is False and r['workerCLaneReactivated'] is False
+          if r['modelArtifactWritten']:
+              m=json.load(open(root/'model-artifact-v3-densified58.json')); mb=dict(m); mh=mb.pop('modelSha256'); assert mh==canon(mb)
+              assert m['trainingGeometryCount']==58 and m['ordinal22ValuesRead'] is False and m['protectedHoldoutRecordCount']==0 and m['protectedValidationAuthorized'] is False and m['freshProtectedValidationSourceRequired'] is True
+              assert m['modelSha256']==r['modelSha256']
+          else:
+              assert r['status']=='TRAINING_ONLY_DENSIFIED58_NO_ELIGIBLE_CANDIDATE_NO_MODEL_FROZEN'
+              assert not (root/'model-artifact-v3-densified58.json').exists()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-v2-training-fit-v3-densified58-${{ github.sha }}
+          path: level-b-v2-training-output-v3-densified58/
+          if-no-files-found: error
+          retention-days: 90

@@ -34,7 +34,8 @@ def validate(p: dict) -> None:
     req(rb.get('ordinal22PostmortemMayInfluenceCandidateSelection') is False and rb.get('ordinal22ValuesMayBeReadByFutureTrainingExecution') is False,'ordinal22 rationale boundary opened')
     s=p.get('sourceTrainingRepresentation') or {}
     req((s.get('resultBindingGitBlobSha'),s.get('artifactId'),s.get('artifactDigest')) == ('a18acace210eaef621930bd5682113a686ad10a3',9208203541,'sha256:2fe50ed674155f440322c92d28877f5c022f0cc5fa13e1e601596a9902482815'),'representation source drift')
-    req((s.get('trainingDatasetCanonicalSha256'),s.get('representationPackageSha256')) == ('bb7908426d9d545f43c082aebbaab1829a486e2962d0b9ee34a5e8bef5390133','2491ac91ed924f2ba69b37ea20f48d63f51d41146cd9fe50e0bd63bfb315a763'),'representation hash drift')
+    req((s.get('trainingDatasetCanonicalSha256'),s.get('trainingDatasetFileSha256'),s.get('representationPackageSha256')) == ('bb7908426d9d545f43c082aebbaab1829a486e2962d0b9ee34a5e8bef5390133','066d6be846fa9b3bdd7236e327894f64d52ea56aa7e7b6e6af4d51d849eb1a61','2491ac91ed924f2ba69b37ea20f48d63f51d41146cd9fe50e0bd63bfb315a763'),'representation hash drift')
+    req(s.get('nullspaceCoefficientScales')==[0.27729231126929754,0.09054255337405856,0.04362631407125976,0.00791831782256918,0.0046149233253235545,0.002441189933423995,0.0015868955715692872,0.0008860617219488324,0.0004930249648425277,0.00021007512113759737],'PCA scale drift')
     req((s.get('trainingGeometryCount'),s.get('representationFeatureCount'),s.get('positiveIntegratedChannelCount'),s.get('nullspacePcaComponentCount')) == (44,13,3,10),'representation dimensions drift')
     req(s.get('holdoutValuesRead') is False,'source says holdout opened')
     r=p.get('roleIsolation') or {}
@@ -43,6 +44,9 @@ def validate(p: dict) -> None:
     req(not set(TRAIN_IDS)&set(OPENED),'training/opened overlap')
     req(r.get('openedV1ProtectedValuesAllowedForTrainingOrSelection') is False and r.get('openedV1ProtectedValuesAllowedForThresholdOrSupportSelection') is False,'opened values admitted')
     req((r.get('trainingRecordCountRequired'),r.get('protectedRecordCountRequired'))==(44,0),'role count drift')
+    ni=p.get('numericalImplementation') or {}
+    req((ni.get('pythonVersion'),ni.get('numpyVersion'),ni.get('dtype'),ni.get('randomnessAllowed'))==('3.12','2.3.2','float64',False),'numerical implementation drift')
+    req(ni.get('candidateEnumerationOrder')=='protocol family order, ascending primary ridge, ascending shape ridge','candidate enumeration drift')
     t=p.get('targets') or {}
     req(t.get('positiveIntegratedChannels')==['photopicLuminanceCdM2','scotopicLuminanceScotCdM2','johnsonVEffectiveRadiance_mW_m2_nm_sr'],'channel drift')
     req(t.get('shapeTargetCount')==10 and t.get('epsilonSubstitutionAllowed') is False,'target semantics drift')
@@ -63,6 +67,8 @@ def validate(p: dict) -> None:
     req(cv.get('balanced')=='FIVE_FOLDS_BY_SORTED_GEOMETRY_ID_POSITION_MOD_5','balanced CV drift')
     req(cv.get('leaveOneGeometryOut')=='EXACTLY_44_SINGLE_GEOMETRY_VALIDATION_FOLDS','LOO CV drift')
     req(len(cv.get('boundary') or [])==10 and cv.get('totalFoldCountRequired')==59,'CV count drift')
+    req(cv.get('expectedBalancedFoldCounts')==[9,9,9,9,8],'balanced fold count drift')
+    req(cv.get('expectedBoundaryFoldCounts')=={'sun-shallow':11,'sun-deep-core':11,'az-low':8,'az-high':9,'alt-low':10,'alt-high':7,'aod-low':9,'aod-high':6,'elev-low':9,'elev-high':6},'boundary fold count drift')
     g=m.get('trainingOnlyReadinessGates') or {}
     req(g=={
       'looMeanPrimaryMaleMax':0.25,

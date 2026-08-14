@@ -1,0 +1,147 @@
+name: Level-B densified-58 fresh validation ordinal25 recovery v2 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-recovery-v2/**'
+      - 'experiments/level-b-v2-densified58-fresh-validation-recovery-v2/**'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-recovery-v2.yml'
+  push:
+    branches:
+      - 'review/level-b-v2-densified58-fresh-validation-ordinal25-recovery-v2'
+    paths:
+      - 'review/level-b-v2-densified58-fresh-validation-recovery-v2/**'
+      - 'experiments/level-b-v2-densified58-fresh-validation-recovery-v2/**'
+      - '.github/workflows/level-b-v2-densified58-fresh-validation-recovery-v2.yml'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review-only-ordinal25-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Install frozen numerical dependency
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Prove frozen base blobs are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:review/level-b-v2-densified58-fresh-validation-v1/contract-v1.json)" = aad11350311ce3768488e64ed72edc3e48646ff9
+          test "$(git rev-parse HEAD:review/level-b-v2-densified58-fresh-validation-implementation-v1/fresh_validation_v1.py)" = 085f040caa6aec53aace00381035115358b21239
+          test "$(git rev-parse HEAD:experiments/level-b-v2-densified58-fresh-validation-v1/build_manifest_v1.py)" = 5972fed72f38a7375251b80d841fb872c2008035
+          test "$(git rev-parse HEAD:experiments/level-b-v2-densified58-fresh-validation-v1/adapter_v1.py)" = 5cd736d78c5b82d124b5b95548063677dbfe0ce9
+          test "$(git rev-parse HEAD:experiments/level-b-v2-densified58-fresh-validation-v1/executor_v1.py)" = 5bf0477f0d5100dcb73da8027233e8415ce9021c
+      - name: Re-run original synthetic tests
+        run: python review/level-b-v2-densified58-fresh-validation-implementation-v1/test_v1.py -v
+      - name: Run ordinal25 recovery tests
+        run: python review/level-b-v2-densified58-fresh-validation-recovery-v2/test_v2.py -v
+      - name: Validate recovery overlay and build exact ordinal25 manifest
+        run: |
+          set -euo pipefail
+          python review/level-b-v2-densified58-fresh-validation-recovery-v2/fresh_validation_v2.py validate \
+            --recovery review/level-b-v2-densified58-fresh-validation-recovery-v2/recovery-v2.json \
+            --repo-root .
+          python review/level-b-v2-densified58-fresh-validation-recovery-v2/fresh_validation_v2.py cases \
+            --recovery review/level-b-v2-densified58-fresh-validation-recovery-v2/recovery-v2.json \
+            --repo-root . > /tmp/ordinal25-cases.json
+          python experiments/level-b-v2-densified58-fresh-validation-recovery-v2/build_manifest_v2.py \
+            --repo-root . \
+            --recovery review/level-b-v2-densified58-fresh-validation-recovery-v2/recovery-v2.json \
+            --output /tmp/ordinal25-manifest.json
+          python - <<'PY'
+          import json
+          cases=json.load(open('/tmp/ordinal25-cases.json'))
+          m=json.load(open('/tmp/ordinal25-manifest.json'))
+          assert len(cases)==24 and len(m['cases'])==24
+          assert [x['seed'] for x in cases]==list(range(2101000025,2101000049))
+          assert [x['seed'] for x in m['cases']]==list(range(2101000025,2101000049))
+          assert len({x['caseId'] for x in cases})==24
+          assert all(x['caseId'].startswith('v0070-o25-holdout-') for x in cases)
+          assert (m['geometryCount'],m['caseCount'],m['configuredPhotonHistories'])==(6,24,960_000_000)
+          assert m['scientificOrdinalCandidate']==25
+          assert m['ordinal24ProtectedValuesRead'] is False and m['ordinal24SolverExecutionCount']==0
+          assert all(v is False for v in m['closedUntilAuthorization'].values())
+          PY
+      - name: Prove ordinal24 immutable dispatch refusal from live GitHub evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/pulls/194 > /tmp/pr194.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/31840635840 > /tmp/auth24.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/31840757436 > /tmp/dispatch24.json
+          gh api 'repos/'${GITHUB_REPOSITORY}'/actions/runs/31840757436/jobs?per_page=100' > /tmp/jobs24.json
+          gh api 'repos/'${GITHUB_REPOSITORY}'/actions/runs/31840757436/artifacts?per_page=100' > /tmp/artifacts24.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9234168268/zip > /tmp/case24.zip
+          rm -rf /tmp/case24 && mkdir /tmp/case24 && unzip -q /tmp/case24.zip -d /tmp/case24
+          python - <<'PY'
+          import json,pathlib
+          pr=json.load(open('/tmp/pr194.json')); auth=json.load(open('/tmp/auth24.json')); run=json.load(open('/tmp/dispatch24.json')); jobs=json.load(open('/tmp/jobs24.json'))['jobs']; arts=json.load(open('/tmp/artifacts24.json'))['artifacts']
+          assert pr['state']=='closed' and pr['merged_at'] is None and pr['head']['sha']=='520ff3cc5f8fee2defc1a0a950bfa7a40974479c'
+          assert auth['id']==31840635840 and auth['head_sha']=='520ff3cc5f8fee2defc1a0a950bfa7a40974479c' and auth['run_attempt']==1 and auth['conclusion']=='success'
+          assert run['id']==31840757436 and run['head_branch']=='dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v3' and run['head_sha']=='520ff3cc5f8fee2defc1a0a950bfa7a40974479c' and run['run_attempt']==1 and run['conclusion']=='failure'
+          pre=[j for j in jobs if j['name']=='preflight']; cases=[j for j in jobs if j['name'].startswith('cases (')]; ev=[j for j in jobs if j['name']=='evaluate']
+          assert len(pre)==1 and pre[0]['conclusion']=='success'
+          assert len(cases)==24 and all(j['conclusion']=='failure' for j in cases)
+          assert len(ev)==1 and ev[0]['conclusion']=='skipped'
+          assert len(arts)==25 and not any('evaluation' in a['name'] for a in arts)
+          files=list(pathlib.Path('/tmp/case24').rglob('case-result.json')); assert len(files)==1
+          r=json.load(open(files[0])); assert r['status']=='FAILED_OR_REFUSED_TERMINAL_ATTEMPT1' and r['reason']=='invalid expected dispatch branch'
+          assert r['protectedHoldoutValueExposed'] is False and r['ordinal22ValueExposed'] is False and r['githubRerun'] is False and r['retryPerformed'] is False and r['resumePerformed'] is False
+          PY
+      - name: Prove ordinal25 remains unallocated and undispatched during recovery review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/branches?per_page=100' > /tmp/branches.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/actions/runs?per_page=100' > /tmp/runs.json
+          gh api --paginate --slurp 'repos/'${GITHUB_REPOSITORY}'/issues/60/comments?per_page=100' > /tmp/comments.json
+          python - <<'PY'
+          import json,re
+          def flat(path,key=None):
+              out=[]
+              for page in json.load(open(path)): out.extend(page.get(key,[]) if key else page)
+              return out
+          branches=flat('/tmp/branches.json'); runs=flat('/tmp/runs.json','workflow_runs'); comments=flat('/tmp/comments.json')
+          assert not [b for b in branches if 'ordinal25' in str(b.get('name') or '') and str(b.get('name') or '').startswith(('authorization/','dispatch/'))]
+          assert not [r for r in runs if r.get('event')=='push' and 'ordinal25' in str(r.get('head_branch') or '') and str(r.get('head_branch') or '').startswith('dispatch/')]
+          prefix='ALLOCATED-SCIENCE-IDENTITY | MYSTIC-STATE-0070 | ordinal=25 | authHead='
+          assert not [c for c in comments if prefix in str(c.get('body') or '')]
+          old=[c for c in comments if str(c.get('body') or '').strip()=='ALLOCATED-SCIENCE-IDENTITY | MYSTIC-STATE-0070 | ordinal=24 | authHead=520ff3cc5f8fee2defc1a0a950bfa7a40974479c | seeds=2101000001-2101000024']
+          assert len(old)==1
+          PY
+      - name: Prove review surface contains no scientific trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/level-b-v2-densified58-fresh-validation-recovery-v2/authorization.json
+          ! grep -R -F -- '--allow-execution' review/level-b-v2-densified58-fresh-validation-recovery-v2 experiments/level-b-v2-densified58-fresh-validation-recovery-v2
+          ! grep -R -F 'workflow_dispatch:' .github/workflows/level-b-v2-densified58-fresh-validation-recovery-v2.yml
+          python - <<'PY'
+          import json
+          r=json.load(open('review/level-b-v2-densified58-fresh-validation-recovery-v2/recovery-v2.json'))
+          assert all(v is False for v in r['reviewSurface'].values())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v0070-ordinal25-recovery-v2-review-${{ github.sha }}
+          path: |
+            /tmp/ordinal25-cases.json
+            /tmp/ordinal25-manifest.json
+          if-no-files-found: error
+          retention-days: 90

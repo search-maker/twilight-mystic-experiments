@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -224,12 +225,34 @@ def validate_dataset(d: dict[str,Any], protocol: dict[str,Any], file_bytes: byte
     for r in recs: target(r,scales); basis(r['geometry'],'COS_COMPACT_13_TERMS')
     return recs
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req_obj, fp, code, msg, headers, newurl):
+        return None
+
 def download_training_dataset(token: str) -> tuple[dict[str,Any],str]:
     req(bool(token),'GITHUB_TOKEN required')
-    url=f'https://api.github.com/repos/{REPO}/actions/artifacts/{ARTIFACT_ID}/zip'
-    request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'level-b-v2-training-fit-v1'})
-    with urllib.request.urlopen(request,timeout=120) as resp: blob=resp.read()
-    req(sha256_bytes(blob)==ARTIFACT_DIGEST,'artifact ZIP digest drift')
+    api_headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'level-b-v2-training-fit-v1'}
+    meta_req=urllib.request.Request(f'https://api.github.com/repos/{REPO}/actions/artifacts/{ARTIFACT_ID}',headers=api_headers)
+    meta=json.loads(urllib.request.urlopen(meta_req,timeout=60).read())
+    req(meta.get('expired') is False,'source artifact expired')
+    req(meta.get('digest')=='sha256:'+ARTIFACT_DIGEST,'source artifact metadata digest drift')
+    opener=urllib.request.build_opener(NoRedirect)
+    zip_req=urllib.request.Request(f'https://api.github.com/repos/{REPO}/actions/artifacts/{ARTIFACT_ID}/zip',headers={k:v for k,v in api_headers.items() if k!='Accept'})
+    try:
+        response=opener.open(zip_req,timeout=60)
+    except urllib.error.HTTPError as exc:
+        req(exc.code in (301,302,303,307,308) and exc.headers.get('Location'),'artifact redirect missing')
+        location=exc.headers['Location']
+    else:
+        with response:
+            blob=response.read()
+        req(sha256_bytes(blob)==ARTIFACT_DIGEST,'artifact ZIP digest drift')
+        location=None
+    if location is not None:
+        signed_req=urllib.request.Request(location,headers={'User-Agent':'level-b-v2-training-fit-v1'})
+        with urllib.request.urlopen(signed_req,timeout=120) as response:
+            blob=response.read()
+        req(sha256_bytes(blob)==ARTIFACT_DIGEST,'artifact ZIP digest drift')
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         req(DATASET_MEMBER in z.namelist(),'training dataset member missing'); raw=z.read(DATASET_MEMBER)
     req(sha256_bytes(raw)==DATASET_FILE_SHA256,'dataset file SHA drift')

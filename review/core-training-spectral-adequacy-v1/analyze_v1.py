@@ -30,6 +30,7 @@ def validate_protocol(p:dict[str,Any])->None:
     req('train-0037' in set(u.get('explicitlyExcludedGeometryIds') or []),'train0037 exclusion missing')
     s=p.get('spectralAdequacy') or {}; g=s.get('wavelengthGrid') or {}
     req((g.get('nodeCount'),g.get('firstNm'),g.get('lastNm'),g.get('canonicalTokenStreamSha256'))==(8001,380.0,780.0,GRID_SHA),'grid contract drift')
+    req(s.get('numericalRankRule')=='FLOAT64_SVD_MAX_DIMENSION_EPS_LEADING_SINGULAR_VALUE','numerical rank rule drift')
     req(s.get('componentSnrThreshold')==1.0 and s.get('maxPcaComponents')==8,'adequacy threshold/cap drift')
     req(s.get('rawResamplingAllowed') is False and s.get('rawSmoothingAllowed') is False and s.get('epsilonSubstitutionAllowed') is False,'raw mutation boundary drift')
     b=p.get('boundaries') or {}
@@ -89,7 +90,7 @@ def projection_residual(y:np.ndarray,W:np.ndarray)->tuple[np.ndarray,np.ndarray]
 def canonicalize_components(vt:np.ndarray)->np.ndarray:
     out=vt.copy()
     for i in range(out.shape[0]):
-        j=int(np.argmax(np.abs(out[i])));
+        j=int(np.argmax(np.abs(out[i])))
         if out[i,j]<0: out[i]*=-1
     return out
 
@@ -99,7 +100,9 @@ def spectral_pca(blocks:dict[str,list[np.ndarray]],W:np.ndarray,max_components:i
     for g in gids:
         req(len(blocks[g])>=2,f'at least two admitted blocks required: {g}'); residual_blocks[g]=[projection_residual(y,W)[0] for y in blocks[g]]
     means=np.vstack([np.mean(np.vstack(residual_blocks[g]),axis=0) for g in gids]); grand=np.mean(means,axis=0); M=means-grand
-    U,s,vt=np.linalg.svd(M,full_matrices=False); vt=canonicalize_components(vt); scores=M@vt.T
+    U,s,vt=np.linalg.svd(M,full_matrices=False); vt=canonicalize_components(vt)
+    lead=float(s[0]) if len(s) else 0.0; rank_tol=float(max(M.shape)*np.finfo(np.float64).eps*lead); active=s>rank_tol
+    scores=M@vt.T
     between=np.var(scores,axis=0,ddof=1); noise=[]
     for j in range(vt.shape[0]):
         q=[]
@@ -108,10 +111,10 @@ def spectral_pca(blocks:dict[str,list[np.ndarray]],W:np.ndarray,max_components:i
             q.append(float(np.var(a,ddof=1)/len(a)))
         noise.append(float(np.mean(q)))
     noise=np.array(noise); snr=np.array([math.inf if nv==0 and bv>0 else (0.0 if nv==0 else bv/nv) for bv,nv in zip(between,noise)])
-    resolved=[int(i) for i,x in enumerate(snr) if x>threshold and between[i]>0]
+    resolved=[int(i) for i,x in enumerate(snr) if bool(active[i]) and x>threshold and between[i]>0]
     req(len(resolved)<=max_components,f'{len(resolved)} resolved nullspace components exceeds frozen cap {max_components}')
     selected=vt[resolved] if resolved else np.zeros((0,len(W[0])))
-    return {'geometryIds':gids,'grandMeanResidual':grand,'components':selected,'resolvedIndices':resolved,'singularValues':s,'betweenVariance':between,'noiseVariance':noise,'snr':snr,'allComponents':vt}
+    return {'geometryIds':gids,'grandMeanResidual':grand,'components':selected,'resolvedIndices':resolved,'singularValues':s,'numericalRankTolerance':rank_tol,'numericalRank':int(np.count_nonzero(active)),'betweenVariance':between,'noiseVariance':noise,'snr':snr,'allComponents':vt}
 
 def derive_sources(protocol:dict[str,Any],token:str)->tuple[list[dict[str,Any]],dict[str,bytes]]:
     u=protocol['trainingUniverse']; evidence={}
@@ -174,7 +177,7 @@ def execute(repo_root:Path,protocol_path:Path,out:Path)->None:
     out.mkdir(parents=True,exist_ok=True)
     npz=out/'spectral-representation-v1.npz'; np.savez_compressed(npz,wavelength_nm=wl0,integration_weights=W,grand_mean_nullspace_residual=r['grandMeanResidual'],selected_nullspace_pca_components=r['components'],resolved_pca_indices=np.array(r['resolvedIndices'],dtype=np.int64))
     universe={'schemaVersion':1,'status':'FROZEN_TRAINING_ONLY_UNIVERSE_RECONSTRUCTED_FROM_REVIEWED_IMMUTABLE_EVIDENCE','protocolId':p['protocolId'],'geometryCount':44,'sourceCaseArtifactCount':138,'sourceArtifactIds':[x['artifactId'] for x in inventory],'cases':inventory,'excludedGeometryIds':p['trainingUniverse']['explicitlyExcludedGeometryIds'],'holdoutValuesRead':False,'protectedHoldoutRecordCount':0,'scientificSolverExecutionPerformed':False}; universe['universeSha256']=canon(universe); write_json(out/'training-universe-v1.json',universe)
-    result={'schemaVersion':1,'status':'TRAINING_ONLY_SPECTRAL_ADEQUACY_ANALYZED','protocolId':p['protocolId'],'numpyVersion':np.__version__,'geometryCount':44,'sourceCaseArtifactCount':138,'wavelengthTokenGridSha256':GRID_SHA,'trainingUniverseSha256':universe['universeSha256'],'representationPackageSha256':sha_bytes(npz.read_bytes()),'mandatoryIntegratedChannelCount':3,'resolvedNullspacePcaComponentCount':len(r['resolvedIndices']),'resolvedPcaIndices':r['resolvedIndices'],'decision':decision,'componentSnrThreshold':p['spectralAdequacy']['componentSnrThreshold'],'maxPcaComponents':p['spectralAdequacy']['maxPcaComponents'],'singularValues':[float(x) for x in r['singularValues']],'betweenGeometryScoreVariance':[float(x) for x in r['betweenVariance']],'noiseFloorVariance':[float(x) for x in r['noiseVariance']],'componentSnr':[('Infinity' if math.isinf(float(x)) else float(x)) for x in r['snr']],'holdoutValuesRead':False,'protectedHoldoutRecordCount':0,'modelFittingAuthorized':False,'modelSelectionAuthorized':False,'stage2Authorized':False,'newScientificExecutionAuthorized':False,'sourceArtifactsModified':False}; result['resultSha256']=canon(result); write_json(out/'spectral-adequacy-result-v1.json',result)
+    result={'schemaVersion':1,'status':'TRAINING_ONLY_SPECTRAL_ADEQUACY_ANALYZED','protocolId':p['protocolId'],'numpyVersion':np.__version__,'geometryCount':44,'sourceCaseArtifactCount':138,'wavelengthTokenGridSha256':GRID_SHA,'trainingUniverseSha256':universe['universeSha256'],'representationPackageSha256':sha_bytes(npz.read_bytes()),'mandatoryIntegratedChannelCount':3,'resolvedNullspacePcaComponentCount':len(r['resolvedIndices']),'resolvedPcaIndices':r['resolvedIndices'],'decision':decision,'numericalRankRule':p['spectralAdequacy']['numericalRankRule'],'numericalRankTolerance':r['numericalRankTolerance'],'numericalRank':r['numericalRank'],'componentSnrThreshold':p['spectralAdequacy']['componentSnrThreshold'],'maxPcaComponents':p['spectralAdequacy']['maxPcaComponents'],'singularValues':[float(x) for x in r['singularValues']],'betweenGeometryScoreVariance':[float(x) for x in r['betweenVariance']],'noiseFloorVariance':[float(x) for x in r['noiseVariance']],'componentSnr':[('Infinity' if math.isinf(float(x)) else float(x)) for x in r['snr']],'holdoutValuesRead':False,'protectedHoldoutRecordCount':0,'modelFittingAuthorized':False,'modelSelectionAuthorized':False,'stage2Authorized':False,'newScientificExecutionAuthorized':False,'sourceArtifactsModified':False}; result['resultSha256']=canon(result); write_json(out/'spectral-adequacy-result-v1.json',result)
 
 def main()->int:
     ap=argparse.ArgumentParser(); sub=ap.add_subparsers(dest='cmd',required=True)

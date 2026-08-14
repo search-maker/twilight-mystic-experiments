@@ -193,6 +193,7 @@ def evaluate(recovery: dict[str, Any], cases_root: Path, model_dir: Path, repres
     p = effective_contract(recovery, repo_root)
     base = patched_base_core(recovery, repo_root)
     result = base.evaluate(p, cases_root, model_dir, representation_dir, repo_root, output)
+    result.pop('resultSha256', None)
     result['schemaVersion'] = 2
     result['stageId'] = 'LEVEL_B_V2_DENSIFIED58_FRESH_PROTECTED_VALIDATION_EVALUATION_V2_ORDINAL25_RECOVERY'
     result['recoveryId'] = RECOVERY_ID
@@ -200,7 +201,6 @@ def evaluate(recovery: dict[str, Any], cases_root: Path, model_dir: Path, repres
     result['ordinal24DispatchRunId'] = 31840757436
     result['ordinal24ProtectedValuesRead'] = False
     result['ordinal24SolverExecutionCount'] = 0
-    result['resultSha256'] = None
     result['resultSha256'] = canon(result)
     write(output, result)
     return result

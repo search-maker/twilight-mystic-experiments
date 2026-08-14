@@ -69,8 +69,8 @@ def main():
     rt=REVIEW_WF.read_text(); at=AUTH_WF.read_text(); et=EXEC_WF.read_text()
     trigger_headers=[text.split('jobs:',1)[0] for text in (rt,at,et)]
     req(all('workflow_dispatch:' not in header and '\nschedule:' not in header for header in trigger_headers),'manual/scheduled trigger introduced')
-    req("'authorization/level-b-v2-densified58-fresh-validation-ordinal24-v1'" in at and 'pull_request:' in at and 'push:' not in at.split('jobs:',1)[0],'authorization workflow trigger drift')
-    req("'dispatch/level-b-v2-densified58-fresh-validation-ordinal24-v1'" in et and 'push:' in et.split('jobs:',1)[0] and 'pull_request:' not in et.split('jobs:',1)[0],'execution workflow trigger drift')
+    req(AUTH_BRANCH in at and 'pull_request:' in at and 'push:' not in at.split('jobs:',1)[0],'authorization workflow trigger drift')
+    req(DISPATCH_BRANCH in et and 'push:' in et.split('jobs:',1)[0] and 'pull_request:' not in et.split('jobs:',1)[0],'execution workflow trigger drift')
     req(AUTH_REL in at and AUTH_REL in et,'authorization path missing from future workflows')
     req('GITHUB_RUN_ATTEMPT' in at and 'GITHUB_RUN_ATTEMPT' in et,'attempt-one guard missing')
     req('allocationMarkerPrefix' in et or 'ALLOCATED-SCIENCE-IDENTITY' in et,'allocation marker guard missing from execution')

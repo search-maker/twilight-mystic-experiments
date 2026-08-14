@@ -1,0 +1,190 @@
+name: Tier2 stage1 ordinal20 immutable artifact salvage v1
+run-name: Tier2 stage1 ordinal20 immutable artifact salvage v1
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/tier2-stage1-ordinal20-artifact-salvage-v1.yml
+      - review/tier2-stage1-ordinal20-artifact-salvage-v1/**
+  push:
+    branches:
+      - postprocess/tier2-stage1-ordinal20-artifact-salvage-v1
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: tier2-stage1-ordinal20-artifact-salvage-v1
+  cancel-in-progress: false
+
+env:
+  CONTRACT: review/tier2-stage1-ordinal20-artifact-salvage-v1/tier2-stage1-ordinal20-artifact-salvage-contract-v1.json
+  SALVAGE: review/tier2-stage1-ordinal20-artifact-salvage-v1/salvage_v1.py
+  AUDIT: review/tier2-stage1-ordinal20-artifact-salvage-v1/audit_v1.py
+  TEST_DIR: review/tier2-stage1-ordinal20-artifact-salvage-v1
+  ACTIVATION: review/tier2-stage1-ordinal20-artifact-salvage-v1/activation.json
+  MANIFEST: experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Prove artifact-only closed-boundary review surface
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python "$SALVAGE" validate-contract --contract "$CONTRACT"
+          (cd "$TEST_DIR" && python -m unittest -v test_salvage_v1.py)
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/tier2-stage1-ordinal20-artifact-salvage-v1.yml')
+          text=p.read_text(encoding='utf-8')
+          forbidden=(
+              'mamba-'+'org/setup-micromamba',
+              'uv'+'spec',
+              '--allow-'+'execution',
+              'workflow_'+'dispatch',
+              'mc_'+'photons ',
+          )
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'forbidden solver/execution surface: {found}')
+          contract=Path('review/tier2-stage1-ordinal20-artifact-salvage-v1/tier2-stage1-ordinal20-artifact-salvage-contract-v1.json').read_text()
+          required=('31763376962','c9de6e643cc8d212a3071996b111980e499ac253','b5fae53c1cc88c7f3de6e3689bc25e4a36c54033d1d1bfd6169482f30cc5b477')
+          missing=[x for x in required if x not in contract]
+          if missing: raise SystemExit(f'frozen source/grid identity missing: {missing}')
+          PY
+      - name: Re-prove two frozen serialization anchors without deriving training aggregate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ordinal20-anchor-review
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9205467288/zip" > /tmp/ordinal20-anchor-review/train-0052-b1.zip
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9205663530/zip" > /tmp/ordinal20-anchor-review/train-0096-b3.zip
+          python - <<'PY'
+          import hashlib,json,sys,zipfile
+          from pathlib import Path
+          sys.path.insert(0,'review/tier2-stage1-ordinal20-artifact-salvage-v1')
+          import salvage_v1
+          c=json.load(open('review/tier2-stage1-ordinal20-artifact-salvage-v1/tier2-stage1-ordinal20-artifact-salvage-contract-v1.json'))
+          rows=[
+              ('train-0052-b1.zip','85516ea8cb5b1ba9fa0971aaf51909663186efd6bb22c18ba41a471ad40685d2'),
+              ('train-0096-b3.zip','60b97f4de693fb35d2e1870c6fd4abf12cf8ef231dafacdbaa83e7190145b93d'),
+          ]
+          for name,want in rows:
+              p=Path('/tmp/ordinal20-anchor-review')/name
+              got=hashlib.sha256(p.read_bytes()).hexdigest()
+              if got!=want: raise SystemExit(f'anchor ZIP digest drift: {name}: {got}')
+              with zipfile.ZipFile(p) as z:
+                  r=salvage_v1.parse_spectrum_bytes(z.read('mc.rad.spc'),c['gridSerialization'])
+                  s=salvage_v1.parse_spectrum_bytes(z.read('mc.rad.std.spc'),c['gridSerialization'])
+                  if r['wavelengthTokens']!=s['wavelengthTokens']: raise SystemExit(f'anchor radiance/std grid mismatch: {name}')
+                  if r['legacyParserAccepts']: raise SystemExit(f'legacy parser unexpectedly accepts anchor: {name}')
+          PY
+
+  salvage:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Refuse wrong trigger, retry, moved main, activation drift, or duplicate activation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_NAME" = postprocess/tier2-stage1-ordinal20-artifact-salvage-v1
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git cat-file -p "$GITHUB_SHA" | grep -c '^parent ')" = 1
+          SOURCE_SHA="$(git rev-parse "$GITHUB_SHA^")"
+          LIVE_MAIN="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .commit.sha)"
+          test "$SOURCE_SHA" = "$LIVE_MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$ACTIVATION"
+          python - <<'PY'
+          import json,os,subprocess
+          a=json.load(open(os.environ['ACTIVATION']))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          expected={
+              'schemaVersion':1,
+              'status':'AUTHORIZED_ARTIFACT_ONLY_REPLAY',
+              'sourceMainSha':parent,
+              'sourceRunId':31763376962,
+              'sourceHeadSha':'c9de6e643cc8d212a3071996b111980e499ac253',
+              'newSolverExecutionAuthorized':False,
+              'protectedHoldoutOpeningAuthorized':False,
+              'modelFittingAuthorized':False,
+          }
+          stale={k:(a.get(k),v) for k,v in expected.items() if a.get(k)!=v}
+          if stale: raise SystemExit(f'activation drift: {stale}')
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > activation-runs.json
+          python - <<'PY'
+          import json,os
+          runs=json.load(open('activation-runs.json')).get('workflow_runs',[])
+          hits=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('head_branch')==os.environ['GITHUB_REF_NAME'] and r.get('event')=='push']
+          if len(hits)!=1 or int(hits[0].get('id') or 0)!=int(os.environ['GITHUB_RUN_ID']):
+              raise SystemExit(f'expected exactly current immutable salvage activation, got {[r.get("id") for r in hits]}')
+          PY
+      - name: Re-prove frozen contract and unit refusal boundaries
+        run: |
+          set -euo pipefail
+          python "$SALVAGE" validate-contract --contract "$CONTRACT"
+          (cd "$TEST_DIR" && python -m unittest -v test_salvage_v1.py)
+      - name: Execute artifact-only salvage over exact 76-case immutable source universe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python "$SALVAGE" execute --repo-root . --manifest "$MANIFEST" --contract "$CONTRACT" --output-root salvage-output
+      - name: Independently reopen all 76 raw spectra and audit recovered training aggregate
+        run: |
+          set -euo pipefail
+          python "$AUDIT" --manifest "$MANIFEST" --contract "$CONTRACT" --results-root salvage-output/source-cases --aggregate salvage-output/aggregate.json --output salvage-output/audit.json
+      - name: Freeze training-only handoff while fitting and holdouts remain closed
+        run: |
+          set -euo pipefail
+          python "$SALVAGE" handoff --manifest "$MANIFEST" --contract "$CONTRACT" --output-root salvage-output --audit salvage-output/audit.json
+      - name: Prove original source artifact ZIPs were not modified
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          inv=json.load(open('salvage-output/inventory.json'))
+          rows={x['artifactName']:x for x in inv['cases']}
+          for name,row in rows.items():
+              p=Path('salvage-output/artifact-zips')/(name+'.zip')
+              got=hashlib.sha256(p.read_bytes()).hexdigest()
+              want=row['artifactDigest'].split(':',1)[1]
+              if got!=want: raise SystemExit(f'source artifact changed after replay: {name}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier2-stage1-ordinal20-artifact-salvage-v1-${{ github.sha }}
+          path: |
+            salvage-output/source-metadata
+            salvage-output/inventory.json
+            salvage-output/consumed-training-seed-ledger.json
+            salvage-output/source-cases/*/salvage-case.json
+            salvage-output/aggregate.json
+            salvage-output/audit.json
+            salvage-output/training-handoff.json
+          if-no-files-found: error
+          retention-days: 90

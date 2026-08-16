@@ -1,0 +1,108 @@
+name: Level-B v3 training-only fit activation v1 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-training-only-fit-activation-v1/**'
+      - '.github/workflows/level-b-v3-training-only-fit-activation-v1-review.yml'
+      - '.github/workflows/level-b-v3-training-only-fit-authorization-review-v1.yml'
+      - '.github/workflows/level-b-v3-training-only-fit-v1.yml'
+  push:
+    branches:
+      - 'review/level-b-v3-training-only-fit-activation-v1'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  REVIEW_BRANCH: review/level-b-v3-training-only-fit-activation-v1
+  AUTH_BRANCH: authorization/level-b-v3-training-only-fit-v1
+  FIT_BRANCH: fit/level-b-v3-training-only-v1
+  CONTRACT: review/level-b-v3-training-only-fit-activation-v1/activation-contract-v1.json
+  AUTH_PATH: review/level-b-v3-training-only-fit-activation-v1/authorization-v1.json
+
+jobs:
+  review-only-activation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - name: Validate exact source-bound activation contract
+        run: python review/level-b-v3-training-only-fit-activation-v1/validate_activation_v1.py
+      - name: Compile independent result auditor
+        run: python -m py_compile review/level-b-v3-training-only-fit-activation-v1/audit_fit_result_v1.py
+      - name: Refuse moved main, wrong PR shape, authorization file, or non-review branch
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.pull_request.draft }}' = true
+          test "$GITHUB_HEAD_REF" = "$REVIEW_BRANCH"
+          test "$GITHUB_BASE_REF" = main
+          test '${{ github.event.pull_request.base.sha }}' = '9634ec2cb9c4481c13fe1c9e4b6e3cdf9a89898a'
+          test "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)" = '9634ec2cb9c4481c13fe1c9e4b6e3cdf9a89898a'
+          test ! -e "$AUTH_PATH"
+          mapfile -t CHANGED < <(git diff --name-only '${{ github.event.pull_request.base.sha }}' HEAD)
+          printf '%s\n' "${CHANGED[@]}" | sort > /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          .github/workflows/level-b-v3-training-only-fit-activation-v1-review.yml
+          .github/workflows/level-b-v3-training-only-fit-authorization-review-v1.yml
+          .github/workflows/level-b-v3-training-only-fit-v1.yml
+          review/level-b-v3-training-only-fit-activation-v1/activation-contract-v1.json
+          review/level-b-v3-training-only-fit-activation-v1/audit_fit_result_v1.py
+          review/level-b-v3-training-only-fit-activation-v1/validate_activation_v1.py
+          EOF
+          sort -o /tmp/expected.txt /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+      - name: Prove activation review has no fit, artifact download, network, solver, or ordinal27 surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          review='.github/workflows/level-b-v3-training-only-fit-activation-v1-review.yml'
+          forbidden=(
+            "actions/download""-artifact"
+            "train_v1.py ""execute"
+            "922922""9366"
+            "923778""8838"
+            "318518""72896"
+            "318480""52825"
+            "v0070-""holdout"
+            "lib""Radtran"
+            "mc.rad.""spc"
+            "micro""mamba"
+          )
+          for needle in "${forbidden[@]}"; do
+            ! grep -F -- "$needle" "$review"
+          done
+      - name: Prove no authorization, fit dispatch, or marker exists yet
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments.json
+          python - <<'PY'
+          import json,os
+          def flat(path,key=None):
+              out=[]
+              for page in json.load(open(path)): out.extend(page.get(key,[]) if key else page)
+              return out
+          branches=flat('/tmp/branches.json'); runs=flat('/tmp/runs.json','workflow_runs'); comments=flat('/tmp/comments.json')
+          assert not [b for b in branches if b.get('name') in (os.environ['AUTH_BRANCH'],os.environ['FIT_BRANCH'])]
+          assert not [r for r in runs if r.get('event')=='push' and r.get('head_branch')==os.environ['FIT_BRANCH']]
+          prefix='AUTHORIZED-LEVEL-B-V3-TRAINING-ONLY-FIT | MYSTIC-STATE-0071 | '
+          assert not [c for c in comments if prefix in str(c.get('body') or '')]
+          PY

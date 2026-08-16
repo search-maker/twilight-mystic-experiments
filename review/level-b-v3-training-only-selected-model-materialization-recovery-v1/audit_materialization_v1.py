@@ -42,10 +42,8 @@ def module(name: str, path: Path):
     req(spec is not None and spec.loader is not None, f'cannot load {path}')
     mod = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(path.parent))
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        sys.path.pop(0)
+    try: spec.loader.exec_module(mod)
+    finally: sys.path.pop(0)
     return mod
 
 

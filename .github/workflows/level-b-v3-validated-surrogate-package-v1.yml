@@ -1,0 +1,65 @@
+name: Level-B v3 computationally validated surrogate package v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-validated-surrogate-package-v1/**'
+      - '.github/workflows/level-b-v3-validated-surrogate-package-v1.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-validated-surrogate-package-v1/**'
+      - '.github/workflows/level-b-v3-validated-surrogate-package-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - name: Download exact frozen model and representation artifacts only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v3-model /tmp/v3-representation
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9258264586/zip" > /tmp/v3-model.zip
+          test "$(sha256sum /tmp/v3-model.zip | awk '{print $1}')" = "a3a4266e95919dccc8248e73f16fc0960dae4254543cbf48677b1f780530bfc7"
+          unzip -q /tmp/v3-model.zip -d /tmp/v3-model
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9208203541/zip" > /tmp/v3-representation.zip
+          test "$(sha256sum /tmp/v3-representation.zip | awk '{print $1}')" = "2fe50ed674155f440322c92d28877f5c022f0cc5fa13e1e601596a9902482815"
+          unzip -q /tmp/v3-representation.zip -d /tmp/v3-representation
+          test -f /tmp/v3-model/model-artifact-materialization-v1.json
+          test -f /tmp/v3-representation/spectral-representation-v2.npz
+      - name: Build publication package without protected truths
+        run: |
+          set -euo pipefail
+          python review/level-b-v3-validated-surrogate-package-v1/build_package_v1.py \
+            --manifest review/level-b-v3-validated-surrogate-package-v1/package-v1.json \
+            --model /tmp/v3-model/model-artifact-materialization-v1.json \
+            --representation /tmp/v3-representation/spectral-representation-v2.npz \
+            --result-binding review/level-b-v3-fresh-validation-ordinal28-result-v1/result-v1.json \
+            --out /tmp/level-b-v3-validated-surrogate-package-v1
+          python review/level-b-v3-validated-surrogate-package-v1/validate_package_v1.py \
+            /tmp/level-b-v3-validated-surrogate-package-v1
+      - name: Prove package contains no protected execution artifacts
+        run: |
+          set -euo pipefail
+          test "$(find /tmp/level-b-v3-validated-surrogate-package-v1 -maxdepth 1 -type f | wc -l)" -eq 3
+          test ! -e /tmp/level-b-v3-validated-surrogate-package-v1/case-result.json
+          test ! -e /tmp/level-b-v3-validated-surrogate-package-v1/radiance.out
+          test ! -e /tmp/level-b-v3-validated-surrogate-package-v1/uvspec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-v3-computationally-validated-surrogate-package-v1-${{ github.sha }}
+          path: /tmp/level-b-v3-validated-surrogate-package-v1/
+          if-no-files-found: error
+          retention-days: 90

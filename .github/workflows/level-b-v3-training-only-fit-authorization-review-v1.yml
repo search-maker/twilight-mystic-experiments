@@ -1,0 +1,188 @@
+name: Level-B v3 training-only fit authorization review v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-training-only-fit-activation-v1/authorization-v1.json'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_PATH: review/level-b-v3-training-only-fit-activation-v1/authorization-v1.json
+  CONTRACT: review/level-b-v3-training-only-fit-activation-v1/activation-contract-v1.json
+  AUTH_BRANCH: authorization/level-b-v3-training-only-fit-v1
+  FIT_BRANCH: fit/level-b-v3-training-only-v1
+  SOURCE_RUN: '31827007009'
+  SOURCE_ARTIFACT: '9229229366'
+  DATASET_MEMBER: training-representation-dataset-v3-densified58.json
+
+jobs:
+  authorization-review-v1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.event.pull_request.head.sha }}', fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - name: Refuse retry, non-Draft, moved main, wrong branch, or non-one-file authorization
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.pull_request.draft }}' = true
+          test "$GITHUB_HEAD_REF" = "$AUTH_BRANCH"
+          test "$GITHUB_BASE_REF" = main
+          HEAD_SHA="$(git rev-parse HEAD)"; test "$HEAD_SHA" = '${{ github.event.pull_request.head.sha }}'
+          test "$(git cat-file -p HEAD | grep -c '^parent ')" = 1
+          PARENT="$(git rev-parse HEAD^)"
+          test "$PARENT" = '${{ github.event.pull_request.base.sha }}'
+          test "$PARENT" = "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH_PATH"
+          test -f "$AUTH_PATH"
+          if git cat-file -e "$PARENT:$AUTH_PATH" 2>/dev/null; then echo authorization-already-on-main; exit 1; fi
+      - name: Revalidate activation contract and exact authorization payload against parent-main blobs
+        run: |
+          python review/level-b-v3-training-only-fit-activation-v1/validate_activation_v1.py
+          python - <<'PY'
+          import json,os,subprocess
+          a=json.load(open(os.environ['AUTH_PATH'])); parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          def b(path): return subprocess.check_output(['git','rev-parse',f'HEAD^:{path}'],text=True).strip()
+          expected={
+            'schemaVersion':1,
+            'status':'AUTHORIZED_LEVEL_B_V3_TRAINING_ONLY_FIT_V1_ATTEMPT1',
+            'governance':'MYSTIC-STATE-0071',
+            'authorizationBranch':os.environ['AUTH_BRANCH'],
+            'fitBranch':os.environ['FIT_BRANCH'],
+            'executionKey':'level-b-v3:training-only-fit:v1',
+            'authorizationParentMainSha':parent,
+            'activationContractGitBlobSha':b('review/level-b-v3-training-only-fit-activation-v1/activation-contract-v1.json'),
+            'activationValidatorGitBlobSha':b('review/level-b-v3-training-only-fit-activation-v1/validate_activation_v1.py'),
+            'resultAuditGitBlobSha':b('review/level-b-v3-training-only-fit-activation-v1/audit_fit_result_v1.py'),
+            'activationReviewWorkflowGitBlobSha':b('.github/workflows/level-b-v3-training-only-fit-activation-v1-review.yml'),
+            'authorizationReviewWorkflowGitBlobSha':b('.github/workflows/level-b-v3-training-only-fit-authorization-review-v1.yml'),
+            'fitWorkflowGitBlobSha':b('.github/workflows/level-b-v3-training-only-fit-v1.yml'),
+            'prefitV2GitBlobSha':b('review/level-b-v3-training-only-prefit-freeze-v2/protocol-v2.json'),
+            'prefitV2CanonicalSha256':'8e3928634c3d297974c07533bed3bbfa24783f14ed55391fd318f817282d9a8e',
+            'implementationDescriptorGitBlobSha':b('review/level-b-v3-training-only-implementation-v1/implementation-v1.json'),
+            'implementationDescriptorCanonicalSha256':'2536ec084597b9e6d9e2dabfbf7902de28c91d02b510415dc4f926e9595be104',
+            'engineGitBlobSha':b('review/level-b-v3-training-only-implementation-v1/engine_v1.py'),
+            'engineSourceSha256':'0c8037dad360cabb8dc2e02254d3f4d48b4f99e036763756899d208796e2a1e0',
+            'trainerGitBlobSha':b('review/level-b-v3-training-only-implementation-v1/train_v1.py'),
+            'trainerSourceSha256':'58911cfb1f46a5c3d8597381354f914e8d7312f41a3ece86cf0c1dafc265538b',
+            'sourceTrainingRunId':31827007009,
+            'sourceTrainingRunAttempt':1,
+            'sourceTrainingHeadSha':'6ffae96ad6054d380f26e6d3a2d17917ba01900f',
+            'sourceTrainingArtifactId':9229229366,
+            'sourceTrainingArtifactName':'level-b-v2-training-fit-v3-densified58-6ffae96ad6054d380f26e6d3a2d17917ba01900f',
+            'sourceTrainingArtifactDigest':'sha256:f4c8c68a622f7c6bdc1b9177ad31d22f673becb1f286436d54b876ceece3668a',
+            'datasetMember':'training-representation-dataset-v3-densified58.json',
+            'datasetMemberByteSha256':'1cf31f1a80ce4ae1f39b9e750616093f6cfa927d10e258f81fe9fc0e58f0ea69',
+            'datasetCanonicalSha256':'58c977acf84b6ce17717765c2052f7f9fd64e2965e5bf447eba5cc4accb30435',
+            'trainingGeometryCount':58,
+            'candidateCount':145,
+            'cvFoldCount':73,
+            'trainingOnlyFitAuthorized':True,
+            'trainingArtifactMayBeRead':True,
+            'protectedValidationAuthorized':False,
+            'protectedValuesMayBeRead':False,
+            'ordinal27MayBeRead':False,
+            'newMysticSolverExecutionAuthorized':False,
+            'newTrainingDataAuthorized':False,
+            'thresholdChangeAuthorized':False,
+            'supportChangeAuthorized':False,
+            'automaticDispatch':False,
+            'runAttemptRequired':1,
+            'githubRerunAllowed':False,
+            'retryAllowed':False,
+            'resumeAllowed':False,
+            'productionPromotionAuthorized':False,
+            'workerBLaneReactivated':False,
+            'workerCLaneReactivated':False,
+          }
+          assert a==expected,(a,expected)
+          PY
+      - name: Re-prove exact immutable training source metadata before download
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}" > /tmp/source-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT}" > /tmp/source-artifact.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/source-run.json')); a=json.load(open('/tmp/source-artifact.json'))
+          assert (r['run_attempt'],r['head_sha'],r['status'],r['conclusion'])==(1,'6ffae96ad6054d380f26e6d3a2d17917ba01900f','completed','success')
+          assert a['id']==9229229366 and a['name']=='level-b-v2-training-fit-v3-densified58-6ffae96ad6054d380f26e6d3a2d17917ba01900f'
+          assert a.get('digest')=='sha256:f4c8c68a622f7c6bdc1b9177ad31d22f673becb1f286436d54b876ceece3668a' and a.get('expired') is False
+          assert a['workflow_run']['id']==31827007009 and a['workflow_run']['head_sha']=='6ffae96ad6054d380f26e6d3a2d17917ba01900f'
+          PY
+      - name: Download only the exact frozen training artifact for source identity review
+        uses: actions/download-artifact@v4
+        with:
+          github-token: '${{ github.token }}'
+          repository: '${{ github.repository }}'
+          run-id: 31827007009
+          artifact-ids: 9229229366
+          path: /tmp/lbv3-training-source
+          merge-multiple: true
+      - name: Verify exact dataset member bytes, self-hash, roles, and zero protected records without fitting
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          p='/tmp/lbv3-training-source/training-representation-dataset-v3-densified58.json'
+          raw=open(p,'rb').read(); assert hashlib.sha256(raw).hexdigest()=='1cf31f1a80ce4ae1f39b9e750616093f6cfa927d10e258f81fe9fc0e58f0ea69'
+          d=json.loads(raw); body=dict(d); h=body.pop('datasetSha256'); assert h=='58c977acf84b6ce17717765c2052f7f9fd64e2965e5bf447eba5cc4accb30435'
+          assert hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==h
+          protocol=json.load(open('review/level-b-v3-training-only-prefit-freeze-v2/protocol-v2.json'))
+          assert d['geometryCount']==58 and d['protectedHoldoutRecordCount']==0 and len(d['records'])==58
+          assert [str(x['geometryId']) for x in d['records']]==protocol['roleIsolation']['trainingGeometryIds']
+          assert not any(str(x['geometryId']).startswith('v0070-holdout-') for x in d['records'])
+          PY
+      - name: Prove no fit branch, fit run, or authorization marker exists yet
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments.json
+          python - <<'PY'
+          import json,os
+          def flat(path,key=None):
+              out=[]
+              for page in json.load(open(path)): out.extend(page.get(key,[]) if key else page)
+              return out
+          branches=flat('/tmp/branches.json'); runs=flat('/tmp/runs.json','workflow_runs'); comments=flat('/tmp/comments.json')
+          assert not [b for b in branches if b.get('name')==os.environ['FIT_BRANCH']]
+          assert not [r for r in runs if r.get('event')=='push' and r.get('head_branch')==os.environ['FIT_BRANCH']]
+          prefix='AUTHORIZED-LEVEL-B-V3-TRAINING-ONLY-FIT | MYSTIC-STATE-0071 | '
+          assert not [c for c in comments if prefix in str(c.get('body') or '')]
+          PY
+      - name: Prove authorization review cannot fit or read protected science
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow='.github/workflows/level-b-v3-training-only-fit-authorization-review-v1.yml'
+          forbidden=(
+            "train_v1.py ""execute"
+            "923778""8838"
+            "318518""72896"
+            "318480""52825"
+            "v0070-""holdout-0"
+            "lib""Radtran"
+            "mc.rad.""spc"
+            "micro""mamba"
+          )
+          for needle in "${forbidden[@]}"; do
+            ! grep -F -- "$needle" "$workflow"
+          done

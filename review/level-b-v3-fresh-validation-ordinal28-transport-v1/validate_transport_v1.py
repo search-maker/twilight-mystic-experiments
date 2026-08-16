@@ -42,7 +42,7 @@ def validate(require_review_inert:bool)->dict[str,Any]:
       'allocationGuardPath':('review/level-b-v3-fresh-validation-ordinal28-transport-v1/allocation_guard_v1.py','2e6854078f70fed7b0e9140d1185184da1e0087c'),
       'authorizationReviewWorkflowPath':('.github/workflows/level-b-v3-fresh-validation-ordinal28-authorization-review-v1.yml','0be5a2b65fcd56da409ce71c6454d86087bb0acf'),
       'executionWorkflowPath':('.github/workflows/level-b-v3-fresh-validation-ordinal28-execution-v1.yml','5123b299df83f00eb906689038ae60fbee88e10e'),
-      'syntheticEvaluatePath':('review/level-b-v3-fresh-validation-ordinal28-transport-v1/synthetic_evaluate_v1.py','826fda460e33c3722523c1257fc9b7f79bc2a2d0')}
+      'syntheticEvaluatePath':('review/level-b-v3-fresh-validation-ordinal28-transport-v1/synthetic_evaluate_v1.py','4c0b5de12879d5610a90da39a8bf3f1251770197')}
     for k,(p,sha) in pairs.items():
         sk=k.replace('Path','GitBlobSha');req(tb[k]==p and tb[sk]==sha,f'{k} binding drift');req(blob(p)==sha,f'live transport blob drift: {p}')
     ident=t['scientificIdentityCandidate'];req((ident['scientificOrdinal'],ident['authorizationBranch'],ident['allocationLockBranch'],ident['dispatchBranch'],ident['executionKey'])==(28,'authorization/level-b-v3-fresh-validation-ordinal28-v1','allocation/level-b-v3-fresh-validation-ordinal28-v1','dispatch/level-b-v3-fresh-validation-ordinal28-v1','level-b-v3:fresh-protected-validation:28'),'ordinal28 identity drift');req(ident['reservedSeeds']==list(range(2110000001,2110000025)),'ordinal28 seed drift');req((ident['geometryCount'],ident['caseCount'],ident['configuredPhotonHistories'])==(6,24,960_000_000),'ordinal28 accounting drift')

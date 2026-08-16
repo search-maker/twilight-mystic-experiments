@@ -1,0 +1,147 @@
+name: Level-B v3 fresh validation implementation review v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-fresh-validation-implementation-v1/**'
+      - 'experiments/level-b-v3-fresh-validation-v1/**'
+      - '.github/workflows/level-b-v3-fresh-validation-implementation-v1.yml'
+  push:
+    branches:
+      - 'review/level-b-v3-fresh-validation-implementation-v1'
+    paths:
+      - 'review/level-b-v3-fresh-validation-implementation-v1/**'
+      - 'experiments/level-b-v3-fresh-validation-v1/**'
+      - '.github/workflows/level-b-v3-fresh-validation-implementation-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  review-only-v3-fresh-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen review dependency
+        run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - name: Download exact frozen representation artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 31771224298
+          artifact-ids: 9208203541
+          path: /tmp/v3-representation
+          merge-multiple: true
+      - name: Download exact frozen densified58 training/model artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 31827007009
+          artifact-ids: 9229229366
+          path: /tmp/v3-base
+          merge-multiple: true
+      - name: Download exact frozen v3 materialized model artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 31927414786
+          artifact-ids: 9258264586
+          path: /tmp/v3-materialized
+          merge-multiple: true
+      - name: Prove frozen v3 predictor parity and source support
+        run: |
+          python review/level-b-v3-fresh-validation-implementation-v1/fresh_validation_v1.py validate \
+            --contract review/level-b-v3-fresh-validation-implementation-v1/contract-v1.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --materialized-dir /tmp/v3-materialized \
+            --base-model-dir /tmp/v3-base
+      - name: Run manifest, dispatch-guard, and frozen-DoD known-answer tests
+        run: |
+          python review/level-b-v3-fresh-validation-implementation-v1/test_v1.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --materialized-dir /tmp/v3-materialized \
+            --base-model-dir /tmp/v3-base
+      - name: Build exact review-only ordinal28 manifest
+        run: |
+          python experiments/level-b-v3-fresh-validation-v1/build_manifest_v1.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output /tmp/o28-manifest.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/o28-manifest.json'))
+          assert p['caseCount']==24 and p['configuredPhotonHistories']==960000000
+          assert [x['seed'] for x in p['cases']]==list(range(2110000001,2110000025))
+          assert p['closedUntilAuthorization']['scientificSolverExecutionAuthorized'] is False
+          print(json.dumps({'status':'PASS','manifestSha256':p['manifestSha256']},sort_keys=True))
+          PY
+      - name: Fetch all branch refs for collision audit
+        shell: bash
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force --prune --no-tags
+      - name: Prove source geometries do not collide with repository geometry history
+        run: |
+          python review/level-b-v3-fresh-validation-implementation-v1/freshness_v1.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --contract review/level-b-v3-fresh-validation-implementation-v1/contract-v1.json
+      - name: Prove ordinal28 and proposed seeds are fresh outside this review branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t refs < <(git for-each-ref refs/remotes/origin --format='%(refname)' | grep -v '/review/level-b-v3-fresh-validation-implementation-v1$' | grep -v '/HEAD$')
+          test "${#refs[@]}" -gt 0
+          regex='ordinal[-_ ]?28|scientificOrdinal[^0-9]{0,12}28|candidateScientificOrdinal[^0-9]{0,12}28|21100000(0[1-9]|1[0-9]|2[0-4])'
+          if git log "${refs[@]}" --extended-regexp --regexp-ignore-case -G "$regex" --pretty='format:%H %D' -- . | grep -q .; then
+            echo 'REFUSED: ordinal28 or proposed seed collision exists outside current review branch'
+            git log "${refs[@]}" --extended-regexp --regexp-ignore-case -G "$regex" --pretty='format:%H %D' -- . | head -40
+            exit 1
+          fi
+      - name: Prove Issue 60 has no ordinal28 allocation or proposed-seed collision outside directive
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, re, urllib.request
+          repo='search-maker/twilight-mystic-experiments'; token=os.environ['GITHUB_TOKEN']; allowed={5305940266}
+          seed_re=re.compile(r'21100000(?:0[1-9]|1[0-9]|2[0-4])')
+          ordinal_re=re.compile(r'(?i)\bordinal[- _:`=]*(?:28|`28`)\b')
+          collisions=[]; page=1
+          while True:
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/60/comments?per_page=100&page={page}',headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'mystic-state-0072-review'})
+              with urllib.request.urlopen(req,timeout=60) as r: rows=json.loads(r.read())
+              if not rows: break
+              for row in rows:
+                  if row.get('id') in allowed: continue
+                  body=row.get('body') or ''
+                  if ordinal_re.search(body) or seed_re.search(body): collisions.append((row.get('id'),body[:220]))
+              if len(rows)<100: break
+              page+=1
+          if collisions: raise SystemExit('REFUSED: Issue #60 ordinal28/seed collision: '+repr(collisions[:10]))
+          print(json.dumps({'status':'PASS','allowedDirectiveCommentId':5305940266,'priorAllocationCollision':False},sort_keys=True))
+          PY
+      - name: Prove review surface cannot execute or authorize science
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/level-b-v3-fresh-validation-implementation-v1/authorization.json
+          test ! -e review/level-b-v3-fresh-validation-implementation-v1/evaluation.json
+          test ! -e review/level-b-v3-fresh-validation-implementation-v1/result.json
+          ! grep -F -- '--allow-execution' .github/workflows/level-b-v3-fresh-validation-implementation-v1.yml
+          ! grep -E '(^|[[:space:]])(uvspec|libradtran)([[:space:]]|$)' .github/workflows/level-b-v3-fresh-validation-implementation-v1.yml
+          python -m py_compile \
+            review/level-b-v3-fresh-validation-implementation-v1/fresh_validation_v1.py \
+            review/level-b-v3-fresh-validation-implementation-v1/freshness_v1.py \
+            review/level-b-v3-fresh-validation-implementation-v1/test_v1.py \
+            experiments/level-b-v3-fresh-validation-v1/build_manifest_v1.py \
+            experiments/level-b-v3-fresh-validation-v1/adapter_v1.py \
+            experiments/level-b-v3-fresh-validation-v1/executor_v1.py

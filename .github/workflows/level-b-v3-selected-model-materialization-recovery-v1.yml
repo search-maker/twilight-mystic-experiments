@@ -1,0 +1,196 @@
+name: Level-B v3 selected-model materialization recovery v1 attempt1
+
+on:
+  push:
+    branches:
+      - materialization/level-b-v3-training-only-selected-model-recovery-v1
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_PATH: review/level-b-v3-training-only-selected-model-materialization-recovery-v1/authorization-v1.json
+  AUTH_BRANCH: authorization/level-b-v3-training-only-selected-model-materialization-recovery-v1
+  MATERIALIZATION_BRANCH: materialization/level-b-v3-training-only-selected-model-recovery-v1
+  SOURCE_FIT_RUN: '31924262989'
+  SOURCE_FIT_JOB: '95109323854'
+  SOURCE_TRAINING_RUN: '31827007009'
+  SOURCE_TRAINING_ARTIFACT: '9229229366'
+  SELECTED_CANDIDATE: resid-V1_IDW_COS_COORDINATES-r1e-05-k6-p1-a1
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}', fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - name: Refuse retry, wrong branch, moved main, wrong commit shape, or authorization drift
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$MATERIALIZATION_BRANCH"
+          HEAD_SHA="$(git rev-parse HEAD)"; test "$HEAD_SHA" = "$GITHUB_SHA"
+          test "$(git cat-file -p "$HEAD_SHA" | grep -c '^parent ')" = 1
+          PARENT="$(git rev-parse "$HEAD_SHA^")"
+          test "$PARENT" = "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$HEAD_SHA")
+          test "${#CHANGED[@]}" = 1; test "${CHANGED[0]}" = "$AUTH_PATH"; test -f "$AUTH_PATH"
+          if git cat-file -e "$PARENT:$AUTH_PATH" 2>/dev/null; then echo authorization-already-on-main; exit 1; fi
+      - name: Validate exact recovery and authorization payload
+        run: |
+          python review/level-b-v3-training-only-selected-model-materialization-recovery-v1/validate_recovery_v1.py
+          python - <<'PY'
+          import json,os,subprocess
+          a=json.load(open(os.environ['AUTH_PATH'])); parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          def b(path): return subprocess.check_output(['git','rev-parse',f'HEAD^:{path}'],text=True).strip()
+          expected={
+            'schemaVersion':1,'status':'AUTHORIZED_LEVEL_B_V3_SELECTED_MODEL_MATERIALIZATION_RECOVERY_V1_ATTEMPT1','governance':'MYSTIC-STATE-0071',
+            'authorizationBranch':os.environ['AUTH_BRANCH'],'materializationBranch':os.environ['MATERIALIZATION_BRANCH'],'executionKey':'level-b-v3:selected-model-materialization-recovery:v1','authorizationParentMainSha':parent,
+            'recoveryContractGitBlobSha':b('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/recovery-v1.json'),
+            'recoveryValidatorGitBlobSha':b('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/validate_recovery_v1.py'),
+            'materializerGitBlobSha':b('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/materialize_selected_v1.py'),'materializerSourceSha256':'f7cb19d2bdbb66977d5061d5ec23c8cfde4263ba95f63cc9550af90d7c7d0dfc',
+            'independentAuditorGitBlobSha':b('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/audit_materialization_v1.py'),'independentAuditorSourceSha256':'2b32f49de789e85653a07f71b5018d3270dd53878740fccb9b50ec727ce926f8',
+            'reviewWorkflowGitBlobSha':b('.github/workflows/level-b-v3-selected-model-materialization-recovery-v1-review.yml'),
+            'authorizationReviewWorkflowGitBlobSha':b('.github/workflows/level-b-v3-selected-model-materialization-authorization-review-v1.yml'),
+            'materializationWorkflowGitBlobSha':b('.github/workflows/level-b-v3-selected-model-materialization-recovery-v1.yml'),
+            'prefitV2GitBlobSha':b('review/level-b-v3-training-only-prefit-freeze-v2/protocol-v2.json'),'prefitV2CanonicalSha256':'8e3928634c3d297974c07533bed3bbfa24783f14ed55391fd318f817282d9a8e',
+            'implementationDescriptorGitBlobSha':b('review/level-b-v3-training-only-implementation-v1/implementation-v1.json'),'implementationDescriptorCanonicalSha256':'2536ec084597b9e6d9e2dabfbf7902de28c91d02b510415dc4f926e9595be104',
+            'sourceFitRunId':31924262989,'sourceFitRunAttempt':1,'sourceFitJobId':95109323854,'sourceFitAuthorizationHeadSha':'bd568ada4e05dea6bcf68223778a5d4f6a0fce56',
+            'sourceAuditedSelectionStatus':'FREEZE_CHANGED_MODEL_TRAINING_ONLY_PENDING_SEPARATE_FRESH_VALIDATION_GOVERNANCE','sourceAuditedEligibleCandidateCount':145,
+            'selectedCandidateId':os.environ['SELECTED_CANDIDATE'],'selectedPrimaryRidge':1e-5,'selectedResidualCoordinateSystem':'V1_IDW_COS_COORDINATES','selectedResidualNeighbors':6,'selectedResidualPower':1.0,'selectedResidualShrinkage':1.0,
+            'sourceTrainingRunId':31827007009,'sourceTrainingArtifactId':9229229366,'sourceTrainingArtifactDigest':'sha256:f4c8c68a622f7c6bdc1b9177ad31d22f673becb1f286436d54b876ceece3668a',
+            'datasetMember':'training-representation-dataset-v3-densified58.json','datasetMemberByteSha256':'1cf31f1a80ce4ae1f39b9e750616093f6cfa927d10e258f81fe9fc0e58f0ea69','datasetCanonicalSha256':'58c977acf84b6ce17717765c2052f7f9fd64e2965e5bf447eba5cc4accb30435','trainingGeometryCount':58,
+            'selectedModelMaterializationAuthorized':True,'candidateSearchAuthorized':False,'candidateEnumerationAuthorized':False,'crossValidationAuthorized':False,'rankingAuthorized':False,'selectionChangeAuthorized':False,
+            'protectedValidationAuthorized':False,'protectedValuesMayBeRead':False,'ordinal27MayBeRead':False,'newMysticSolverExecutionAuthorized':False,'automaticDispatch':False,'runAttemptRequired':1,'githubRerunAllowed':False,'retryAllowed':False,'resumeAllowed':False,
+            'productionPromotionAuthorized':False,'workerBLaneReactivated':False,'workerCLaneReactivated':False,
+          }
+          assert a==expected,(a,expected)
+          PY
+      - name: Resolve exact successful attempt-1 Draft materialization authorization review
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"; HEAD_SHA="$(git rev-parse HEAD)"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > /tmp/auth-prs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/level-b-v3-selected-model-materialization-authorization-review-v1.yml/runs?event=pull_request&branch=${AUTH_BRANCH}&per_page=100" > /tmp/auth-runs.json
+          python - "$HEAD_SHA" <<'PY'
+          import json,os,sys
+          sha=sys.argv[1]; prs=json.load(open('/tmp/auth-prs.json')); runs=json.load(open('/tmp/auth-runs.json'))['workflow_runs']
+          ps=[p for p in prs if p['head']['sha']==sha and p['head']['ref']==os.environ['AUTH_BRANCH'] and p.get('merged_at') is None and p.get('draft') is True]
+          rs=[r for r in runs if r['head_sha']==sha and r['head_branch']==os.environ['AUTH_BRANCH'] and int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          assert len(ps)==1 and len(rs)==1,(len(ps),len(rs))
+          PY
+      - name: Require exact recovery marker and sole materialization dispatch identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments.json
+          python - "$GITHUB_SHA" "$GITHUB_RUN_ID" <<'PY'
+          import json,os,sys
+          head=sys.argv[1]; run_id=int(sys.argv[2]); marker=f'AUTHORIZED-LEVEL-B-V3-SELECTED-MODEL-MATERIALIZATION-RECOVERY | MYSTIC-STATE-0071 | authHead={head} | sourceFitRun=31924262989 | selectedCandidate={os.environ["SELECTED_CANDIDATE"]}'
+          def flat(path,key=None):
+              out=[]
+              for page in json.load(open(path)): out.extend(page.get(key,[]) if key else page)
+              return out
+          branches=flat('/tmp/branches.json'); runs=flat('/tmp/runs.json','workflow_runs'); comments=flat('/tmp/comments.json')
+          mb=[b for b in branches if b.get('name')==os.environ['MATERIALIZATION_BRANCH']]; assert len(mb)==1 and mb[0]['commit']['sha']==head
+          markers=[c for c in comments if str(c.get('body') or '')==marker]; assert len(markers)==1,len(markers)
+          prefix='AUTHORIZED-LEVEL-B-V3-SELECTED-MODEL-MATERIALIZATION-RECOVERY | MYSTIC-STATE-0071 | '
+          assert [str(c.get('body') or '') for c in comments if prefix in str(c.get('body') or '')]==[marker]
+          rr=[r for r in runs if r.get('event')=='push' and r.get('head_branch')==os.environ['MATERIALIZATION_BRANCH']]
+          assert len(rr)==1 and int(rr[0]['id'])==run_id and rr[0]['head_sha']==head and int(rr[0].get('run_attempt') or 0)==1,(rr,run_id)
+          PY
+      - name: Re-prove original fit verdict and exact training source before materialization
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_FIT_RUN}/jobs" > /tmp/source-jobs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${SOURCE_FIT_JOB}/logs" > /tmp/source-fit.log
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_TRAINING_ARTIFACT}" > /tmp/training-artifact.json
+          grep -F '{"eligibleCandidateCount": 145, "selectedCandidateId": "resid-V1_IDW_COS_COORDINATES-r1e-05-k6-p1-a1", "selectionStatus": "FREEZE_CHANGED_MODEL_TRAINING_ONLY_PENDING_SEPARATE_FRESH_VALIDATION_GOVERNANCE", "status": "PASS"}' /tmp/source-fit.log
+          python - <<'PY'
+          import json
+          a=json.load(open('/tmp/training-artifact.json')); assert (a['id'],a.get('digest'),a.get('expired'))==(9229229366,'sha256:f4c8c68a622f7c6bdc1b9177ad31d22f673becb1f286436d54b876ceece3668a',False)
+          PY
+      - name: Prove recovery workflow contains no candidate/CV/ranking/protected solver surface
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          paths=[Path('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/materialize_selected_v1.py'),Path('review/level-b-v3-training-only-selected-model-materialization-recovery-v1/audit_materialization_v1.py')]
+          forbidden=['candidate_specs(', 'folds58(', 'evaluate_all(', 'generic_evaluate(', 'select_candidate(', 'evaluate_candidate58(']
+          for p in paths:
+              t=p.read_text()
+              for token in forbidden: assert token not in t,(p,token)
+          workflow=Path('.github/workflows/level-b-v3-selected-model-materialization-recovery-v1.yml').read_text().lower()
+          for token in ['v0070-'+'holdout','lib'+'radtran','mc.rad.'+'spc','micro'+'mamba']:
+              assert token not in workflow,token
+          PY
+
+  materialize:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}', fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - run: python -m pip install --disable-pip-version-check 'numpy==2.3.2'
+      - name: Download only exact immutable 58-geometry training artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: '${{ github.token }}'
+          repository: '${{ github.repository }}'
+          run-id: 31827007009
+          artifact-ids: 9229229366
+          path: /tmp/lbv3-training-source
+          merge-multiple: true
+      - name: Materialize only the already-selected model on all 58 training records
+        run: |
+          mkdir -p /tmp/lbv3-materialization-output
+          python review/level-b-v3-training-only-selected-model-materialization-recovery-v1/materialize_selected_v1.py materialize \
+            --dataset /tmp/lbv3-training-source/training-representation-dataset-v3-densified58.json \
+            --output-dir /tmp/lbv3-materialization-output
+      - name: Independently audit deterministic model reconstruction with zero reselection
+        run: |
+          python review/level-b-v3-training-only-selected-model-materialization-recovery-v1/audit_materialization_v1.py \
+            --dataset /tmp/lbv3-training-source/training-representation-dataset-v3-densified58.json \
+            --output-dir /tmp/lbv3-materialization-output | tee /tmp/lbv3-materialization-output/independent-materialization-audit-v1.log
+      - name: Bind immutable provenance without parent lookup or candidate reevaluation
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          out='/tmp/lbv3-materialization-output'; auth=json.load(open(os.environ['AUTH_PATH']))
+          result=json.load(open(out+'/materialization-result-v1.json')); artifact=json.load(open(out+'/model-artifact-materialization-v1.json'))
+          p={
+            'schemaVersion':1,'provenanceId':'level-b-v3-selected-model-materialization-recovery-v1-provenance','status':'SELECTED_MODEL_MATERIALIZATION_RECOVERY_ATTEMPT1_COMPLETED','governance':'MYSTIC-STATE-0071',
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'authorizationHeadSha':os.environ['GITHUB_SHA'],'authorizationParentMainSha':auth['authorizationParentMainSha'],
+            'sourceFitRunId':31924262989,'sourceFitJobId':95109323854,'sourceAuditedEligibleCandidateCount':145,'selectedCandidateId':os.environ['SELECTED_CANDIDATE'],
+            'sourceTrainingRunId':31827007009,'sourceTrainingArtifactId':9229229366,'sourceTrainingArtifactDigest':'sha256:f4c8c68a622f7c6bdc1b9177ad31d22f673becb1f286436d54b876ceece3668a','datasetCanonicalSha256':'58c977acf84b6ce17717765c2052f7f9fd64e2965e5bf447eba5cc4accb30435',
+            'modelCanonicalSha256':result['modelCanonicalSha256'],'modelArtifactCanonicalSha256':artifact['artifactCanonicalSha256'],'materializationResultSha256':result['resultSha256'],
+            'candidateSearchPerformed':False,'candidateEnumerationPerformed':False,'crossValidationFoldEvaluationsPerformed':0,'rankingPerformed':False,'additionalMysticSolverInvocationCount':0,'protectedArtifactCountRead':0,'ordinal27ValuesRead':False,
+            'githubRerunPerformed':False,'retryPerformed':False,'resumePerformed':False,'protectedValidationAuthorized':False,'productionPromotionAuthorized':False,'workerBLaneReactivated':False,'workerCLaneReactivated':False,
+          }
+          p['provenanceSha256']=hashlib.sha256(json.dumps(p,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          open(out+'/materialization-provenance-v1.json','w').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-v3-selected-model-materialization-recovery-v1-${{ github.sha }}
+          path: /tmp/lbv3-materialization-output
+          if-no-files-found: error
+          retention-days: 90

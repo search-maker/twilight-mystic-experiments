@@ -1,0 +1,118 @@
+name: Level-B v3 selected-model materialization recovery v1 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/level-b-v3-training-only-selected-model-materialization-recovery-v1/**'
+      - '.github/workflows/level-b-v3-selected-model-materialization-recovery-v1-review.yml'
+      - '.github/workflows/level-b-v3-selected-model-materialization-authorization-review-v1.yml'
+      - '.github/workflows/level-b-v3-selected-model-materialization-recovery-v1.yml'
+  push:
+    branches:
+      - 'review/level-b-v3-training-only-selected-model-materialization-recovery-v1'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  REVIEW_BRANCH: review/level-b-v3-training-only-selected-model-materialization-recovery-v1
+  AUTH_BRANCH: authorization/level-b-v3-training-only-selected-model-materialization-recovery-v1
+  MATERIALIZATION_BRANCH: materialization/level-b-v3-training-only-selected-model-recovery-v1
+  AUTH_PATH: review/level-b-v3-training-only-selected-model-materialization-recovery-v1/authorization-v1.json
+  SOURCE_FIT_RUN: '31924262989'
+  SOURCE_FIT_JOB: '95109323854'
+
+jobs:
+  review-only-materialization-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12.4'}
+      - name: Validate exact recovery contract and absence of reselection surface
+        run: |
+          python review/level-b-v3-training-only-selected-model-materialization-recovery-v1/validate_recovery_v1.py
+          python review/level-b-v3-training-only-selected-model-materialization-recovery-v1/materialize_selected_v1.py self-test
+          python -m py_compile review/level-b-v3-training-only-selected-model-materialization-recovery-v1/audit_materialization_v1.py
+      - name: Bind original audited selection and exact post-selection operational failure
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_FIT_RUN}/jobs" > /tmp/source-jobs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${SOURCE_FIT_JOB}/logs" > /tmp/source-fit.log
+          python - <<'PY'
+          import json,os
+          jobs=json.load(open('/tmp/source-jobs.json'))['jobs']; js=[j for j in jobs if int(j['id'])==int(os.environ['SOURCE_FIT_JOB'])]
+          assert len(js)==1
+          j=js[0]; assert j['name']=='fit' and j['status']=='completed' and j['conclusion']=='failure'
+          steps={s['name']:(s['status'],s['conclusion']) for s in j['steps']}
+          assert steps['Execute frozen 145-candidate training-only fit once']==('completed','success')
+          assert steps['Independently audit candidate gates, ranking, shape invariance, and result bindings']==('completed','success')
+          assert steps['Bind immutable workflow/source provenance with zero protected/MYSTIC access']==('completed','failure')
+          PY
+          grep -F '{"eligibleCandidateCount": 145, "selectedCandidateId": "resid-V1_IDW_COS_COORDINATES-r1e-05-k6-p1-a1", "selectionStatus": "FREEZE_CHANGED_MODEL_TRAINING_ONLY_PENDING_SEPARATE_FRESH_VALIDATION_GOVERNANCE", "status": "PASS"}' /tmp/source-fit.log
+          grep -F "fatal: ambiguous argument 'HEAD^': unknown revision or path not in the working tree." /tmp/source-fit.log
+          grep -F "fetch-depth: 1" /tmp/source-fit.log
+      - name: Refuse moved main, wrong PR shape, authorization file, or non-review branch
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.pull_request.draft }}' = true
+          test "$GITHUB_HEAD_REF" = "$REVIEW_BRANCH"
+          test "$GITHUB_BASE_REF" = main
+          test '${{ github.event.pull_request.base.sha }}' = '4204b925b18346f4325682528b511b6d67378665'
+          test "$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq .commit.sha)" = '4204b925b18346f4325682528b511b6d67378665'
+          test ! -e "$AUTH_PATH"
+          mapfile -t CHANGED < <(git diff --name-only '${{ github.event.pull_request.base.sha }}' HEAD)
+          printf '%s\n' "${CHANGED[@]}" | sort > /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          .github/workflows/level-b-v3-selected-model-materialization-authorization-review-v1.yml
+          .github/workflows/level-b-v3-selected-model-materialization-recovery-v1-review.yml
+          .github/workflows/level-b-v3-selected-model-materialization-recovery-v1.yml
+          review/level-b-v3-training-only-selected-model-materialization-recovery-v1/audit_materialization_v1.py
+          review/level-b-v3-training-only-selected-model-materialization-recovery-v1/materialize_selected_v1.py
+          review/level-b-v3-training-only-selected-model-materialization-recovery-v1/recovery-v1.json
+          review/level-b-v3-training-only-selected-model-materialization-recovery-v1/validate_recovery_v1.py
+          EOF
+          sort -o /tmp/expected.txt /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+      - name: Prove review cannot download training artifact or materialize selected model
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow='.github/workflows/level-b-v3-selected-model-materialization-recovery-v1-review.yml'
+          forbidden=("actions/download""-artifact" " materialize --" "922922""9366" "v0070-""holdout" "lib""Radtran" "mc.rad.""spc")
+          for needle in "${forbidden[@]}"; do ! grep -F -- "$needle" "$workflow"; done
+      - name: Prove no recovery authorization, materialization branch, run, or marker exists yet
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > /tmp/branches.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" > /tmp/runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments.json
+          python - <<'PY'
+          import json,os
+          def flat(path,key=None):
+              out=[]
+              for page in json.load(open(path)): out.extend(page.get(key,[]) if key else page)
+              return out
+          branches=flat('/tmp/branches.json'); runs=flat('/tmp/runs.json','workflow_runs'); comments=flat('/tmp/comments.json')
+          assert not [b for b in branches if b.get('name') in (os.environ['AUTH_BRANCH'],os.environ['MATERIALIZATION_BRANCH'])]
+          assert not [r for r in runs if r.get('event')=='push' and r.get('head_branch')==os.environ['MATERIALIZATION_BRANCH']]
+          prefix='AUTHORIZED-LEVEL-B-V3-SELECTED-MODEL-MATERIALIZATION-RECOVERY | MYSTIC-STATE-0071 | '
+          assert not [c for c in comments if prefix in str(c.get('body') or '')]
+          PY

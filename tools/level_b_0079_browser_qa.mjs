@@ -25,9 +25,12 @@ function assert(condition, message) {
 function jsonClone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
+function cloudflareRumConsoleEntry(text, url) {
+  return /cloudflareinsights\.com\/cdn-cgi\/rum|\/cdn-cgi\/rum/i.test(`${text || ''} ${url || ''}`);
+}
 
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   mysticState: 'MYSTIC-STATE-0079',
   applicationSha: APPLICATION_SHA,
   deploymentUrl: BASE_URL,
@@ -39,6 +42,7 @@ const report = {
   batch: [],
   viewportChecks: [],
   consoleErrors: [],
+  ignoredThirdPartyConsoleErrors: [],
   pageErrors: [],
   pass: false,
   claimBoundary: 'deployed-browser-software-integration-only-not-empirical-real-sky-or-human-validation',
@@ -52,16 +56,38 @@ async function globalEval(page, expression) {
   }, expression);
 }
 
+async function waitCalculateReady(page, timeout = 240000) {
+  await page.waitForFunction(() => {
+    const b = document.querySelector('#calculate');
+    return Boolean(
+      b
+      && !b.disabled
+      && b.getAttribute('aria-busy') !== 'true'
+      && !b.classList.contains('is-calculating')
+    );
+  }, undefined, { timeout });
+}
+
 async function createPage(viewport) {
   const context = await browser.newContext({ viewport, acceptDownloads: true });
   const page = await context.newPage();
+  page.setDefaultTimeout(240000);
+  page.setDefaultNavigationTimeout(120000);
   page.on('console', msg => {
-    if (msg.type() === 'error') report.consoleErrors.push({ viewport, text: msg.text() });
+    if (msg.type() !== 'error') return;
+    const location = msg.location?.() || {};
+    const entry = { viewport, text: msg.text(), url: location.url || null, lineNumber: location.lineNumber ?? null, columnNumber: location.columnNumber ?? null };
+    if (cloudflareRumConsoleEntry(entry.text, entry.url)) {
+      report.ignoredThirdPartyConsoleErrors.push({ ...entry, classification: 'cloudflare-insights-rum-cors' });
+    } else {
+      report.consoleErrors.push(entry);
+    }
   });
   page.on('pageerror', error => report.pageErrors.push({ viewport, text: error?.stack || error?.message || String(error) }));
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForSelector('#visibilityEngineMode', { state: 'visible', timeout: 60000 });
-  await page.waitForFunction(() => document.querySelector('#calculate') && document.querySelector('#threeStarCalculatorTab'));
+  await page.waitForFunction(() => document.querySelector('#calculate') && document.querySelector('#threeStarCalculatorTab'), undefined, { timeout: 60000 });
+  await waitCalculateReady(page);
   await page.evaluate(() => {
     const set = (id, value) => {
       const el = document.getElementById(id);
@@ -76,11 +102,14 @@ async function createPage(viewport) {
     set('timezone', 'Asia/Jerusalem');
     set('date', '2026-08-17');
   });
+  await waitCalculateReady(page);
   return { context, page };
 }
 
 async function selectEngine(page, engine) {
+  await waitCalculateReady(page);
   await page.selectOption('#visibilityEngineMode', engine);
+  await waitCalculateReady(page);
   const state = await page.evaluate(() => ({
     value: document.querySelector('#visibilityEngineMode')?.value,
     globalValue: globalThis.__STAR_VISIBILITY_ENGINE_MODE__,
@@ -96,23 +125,24 @@ async function selectEngine(page, engine) {
 }
 
 async function chooseFeature(page, feature) {
+  await waitCalculateReady(page);
   const id = feature === 'three-star' ? '#threeStarCalculatorTab' : '#standardCalculatorTab';
   await page.click(id);
-  await page.waitForFunction(expected => document.querySelector('#calculatorFeature')?.value === expected, feature);
+  await page.waitForFunction(expected => document.querySelector('#calculatorFeature')?.value === expected, feature, { timeout: 60000 });
+  await waitCalculateReady(page);
   assert(await page.$eval('#calculatorFeature', el => el.value) === feature, `calculatorFeature did not become ${feature}`);
 }
 
 async function waitDailyDone(page) {
-  await page.waitForTimeout(250);
-  await page.waitForFunction(() => {
-    const b = document.querySelector('#calculate');
-    return b && !b.disabled && !b.classList.contains('is-calculating');
-  }, { timeout: 240000 });
+  await page.waitForTimeout(150);
+  await waitCalculateReady(page);
 }
 
 async function calculateDaily(page, engine, feature) {
+  await waitCalculateReady(page);
   await selectEngine(page, engine);
   await chooseFeature(page, feature);
+  await waitCalculateReady(page);
   await page.click('#calculate');
   await waitDailyDone(page);
   const error = await page.evaluate(() => {
@@ -174,6 +204,7 @@ async function waitGlobal(page, expression, timeout = 300000) {
 }
 
 async function runWeekly(page, engine) {
+  await waitCalculateReady(page);
   await selectEngine(page, engine);
   await chooseFeature(page, 'three-star');
   await page.evaluate(() => { const el = document.querySelector('#weeklyView'); if (el && !el.open) el.querySelector('summary')?.click(); });
@@ -187,6 +218,7 @@ async function runWeekly(page, engine) {
 }
 
 async function runAnnualMonthAndExport(page, engine) {
+  await waitCalculateReady(page);
   await selectEngine(page, engine);
   await chooseFeature(page, 'three-star');
   await page.evaluate(() => {
@@ -215,6 +247,7 @@ async function runAnnualMonthAndExport(page, engine) {
 }
 
 async function runComparison(page, engine) {
+  await waitCalculateReady(page);
   await selectEngine(page, engine);
   await chooseFeature(page, 'three-star');
   await page.evaluate(() => {
@@ -233,6 +266,7 @@ async function runComparison(page, engine) {
 }
 
 async function runSkyMap(page, engine) {
+  await waitCalculateReady(page);
   await selectEngine(page, engine);
   await chooseFeature(page, 'three-star');
   let result = jsonClone(await globalEval(page, 'threeStarResultData'));
@@ -285,18 +319,16 @@ try {
 
   const narrow = await createPage({ width: 375, height: 812 });
   await assertViewport(narrow.page, { width: 375, height: 812 }, 'narrow-initial');
-  await selectEngine(narrow.page, 'level-b-v3-crumey-blackwell-transient-experimental');
-  await chooseFeature(narrow.page, 'three-star');
   await calculateDaily(narrow.page, 'level-b-v3-crumey-blackwell-transient-experimental', 'three-star');
   await assertViewport(narrow.page, { width: 375, height: 812 }, 'narrow-after-three-star');
   await narrow.context.close();
 
   assert(report.pageErrors.length === 0, `page errors observed: ${JSON.stringify(report.pageErrors)}`);
-  assert(report.consoleErrors.length === 0, `console errors observed: ${JSON.stringify(report.consoleErrors)}`);
+  assert(report.consoleErrors.length === 0, `unexpected console errors observed: ${JSON.stringify(report.consoleErrors)}`);
   report.pass = true;
 } finally {
   await browser.close();
   writeFileSync(OUTPUT, JSON.stringify(report, null, 2) + '\n');
 }
 
-console.log(JSON.stringify({ pass: report.pass, matrix: report.matrix, batch: report.batch, viewportChecks: report.viewportChecks }, null, 2));
+console.log(JSON.stringify({ pass: report.pass, matrix: report.matrix, batch: report.batch, viewportChecks: report.viewportChecks, ignoredThirdPartyConsoleErrors: report.ignoredThirdPartyConsoleErrors }, null, 2));

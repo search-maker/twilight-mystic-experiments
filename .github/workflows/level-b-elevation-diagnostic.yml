@@ -1,0 +1,137 @@
+name: Level-B AFGLUS elevation interpolation diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-elevation-diagnostic.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-elevation-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APPLICATION_SHA: 37320f4806cc53c4886528a0260fd0331adfdf93
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Checkout public diagnostic source
+        uses: actions/checkout@v4
+        with:
+          path: bridge
+          persist-credentials: false
+
+      - name: Checkout exact private application commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private commit and sanitize Git remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C private-app rev-parse HEAD)"
+          test "$actual" = "$APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+
+      - name: Set up exact reviewed libRadtran environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: stellar-ref
+          create-args: >-
+            python=3.12
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          init-shell: bash
+          cache-environment: false
+
+      - name: Verify libRadtran and AFGLUS identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uvspec="$(command -v uvspec)"
+          test "$(sha256sum "$uvspec" | awk '{print $1}')" = "$EXPECTED_UVSPEC_SHA256"
+          data_dir="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data dir not found')
+          PY
+          )"
+          test "$(sha256sum "$data_dir/atmmod/afglus.dat" | awk '{print $1}')" = "$EXPECTED_AFGLUS_SHA256"
+          echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
+          echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
+
+      - name: Measure exact off-knot elevation columns
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, math, os, sys
+          from pathlib import Path
+
+          app=Path('private-app').resolve()
+          p=app/'scientific-tools/visibility-v3/stellar_transmission_libradtran_v3.py'
+          spec=importlib.util.spec_from_file_location('stellar_ref_diag',p)
+          ref=importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          sys.modules['stellar_ref_diag']=ref
+          spec.loader.exec_module(ref)
+
+          afglus=Path(os.environ['LIBRADTRAN_DATA'])/'atmmod'/'afglus.dat'
+          profile=[]
+          for raw in afglus.read_text().splitlines():
+              line=raw.strip()
+              if not line or line.startswith('#'): continue
+              parts=line.split()
+              profile.append([float(x) for x in parts])
+
+          elevations=[0.0,250.0,500.0,875.0,1250.0,1625.0,2000.0,2250.0,2500.0]
+          aods=[0.05,0.20,0.40]
+          altitude=30.0
+          mu=math.sin(math.radians(altitude))
+          cases=[]
+          for elev in elevations:
+              for aod in aods:
+                  rr=ref.run_reference(target_altitude_deg=altitude,aod550=aod,observer_elevation_m=elev)
+                  trans=rr['spectrum']['lineOfSightDirectTransmission']
+                  tau_vertical=[-math.log(max(float(t),1e-300))*mu for t in trans]
+                  cases.append({'observerElevationM':elev,'aod550':aod,'verticalOpticalDepth':tau_vertical})
+
+          out={
+              'schemaVersion':1,
+              'applicationSha':os.environ['APPLICATION_SHA'],
+              'uvspecSha256':os.environ['EXPECTED_UVSPEC_SHA256'],
+              'afglusSha256':os.environ['EXPECTED_AFGLUS_SHA256'],
+              'targetAltitudeDeg':altitude,
+              'wavelengthNm':list(range(380,781)),
+              'observerElevationsM':elevations,
+              'aod550':aods,
+              'afglusColumns':{'note':'raw numeric columns from exact reviewed afglus.dat','rows':profile},
+              'cases':cases,
+          }
+          dest=Path(os.environ['RUNNER_TEMP'])/'afglus-elevation-diagnostic.json'
+          dest.write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'caseCount':len(cases),'afglusRows':len(profile),'output':str(dest)},sort_keys=True))
+          PY
+
+      - name: Upload diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-afglus-elevation-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/afglus-elevation-diagnostic.json
+          if-no-files-found: error
+          retention-days: 30

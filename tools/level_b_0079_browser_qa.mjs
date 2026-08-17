@@ -13,7 +13,7 @@ const ENGINES = [
 ];
 const LEVEL_B_ENGINES = new Set(ENGINES.slice(1));
 const EXPECTED_TRANSPORT = 'MYSTIC-STATE-0081-wavelength-resolved-direct-transport';
-const EXPECTED_PROMOTION = 'VALIDATED_MYSTIC_STATE_0081_REFERENCE_GATE';
+const EXPECTED_PROMOTION = 'VALIDATED_MYSTIC_STATE_0081_COMPUTATIONAL_REFERENCE_GATE';
 const EXPECTED_PROTOCOL = 'aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef';
 const EXPECTED_SED = '85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb';
 const EXPECTED_LUT = '21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f';
@@ -91,7 +91,7 @@ async function selectEngine(page, engine) {
   assert(state.globalValue === engine, `global engine did not bind ${engine}`);
   assert(state.stored === engine, `localStorage engine did not bind ${engine}`);
   assert(/MYSTIC-STATE-0081/.test(state.note), 'Preview note does not disclose MYSTIC-STATE-0081');
-  assert(/empirically validated|אינו מאומת אמפירית/.test(state.note), 'Preview note lost empirical-validation boundary');
+  assert(/not empirically or human validated|אינו מאומת אמפירית או בבני-אדם/.test(state.note), 'Preview note lost empirical/human-validation boundary');
   return state;
 }
 
@@ -140,11 +140,12 @@ async function calculateDaily(page, engine, feature) {
       assert(state.rows.every(row => row?.levelBStellarTransportPromotionStatus === EXPECTED_PROMOTION), `${engine}/standard promotion provenance drift`);
       assert(state.metadata?.levelBStellarTransport === EXPECTED_TRANSPORT, `${engine}/standard run metadata transport drift`);
       assert(state.metadata?.levelBStellarTransportPromotionStatus === EXPECTED_PROMOTION, `${engine}/standard run metadata promotion drift`);
-      assert(state.metadata?.levelBStellarTransportBinding?.protocolSha256 === EXPECTED_PROTOCOL, `${engine}/standard protocol binding drift`);
-      assert(state.metadata?.levelBStellarTransportBinding?.sedBundleSha256 === EXPECTED_SED, `${engine}/standard SED binding drift`);
-      assert(state.metadata?.levelBStellarTransportBinding?.spectralRuntimeSha256 === EXPECTED_LUT, `${engine}/standard LUT binding drift`);
-      assert(state.metadata?.levelBStellarTransportBinding?.johnsonVBandpassSha256 === EXPECTED_JOHNSON_V, `${engine}/standard Johnson-V binding drift`);
-      assert(state.rows.every(row => row?.levelBProductionAuthorized === false), `${engine}/standard falsely claims production authorization`);
+      assert(state.metadata?.levelBStellarTransportProtocolSha256 === EXPECTED_PROTOCOL, `${engine}/standard protocol binding drift`);
+      assert(state.metadata?.levelBStellarTransportSedSha256 === EXPECTED_SED, `${engine}/standard SED binding drift`);
+      assert(state.metadata?.levelBStellarTransportLutSha256 === EXPECTED_LUT, `${engine}/standard LUT binding drift`);
+      assert(state.metadata?.levelBRunProvenance?.productionAuthorized === false, `${engine}/standard falsely claims production authorization`);
+      assert(state.metadata?.levelBRunProvenance?.measuredRealSkyValidated === false, `${engine}/standard falsely claims measured-real-sky validation`);
+      assert(state.metadata?.levelBRunProvenance?.empiricalHumanValidationComplete === false, `${engine}/standard falsely claims empirical human validation`);
     }
   } else {
     assert(state.threeStar && typeof state.threeStar === 'object', `${engine}/three-star produced no result object`);
@@ -153,7 +154,12 @@ async function calculateDaily(page, engine, feature) {
       assert(state.threeStar.planetsCountTowardThreeStars === false, `${engine}/three-star unexpectedly counts planets`);
       assert(state.threeStar.levelBRunProvenance?.stellarTransport === EXPECTED_TRANSPORT, `${engine}/three-star transport provenance drift`);
       assert(state.threeStar.levelBRunProvenance?.stellarTransportPromotionStatus === EXPECTED_PROMOTION, `${engine}/three-star promotion provenance drift`);
+      assert(state.threeStar.levelBRunProvenance?.stellarTransportProtocolSha256 === EXPECTED_PROTOCOL, `${engine}/three-star protocol binding drift`);
+      assert(state.threeStar.levelBRunProvenance?.stellarTransportSedSha256 === EXPECTED_SED, `${engine}/three-star SED binding drift`);
+      assert(state.threeStar.levelBRunProvenance?.stellarTransportLutSha256 === EXPECTED_LUT, `${engine}/three-star LUT binding drift`);
       assert(state.threeStar.levelBRunProvenance?.productionAuthorized === false, `${engine}/three-star falsely claims production authorization`);
+      assert(state.threeStar.levelBRunProvenance?.measuredRealSkyValidated === false, `${engine}/three-star falsely claims measured-real-sky validation`);
+      assert(state.threeStar.levelBRunProvenance?.empiricalHumanValidationComplete === false, `${engine}/three-star falsely claims empirical human validation`);
     }
   }
 

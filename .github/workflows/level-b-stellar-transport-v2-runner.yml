@@ -1,0 +1,256 @@
+name: Level-B stellar transport v2 fresh reference gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_sha:
+        description: Exact 40-hex starsvisibility MYSTIC-STATE-0081 commit SHA
+        required: true
+        type: string
+      execution_phase:
+        description: Execution phase
+        required: true
+        default: v2-reference
+        type: choice
+        options:
+          - v2-reference
+          - repository-qa
+      expected_protocol_sha256:
+        description: Optional expected exact v2 protocol SHA-256
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-stellar-transport-v2-runner.yml'
+      - 'tools/level_b_0081_reference_gate.py'
+      - 'tools/fetch_pickles_raw_sources.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-stellar-transport-v2-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  v2-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DEFAULT_0081_SHA: b88821df557b379935898c682772ed313357bf9f
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Resolve immutable MYSTIC-STATE-0081 binding
+        id: bind
+        shell: bash
+        env:
+          DISPATCH_SHA: ${{ inputs.application_sha }}
+          DISPATCH_PHASE: ${{ inputs.execution_phase }}
+          DISPATCH_PROTOCOL: ${{ inputs.expected_protocol_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            app_sha="$DEFAULT_0081_SHA"
+            phase="v2-reference"
+            expected_protocol=""
+          else
+            app_sha="$DISPATCH_SHA"
+            phase="$DISPATCH_PHASE"
+            expected_protocol="$DISPATCH_PROTOCOL"
+          fi
+          printf '%s' "$app_sha" | grep -Eq '^[0-9a-f]{40}$'
+          case "$phase" in v2-reference|repository-qa) ;; *) exit 64 ;; esac
+          if [ -n "$expected_protocol" ]; then printf '%s' "$expected_protocol" | grep -Eq '^[0-9a-f]{64}$'; fi
+          if [ -z "${STARSVISIBILITY_READ_TOKEN:-}" ]; then
+            echo 'Required read-only secret STARSVISIBILITY_READ_TOKEN is unavailable.' >&2
+            exit 78
+          fi
+          echo "application_sha=$app_sha" >> "$GITHUB_OUTPUT"
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          echo "expected_protocol=$expected_protocol" >> "$GITHUB_OUTPUT"
+          echo "Exact private MYSTIC-STATE-0081 application SHA: $app_sha"
+          echo "Execution phase: $phase"
+
+      - name: Checkout public v2 gate source
+        uses: actions/checkout@v4
+        with:
+          path: bridge
+          persist-credentials: false
+
+      - name: Checkout exact private application commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ steps.bind.outputs.application_sha }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private commit and sanitize Git remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C private-app rev-parse HEAD)"
+          test "$actual" = "${{ steps.bind.outputs.application_sha }}"
+          git -C private-app remote remove origin || true
+          protocol='private-app/scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V2.md'
+          test -f "$protocol"
+          protocol_sha="$(sha256sum "$protocol" | awk '{print $1}')"
+          expected="${{ steps.bind.outputs.expected_protocol }}"
+          if [ -n "$expected" ]; then test "$protocol_sha" = "$expected"; fi
+          echo "protocol_sha256=$protocol_sha" >> "$GITHUB_OUTPUT"
+          echo "Verified exact private application SHA: $actual"
+          echo "Exact v2 protocol SHA-256: $protocol_sha"
+        id: verify
+
+      - name: Download frozen Pickles source material
+        if: steps.bind.outputs.phase == 'v2-reference'
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          mkdir -p "$RUNNER_TEMP/pickles98"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=J/PASP/110/863/synphot' \
+            --data-urlencode '-out=num,SpType,LogTe,file' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/pickles98/synphot.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=VI/135/table6' \
+            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/table6.dat"
+          python bridge/tools/fetch_pickles_raw_sources.py \
+            --synphot-tsv "$RUNNER_TEMP/pickles98/synphot.dat" \
+            --output-dir "$RUNNER_TEMP/pickles98"
+          sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" "$RUNNER_TEMP/table6.dat"
+
+      - name: Set up exact reviewed libRadtran environment
+        if: steps.bind.outputs.phase == 'v2-reference'
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: stellar-ref
+          create-args: >-
+            python=3.12
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          init-shell: bash
+          cache-environment: false
+
+      - name: Verify libRadtran and AFGLUS identity
+        if: steps.bind.outputs.phase == 'v2-reference'
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uvspec="$(command -v uvspec)"
+          test "$(sha256sum "$uvspec" | awk '{print $1}')" = "$EXPECTED_UVSPEC_SHA256"
+          data_dir="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data dir not found')
+          PY
+          )"
+          test "$(sha256sum "$data_dir/atmmod/afglus.dat" | awk '{print $1}')" = "$EXPECTED_AFGLUS_SHA256"
+          echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
+          echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
+          echo "uvspec_sha256=$EXPECTED_UVSPEC_SHA256"
+          echo "afglus_sha256=$EXPECTED_AFGLUS_SHA256"
+
+      - name: Build empirical SED bundle and preregistered 675-spectrum v2 LUT
+        if: steps.bind.outputs.phase == 'v2-reference'
+        shell: micromamba-shell {0}
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          python scientific-tools/visibility-v3/build_pickles_sed_bundle.py \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --libmags-table6 "$RUNNER_TEMP/table6.dat" \
+            --output "$RUNNER_TEMP/pickles-sed-1nm.json"
+          python scientific-tools/visibility-v3/build_stellar_transport_lut.py \
+            --output "$RUNNER_TEMP/stellar-transport-lut-v2.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          lut=json.loads((Path(os.environ['RUNNER_TEMP'])/'stellar-transport-lut-v2.json').read_text())
+          assert len(lut['directOpticalDepth']) == 675
+          assert lut['validation']['freshAtmosphericCaseCount'] == 192
+          assert lut['validation']['freshBandComparisonCount'] == 576
+          PY
+          sha256sum "$RUNNER_TEMP/pickles-sed-1nm.json" "$RUNNER_TEMP/stellar-transport-lut-v2.json"
+
+      - name: Execute fresh 576-case MYSTIC-STATE-0081 reference gate
+        if: steps.bind.outputs.phase == 'v2-reference'
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python bridge/tools/level_b_0081_reference_gate.py \
+            --app-dir private-app \
+            --sed-bundle "$RUNNER_TEMP/pickles-sed-1nm.json" \
+            --lut "$RUNNER_TEMP/stellar-transport-lut-v2.json" \
+            --output "$RUNNER_TEMP/0081-reference-result.json"
+          actual_protocol="$(python -c 'import json,os; print(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"0081-reference-result.json")))["protocolSha256"])')"
+          test "$actual_protocol" = "${{ steps.verify.outputs.protocol_sha256 }}"
+
+      - name: Run stellar runtime unit test and existing Level-B parity suite
+        if: steps.bind.outputs.phase == 'v2-reference'
+        shell: bash
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          node scientific-tools/visibility-v3/tests/test-stellar-spectral-runtime.mjs
+          npm run test:level-b-parity
+
+      - name: Run repository QA when requested
+        if: steps.bind.outputs.phase == 'repository-qa'
+        shell: bash
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          npm run test:level-b-parity
+          npm run test:level-b-current-main --if-present
+          npm run build:pages
+
+      - name: Write public-safe MYSTIC-STATE-0081 summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/public-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'public-summary'/'0081-bridge-summary.json'
+          d={
+              'mysticState':'MYSTIC-STATE-0081',
+              'applicationSha':'${{ steps.bind.outputs.application_sha }}',
+              'phase':'${{ steps.bind.outputs.phase }}',
+              'protocolSha256':'${{ steps.verify.outputs.protocol_sha256 }}',
+              'githubRunId':'${{ github.run_id }}',
+              'githubRunAttempt':'${{ github.run_attempt }}',
+          }
+          result=Path(os.environ['RUNNER_TEMP'])/'0081-reference-result.json'
+          if result.exists():
+              j=json.loads(result.read_text())
+              keys=('gate','freshValidation','caseCount','atmosphericCaseCount','templates','limits','statistics','pass','protocolSha256','interpolation','hashes','worstCases')
+              d['referenceGate']={key:j[key] for key in keys}
+          out.write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(out.read_text())
+          PY
+
+      - name: Upload public-safe v2 results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-stellar-v2-summary-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/public-summary/0081-bridge-summary.json
+            ${{ runner.temp }}/0081-reference-result.json

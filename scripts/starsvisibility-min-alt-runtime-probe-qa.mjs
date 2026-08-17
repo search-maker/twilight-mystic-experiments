@@ -24,14 +24,24 @@ try {
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
   await page.locator('#visibilityEngineMode').waitFor({ state: 'attached', timeout: 20000 });
-  const disable = await page.evaluate(() => {
+  const reset = await page.evaluate(() => {
     try {
-      return globalThis.eval('workerEnabled = false; ({ workerEnabled })');
+      return globalThis.eval(`
+        workerEnabled = false;
+        calculationResultsFinal = false;
+        threeStarResultData = null;
+        lastRunMetadata = {};
+        ({
+          workerEnabled,
+          calculationResultsFinal,
+          scaffoldFlag: globalThis.__LEVEL_B_SITEWIDE_LEGACY_SCAFFOLD__ === true
+        })
+      `);
     } catch (error) {
       return { error: String(error?.stack || error) };
     }
   });
-  if (disable?.error) throw new Error(`Could not disable worker for diagnostic: ${disable.error}`);
+  if (reset?.error) throw new Error(`Could not reset main-thread diagnostic state: ${reset.error}`);
 
   // Silent setters are intentional: several legacy Three-Star controls auto-run
   // calculate() on change. The diagnostic must have exactly one calculation,
@@ -51,6 +61,7 @@ try {
     minAlt: document.querySelector('#minAlt')?.value ?? null,
     engine: document.querySelector('#visibilityEngineMode')?.value ?? null,
     engineFromRuntime: globalThis.eval('__levelBSitewideEngineMode()'),
+    scaffoldFlag: globalThis.__LEVEL_B_SITEWIDE_LEGACY_SCAFFOLD__ === true,
   }));
 
   const calculate = page.locator('#calculate');
@@ -65,12 +76,13 @@ try {
 
   await page.waitForFunction(() => {
     try {
-      return globalThis.eval('calculationResultsFinal === true && threeStarResultData !== null');
+      const state = globalThis.eval('({ final: calculationResultsFinal, result: threeStarResultData, metadata: lastRunMetadata })');
+      return state.final === true && state.result !== null;
     } catch {
       return false;
     }
-  }, { timeout: 30000 });
-  await page.waitForTimeout(250);
+  }, { timeout: 60000 });
+  await page.waitForTimeout(500);
 
   const runtime = await page.evaluate(() => {
     let result = null;
@@ -84,6 +96,8 @@ try {
     return {
       result,
       metadata,
+      finalState: globalThis.eval('calculationResultsFinal'),
+      scaffoldFlag: globalThis.__LEVEL_B_SITEWIDE_LEGACY_SCAFFOLD__ === true,
       resultCard: {
         title: document.querySelector('#threeStarResultTitle')?.textContent ?? null,
         empty: document.querySelector('#threeStarEmpty')?.textContent ?? null,
@@ -97,7 +111,7 @@ try {
     };
   });
 
-  const diagnostic = { url: page.url(), disable, clickedControl, inputsBefore, ...runtime };
+  const diagnostic = { url: page.url(), reset, clickedControl, inputsBefore, ...runtime };
   console.log(JSON.stringify(diagnostic, null, 2));
 
   const calculationEngine = runtime.result?.calculationEngine ?? runtime.metadata?.calculationEngine ?? runtime.metadata?.levelBRunProvenance?.calculationEngine;

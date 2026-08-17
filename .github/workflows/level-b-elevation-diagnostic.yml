@@ -1,4 +1,4 @@
-name: Level-B AFGLUS elevation interpolation diagnostic
+name: Level-B stellar interpolation axis diagnostic
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: level-b-elevation-diagnostic-${{ github.ref }}
+  group: level-b-interpolation-axis-diagnostic-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
           echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
           echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
 
-      - name: Measure exact off-knot elevation columns
+      - name: Measure isolated altitude and AOD axes
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
@@ -85,53 +85,49 @@ jobs:
 
           app=Path('private-app').resolve()
           p=app/'scientific-tools/visibility-v3/stellar_transmission_libradtran_v3.py'
-          spec=importlib.util.spec_from_file_location('stellar_ref_diag',p)
+          spec=importlib.util.spec_from_file_location('stellar_ref_axis_diag',p)
           ref=importlib.util.module_from_spec(spec)
           assert spec and spec.loader
-          sys.modules['stellar_ref_diag']=ref
+          sys.modules['stellar_ref_axis_diag']=ref
           spec.loader.exec_module(ref)
 
-          afglus=Path(os.environ['LIBRADTRAN_DATA'])/'atmmod'/'afglus.dat'
-          profile=[]
-          for raw in afglus.read_text().splitlines():
-              line=raw.strip()
-              if not line or line.startswith('#'): continue
-              parts=line.split()
-              profile.append([float(x) for x in parts])
+          altitude_values=[5.0,6.25,7.5,8.75,10.0,12.5,15.0,17.5,20.0,25.0,30.0,37.5,45.0,52.5,60.0,65.0,70.0,75.0,80.0]
+          aod_values=[0.05,0.075,0.10,0.15,0.20,0.25,0.30,0.35,0.40]
+          fixed_elevation=1250.0
+          fixed_aod=0.20
+          fixed_altitude=30.0
 
-          elevations=[0.0,250.0,500.0,875.0,1250.0,1625.0,2000.0,2250.0,2500.0]
-          aods=[0.05,0.20,0.40]
-          altitude=30.0
-          mu=math.sin(math.radians(altitude))
-          cases=[]
-          for elev in elevations:
-              for aod in aods:
-                  rr=ref.run_reference(target_altitude_deg=altitude,aod550=aod,observer_elevation_m=elev)
-                  trans=rr['spectrum']['lineOfSightDirectTransmission']
-                  tau_vertical=[-math.log(max(float(t),1e-300))*mu for t in trans]
-                  cases.append({'observerElevationM':elev,'aod550':aod,'verticalOpticalDepth':tau_vertical})
+          def los_tau(rr):
+              return [-math.log(max(float(t),1e-300)) for t in rr['spectrum']['lineOfSightDirectTransmission']]
+
+          altitude_cases=[]
+          for altitude in altitude_values:
+              rr=ref.run_reference(target_altitude_deg=altitude,aod550=fixed_aod,observer_elevation_m=fixed_elevation)
+              altitude_cases.append({'targetAltitudeDeg':altitude,'lineOfSightOpticalDepth':los_tau(rr)})
+
+          aod_cases=[]
+          for aod in aod_values:
+              rr=ref.run_reference(target_altitude_deg=fixed_altitude,aod550=aod,observer_elevation_m=fixed_elevation)
+              aod_cases.append({'aod550':aod,'lineOfSightOpticalDepth':los_tau(rr)})
 
           out={
               'schemaVersion':1,
               'applicationSha':os.environ['APPLICATION_SHA'],
               'uvspecSha256':os.environ['EXPECTED_UVSPEC_SHA256'],
               'afglusSha256':os.environ['EXPECTED_AFGLUS_SHA256'],
-              'targetAltitudeDeg':altitude,
               'wavelengthNm':list(range(380,781)),
-              'observerElevationsM':elevations,
-              'aod550':aods,
-              'afglusColumns':{'note':'raw numeric columns from exact reviewed afglus.dat','rows':profile},
-              'cases':cases,
+              'altitudeAxis':{'observerElevationM':fixed_elevation,'aod550':fixed_aod,'cases':altitude_cases},
+              'aodAxis':{'observerElevationM':fixed_elevation,'targetAltitudeDeg':fixed_altitude,'cases':aod_cases},
           }
-          dest=Path(os.environ['RUNNER_TEMP'])/'afglus-elevation-diagnostic.json'
+          dest=Path(os.environ['RUNNER_TEMP'])/'stellar-interpolation-axis-diagnostic.json'
           dest.write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'caseCount':len(cases),'afglusRows':len(profile),'output':str(dest)},sort_keys=True))
+          print(json.dumps({'altitudeCaseCount':len(altitude_cases),'aodCaseCount':len(aod_cases),'output':str(dest)},sort_keys=True))
           PY
 
       - name: Upload diagnostic
         uses: actions/upload-artifact@v4
         with:
-          name: level-b-afglus-elevation-diagnostic-${{ github.run_id }}
-          path: ${{ runner.temp }}/afglus-elevation-diagnostic.json
+          name: level-b-stellar-axis-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/stellar-interpolation-axis-diagnostic.json
           if-no-files-found: error
           retention-days: 30

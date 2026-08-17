@@ -42,6 +42,37 @@ async function selectLevelBEquilibrium(page) {
   });
 }
 
+async function maximizeRequiredCount(page) {
+  return page.evaluate(() => {
+    const selects = [...document.querySelectorAll('select')];
+    const candidate = selects.find(select => {
+      const values = [...select.options].map(o => Number(o.value)).filter(Number.isFinite);
+      if (!values.includes(3) || values.length < 2) return false;
+      const context = `${select.id || ''} ${select.name || ''} ${select.parentElement?.textContent || ''}`;
+      return /number of stars|stars required|required count|מספר.*כוכב/i.test(context)
+        || (values.every(value => value >= 2 && value <= 20) && values.length <= 12);
+    });
+    if (!(candidate instanceof HTMLSelectElement)) {
+      return { found: false, selects: selects.map(s => ({ id: s.id, values: [...s.options].map(o => o.value) })) };
+    }
+    const numericOptions = [...candidate.options]
+      .map(o => ({ value: o.value, number: Number(o.value), text: (o.textContent || '').trim() }))
+      .filter(o => Number.isFinite(o.number));
+    const selected = numericOptions.sort((a, b) => b.number - a.number)[0];
+    candidate.value = selected.value;
+    candidate.dispatchEvent(new Event('input', { bubbles: true }));
+    candidate.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      found: true,
+      id: candidate.id || null,
+      name: candidate.name || null,
+      selectedValue: candidate.value,
+      selectedNumber: selected.number,
+      options: numericOptions.sort((a, b) => a.number - b.number),
+    };
+  });
+}
+
 async function installFeatureAudit(page) {
   await page.evaluate(() => {
     const feature = document.querySelector('#calculatorFeature');
@@ -99,6 +130,8 @@ for (const viewport of viewports) {
   const diag = {
     viewport,
     httpStatus: null,
+    thresholdInput: null,
+    requiredCountControl: null,
     featureHistory: [],
     candidateDiagnosticLine: null,
     candidateCount: null,
@@ -125,11 +158,26 @@ for (const viewport of viewports) {
     await page.locator('#threeStarMagnitudeThreshold').waitFor({ state: 'attached', timeout: 10000 });
     await setValue(page, '#calculatorFeature', 'three-star');
     await setValue(page, '#threeStarMagnitudeBasis', 'effective');
-    await setValue(page, '#threeStarMagnitudeThreshold', '99');
+
+    // Keep the probe inside the application's catalog magnitude limit. 6.5 is
+    // the live site's supported catalog ceiling, unlike the rejected value 99.
+    await setValue(page, '#threeStarMagnitudeThreshold', '6.5');
+    diag.thresholdInput = await page.locator('#threeStarMagnitudeThreshold').evaluate(el => ({
+      value: el.value,
+      min: el.getAttribute('min'),
+      max: el.getAttribute('max'),
+      step: el.getAttribute('step'),
+      valid: typeof el.checkValidity === 'function' ? el.checkValidity() : null,
+      validationMessage: el.validationMessage || '',
+    }));
+    diag.requiredCountControl = await maximizeRequiredCount(page);
+
     assert(await selectLevelBEquilibrium(page), 'Level-B equilibrium calculation engine is available and selected');
     assert(await page.locator('#calculatorFeature').inputValue() === 'three-star', 'Three-Star is selected before forced no-event calculation');
     assert(await page.locator('#threeStarMagnitudeBasis').inputValue() === 'effective', 'Effective magnitude basis is selected');
-    assert(Number(await page.locator('#threeStarMagnitudeThreshold').inputValue()) === 99, 'Forced no-event threshold is 99');
+    assert(Number(await page.locator('#threeStarMagnitudeThreshold').inputValue()) === 6.5, 'No-event threshold is the legal catalog ceiling 6.5');
+    assert(diag.thresholdInput.valid !== false, `Threshold 6.5 passes browser validity (${diag.thresholdInput.validationMessage || 'valid'})`);
+    assert(diag.requiredCountControl.found, 'Number-of-stars control was found');
 
     await installFeatureAudit(page);
     await clickCalculate(page);
@@ -146,9 +194,10 @@ for (const viewport of viewports) {
     diag.candidateDiagnosticLine = candidateLine || null;
     const candidateMatch = candidateLine?.match(/(\d+)/);
     diag.candidateCount = candidateMatch ? Number(candidateMatch[1]) : null;
-    diag.resultExcerpt = lines.filter(line => /Three.?Star|שלושה כוכבים|candidate|מועמד|not found|לא נמצא/i.test(line)).slice(-8).join(' | ');
+    diag.resultExcerpt = lines.filter(line => /Three.?Star|שלושה כוכבים|candidate|מועמד|not found|לא נמצא/i.test(line)).slice(-10).join(' | ');
 
-    assert(!/Three-star time:\s*\d{1,2}:\d{2}\s*[·-]\s*Verified/i.test(body), 'Threshold 99 produces a no-event result rather than a verified event');
+    const verifiedEvent = /Three-star time:\s*\d{1,2}:\d{2}\s*[·-]\s*Verified/i.test(body);
+    assert(!verifiedEvent, `Legal faint-star/max-count fixture produces a no-event result (required=${diag.requiredCountControl.selectedNumber})`);
     assert(Boolean(candidateLine), 'No-event result renders candidate diagnostics');
     assert(Number.isFinite(diag.candidateCount) && diag.candidateCount > 0,
       `No-event diagnostics report a nonzero scanned-candidate count (got ${diag.candidateCount})`);

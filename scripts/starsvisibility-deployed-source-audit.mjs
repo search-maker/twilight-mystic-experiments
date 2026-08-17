@@ -14,12 +14,17 @@ function allIndices(needle) {
   }
   return out;
 }
-function functionSlice(name, maxBytes = 22000) {
-  for (const prefix of [`function ${name}`, `async function ${name}`]) {
-    const index = html.indexOf(prefix);
-    if (index >= 0) return html.slice(index, Math.min(html.length, index + maxBytes));
+function functionSlices(name, maxBytes = 9000) {
+  const out = [];
+  for (const prefix of [`async function ${name}`, `function ${name}`]) {
+    for (const index of allIndices(prefix)) {
+      out.push({ prefix, index, source: html.slice(index, Math.min(html.length, index + maxBytes)) });
+    }
   }
-  return null;
+  return out.sort((a, b) => a.index - b.index);
+}
+function functionSlice(name, maxBytes = 22000) {
+  return functionSlices(name, maxBytes)[0]?.source ?? null;
 }
 function around(needle, before = 700, after = 2200) {
   const index = html.indexOf(needle);
@@ -33,12 +38,16 @@ const audit = {
   counts: {
     workerFunctions: allIndices('function createReusableCalculationWorker').length,
     calculateInWorkerDefinitions: allIndices('function calculateInWorker').length,
+    calculateDefinitions: allIndices('async function calculate()').length,
     workerModeMentions: allIndices('visibilityEngineMode').length,
     sitewideDispatchMentions: allIndices('const __sitewideEngineMode = __levelBSitewideEngineMode();').length,
+    calculateButtonBindings: allIndices('$("calculate").addEventListener("click", calculate)').length,
   },
+  calculateFunctions: functionSlices('calculate', 14000),
   createReusableCalculationWorker: functionSlice('createReusableCalculationWorker', 30000),
   calculateInWorker: functionSlice('calculateInWorker', 18000),
+  calculateButtonBinding: around('$("calculate").addEventListener("click", calculate)', 1000, 1600),
   appScriptSource: around('const APP_SCRIPT_SOURCE = document.currentScript?.textContent || "";', 1200, 1600),
-  sitewideDispatch: around('const __sitewideEngineMode = __levelBSitewideEngineMode();', 1200, 1600),
+  sitewideDispatch: around('const __sitewideEngineMode = __levelBSitewideEngineMode();', 1800, 2200),
 };
 console.log(JSON.stringify(audit, null, 2));

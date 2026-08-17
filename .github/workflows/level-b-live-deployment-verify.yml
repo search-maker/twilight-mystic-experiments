@@ -1,0 +1,136 @@
+name: Level-B exact live deployment verification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-live-deployment-verify.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_COMMIT_SHA: e773b5c53860dc27b172b31e6692d6c65dcdb1ea
+      EXPECTED_PROTOCOL_SHA256: aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef
+      EXPECTED_SED_SHA256: 85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb
+      EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+      EXPECTED_PUBLIC_ASSET_COMMIT: 4b71445139e24236f12952ab41c791bd07a9f7db
+      LIVE_ROOT: https://starsvisibility.pages.dev
+
+    steps:
+      - name: Poll public Cloudflare marker until exact merged main is live
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$LIVE_ROOT"
+          paths=("/level-b-software-status.json" "/.well-known/level-b-software-status.json")
+          rm -f "$RUNNER_TEMP/live-marker.json" "$RUNNER_TEMP/live-http.txt"
+          matched=''
+          for attempt in $(seq 1 60); do
+            for path in "${paths[@]}"; do
+              url="${root}${path}?level_b_verify=${GITHUB_RUN_ID}-${attempt}"
+              code="$(curl --silent --show-error --location --max-time 15 \
+                --header 'Accept: application/json' \
+                --header 'Cache-Control: no-cache, no-store, must-revalidate' \
+                --header 'Pragma: no-cache' \
+                --output "$RUNNER_TEMP/candidate.json" \
+                --write-out '%{http_code}' "$url" || true)"
+              printf 'attempt=%s path=%s http=%s\n' "$attempt" "$path" "$code" >> "$RUNNER_TEMP/live-http.txt"
+              if [ "$code" != '200' ]; then continue; fi
+              if python - "$RUNNER_TEMP/candidate.json" <<'PY'
+          import json, os, sys
+          p=sys.argv[1]
+          try:
+              j=json.load(open(p))
+          except Exception:
+              raise SystemExit(1)
+          required={
+              'commitSha': os.environ['EXPECTED_COMMIT_SHA'],
+              'stellarTransportState': 'MYSTIC-STATE-0081',
+              'stellarTransportProtocolSha256': os.environ['EXPECTED_PROTOCOL_SHA256'],
+              'stellarTransportSedSha256': os.environ['EXPECTED_SED_SHA256'],
+              'stellarTransportLutSha256': os.environ['EXPECTED_LUT_SHA256'],
+              'stellarTransportPublicAssetCommit': os.environ['EXPECTED_PUBLIC_ASSET_COMMIT'],
+              'claimBoundary': 'software-build-identity-only-pending-empirical-validation',
+          }
+          if any(j.get(k) != v for k,v in required.items()):
+              raise SystemExit(1)
+          PY
+              then
+                cp "$RUNNER_TEMP/candidate.json" "$RUNNER_TEMP/live-marker.json"
+                printf '%s\n' "$path" > "$RUNNER_TEMP/live-marker-path.txt"
+                matched="$path"
+                break 2
+              fi
+              if python - "$RUNNER_TEMP/candidate.json" <<'PY'
+          import json, sys
+          try:
+              j=json.load(open(sys.argv[1]))
+              print('observed_marker_commit='+str(j.get('commitSha')))
+          except Exception:
+              pass
+          PY
+              then :; fi
+            done
+            sleep 5
+          done
+          test -n "$matched" || { echo 'Exact merged-main Cloudflare marker was not observed within this verification run.' >&2; cat "$RUNNER_TEMP/live-http.txt" >&2; exit 1; }
+          echo "Verified exact live marker at $matched"
+          cat "$RUNNER_TEMP/live-marker.json"
+
+      - name: Verify live rendered page has no obsolete 0077/active-550 claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --max-time 20 \
+            --header 'Cache-Control: no-cache, no-store, must-revalidate' \
+            "$LIVE_ROOT/?level_b_verify=$GITHUB_RUN_ID" > "$RUNNER_TEMP/live-index.html"
+          ! grep -Fq 'BLOCKED_MYSTIC_STATE_0077_REFERENCE_GATE' "$RUNNER_TEMP/live-index.html"
+          ! grep -Fq 'current-main-550nm-full-column-browser-approximation' "$RUNNER_TEMP/live-index.html"
+          grep -Fq 'MYSTIC-STATE-0081' "$RUNNER_TEMP/live-index.html"
+
+      - name: Seal public-safe deployment verification summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/public-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          marker_path=root/'live-marker.json'
+          summary={
+              'verification':'LEVEL_B_EXACT_LIVE_DEPLOYMENT',
+              'expectedCommitSha':os.environ['EXPECTED_COMMIT_SHA'],
+              'liveRoot':os.environ['LIVE_ROOT'],
+              'githubRunId':os.environ['GITHUB_RUN_ID'],
+              'pass':marker_path.exists(),
+              'claimBoundary':'deployment/software-identity-only-pending-empirical-real-sky-and-human-validation',
+          }
+          if marker_path.exists():
+              summary['marker']=json.loads(marker_path.read_text())
+              p=root/'live-marker-path.txt'
+              summary['markerPath']=p.read_text().strip() if p.exists() else None
+          http=root/'live-http.txt'
+          if http.exists(): summary['httpTrace']=http.read_text().splitlines()[-20:]
+          out=root/'public-summary'/'level-b-live-deployment-verification.json'
+          out.write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(out.read_text())
+          PY
+
+      - name: Upload public-safe deployment evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-live-deployment-verification-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/public-summary/level-b-live-deployment-verification.json
+            ${{ runner.temp }}/live-marker.json
+            ${{ runner.temp }}/live-marker-path.txt
+            ${{ runner.temp }}/live-http.txt

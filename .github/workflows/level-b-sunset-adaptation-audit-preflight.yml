@@ -1,0 +1,76 @@
+name: Level-B sunset adaptation audit harness preflight
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-sunset-adaptation-audit-preflight.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APPLICATION_SHA: b2bff4c8944c49495007fc76d23f8894fd7783fe
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Require read-only private checkout credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          printf '%s' "$APPLICATION_SHA" | grep -Eq '^[0-9a-f]{40}$'
+
+      - name: Checkout public preflight source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact private 0078 audit head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact head and sanitize private remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+
+      - name: Run 0078 unit and thousands-case audit harness
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scientific-tools/visibility-v3/tests/test-sunset-adaptation-prehistory.mjs
+          node scientific-tools/visibility-v3/tests/audit-sunset-adaptation-prehistory-timing.mjs --output "$RUNNER_TEMP/0078-audit-preflight.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r=json.loads((Path(os.environ['RUNNER_TEMP'])/'0078-audit-preflight.json').read_text())
+          assert r['scientificAcceptanceGate'] is False
+          assert r['observationallyCalibrated'] is False
+          assert r['fixtureCount'] >= 1000
+          assert r['totalTauCaseCount'] >= 4000
+          assert r['tauSeconds'] == [20,30,45,60]
+          assert all(v == 0 for v in r['invariants'].values())
+          assert all(r['byTau'][str(t)]['caseCount'] >= 1000 for t in [20,30,45,60])
+          PY
+
+      - name: Upload public-safe audit report only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-sunset-audit-preflight-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: ${{ runner.temp }}/0078-audit-preflight.json

@@ -1,0 +1,91 @@
+name: Level-B stellar v2 publish verified public assets
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-stellar-v2-publish-assets.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: level-b-stellar-v2-publish-assets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      SOURCE_RUN_ID: '31994424420'
+      SOURCE_ARTIFACT_NAME: 'level-b-stellar-v2-exact-assets-31994424420'
+      EXPECTED_SED_SHA256: 379f390bddb3f873b3b8cf336776c2bf9b0180b5e7924a8fdca4649bf835438f
+      EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+      TARGET_BRANCH: execution/level-b-stellar-transport-v2-runner
+    steps:
+      - name: Checkout public execution branch only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Wait for exact verified asset artifact and download it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/source-artifact"
+          artifact_id=''
+          for attempt in $(seq 1 120); do
+            response="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$SOURCE_RUN_ID/artifacts")"
+            artifact_id="$(printf '%s' "$response" | python -c 'import json,sys,os; d=json.load(sys.stdin); name=os.environ["SOURCE_ARTIFACT_NAME"]; print(next((str(x["id"]) for x in d.get("artifacts",[]) if x.get("name")==name and not x.get("expired")),""))')"
+            if [ -n "$artifact_id" ]; then break; fi
+            sleep 30
+          done
+          test -n "$artifact_id"
+          echo "artifact_id=$artifact_id"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$artifact_id/zip" \
+            --output "$RUNNER_TEMP/source-artifact/assets.zip"
+          unzip -q "$RUNNER_TEMP/source-artifact/assets.zip" -d "$RUNNER_TEMP/source-artifact/unpacked"
+
+      - name: Verify exact passing bytes with no private source present
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed_file="$RUNNER_TEMP/source-artifact/unpacked/pickles-sed-1nm.json"
+          lut_file="$RUNNER_TEMP/source-artifact/unpacked/stellar-transport-v2-lut.json"
+          test -f "$sed_file"
+          test -f "$lut_file"
+          test "$(sha256sum "$sed_file" | awk '{print $1}')" = "$EXPECTED_SED_SHA256"
+          test "$(sha256sum "$lut_file" | awk '{print $1}')" = "$EXPECTED_LUT_SHA256"
+          count="$(find "$RUNNER_TEMP/source-artifact/unpacked" -type f | wc -l | tr -d ' ')"
+          test "$count" = '2'
+          mkdir -p generated/level-b-stellar-v2
+          cp "$sed_file" generated/level-b-stellar-v2/pickles-sed-1nm.json
+          cp "$lut_file" generated/level-b-stellar-v2/stellar-transport-v2-lut.json
+
+      - name: Commit only verified public-science assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add generated/level-b-stellar-v2/pickles-sed-1nm.json generated/level-b-stellar-v2/stellar-transport-v2-lut.json
+          git diff --cached --stat
+          if git diff --cached --quiet; then
+            echo 'Verified assets already published.'
+            exit 0
+          fi
+          git commit -m 'Publish exact passing MYSTIC-STATE-0081 stellar assets'
+          git push origin "HEAD:$TARGET_BRANCH"

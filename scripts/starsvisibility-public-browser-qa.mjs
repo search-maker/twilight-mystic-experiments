@@ -15,12 +15,29 @@ const diagnostics = [];
 let failed = false;
 const browser = await chromium.launch({ headless: true });
 
+async function setControlValue(page, selector, value) {
+  const locator = page.locator(selector);
+  const tagName = await locator.evaluate(el => el.tagName);
+  if (tagName === 'SELECT') {
+    await locator.selectOption(String(value));
+    return;
+  }
+  await locator.evaluate((el, nextValue) => {
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype
+      : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+      : HTMLElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor?.set) descriptor.set.call(el, String(nextValue));
+    else el.value = String(nextValue);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, value);
+}
+
 async function setStableInputs(page) {
   await page.evaluate(() => {
     const setValue = (el, value) => {
-      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype
-        : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
-        : HTMLElement.prototype;
+      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
       const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
       if (descriptor?.set) descriptor.set.call(el, String(value));
       else el.value = String(value);
@@ -45,8 +62,9 @@ async function setStableInputs(page) {
 
 async function chooseLevelBEngine(page) {
   return page.evaluate(() => {
-    const levelBPattern = /level\s*-?\s*b|level_b|sitewide|stellar\s+transport/i;
-    for (const select of document.querySelectorAll('select')) {
+    const levelBPattern = /mystic|level\s*-?\s*b|level_b|sitewide|stellar\s+transport/i;
+    const allSelects = [...document.querySelectorAll('select')];
+    for (const select of allSelects) {
       const options = [...select.options];
       const option = options.find(o => levelBPattern.test(`${o.value} ${o.textContent || ''}`));
       if (!option) continue;
@@ -57,13 +75,14 @@ async function chooseLevelBEngine(page) {
         found: true,
         id: select.id || null,
         name: select.name || null,
-        value: option.value,
+        value: select.value,
         text: (option.textContent || '').trim(),
+        options: options.map(o => ({ value: o.value, text: (o.textContent || '').trim() })),
       };
     }
     return {
       found: false,
-      selects: [...document.querySelectorAll('select')].map(select => ({
+      selects: allSelects.map(select => ({
         id: select.id || null,
         name: select.name || null,
         value: select.value,
@@ -125,6 +144,8 @@ for (const viewport of viewports) {
     url: targetUrl,
     httpStatus: null,
     feature: null,
+    featureTag: null,
+    featureHistoryDuringCalculation: [],
     magnitudeBasis: null,
     magnitudeThreshold: null,
     engineSelection: null,
@@ -153,38 +174,67 @@ for (const viewport of viewports) {
     await page.locator('#threeStarMagnitudeBasis').waitFor({ state: 'attached', timeout: 10000 });
     await page.locator('#threeStarMagnitudeThreshold').waitFor({ state: 'attached', timeout: 10000 });
 
-    await page.selectOption('#calculatorFeature', 'three-star');
-    await page.selectOption('#threeStarMagnitudeBasis', 'effective');
-    await page.locator('#threeStarMagnitudeThreshold').fill('1.7');
-    await page.locator('#threeStarMagnitudeThreshold').dispatchEvent('change');
+    diag.featureTag = await page.locator('#calculatorFeature').evaluate(el => el.tagName.toLowerCase());
+    await setControlValue(page, '#calculatorFeature', 'three-star');
+    await setControlValue(page, '#threeStarMagnitudeBasis', 'effective');
+    await setControlValue(page, '#threeStarMagnitudeThreshold', '1.7');
     await setStableInputs(page);
     diag.engineSelection = await chooseLevelBEngine(page);
+    assert(diag.engineSelection.found, 'A public MYSTIC/Level-B calculation engine option is available and selected');
 
     diag.feature = await page.locator('#calculatorFeature').inputValue();
     diag.magnitudeBasis = await page.locator('#threeStarMagnitudeBasis').inputValue();
     diag.magnitudeThreshold = await page.locator('#threeStarMagnitudeThreshold').inputValue();
-    assert(diag.feature === 'three-star', `Three-Star feature remains selected (got ${diag.feature})`);
+    assert(diag.feature === 'three-star', `Three-Star feature remains selected before calculation (got ${diag.feature})`);
     assert(diag.magnitudeBasis === 'effective', `Effective magnitude basis remains selected (got ${diag.magnitudeBasis})`);
     assert(Number(diag.magnitudeThreshold) === 1.7, `Magnitude threshold is 1.7 (got ${diag.magnitudeThreshold})`);
 
-    const before = await page.locator('body').innerText();
-    diag.trigger = await triggerCalculation(page);
-    await page.waitForTimeout(5000);
-    const after = await page.locator('body').innerText();
-    assert(after !== before, 'Calculation updates visible page content');
+    await page.evaluate(() => {
+      const feature = document.querySelector('#calculatorFeature');
+      globalThis.__starsVisibilityQaFeatureHistory = [feature?.value ?? null];
+      globalThis.__starsVisibilityQaFeatureTimer = setInterval(() => {
+        const value = document.querySelector('#calculatorFeature')?.value ?? null;
+        const history = globalThis.__starsVisibilityQaFeatureHistory;
+        if (history[history.length - 1] !== value) history.push(value);
+      }, 5);
+    });
 
-    const candidateMatch = after.match(/(\d+)\s+מועמדים(?:\s+שעברו\s+את\s+תנאי\s+הבחירה)?\s+נסרקו/);
-    if (candidateMatch) diag.candidateCountFromText = Number(candidateMatch[1]);
-    const resultLine = after.split(/\n+/).find(line => /זמן שלושה כוכבים|שלושה כוכבים|Three.?Star/i.test(line));
+    diag.trigger = await triggerCalculation(page);
+    await page.waitForTimeout(8000);
+    diag.featureHistoryDuringCalculation = await page.evaluate(() => {
+      clearInterval(globalThis.__starsVisibilityQaFeatureTimer);
+      delete globalThis.__starsVisibilityQaFeatureTimer;
+      const history = [...(globalThis.__starsVisibilityQaFeatureHistory || [])];
+      delete globalThis.__starsVisibilityQaFeatureHistory;
+      return history;
+    });
+
+    const after = await page.locator('body').innerText();
+    const featureAfter = await page.locator('#calculatorFeature').inputValue();
+    assert(featureAfter === 'three-star', `Three-Star feature remains selected after calculation (got ${featureAfter})`);
+    assert(diag.featureHistoryDuringCalculation.every(value => value === 'three-star'),
+      `Three-Star never routes through Standard during calculation (history: ${JSON.stringify(diag.featureHistoryDuringCalculation)})`);
+
+    const candidateMatches = [
+      after.match(/(\d+)\s+מועמדים(?:\s+שעברו\s+את\s+תנאי\s+הבחירה)?\s+נסרקו/),
+      after.match(/(\d+)\s+(?:selection-qualified\s+)?candidates?[^\n]{0,120}scanned/i),
+    ].filter(Boolean);
+    if (candidateMatches.length) diag.candidateCountFromText = Number(candidateMatches[0][1]);
+
+    const resultLine = after.split(/\n+/).find(line => /זמן שלושה כוכבים|שלושה כוכבים|Three.?Star time|Three.?Star/i.test(line));
     diag.resultSnippet = resultLine?.slice(0, 500) || after.slice(-500);
+    assert(Boolean(resultLine), 'A Three-Star result is rendered after calculation');
 
     const overflow = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
     diag.horizontalOverflowPx = overflow;
     assert(overflow <= 1, `No page-wide horizontal overflow (got ${overflow}px)`);
     assert(pageErrors.length === 0, `No uncaught page errors (got ${pageErrors.length})`);
+    assert(consoleErrors.length === 0, `No console errors (got ${consoleErrors.length})`);
+    assert(failedRequests.length === 0, `No failed network requests (got ${failedRequests.length})`);
 
-    if (candidateMatch) {
-      assert(diag.candidateCountFromText > 0, `Three-Star diagnostics do not report zero scanned candidates (got ${diag.candidateCountFromText})`);
+    if (diag.candidateCountFromText !== null) {
+      assert(diag.candidateCountFromText > 0,
+        `Three-Star diagnostics do not report zero scanned candidates (got ${diag.candidateCountFromText})`);
     }
 
     await page.screenshot({ path: `qa-artifacts/${viewport.name}.png`, fullPage: true });
@@ -192,6 +242,9 @@ for (const viewport of viewports) {
     failed = true;
     diag.fatalError = String(error?.stack || error);
     try {
+      await page.evaluate(() => {
+        if (globalThis.__starsVisibilityQaFeatureTimer) clearInterval(globalThis.__starsVisibilityQaFeatureTimer);
+      });
       await page.screenshot({ path: `qa-artifacts/${viewport.name}-failure.png`, fullPage: true });
     } catch {}
   } finally {

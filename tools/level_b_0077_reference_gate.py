@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, importlib.util, json, math, os, sys
+import argparse, hashlib, importlib.util, json, math, sys
 from pathlib import Path
 
 ALT = [6.25, 8.75, 12.5, 17.5, 25.0, 37.5, 52.5, 65.0, 75.0]
@@ -8,16 +8,24 @@ ELEV = [250.0, 875.0, 1625.0, 2250.0]
 AOD = [0.075, 0.15, 0.25, 0.35]
 MAX_LIMIT = 0.025
 RMS_LIMIT = 0.010
+PROTOCOL_NAMES = (
+    'STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V1.md',
+    'STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V1_AMENDMENT_1.md',
+    'STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V1_AMENDMENT_2_SOURCE_TRANSPORT.md',
+)
 
 
 def sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
+
 def sha256_file(p: Path) -> str:
     return sha256_bytes(p.read_bytes())
 
+
 def load_json(p: Path):
     return json.loads(p.read_text(encoding='utf-8'))
+
 
 def import_ref(app: Path):
     p = app/'scientific-tools/visibility-v3/stellar_transmission_libradtran_v3.py'
@@ -28,6 +36,7 @@ def import_ref(app: Path):
     spec.loader.exec_module(m)
     return m
 
+
 def bracket(axis, value):
     if value < axis[0] or value > axis[-1]: raise ValueError('outside LUT support')
     if value == axis[-1]: return len(axis)-2, len(axis)-1, 1.0
@@ -35,6 +44,7 @@ def bracket(axis, value):
         if value < axis[hi]:
             lo=hi-1; return lo, hi, (value-axis[lo])/(axis[hi]-axis[lo])
     raise AssertionError
+
 
 def interp_tau(lut, altitude, elevation, aod):
     aa=lut['axes']['targetAltitudeDeg']; ee=lut['axes']['observerElevationM']; oo=lut['axes']['aod550']
@@ -51,11 +61,13 @@ def interp_tau(lut, altitude, elevation, aod):
         c0=lerp(c00,c01,eb[2]); c1=lerp(c10,c11,eb[2]); out.append(lerp(c0,c1,ab[2]))
     return out
 
+
 def extinction(flux, response, transmission):
     den=sum(float(f)*float(r) for f,r in zip(flux,response))
     num=sum(float(f)*float(r)*float(t) for f,r,t in zip(flux,response,transmission))
     if not (den > 0 and num > 0): raise ValueError('non-positive Johnson-V integral')
     return -2.5*math.log10(num/den)
+
 
 def choose_templates(bundle):
     normal=[t for t in bundle['templates'] if t.get('abundance')=='normal']
@@ -64,6 +76,7 @@ def choose_templates(bundle):
     solar=min(normal,key=lambda t:(abs(float(t['bMinusVLandoltBmVc'])-0.65),int(t['libraryNumber'])))
     red=max(normal,key=lambda t:(float(t['bMinusVLandoltBmVc']),-int(t['libraryNumber'])))
     return [blue,solar,red]
+
 
 def main():
     ap=argparse.ArgumentParser()
@@ -89,12 +102,15 @@ def main():
           rows.append({'targetAltitudeDeg':alt,'observerElevationM':elev,'aod550':aod,'templateId':t['templateId'],'bMinusV':t['bMinusVLandoltBmVc'],'referenceAvMag':ar,'runtimeAvMag':al,'deltaAvMag':al-ar,'absDeltaAvMag':abs(al-ar)})
     if len(rows)!=432: raise SystemExit(f'expected 432 rows, got {len(rows)}')
     maxerr=max(r['absDeltaAvMag'] for r in rows); rms=math.sqrt(sum(r['deltaAvMag']**2 for r in rows)/len(rows))
-    base=(app/'scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V1.md').read_bytes()
-    amend=(app/'scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V1_AMENDMENT_1.md').read_bytes()
-    protocol=sha256_bytes(base+b'\n'+amend)
+    protocol_dir=app/'scientific-tools/visibility-v3'
+    protocol=sha256_bytes(b'\n'.join((protocol_dir/name).read_bytes() for name in PROTOCOL_NAMES))
+    if lut.get('provenance',{}).get('validationProtocolSha256') != protocol:
+        raise SystemExit('LUT protocol hash does not match gate protocol hash')
     passed=(maxerr<=MAX_LIMIT and rms<=RMS_LIMIT)
     result={'schemaVersion':1,'gate':'MYSTIC-STATE-0077-stellar-transport-reference','caseCount':len(rows),'atmosphericCaseCount':144,'templates':[{'templateId':t['templateId'],'libraryNumber':t['libraryNumber'],'bMinusV':t['bMinusVLandoltBmVc']} for t in templates],'limits':{'maxAbsDeltaAvMag':MAX_LIMIT,'rmsDeltaAvMag':RMS_LIMIT},'statistics':{'maxAbsDeltaAvMag':maxerr,'rmsDeltaAvMag':rms},'pass':passed,'protocolSha256':protocol,'hashes':{'sedBundleSha256':sha256_file(args.sed_bundle),'lutSha256':sha256_file(args.lut),'johnsonVGridSha256':sha256_file(band_path)},'rows':rows}
     args.output.parent.mkdir(parents=True,exist_ok=True); args.output.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
     print(json.dumps({k:result[k] for k in ['gate','caseCount','statistics','pass','protocolSha256','hashes']},sort_keys=True))
     raise SystemExit(0 if passed else 2)
+
+
 if __name__=='__main__': main()

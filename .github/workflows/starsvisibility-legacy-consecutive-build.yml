@@ -20,6 +20,7 @@ jobs:
     env:
       APPLICATION_SHA: f51fbbb48372d41bca3beadedb61afeb0d231c07
       STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      LIVE_SITE_URL: https://starsvisibility.pages.dev
 
     steps:
       - name: Require read-only private checkout credential
@@ -95,11 +96,65 @@ jobs:
               'legacyConsecutiveBaked': True,
               'independentResultHost': True,
               'ordinaryResultGateRemoved': True,
+              'liveDeployment': 'PENDING',
+              'liveCommitSha': None,
           }
           out=Path(os.environ['RUNNER_TEMP'])/'starsvisibility-legacy-consecutive-summary.json'
           out.write_text(json.dumps(summary, indent=2, sort_keys=True)+'\n')
           print(json.dumps(summary, sort_keys=True))
           PY
+
+      - name: Verify exact fix is live on Cloudflare Pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_url="$LIVE_SITE_URL/.well-known/level-b-software-status.json"
+          live_sha=""
+          for attempt in $(seq 1 12); do
+            body="$(curl --fail --silent --show-error --location --max-time 20 \
+              -H 'Cache-Control: no-cache' \
+              "$marker_url?verify=$GITHUB_RUN_ID-$attempt" || true)"
+            live_sha="$(printf '%s' "$body" | python -c 'import json,sys; 
+try: print(json.load(sys.stdin).get("commitSha", ""))
+except Exception: print("")')"
+            echo "Live deployment attempt $attempt: ${live_sha:-unavailable}"
+            if [ "$live_sha" = "$APPLICATION_SHA" ]; then
+              html="$(curl --fail --silent --show-error --location --max-time 30 \
+                -H 'Cache-Control: no-cache' \
+                "$LIVE_SITE_URL/?verify=$GITHUB_RUN_ID-$attempt")"
+              printf '%s' "$html" | grep -Fq 'STARS-CLOSE-TRIPLE-MAGNITUDE-V1'
+              printf '%s' "$html" | grep -Fq 'STARS-CLOSE-TRIPLE-INDEPENDENT-RESULT-HOST-V1'
+              printf '%s' "$html" | grep -Fq 'LEGACY-THREE-STAR-CONSECUTIVE-MAIN-THREAD-V1'
+              if printf '%s' "$html" | grep -Fq 'if (!result?.found || !close?.enabled)'; then
+                echo 'FAIL: live HTML still contains the old ordinary-result gate' >&2
+                exit 1
+              fi
+              LIVE_SHA="$live_sha" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'starsvisibility-legacy-consecutive-summary.json'
+          data=json.loads(p.read_text())
+          data['liveDeployment']='PASS'
+          data['liveCommitSha']=os.environ['LIVE_SHA']
+          p.write_text(json.dumps(data, indent=2, sort_keys=True)+'\n')
+          print(json.dumps(data, sort_keys=True))
+          PY
+              exit 0
+            fi
+            sleep 10
+          done
+          LIVE_SHA="$live_sha" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'starsvisibility-legacy-consecutive-summary.json'
+          data=json.loads(p.read_text())
+          data['liveDeployment']='FAIL'
+          data['liveCommitSha']=os.environ.get('LIVE_SHA') or None
+          p.write_text(json.dumps(data, indent=2, sort_keys=True)+'\n')
+          print(json.dumps(data, sort_keys=True))
+          PY
+          echo "Cloudflare Pages is not serving expected SHA $APPLICATION_SHA; observed ${live_sha:-unavailable}" >&2
+          exit 1
 
       - name: Upload public-safe verification summary
         if: always()

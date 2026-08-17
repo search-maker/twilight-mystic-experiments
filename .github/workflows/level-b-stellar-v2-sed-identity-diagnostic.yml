@@ -1,0 +1,108 @@
+name: Level-B stellar v2 SED identity diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-stellar-v2-sed-identity-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APPLICATION_SHA: b88821df557b379935898c682772ed313357bf9f
+      EXPECTED_PASS_SED_SHA256: 379f390bddb3f873b3b8cf336776c2bf9b0180b5e7924a8fdca4649bf835438f
+      PASS_SYNPHOT_RAW_SHA256: 42d6c9450169b144fd23907ef5829e15363d8961db10786d00e251a729e3e29d
+      PASS_TABLE6_RAW_SHA256: 0378ac9e984e1886577babe5262d88fb756df011e0bb2fc4ca0a66e8ed85fe2
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Checkout public helpers
+        uses: actions/checkout@v4
+        with:
+          path: bridge
+          persist-credentials: false
+
+      - name: Checkout exact passing private application commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact SHA and sanitize remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+
+      - name: Fetch current authoritative public source bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          mkdir -p "$RUNNER_TEMP/pickles98"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=J/PASP/110/863/synphot' \
+            --data-urlencode '-out=num,SpType,LogTe,file' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/pickles98/synphot.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=VI/135/table6' \
+            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/table6.dat"
+          python bridge/tools/fetch_pickles_raw_sources.py \
+            --synphot-tsv "$RUNNER_TEMP/pickles98/synphot.dat" \
+            --output-dir "$RUNNER_TEMP/pickles98"
+          echo "current_synphot_raw_sha256=$(sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" | awk '{print $1}')"
+          echo "current_table6_raw_sha256=$(sha256sum "$RUNNER_TEMP/table6.dat" | awk '{print $1}')"
+
+      - name: Build SED and isolate raw-metadata provenance drift
+        shell: bash
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          python scientific-tools/visibility-v3/build_pickles_sed_bundle.py \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --libmags-table6 "$RUNNER_TEMP/table6.dat" \
+            --output "$RUNNER_TEMP/current-sed.json"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'current-sed.json'
+          raw=p.read_bytes()
+          current=hashlib.sha256(raw).hexdigest()
+          j=json.loads(raw)
+          current_syn=j['provenance']['pickles1998']['synphotSha256']
+          current_t6=j['provenance']['picklesDepagne2010']['table6Sha256']
+          j['provenance']['pickles1998']['synphotSha256']=os.environ['PASS_SYNPHOT_RAW_SHA256']
+          j['provenance']['picklesDepagne2010']['table6Sha256']=os.environ['PASS_TABLE6_RAW_SHA256']
+          patched=(json.dumps(j,indent=2,sort_keys=True)+'\n').encode()
+          restored=hashlib.sha256(patched).hexdigest()
+          print(json.dumps({
+            'currentSedSha256':current,
+            'expectedPassSedSha256':os.environ['EXPECTED_PASS_SED_SHA256'],
+            'currentSynphotRawSha256':current_syn,
+            'passSynphotRawSha256':os.environ['PASS_SYNPHOT_RAW_SHA256'],
+            'currentTable6RawSha256':current_t6,
+            'passTable6RawSha256':os.environ['PASS_TABLE6_RAW_SHA256'],
+            'sedShaAfterRestoringOnlyPassRawMetadataHashes':restored,
+            'onlyRawMetadataProvenanceDrift':restored==os.environ['EXPECTED_PASS_SED_SHA256'],
+            'templateCount':len(j['templates']),
+            'wavelengthCount':len(j['wavelengthNm']),
+            'sourceSpectrumSha256First':j['provenance']['pickles1998']['sourceSpectrumSha256'][0],
+            'sourceSpectrumSha256Last':j['provenance']['pickles1998']['sourceSpectrumSha256'][-1],
+          },sort_keys=True))
+          if restored != os.environ['EXPECTED_PASS_SED_SHA256']:
+            raise SystemExit('SED drift is not explained solely by raw VizieR metadata-response hashes')
+          PY

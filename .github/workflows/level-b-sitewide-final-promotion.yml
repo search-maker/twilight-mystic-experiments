@@ -201,6 +201,66 @@ jobs:
             claimBoundary: 'real-browser-software-interaction-QA-only-not-empirical-sky-or-human-validation',
           };
 
+          async function activateThreeStar(page, label) {
+            const feature = page.locator('#calculatorFeature');
+            if (await feature.count() !== 1) throw new Error(`${label}: calculatorFeature state control missing`);
+            const featureMeta = await feature.evaluate(el => ({
+              tagName: el.tagName,
+              type: el.getAttribute('type'),
+              value: el.value,
+              hidden: Boolean(el.hidden),
+              optionCount: el.options?.length ?? null,
+            }));
+            const candidate = await page.evaluate(() => {
+              const visible = el => {
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+              };
+              const nodes = Array.from(document.querySelectorAll('[data-feature],[data-calculator-feature],[data-value],button,[role="tab"],label,a'));
+              const rows = nodes.map((el, index) => {
+                const datasetValues = Object.values(el.dataset ?? {}).map(String);
+                const attrs = [
+                  el.id,
+                  el.className,
+                  el.getAttribute('value'),
+                  el.getAttribute('onclick'),
+                  el.getAttribute('aria-controls'),
+                  ...datasetValues,
+                ].filter(Boolean).join(' ');
+                const text = String(el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
+                const matches = /three[-_\s]?star/i.test(`${attrs} ${text}`)
+                  || /3\s*(?:stars?|כוכב)/i.test(text)
+                  || /שלוש(?:ה|ת)?[^\n]{0,20}כוכב/i.test(text);
+                return { el, index, attrs, text, visible: visible(el), matches };
+              });
+              const match = rows.find(row => row.matches && row.visible);
+              if (!match) {
+                return {
+                  found: false,
+                  diagnostics: rows.filter(row => row.visible).slice(0, 40).map(({ index, attrs, text }) => ({ index, attrs, text })),
+                };
+              }
+              match.el.setAttribute('data-level-b-browser-three-star-target', 'true');
+              return {
+                found: true,
+                tagName: match.el.tagName,
+                attrs: match.attrs,
+                text: match.text,
+              };
+            });
+            if (!candidate.found) throw new Error(`${label}: no visible Three-Star feature control found; feature=${JSON.stringify(featureMeta)} candidates=${JSON.stringify(candidate.diagnostics)}`);
+            const control = page.locator('[data-level-b-browser-three-star-target="true"]').first();
+            await control.click();
+            await page.waitForTimeout(75);
+            const selected = await feature.inputValue();
+            if (selected !== 'three-star') throw new Error(`${label}: visible Three-Star control click did not set calculatorFeature=three-star; selected=${selected}; control=${JSON.stringify(candidate)}`);
+            const threeStarCount = page.locator('#threeStarCount');
+            const threeStarCountVisible = await threeStarCount.count() === 1 ? await threeStarCount.isVisible() : false;
+            if (!threeStarCountVisible) throw new Error(`${label}: Three-Star feature state selected but #threeStarCount is not visible`);
+            return { method: 'visible-control-click', featureMeta, control: candidate, selected, threeStarCountVisible };
+          }
+
           async function inspect(viewport, label) {
             const page = await browser.newPage({ viewport });
             const errors = [];
@@ -224,21 +284,12 @@ jobs:
               if (globalMode !== mode) throw new Error(`${label}: global engine mode did not follow selector: ${mode}/${globalMode}`);
             }
 
-            const featureResult = await page.evaluate(() => {
-              const feature = document.getElementById('calculatorFeature');
-              if (!feature) return { exists: false };
-              const values = Array.from(feature.options ?? []).map(option => option.value);
-              if (!values.includes('three-star')) return { exists: true, values, selected: feature.value, threeStarAvailable: false };
-              feature.value = 'three-star';
-              feature.dispatchEvent(new Event('change', { bubbles: true }));
-              return { exists: true, values, selected: feature.value, threeStarAvailable: true };
-            });
-            if (!featureResult.exists || !featureResult.threeStarAvailable || featureResult.selected !== 'three-star') throw new Error(`${label}: Three-Star DOM routing surface unavailable: ${JSON.stringify(featureResult)}`);
+            const featureActivation = await activateThreeStar(page, label);
             await engine.selectOption('level-b-v3-crumey-blackwell-equilibrium');
-            const featureAfterEquilibrium = await page.evaluate(() => document.getElementById('calculatorFeature')?.value ?? null);
+            const featureAfterEquilibrium = await page.locator('#calculatorFeature').inputValue();
             if (featureAfterEquilibrium !== 'three-star') throw new Error(`${label}: engine switch changed Three-Star feature`);
             await engine.selectOption('level-b-v3-crumey-blackwell-transient-experimental');
-            const featureAfterTransient = await page.evaluate(() => document.getElementById('calculatorFeature')?.value ?? null);
+            const featureAfterTransient = await page.locator('#calculatorFeature').inputValue();
             if (featureAfterTransient !== 'three-star') throw new Error(`${label}: transient engine switch changed Three-Star feature`);
 
             const fieldBox = await page.locator('#visibilityEngineModeField').boundingBox();
@@ -254,6 +305,7 @@ jobs:
               viewport,
               options,
               noteExcerpt: note.slice(0, 600),
+              featureActivation,
               threeStarFeatureAvailable: true,
               finalEngineMode: 'level-b-v3-crumey-blackwell-transient-experimental',
               noHorizontalEngineControlOverflow: true,

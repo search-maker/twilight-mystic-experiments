@@ -1,0 +1,82 @@
+name: Level-B private exact-head build probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-private-exact-head-build-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APPLICATION_SHA: 7cf6437a38941413151c1e497a2564fe33b2a97c
+      EXPECTED_MAIN_SHA: 43c6a5697b727c6afd2e3061338121cb7aa5e574
+      PUBLIC_ASSET_COMMIT: 4b71445139e24236f12952ab41c791bd07a9f7db
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+
+    steps:
+      - name: Require exact immutable binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || { echo 'Required read-only secret unavailable.' >&2; exit 78; }
+          printf '%s' "$APPLICATION_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_MAIN_SHA" | grep -Eq '^[0-9a-f]{40}$'
+
+      - name: Checkout exact private head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 5
+
+      - name: Checkout frozen public stellar assets
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/twilight-mystic-experiments
+          ref: ${{ env.PUBLIC_ASSET_COMMIT }}
+          path: public-assets
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify parent and sanitize remotes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C private-app merge-base --is-ancestor "$EXPECTED_MAIN_SHA" HEAD
+          git -C private-app remote remove origin || true
+          git -C public-assets remote remove origin || true
+          mkdir -p private-app/scientific-tools/visibility-v3/generated
+          cp public-assets/generated/level-b-stellar-v2/pickles-sed-1nm.json private-app/scientific-tools/visibility-v3/generated/pickles-sed-1nm.json
+          cp public-assets/generated/level-b-stellar-v2/stellar-transport-v2-lut.json private-app/scientific-tools/visibility-v3/generated/stellar-transport-v2-lut.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: private-app
+        shell: bash
+        run: npm ci
+
+      - name: Run exact Pages build
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          GITHUB_SHA="$APPLICATION_SHA" npm run build:pages
+          grep -Fq 'WEEKLY-WORKER-TERMINAL-CONTRACT-V1' dist/index.html
+          grep -Fq 'WEEKLY-ATMOSPHERE-UNAVAILABLE-DATE-CONTRACT-V1' dist/index.html
+          grep -Fq 'WEEKLY-WORKER-ATMOSPHERE-DIAGNOSTIC-V1' dist/index.html
+          ! grep -Fq "const prefix = document.documentElement.lang === 'en' ? 'Level-B atmosphere unavailable'" dist/index.html
+          test "$(node -p \"require('./dist/level-b-software-status.json').commitSha\")" = "$APPLICATION_SHA"

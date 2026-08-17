@@ -25,4 +25,6 @@ console.log(JSON.stringify(result, null, 2));
 if (!response.ok) throw new Error(`Preview returned HTTP ${response.status}`);
 if (!result.routingMarkerPresent) throw new Error('Existing Three-Star pointwise routing marker is missing from Preview HTML');
 if (!result.minimumAltitudeMarkerPresent) throw new Error('New Three-Star minimum-altitude patch marker is missing from Preview HTML');
-if (!result.minimumAltitudeRuntimeProbePresent) throw new Error('Latest Three-Star minimum-altitude runtime probe is missing from Preview HTML');
+if (result.recomputeFunctionCount !== 1) throw new Error(`Expected one Three-Star recompute function, found ${result.recomputeFunctionCount}`);
+if (result.minimumAltitudeGuardCount !== 2) throw new Error(`Expected two min-altitude guards, found ${result.minimumAltitudeGuardCount}`);
+if (result.minimumAltitudeReaderCount !== 1) throw new Error(`Expected one min-altitude reader, found ${result.minimumAltitudeReaderCount}`);

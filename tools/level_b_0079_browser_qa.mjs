@@ -11,9 +11,14 @@ const replacements = [
     newText: "document.querySelector('#threeStarComparisonView')",
   },
   {
-    name: 'weekly-start-route',
+    name: 'weekly-start-route-with-current-engine-baseline',
     oldText: "  await page.evaluate(() => { const el = document.querySelector('#weeklyView'); if (el && !el.open) el.querySelector('summary')?.click(); });\n  await waitGlobal(page, 'weeklyResultsFinal === true && Array.isArray(weeklyResults) && weeklyResults.length === 7');",
-    newText: "  await page.evaluate(() => { const el = document.querySelector('#weeklyView'); if (el) el.open = true; });\n  await page.waitForSelector('#calculateWeekly', { state: 'visible', timeout: 60000 });\n  assert(await page.isEnabled('#calculateWeekly'), `${engine}/weekly calculate button did not enable`);\n  await page.click('#calculateWeekly');\n  await waitGlobal(page, \"Array.isArray(weeklyResults) && weeklyResults.length === 7 && weeklyResults.every(row => !row?.pending) && document.querySelector('#calculateWeekly') && !document.querySelector('#calculateWeekly').disabled\");",
+    newText: "  await page.click('#calculate');\n  await waitDailyDone(page);\n  const weeklyBaseline = jsonClone(await globalEval(page, 'threeStarResultData'));\n  assert(weeklyBaseline && weeklyBaseline.calculationEngine === engine, `${engine}/weekly prerequisite Three-Star baseline did not bind current engine`);\n  await page.evaluate(() => { const el = document.querySelector('#weeklyView'); if (el) el.open = true; });\n  await page.waitForSelector('#calculateWeekly', { state: 'visible', timeout: 60000 });\n  assert(await page.isEnabled('#calculateWeekly'), `${engine}/weekly calculate button did not enable after current-engine Three-Star baseline`);\n  await page.click('#calculateWeekly');\n  await waitGlobal(page, \"Array.isArray(weeklyResults) && weeklyResults.length === 7 && weeklyResults.every(row => !row?.pending) && document.querySelector('#calculateWeekly') && !document.querySelector('#calculateWeekly').disabled\");",
+  },
+  {
+    name: 'annual-current-engine-baseline',
+    oldText: "async function runAnnualMonthAndExport(page, engine) {\n  await waitCalculateReady(page);\n  await selectEngine(page, engine);\n  await chooseFeature(page, 'three-star');\n  await page.evaluate(() => {",
+    newText: "async function runAnnualMonthAndExport(page, engine) {\n  await waitCalculateReady(page);\n  await selectEngine(page, engine);\n  await chooseFeature(page, 'three-star');\n  await page.click('#calculate');\n  await waitDailyDone(page);\n  const annualBaseline = jsonClone(await globalEval(page, 'threeStarResultData'));\n  assert(annualBaseline && annualBaseline.calculationEngine === engine, `${engine}/annual prerequisite Three-Star baseline did not bind current engine`);\n  await page.evaluate(() => {",
   },
 ];
 
@@ -31,7 +36,7 @@ for (const replacement of replacements) {
 
 writeFileSync(runtimeUrl, patched);
 try {
-  await import(`${runtimeUrl.href}?runner-fix-v2`);
+  await import(`${runtimeUrl.href}?runner-fix-v3`);
 } finally {
   try { unlinkSync(runtimeUrl); } catch (_) {}
 }

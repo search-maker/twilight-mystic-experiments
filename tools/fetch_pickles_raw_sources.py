@@ -2,12 +2,12 @@
 """Fetch and authenticate official Pickles spectra for MYSTIC-STATE-0080.
 
 The current VizieR metadata service is used for the reviewed Pickles library
-mapping. The legacy CDS raw-file host still serves the original files but now
-presents a self-signed TLS certificate. Those public bytes are therefore never
-trusted on transport alone: every downloaded spectrum is independently checked
-against STScI's HTTPS Pickles atlas before it is admitted. The CDS bytes, not
-the mirror bytes, are written for the private reviewed builder/provenance path.
-No science values are transformed here.
+mapping. The historical CDS raw-file archive is under /pub/cats. Its legacy
+HTTPS service may present an obsolete/self-signed TLS certificate, so those
+public bytes are never trusted on transport alone: every downloaded spectrum
+is independently checked against STScI's HTTPS Pickles atlas before it is
+admitted. The CDS bytes, not the mirror bytes, are written for the private
+reviewed builder/provenance path. No science values are transformed here.
 """
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ from urllib.request import Request, urlopen
 
 COUNT = 131
 LEGACY_CDS_BASES = (
+    "https://cdsarc.u-strasbg.fr/pub/cats/J/PASP/110/863",
+    "http://cdsarc.u-strasbg.fr/pub/cats/J/PASP/110/863",
     "https://cdsarc.u-strasbg.fr/ftp/J/PASP/110/863",
     "https://cdsarc.u-strasbg.fr/ftp/cats/J/PASP/110/863",
 )
@@ -126,9 +128,6 @@ def mirror_equivalence(cds_payload: bytes, stsci_payload: bytes, label: str) -> 
     if cw != sw:
         raise RuntimeError(f"{label}: CDS/STScI wavelength grids differ ({len(cw)} vs {len(sw)})")
 
-    # The archives may use different absolute normalizations. Authenticate the
-    # spectral shape by fitting one positive multiplicative scale over the full
-    # common wavelength grid and bounding the residual relative to peak flux.
     denom = sum(value * value for value in cf)
     if not denom:
         raise RuntimeError(f"{label}: zero CDS spectrum")
@@ -140,9 +139,6 @@ def mirror_equivalence(cds_payload: bytes, stsci_payload: bytes, label: str) -> 
         raise RuntimeError(f"{label}: zero comparison peak")
     max_abs_norm = max(abs(b - scale * a) for a, b in zip(cf, sf)) / peak
     rms_norm = math.sqrt(sum((b - scale * a) ** 2 for a, b in zip(cf, sf)) / len(cf)) / peak
-    # This is a source-authentication guard, not a scientific acceptance budget.
-    # The bound is deliberately tight enough to catch any material shape change
-    # while allowing ASCII formatting/rounding differences between archives.
     if max_abs_norm > 2e-5:
         raise RuntimeError(
             f"{label}: CDS/STScI spectral shape mismatch maxNorm={max_abs_norm:.9g} rmsNorm={rms_norm:.9g}"
@@ -168,10 +164,10 @@ def choose_legacy_base(probe_number: int, probe_name: str) -> tuple[str, dict]:
     failures: list[dict] = []
     for base in LEGACY_CDS_BASES:
         try:
-            payload = fetch(f"{base}/{probe_name}.dat", legacy_cds=True)
+            payload = fetch(f"{base}/{probe_name}.dat", legacy_cds=base.startswith("https://cdsarc.u-strasbg.fr"))
             comparison = mirror_equivalence(payload, mirror, probe_name)
             comparison["mirror"] = f"STScI pickles_uk_{probe_number}.ascii"
-            comparison["legacyTlsCertificateVerified"] = False
+            comparison["legacyTlsCertificateVerified"] = not base.startswith("https://cdsarc.u-strasbg.fr")
             comparison["authenticatedByIndependentMirror"] = True
             return base, comparison
         except Exception as exc:
@@ -196,7 +192,10 @@ def main() -> int:
     hashes: dict[str, str] = {}
     for number in range(1, COUNT + 1):
         name = mapping[number]
-        cds_payload = fetch(f"{base}/{name}.dat", attempts=3, timeout=60, legacy_cds=True)
+        cds_payload = fetch(
+            f"{base}/{name}.dat", attempts=3, timeout=60,
+            legacy_cds=base.startswith("https://cdsarc.u-strasbg.fr")
+        )
         mirror = stsci_payload(number)
         comparison = mirror_equivalence(cds_payload, mirror, name)
         max_norm = max(max_norm, comparison["maxNormalizedDifference"])
@@ -207,7 +206,7 @@ def main() -> int:
 
     result = {
         "selectedLegacyCdsBase": base,
-        "legacyTlsCertificateVerified": False,
+        "legacyTlsCertificateVerified": not base.startswith("https://cdsarc.u-strasbg.fr"),
         "authenticatedByIndependentMirror": "STScI HTTPS Pickles atlas, all 131 spectra",
         "probe": probe,
         "spectrumCount": len(hashes),

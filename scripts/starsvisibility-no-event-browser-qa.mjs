@@ -8,6 +8,7 @@ const viewports = [
   { name: 'no-event-desktop', width: 1440, height: 1000 },
   { name: 'no-event-mobile-390', width: 390, height: 844 },
 ];
+
 const diagnostics = [];
 let failed = false;
 const browser = await chromium.launch({ headless: true });
@@ -42,33 +43,100 @@ async function selectLevelBEquilibrium(page) {
   });
 }
 
-async function maximizeRequiredCount(page) {
+async function setThreeStarCount(page) {
   return page.evaluate(() => {
-    const selects = [...document.querySelectorAll('select')];
-    const candidate = selects.find(select => {
-      const values = [...select.options].map(o => Number(o.value)).filter(Number.isFinite);
-      if (!values.includes(3) || values.length < 2) return false;
-      const context = `${select.id || ''} ${select.name || ''} ${select.parentElement?.textContent || ''}`;
-      return /number of stars|stars required|required count|מספר.*כוכב/i.test(context)
-        || (values.every(value => value >= 2 && value <= 20) && values.length <= 12);
-    });
-    if (!(candidate instanceof HTMLSelectElement)) {
-      return { found: false, selects: selects.map(s => ({ id: s.id, values: [...s.options].map(o => o.value) })) };
+    const select = document.querySelector('#threeStarCount');
+    if (!(select instanceof HTMLSelectElement)) return { found: false };
+    const option = [...select.options].find(o => o.value === '3');
+    if (!option) return { found: false, options: [...select.options].map(o => o.value) };
+    select.value = option.value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return { found: true, value: select.value, options: [...select.options].map(o => o.value) };
+  });
+}
+
+async function setHighMinimumStarAltitude(page) {
+  return page.evaluate(() => {
+    const inputs = [...document.querySelectorAll('input')]
+      .filter(input => input.type !== 'hidden' && input.type !== 'date');
+
+    const describe = input => {
+      const id = input.id || '';
+      const name = input.name || '';
+      const aria = input.getAttribute('aria-label') || '';
+      const labelledBy = input.getAttribute('aria-labelledby') || '';
+      const labelledText = labelledBy
+        ? labelledBy.split(/\s+/).map(idref => document.getElementById(idref)?.textContent || '').join(' ')
+        : '';
+      const label = input.labels ? [...input.labels].map(el => el.textContent || '').join(' ') : '';
+      const parent = input.parentElement?.textContent || '';
+      const grandparent = input.parentElement?.parentElement?.textContent || '';
+      const context = `${id} ${name} ${aria} ${labelledText} ${label} ${parent} ${grandparent}`.replace(/\s+/g, ' ').trim();
+      return { input, id, name, context };
+    };
+
+    const described = inputs.map(describe);
+    const score = ({ id, name, context, input }) => {
+      const key = `${id} ${name}`.toLowerCase();
+      const text = context.toLowerCase();
+      if (/latitude|longitude|\blat\b|\blon\b|\blng\b/.test(key)) return -100;
+      if (/magnitude|mag/.test(key) || /magnitude/.test(text)) return -50;
+      let points = 0;
+      if (/altitude|elevation|alt|minalt|min_alt/.test(key)) points += 25;
+      if (/minimum star altitude|minimum altitude|star altitude|altitude.*star/.test(text)) points += 40;
+      if (/גובה/.test(context) && /כוכב/.test(context)) points += 40;
+      if (/minimum|min/.test(text)) points += 5;
+      if (String(input.value) === '3') points += 3;
+      return points;
+    };
+
+    const ranked = described
+      .map(item => ({ ...item, score: score(item) }))
+      .sort((a, b) => b.score - a.score);
+    const selected = ranked[0];
+    if (!selected || selected.score <= 0) {
+      return {
+        found: false,
+        candidates: ranked.slice(0, 12).map(item => ({
+          id: item.id,
+          name: item.name,
+          value: item.input.value,
+          type: item.input.type,
+          score: item.score,
+          context: item.context.slice(0, 240),
+        })),
+      };
     }
-    const numericOptions = [...candidate.options]
-      .map(o => ({ value: o.value, number: Number(o.value), text: (o.textContent || '').trim() }))
-      .filter(o => Number.isFinite(o.number));
-    const selected = numericOptions.sort((a, b) => b.number - a.number)[0];
-    candidate.value = selected.value;
-    candidate.dispatchEvent(new Event('input', { bubbles: true }));
-    candidate.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const input = selected.input;
+    const before = input.value;
+    const min = input.getAttribute('min');
+    const max = input.getAttribute('max');
+    const step = input.getAttribute('step');
+    const maxNumber = Number(max);
+    const target = Number.isFinite(maxNumber) && max !== '' ? Math.min(89, maxNumber) : 89;
+    const proto = HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor?.set) descriptor.set.call(input, String(target));
+    else input.value = String(target);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
     return {
       found: true,
-      id: candidate.id || null,
-      name: candidate.name || null,
-      selectedValue: candidate.value,
-      selectedNumber: selected.number,
-      options: numericOptions.sort((a, b) => a.number - b.number),
+      id: selected.id,
+      name: selected.name,
+      score: selected.score,
+      before,
+      value: input.value,
+      target,
+      min,
+      max,
+      step,
+      valid: typeof input.checkValidity === 'function' ? input.checkValidity() : null,
+      validationMessage: input.validationMessage || '',
+      context: selected.context.slice(0, 300),
     };
   });
 }
@@ -130,8 +198,8 @@ for (const viewport of viewports) {
   const diag = {
     viewport,
     httpStatus: null,
-    thresholdInput: null,
-    requiredCountControl: null,
+    countControl: null,
+    altitudeControl: null,
     featureHistory: [],
     candidateDiagnosticLine: null,
     candidateCount: null,
@@ -156,28 +224,23 @@ for (const viewport of viewports) {
     await page.locator('#calculatorFeature').waitFor({ state: 'attached', timeout: 20000 });
     await page.locator('#threeStarMagnitudeBasis').waitFor({ state: 'attached', timeout: 10000 });
     await page.locator('#threeStarMagnitudeThreshold').waitFor({ state: 'attached', timeout: 10000 });
+
     await setValue(page, '#calculatorFeature', 'three-star');
     await setValue(page, '#threeStarMagnitudeBasis', 'effective');
-
-    // Keep the probe inside the application's catalog magnitude limit. 6.5 is
-    // the live site's supported catalog ceiling, unlike the rejected value 99.
-    await setValue(page, '#threeStarMagnitudeThreshold', '6.5');
-    diag.thresholdInput = await page.locator('#threeStarMagnitudeThreshold').evaluate(el => ({
-      value: el.value,
-      min: el.getAttribute('min'),
-      max: el.getAttribute('max'),
-      step: el.getAttribute('step'),
-      valid: typeof el.checkValidity === 'function' ? el.checkValidity() : null,
-      validationMessage: el.validationMessage || '',
-    }));
-    diag.requiredCountControl = await maximizeRequiredCount(page);
+    await setValue(page, '#threeStarMagnitudeThreshold', '1.7');
+    diag.countControl = await setThreeStarCount(page);
+    diag.altitudeControl = await setHighMinimumStarAltitude(page);
 
     assert(await selectLevelBEquilibrium(page), 'Level-B equilibrium calculation engine is available and selected');
-    assert(await page.locator('#calculatorFeature').inputValue() === 'three-star', 'Three-Star is selected before forced no-event calculation');
+    assert(await page.locator('#calculatorFeature').inputValue() === 'three-star', 'Three-Star is selected before high-altitude no-event calculation');
     assert(await page.locator('#threeStarMagnitudeBasis').inputValue() === 'effective', 'Effective magnitude basis is selected');
-    assert(Number(await page.locator('#threeStarMagnitudeThreshold').inputValue()) === 6.5, 'No-event threshold is the legal catalog ceiling 6.5');
-    assert(diag.thresholdInput.valid !== false, `Threshold 6.5 passes browser validity (${diag.thresholdInput.validationMessage || 'valid'})`);
-    assert(diag.requiredCountControl.found, 'Number-of-stars control was found');
+    assert(Number(await page.locator('#threeStarMagnitudeThreshold').inputValue()) === 1.7, 'Effective threshold remains 1.7');
+    assert(diag.countControl.found && diag.countControl.value === '3', 'Three-Star required count is 3');
+    assert(diag.altitudeControl.found, 'Minimum star altitude control was found');
+    if (diag.altitudeControl.found) {
+      assert(Number(diag.altitudeControl.value) >= 80, `Minimum star altitude was raised to a legal high value (got ${diag.altitudeControl.value}°)`);
+      assert(diag.altitudeControl.valid !== false, `High altitude input passes browser validity (${diag.altitudeControl.validationMessage || 'valid'})`);
+    }
 
     await installFeatureAudit(page);
     await clickCalculate(page);
@@ -194,10 +257,10 @@ for (const viewport of viewports) {
     diag.candidateDiagnosticLine = candidateLine || null;
     const candidateMatch = candidateLine?.match(/(\d+)/);
     diag.candidateCount = candidateMatch ? Number(candidateMatch[1]) : null;
-    diag.resultExcerpt = lines.filter(line => /Three.?Star|שלושה כוכבים|candidate|מועמד|not found|לא נמצא/i.test(line)).slice(-10).join(' | ');
+    diag.resultExcerpt = lines.filter(line => /Three.?Star|שלושה כוכבים|candidate|מועמד|not found|לא נמצא|altitude|גובה/i.test(line)).slice(-12).join(' | ');
 
     const verifiedEvent = /Three-star time:\s*\d{1,2}:\d{2}\s*[·-]\s*Verified/i.test(body);
-    assert(!verifiedEvent, `Legal faint-star/max-count fixture produces a no-event result (required=${diag.requiredCountControl.selectedNumber})`);
+    assert(!verifiedEvent, `High-altitude fixture produces a no-event result (altitude=${diag.altitudeControl?.value || 'unknown'}°)`);
     assert(Boolean(candidateLine), 'No-event result renders candidate diagnostics');
     assert(Number.isFinite(diag.candidateCount) && diag.candidateCount > 0,
       `No-event diagnostics report a nonzero scanned-candidate count (got ${diag.candidateCount})`);

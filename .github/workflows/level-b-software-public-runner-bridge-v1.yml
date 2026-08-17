@@ -23,6 +23,7 @@ on:
     paths:
       - '.github/workflows/level-b-software-public-runner-bridge-v1.yml'
       - 'tools/level_b_0077_reference_gate.py'
+      - 'tools/extract_pickles_catalog_tar.py'
 
 permissions:
   contents: read
@@ -97,86 +98,28 @@ jobs:
           git -C private-app remote remove origin || true
           echo "Verified exact private application SHA: $actual"
 
-      - name: Download official Pickles source material
+      - name: Download exact official Pickles catalog archives
         if: steps.bind.outputs.phase == 'phase-a-0077'
         shell: bash
         run: |
           set -euo pipefail
-          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
-          file_service='https://cdsarc.cds.unistra.fr/viz-bin/nph-Cat/txt?'
           mkdir -p "$RUNNER_TEMP/pickles98"
-
-          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
-            --data-urlencode '-source=J/PASP/110/863/synphot' \
-            --data-urlencode '-out=num,SpType,LogTe,file' \
-            --data-urlencode '-out.max=unlimited' \
-            --data-urlencode '-out.meta=hu' \
-            --output "$RUNNER_TEMP/pickles98/synphot.dat"
-          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
-            --data-urlencode '-source=VI/135/table6' \
-            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
-            --data-urlencode '-out.max=unlimited' \
-            --data-urlencode '-out.meta=hu' \
-            --output "$RUNNER_TEMP/table6.dat"
-
-          FILE_SERVICE="$file_service" python - <<'PY'
-          from pathlib import Path
-          from urllib.request import urlopen
-          import os, time
-
-          root = Path(os.environ['RUNNER_TEMP']) / 'pickles98'
-          service = os.environ['FILE_SERVICE']
-          lines = (root / 'synphot.dat').read_text(encoding='ascii').splitlines()
-          header = None
-          start = 0
-          for i, raw in enumerate(lines):
-              if raw.startswith('#') or '\t' not in raw:
-                  continue
-              cols = [x.strip() for x in raw.split('\t')]
-              if all(name in cols for name in ('num', 'file')):
-                  header, start = cols, i + 1
-                  break
-          if header is None:
-              raise SystemExit('VizieR synphot TSV header not found')
-          ni, fi = header.index('num'), header.index('file')
-          names = {}
-          for raw in lines[start:]:
-              if not raw.strip() or raw.startswith('#'):
-                  continue
-              cols = [x.strip() for x in raw.split('\t')]
-              if len(cols) != len(header):
-                  continue
-              try:
-                  n = int(cols[ni])
-              except ValueError:
-                  continue
-              if 1 <= n <= 131:
-                  name = cols[fi].removesuffix('.dat')
-                  if not name or n in names:
-                      raise SystemExit(f'invalid/duplicate Pickles file mapping at Lib {n}')
-                  names[n] = name
-          if set(names) != set(range(1, 132)) or len(set(names.values())) != 131:
-              raise SystemExit(f'expected exact Pickles Lib 1..131 mapping, got {len(names)}/{len(set(names.values()))}')
-
-          for n in range(1, 132):
-              name = names[n]
-              url = f'{service}J/PASP/110/863/{name}.dat'
-              last = None
-              for attempt in range(3):
-                  try:
-                      payload = urlopen(url, timeout=60).read()
-                      if payload:
-                          break
-                  except Exception as exc:
-                      last = exc
-                      if attempt < 2:
-                          time.sleep(1 + attempt)
-              else:
-                  raise SystemExit(f'failed Pickles spectrum {name}: {last}')
-              (root / f'{name}.dat').write_bytes(payload)
-          print(f'Fetched {len(names)} exact Pickles spectrum responses')
-          PY
-          sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" "$RUNNER_TEMP/table6.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            'https://cdsarc.cds.unistra.fr/viz-bin/nph-Cat/tar.gz?J/PASP/110/863' \
+            --output "$RUNNER_TEMP/pickles-catalog.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            'https://cdsarc.cds.unistra.fr/viz-bin/nph-Cat/tar.gz?VI/135' \
+            --output "$RUNNER_TEMP/libmags-catalog.tar.gz"
+          python bridge/tools/extract_pickles_catalog_tar.py \
+            --pickles-tar "$RUNNER_TEMP/pickles-catalog.tar.gz" \
+            --libmags-tar "$RUNNER_TEMP/libmags-catalog.tar.gz" \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --table6-output "$RUNNER_TEMP/table6.dat"
+          sha256sum \
+            "$RUNNER_TEMP/pickles-catalog.tar.gz" \
+            "$RUNNER_TEMP/libmags-catalog.tar.gz" \
+            "$RUNNER_TEMP/pickles98/synphot.dat" \
+            "$RUNNER_TEMP/table6.dat"
 
       - name: Set up exact reviewed libRadtran environment
         if: steps.bind.outputs.phase == 'phase-a-0077'
@@ -217,8 +160,12 @@ jobs:
         working-directory: private-app
         run: |
           set -euo pipefail
-          python scientific-tools/visibility-v3/build_pickles_sed_bundle.py --pickles-dir "$RUNNER_TEMP/pickles98" --libmags-table6 "$RUNNER_TEMP/table6.dat" --output "$RUNNER_TEMP/pickles-sed-1nm.json"
-          python scientific-tools/visibility-v3/build_stellar_transport_lut.py --output "$RUNNER_TEMP/stellar-transport-lut.json"
+          python scientific-tools/visibility-v3/build_pickles_sed_bundle.py \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --libmags-table6 "$RUNNER_TEMP/table6.dat" \
+            --output "$RUNNER_TEMP/pickles-sed-1nm.json"
+          python scientific-tools/visibility-v3/build_stellar_transport_lut.py \
+            --output "$RUNNER_TEMP/stellar-transport-lut.json"
           sha256sum "$RUNNER_TEMP/pickles-sed-1nm.json" "$RUNNER_TEMP/stellar-transport-lut.json"
 
       - name: Execute frozen 432-case 0077 Johnson-V reference gate
@@ -226,7 +173,11 @@ jobs:
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
-          python bridge/tools/level_b_0077_reference_gate.py --app-dir private-app --sed-bundle "$RUNNER_TEMP/pickles-sed-1nm.json" --lut "$RUNNER_TEMP/stellar-transport-lut.json" --output "$RUNNER_TEMP/0077-reference-result.json"
+          python bridge/tools/level_b_0077_reference_gate.py \
+            --app-dir private-app \
+            --sed-bundle "$RUNNER_TEMP/pickles-sed-1nm.json" \
+            --lut "$RUNNER_TEMP/stellar-transport-lut.json" \
+            --output "$RUNNER_TEMP/0077-reference-result.json"
           actual_protocol="$(python -c 'import json,os; print(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"0077-reference-result.json")))["protocolSha256"])')"
           expected="${{ steps.bind.outputs.expected_protocol }}"
           if [ -n "$expected" ]; then test "$actual_protocol" = "$expected"; fi

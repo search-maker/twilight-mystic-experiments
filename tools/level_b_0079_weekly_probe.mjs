@@ -66,6 +66,14 @@ async function weeklyState() {
     const version = Number(lexical("typeof weeklyCalculationVersion !== 'undefined' ? weeklyCalculationVersion : NaN"));
     const final = typeof weeklyResultsFinal !== 'undefined' ? weeklyResultsFinal : null;
     const engineOf = row => row?.calculationEngine ?? row?.levelBRunProvenance?.calculationEngine ?? null;
+    const atmosphereUnavailableDates = rows
+      .filter(row => row?.reason === 'LEVEL_B_ATMOSPHERE_UNAVAILABLE')
+      .map(row => ({
+        date: row?.date ?? null,
+        errorCode: row?.errorCode ?? null,
+        errorMessage: row?.errorMessage ?? null,
+        diagnostic: row?.levelBAtmosphereDiagnostic ?? null,
+      }));
     return {
       at: new Date().toISOString(),
       final,
@@ -74,6 +82,7 @@ async function weeklyState() {
       provisional: rows.filter(row => Boolean(row?.provisional)).length,
       verified: rows.filter(row => row && !row.pending && row.provisional === false).length,
       engines: [...new Set(rows.map(engineOf).filter(Boolean))],
+      atmosphereUnavailableDates,
       progressValue: Number(document.querySelector('#weeklyProgressBar')?.value ?? 0),
       progressText: String(document.querySelector('#weeklyProgressText')?.textContent || '').trim().slice(0, 500),
       calculateDisabled: calculate?.disabled ?? null,
@@ -179,7 +188,7 @@ try {
       lastHeartbeatAt = Date.now();
       lastKey = key;
       report.samples.push({ elapsedMs: Date.now() - startedAt, ...next });
-      console.log(JSON.stringify({ weeklyHeartbeat: true, elapsedMs: Date.now() - startedAt, verified: next.verified, pending: next.pending, progressValue: next.progressValue, progressText: next.progressText }));
+      console.log(JSON.stringify({ weeklyHeartbeat: true, elapsedMs: Date.now() - startedAt, verified: next.verified, pending: next.pending, progressValue: next.progressValue, progressText: next.progressText, atmosphereUnavailableDates: next.atmosphereUnavailableDates.map(item => item.date) }));
     }
     state = next;
   }

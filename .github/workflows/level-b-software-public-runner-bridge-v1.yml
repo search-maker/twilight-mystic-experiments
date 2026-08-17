@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      DEFAULT_0077_SHA: 66c9b1bf6b11da2a6d903ff7567c2ac1b1fe9a89
+      DEFAULT_0077_SHA: 7ba8c8e73ff4c06d117ae7016d4c9f30c7d5c855
       EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
       EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
       STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
@@ -97,6 +97,87 @@ jobs:
           git -C private-app remote remove origin || true
           echo "Verified exact private application SHA: $actual"
 
+      - name: Download official Pickles source material
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          file_service='https://cdsarc.cds.unistra.fr/viz-bin/nph-Cat/txt?'
+          mkdir -p "$RUNNER_TEMP/pickles98"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode=-source=J/PASP/110/863/synphot \
+            --data-urlencode=-out=num,SpType,LogTe,file \
+            --data-urlencode=-out.max=unlimited \
+            --data-urlencode=-out.meta=hu \
+            --output "$RUNNER_TEMP/pickles98/synphot.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode=-source=VI/135/table6 \
+            --data-urlencode=-out=Lib,Type,Bmmag,Vcmag \
+            --data-urlencode=-out.max=unlimited \
+            --data-urlencode=-out.meta=hu \
+            --output "$RUNNER_TEMP/table6.dat"
+
+          FILE_SERVICE="$file_service" python - <<'PY'
+          from pathlib import Path
+          from urllib.request import urlopen
+          import os, time
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'pickles98'
+          service = os.environ['FILE_SERVICE']
+          lines = (root / 'synphot.dat').read_text(encoding='ascii').splitlines()
+          header = None
+          start = 0
+          for i, raw in enumerate(lines):
+              if raw.startswith('#') or '\t' not in raw:
+                  continue
+              cols = [x.strip() for x in raw.split('\t')]
+              if all(name in cols for name in ('num', 'file')):
+                  header, start = cols, i + 1
+                  break
+          if header is None:
+              raise SystemExit('VizieR synphot TSV header not found')
+          ni, fi = header.index('num'), header.index('file')
+          names = {}
+          for raw in lines[start:]:
+              if not raw.strip() or raw.startswith('#'):
+                  continue
+              cols = [x.strip() for x in raw.split('\t')]
+              if len(cols) != len(header):
+                  continue
+              try:
+                  n = int(cols[ni])
+              except ValueError:
+                  continue
+              if 1 <= n <= 131:
+                  name = cols[fi].removesuffix('.dat')
+                  if not name or n in names:
+                      raise SystemExit(f'invalid/duplicate Pickles file mapping at Lib {n}')
+                  names[n] = name
+          if set(names) != set(range(1, 132)) or len(set(names.values())) != 131:
+              raise SystemExit(f'expected exact Pickles Lib 1..131 mapping, got {len(names)}/{len(set(names.values()))}')
+
+          for n in range(1, 132):
+              name = names[n]
+              url = f'{service}J/PASP/110/863/{name}.dat'
+              last = None
+              for attempt in range(3):
+                  try:
+                      payload = urlopen(url, timeout=60).read()
+                      if payload:
+                          break
+                  except Exception as exc:
+                      last = exc
+                      if attempt < 2:
+                          time.sleep(1 + attempt)
+              else:
+                  raise SystemExit(f'failed Pickles spectrum {name}: {last}')
+              (root / f'{name}.dat').write_bytes(payload)
+          print(f'Fetched {len(names)} exact Pickles spectrum responses')
+          PY
+          sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" "$RUNNER_TEMP/table6.dat"
+
       - name: Set up exact reviewed libRadtran environment
         if: steps.bind.outputs.phase == 'phase-a-0077'
         uses: mamba-org/setup-micromamba@v2
@@ -129,34 +210,6 @@ jobs:
           echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
           echo "uvspec_sha256=$EXPECTED_UVSPEC_SHA256"
           echo "afglus_sha256=$EXPECTED_AFGLUS_SHA256"
-
-      - name: Download official Pickles source material
-        if: steps.bind.outputs.phase == 'phase-a-0077'
-        shell: bash
-        run: |
-          set -euo pipefail
-          file_service='https://cdsarc.cds.unistra.fr/viz-bin/nph-Cat/txt?'
-          mkdir -p "$RUNNER_TEMP/pickles98"
-          curl --fail --silent --show-error --location --retry 3 --retry-all-errors "${file_service}J/PASP/110/863/synphot.dat" --output "$RUNNER_TEMP/pickles98/synphot.dat"
-          curl --fail --silent --show-error --location --retry 3 --retry-all-errors "${file_service}VI/135/table6.dat" --output "$RUNNER_TEMP/table6.dat"
-          FILE_SERVICE="$file_service" python - <<'PY'
-          from pathlib import Path
-          from urllib.request import urlopen
-          import os
-          root=Path(os.environ['RUNNER_TEMP'])/'pickles98'
-          service=os.environ['FILE_SERVICE']
-          rows=[]
-          for raw in (root/'synphot.dat').read_text(encoding='ascii').splitlines():
-              if not raw.strip() or raw.lstrip().startswith('#'): continue
-              if len(raw) < 162: raise SystemExit('short synphot row')
-              rows.append(raw[156:162].strip())
-          if len(rows)!=131 or len(set(rows))!=131: raise SystemExit(f'expected 131 unique spectra, got {len(rows)}/{len(set(rows))}')
-          for name in rows:
-              payload=urlopen(f'{service}J/PASP/110/863/{name}.dat',timeout=60).read()
-              if not payload: raise SystemExit(f'empty spectrum {name}')
-              (root/f'{name}.dat').write_bytes(payload)
-          PY
-          sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" "$RUNNER_TEMP/table6.dat"
 
       - name: Build empirical SED bundle and 250-spectrum runtime LUT
         if: steps.bind.outputs.phase == 'phase-a-0077'

@@ -1,44 +1,45 @@
 #!/usr/bin/env python3
-"""Fetch official Pickles spectra from a validated CDS raw-file base.
+"""Fetch and authenticate official Pickles spectra for MYSTIC-STATE-0080.
 
-Transport-only helper for MYSTIC-STATE-0080. The helper first reads the
-current official VizieR TSV metadata, then probes candidate CDS archive bases
-with one known Pickles spectrum. A base is admitted only if the returned bytes
-parse as the documented UVILIB wavelength/flux rows and cover the expected
-1150--10620 Angstrom interval. All 131 spectra are then fetched from that same
-base and written byte-for-byte; no science values are transformed here.
+The current VizieR metadata service is used for the reviewed Pickles library
+mapping. The legacy CDS raw-file host still serves the original files but now
+presents a self-signed TLS certificate. Those public bytes are therefore never
+trusted on transport alone: every downloaded spectrum is independently checked
+against STScI's HTTPS Pickles atlas before it is admitted. The CDS bytes, not
+the mirror bytes, are written for the private reviewed builder/provenance path.
+No science values are transformed here.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
+import ssl
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 COUNT = 131
-CANDIDATE_BASES = (
+LEGACY_CDS_BASES = (
     "https://cdsarc.u-strasbg.fr/ftp/J/PASP/110/863",
-    "http://cdsarc.u-strasbg.fr/ftp/J/PASP/110/863",
     "https://cdsarc.u-strasbg.fr/ftp/cats/J/PASP/110/863",
-    "http://cdsarc.u-strasbg.fr/ftp/cats/J/PASP/110/863",
-    "https://cdsarc.cds.unistra.fr/ftp/J/PASP/110/863",
-    "https://cdsarc.cds.unistra.fr/ftp/cats/J/PASP/110/863",
 )
+STSCI_BASE = "https://ssb.stsci.edu/cdbs/deliveries/etc/trds.24.3xxxx/grid/pickles/dat_uvk"
 
 
 def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def fetch(url: str, *, attempts: int = 2, timeout: int = 45) -> bytes:
+def fetch(url: str, *, attempts: int = 2, timeout: int = 45, legacy_cds: bool = False) -> bytes:
     last: Exception | None = None
+    context = ssl._create_unverified_context() if legacy_cds else ssl.create_default_context()
     for attempt in range(attempts):
         try:
             request = Request(url, headers={"User-Agent": "MYSTIC-STATE-0080-Public-Runner/1.0"})
-            with urlopen(request, timeout=timeout) as response:
+            with urlopen(request, timeout=timeout, context=context) as response:
                 payload = response.read()
             if not payload:
                 raise RuntimeError("empty response")
@@ -87,12 +88,13 @@ def parse_tsv_file_map(path: Path) -> dict[int, str]:
     return rows
 
 
-def validate_raw_spectrum(payload: bytes, label: str) -> tuple[int, float, float]:
+def numeric_spectrum(payload: bytes, label: str) -> tuple[list[float], list[float]]:
     try:
         lines = payload.decode("ascii").splitlines()
     except UnicodeDecodeError as exc:
         raise RuntimeError(f"{label}: response is not ASCII") from exc
     wavelength: list[float] = []
+    flux: list[float] = []
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -105,30 +107,76 @@ def validate_raw_spectrum(payload: bytes, label: str) -> tuple[int, float, float
             f = float(parts[1])
         except ValueError:
             continue
-        if not (1000.0 <= w <= 30000.0) or f < 0:
+        if not (1000.0 <= w <= 30000.0) or not math.isfinite(f) or f < 0:
             continue
         if wavelength and w <= wavelength[-1]:
             raise RuntimeError(f"{label}: non-increasing wavelength rows")
         wavelength.append(w)
+        flux.append(f)
     if len(wavelength) < 1000:
         raise RuntimeError(f"{label}: only {len(wavelength)} numeric spectral rows")
     if abs(wavelength[0] - 1150.0) > 1e-9 or wavelength[-1] < 10620.0 - 1e-9:
         raise RuntimeError(f"{label}: unexpected coverage {wavelength[0]}..{wavelength[-1]} Angstrom")
-    return len(wavelength), wavelength[0], wavelength[-1]
+    return wavelength, flux
 
 
-def choose_base(probe_name: str) -> tuple[str, dict]:
+def mirror_equivalence(cds_payload: bytes, stsci_payload: bytes, label: str) -> dict:
+    cw, cf = numeric_spectrum(cds_payload, f"CDS {label}")
+    sw, sf = numeric_spectrum(stsci_payload, f"STScI {label}")
+    if cw != sw:
+        raise RuntimeError(f"{label}: CDS/STScI wavelength grids differ ({len(cw)} vs {len(sw)})")
+
+    # The archives may use different absolute normalizations. Authenticate the
+    # spectral shape by fitting one positive multiplicative scale over the full
+    # common wavelength grid and bounding the residual relative to peak flux.
+    denom = sum(value * value for value in cf)
+    if not denom:
+        raise RuntimeError(f"{label}: zero CDS spectrum")
+    scale = sum(a * b for a, b in zip(cf, sf)) / denom
+    if not math.isfinite(scale) or scale <= 0:
+        raise RuntimeError(f"{label}: invalid CDS/STScI scale {scale}")
+    peak = max(max(sf), abs(scale) * max(cf))
+    if not peak > 0:
+        raise RuntimeError(f"{label}: zero comparison peak")
+    max_abs_norm = max(abs(b - scale * a) for a, b in zip(cf, sf)) / peak
+    rms_norm = math.sqrt(sum((b - scale * a) ** 2 for a, b in zip(cf, sf)) / len(cf)) / peak
+    # This is a source-authentication guard, not a scientific acceptance budget.
+    # The bound is deliberately tight enough to catch any material shape change
+    # while allowing ASCII formatting/rounding differences between archives.
+    if max_abs_norm > 2e-5:
+        raise RuntimeError(
+            f"{label}: CDS/STScI spectral shape mismatch maxNorm={max_abs_norm:.9g} rmsNorm={rms_norm:.9g}"
+        )
+    return {
+        "rowCount": len(cw),
+        "firstAngstrom": cw[0],
+        "lastAngstrom": cw[-1],
+        "scale": scale,
+        "maxNormalizedDifference": max_abs_norm,
+        "rmsNormalizedDifference": rms_norm,
+        "cdsSha256": sha256_bytes(cds_payload),
+        "stsciSha256": sha256_bytes(stsci_payload),
+    }
+
+
+def stsci_payload(number: int) -> bytes:
+    return fetch(f"{STSCI_BASE}/pickles_uk_{number}.ascii", attempts=3, timeout=60)
+
+
+def choose_legacy_base(probe_number: int, probe_name: str) -> tuple[str, dict]:
+    mirror = stsci_payload(probe_number)
     failures: list[dict] = []
-    for base in CANDIDATE_BASES:
-        url = f"{base}/{probe_name}.dat"
+    for base in LEGACY_CDS_BASES:
         try:
-            payload = fetch(url)
-            rows, lo, hi = validate_raw_spectrum(payload, probe_name)
-            return base, {"probe": probe_name, "rowCount": rows, "firstAngstrom": lo,
-                          "lastAngstrom": hi, "sha256": sha256_bytes(payload)}
+            payload = fetch(f"{base}/{probe_name}.dat", legacy_cds=True)
+            comparison = mirror_equivalence(payload, mirror, probe_name)
+            comparison["mirror"] = f"STScI pickles_uk_{probe_number}.ascii"
+            comparison["legacyTlsCertificateVerified"] = False
+            comparison["authenticatedByIndependentMirror"] = True
+            return base, comparison
         except Exception as exc:
-            failures.append({"base": base, "error": str(exc)[:300]})
-    raise RuntimeError("no candidate CDS raw-file base returned a valid Pickles spectrum: " + json.dumps(failures))
+            failures.append({"base": base, "error": str(exc)[:500]})
+    raise RuntimeError("no legacy CDS base passed STScI mirror authentication: " + json.dumps(failures))
 
 
 def main() -> int:
@@ -138,24 +186,34 @@ def main() -> int:
     args = parser.parse_args()
 
     mapping = parse_tsv_file_map(args.synphot_tsv)
-    probe_name = mapping[1]
-    base, probe = choose_base(probe_name)
+    probe_number = 1
+    probe_name = mapping[probe_number]
+    base, probe = choose_legacy_base(probe_number, probe_name)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    max_norm = 0.0
+    max_rms = 0.0
     hashes: dict[str, str] = {}
     for number in range(1, COUNT + 1):
         name = mapping[number]
-        payload = fetch(f"{base}/{name}.dat", attempts=3, timeout=60)
-        validate_raw_spectrum(payload, name)
+        cds_payload = fetch(f"{base}/{name}.dat", attempts=3, timeout=60, legacy_cds=True)
+        mirror = stsci_payload(number)
+        comparison = mirror_equivalence(cds_payload, mirror, name)
+        max_norm = max(max_norm, comparison["maxNormalizedDifference"])
+        max_rms = max(max_rms, comparison["rmsNormalizedDifference"])
         path = args.output_dir / f"{name}.dat"
-        path.write_bytes(payload)
-        hashes[path.name] = sha256_bytes(payload)
+        path.write_bytes(cds_payload)
+        hashes[path.name] = sha256_bytes(cds_payload)
 
     result = {
-        "selectedBase": base,
+        "selectedLegacyCdsBase": base,
+        "legacyTlsCertificateVerified": False,
+        "authenticatedByIndependentMirror": "STScI HTTPS Pickles atlas, all 131 spectra",
         "probe": probe,
         "spectrumCount": len(hashes),
-        "uniqueHashes": len(set(hashes.values())),
+        "uniqueCdsHashes": len(set(hashes.values())),
+        "maxNormalizedMirrorDifference": max_norm,
+        "maxRmsNormalizedMirrorDifference": max_rms,
         "firstFile": f"{mapping[1]}.dat",
         "lastFile": f"{mapping[COUNT]}.dat",
     }

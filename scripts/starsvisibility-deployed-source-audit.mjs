@@ -17,21 +17,19 @@ function allIndices(needle) {
 function functionSlices(name, maxBytes = 9000) {
   const out = [];
   for (const prefix of [`async function ${name}`, `function ${name}`]) {
-    for (const index of allIndices(prefix)) {
-      out.push({ prefix, index, source: html.slice(index, Math.min(html.length, index + maxBytes)) });
-    }
+    for (const index of allIndices(prefix)) out.push({ prefix, index, source: html.slice(index, Math.min(html.length, index + maxBytes)) });
   }
   return out.sort((a, b) => a.index - b.index);
 }
-function functionSlice(name, maxBytes = 22000) {
-  return functionSlices(name, maxBytes)[0]?.source ?? null;
-}
+function functionSlice(name, maxBytes = 22000) { return functionSlices(name, maxBytes)[0]?.source ?? null; }
 function around(needle, before = 700, after = 2200) {
   const index = html.indexOf(needle);
   if (index < 0) return null;
   return html.slice(Math.max(0, index - before), Math.min(html.length, index + needle.length + after));
 }
 
+const failureTimeAnchor = '          date: input.date, timeZone: input.timeZone, eventTime: null, sunsetTime: sunsetMs, requiredCount,';
+const successTimeAnchor = '        eventTime: event.eventTimeMs, sunsetTime: sunsetMs, minutesAfterSunset: (event.eventTimeMs - sunsetMs) / 60000,';
 const audit = {
   url: response.url,
   bytes: html.length,
@@ -44,6 +42,8 @@ const audit = {
     calculateButtonBindings: allIndices('$("calculate").addEventListener("click", calculate)').length,
     scaffoldDefinitions: allIndices('async function __levelBSitewideRunUsingLegacyScaffold').length,
     catalogOnlyMarkers: allIndices('__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__').length,
+    resultShapeFailureAnchor: allIndices(failureTimeAnchor).length,
+    resultShapeSuccessAnchor: allIndices(successTimeAnchor).length,
   },
   calculateFunctions: functionSlices('calculate', 7000),
   levelBScaffold: functionSlice('__levelBSitewideRunUsingLegacyScaffold', 9000),
@@ -51,8 +51,10 @@ const audit = {
   catalogOnlyHook: around('LEVEL-B-THREE-STAR-DIRECT-CATALOG-HOOK-V2', 1000, 1800),
   createReusableCalculationWorker: functionSlice('createReusableCalculationWorker', 12000),
   calculateInWorker: functionSlice('calculateInWorker', 8000),
-  calculateButtonBinding: around('$("calculate").addEventListener("click", calculate)', 1000, 1600),
-  appScriptSource: around('const APP_SCRIPT_SOURCE = document.currentScript?.textContent || "";', 1200, 1600),
-  sitewideDispatch: around('const __sitewideEngineMode = __levelBSitewideEngineMode();', 1800, 2200),
+  resultShapeFailureAnchor: around(failureTimeAnchor, 400, 600),
+  resultShapeSuccessAnchor: around(successTimeAnchor, 400, 600),
 };
 console.log(JSON.stringify(audit, null, 2));
+if (audit.counts.resultShapeFailureAnchor !== 1 || audit.counts.resultShapeSuccessAnchor !== 1) {
+  throw new Error(`Result-shape patch anchors are not unique: failure=${audit.counts.resultShapeFailureAnchor}, success=${audit.counts.resultShapeSuccessAnchor}`);
+}

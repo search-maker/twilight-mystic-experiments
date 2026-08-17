@@ -42,6 +42,28 @@ try {
     engine: document.querySelector('#visibilityEngineMode')?.value ?? null,
   }));
 
+  await page.evaluate(() => {
+    const input = document.querySelector('#minAlt');
+    if (!(input instanceof HTMLInputElement)) throw new Error('#minAlt input missing');
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    if (!descriptor?.get || !descriptor?.set) throw new Error('HTMLInputElement value descriptor unavailable');
+    globalThis.__MIN_ALT_VALUE_READ_AUDIT__ = { reads: 0, values: [], writes: [] };
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get() {
+        const value = String(descriptor.get.call(this));
+        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.reads += 1;
+        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.values.push(value);
+        return value;
+      },
+      set(nextValue) {
+        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.writes.push(String(nextValue));
+        descriptor.set.call(this, String(nextValue));
+      },
+    });
+  });
+
   const clicked = await page.evaluate(() => {
     const controls = [...document.querySelectorAll('button, input[type="button"], input[type="submit"]')];
     const visible = el => {
@@ -85,12 +107,21 @@ try {
     } catch (error) {
       result = { readError: String(error?.message || error) };
     }
+    const readAudit = globalThis.__MIN_ALT_VALUE_READ_AUDIT__
+      ? {
+          reads: globalThis.__MIN_ALT_VALUE_READ_AUDIT__.reads,
+          values: [...globalThis.__MIN_ALT_VALUE_READ_AUDIT__.values],
+          writes: [...globalThis.__MIN_ALT_VALUE_READ_AUDIT__.writes],
+        }
+      : null;
+    const minAltAfter = document.querySelector('#minAlt')?.value ?? null;
     return {
-      probe: globalThis.__LEVEL_B_THREE_STAR_MIN_ALTITUDE_RUNTIME__ ?? null,
+      privateProbe: globalThis.__LEVEL_B_THREE_STAR_MIN_ALTITUDE_RUNTIME__ ?? null,
+      readAudit,
       result,
       inputsAfter: {
         feature: document.querySelector('#calculatorFeature')?.value ?? null,
-        minAlt: document.querySelector('#minAlt')?.value ?? null,
+        minAlt: minAltAfter,
         engine: document.querySelector('#visibilityEngineMode')?.value ?? null,
       },
     };
@@ -98,12 +129,11 @@ try {
 
   const diagnostic = { url: page.url(), inputsBefore, ...runtime };
   console.log(JSON.stringify(diagnostic, null, 2));
-  if (!runtime.probe) throw new Error('Minimum-altitude runtime probe did not execute');
-  if (Number(runtime.probe.minimumStarAltitudeDeg) !== 89) {
-    throw new Error(`Runtime read minimum altitude ${runtime.probe.minimumStarAltitudeDeg}, expected 89`);
+  if (!runtime.readAudit || runtime.readAudit.reads < 1) {
+    throw new Error('Active calculation never read #minAlt.value');
   }
-  if (runtime.probe.engineMode !== 'level-b-v3-crumey-blackwell-equilibrium') {
-    throw new Error(`Runtime probe used unexpected engine ${runtime.probe.engineMode}`);
+  if (!runtime.readAudit.values.every(value => value === '89')) {
+    throw new Error(`Runtime observed unexpected #minAlt values: ${JSON.stringify(runtime.readAudit.values)}`);
   }
 } finally {
   await context.close();

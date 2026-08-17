@@ -1,0 +1,285 @@
+name: Level-B stellar v2 capture exact assets and revalidate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-stellar-v2-capture-assets.yml'
+      - 'tools/level_b_0081_reference_gate.py'
+      - 'tools/fetch_pickles_raw_sources.py'
+  workflow_dispatch:
+
+jobs:
+  capture:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      APPLICATION_SHA: b88821df557b379935898c682772ed313357bf9f
+      EXPECTED_PROTOCOL_SHA256: aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef
+      ORIGINAL_PASS_SED_SHA256: 379f390bddb3f873b3b8cf336776c2bf9b0180b5e7924a8fdca4649bf835438f
+      ORIGINAL_PASS_SYNPHOT_RAW_SHA256: 42d6c9450169b144fd23907ef5829e15363d8961db10786d00e251a729e3e29d
+      ORIGINAL_PASS_TABLE6_RAW_SHA256: 0378ac9e984e1886577babe5262d88fb756df011e0bb2fc4ca0a66e8ed85fe2b
+      EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Require read-only private checkout credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          echo "Exact private science SHA: $APPLICATION_SHA"
+
+      - name: Checkout clean public gate source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact passing private science commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private SHA/protocol and sanitize remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+          protocol='private-app/scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V2.md'
+          test "$(sha256sum "$protocol" | awk '{print $1}')" = "$EXPECTED_PROTOCOL_SHA256"
+
+      - name: Fetch current authoritative Pickles source bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          mkdir -p "$RUNNER_TEMP/pickles98" "$RUNNER_TEMP/capture"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=J/PASP/110/863/synphot' \
+            --data-urlencode '-out=num,SpType,LogTe,file' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/pickles98/synphot.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=VI/135/table6' \
+            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/table6.dat"
+          python tools/fetch_pickles_raw_sources.py \
+            --synphot-tsv "$RUNNER_TEMP/pickles98/synphot.dat" \
+            --output-dir "$RUNNER_TEMP/pickles98"
+          echo "CURRENT_SYNPHOT_RAW_SHA256=$(sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "CURRENT_TABLE6_RAW_SHA256=$(sha256sum "$RUNNER_TEMP/table6.dat" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Set up exact reviewed libRadtran environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: stellar-ref
+          create-args: >-
+            python=3.12
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          init-shell: bash
+          cache-environment: false
+
+      - name: Verify exact libRadtran and AFGLUS identities
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uvspec="$(command -v uvspec)"
+          test "$(sha256sum "$uvspec" | awk '{print $1}')" = "$EXPECTED_UVSPEC_SHA256"
+          data_dir="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data dir not found')
+          PY
+          )"
+          test "$(sha256sum "$data_dir/atmmod/afglus.dat" | awk '{print $1}')" = "$EXPECTED_AFGLUS_SHA256"
+          echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
+          echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
+
+      - name: Build capture SED and prove parsed science matches original PASS
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python private-app/scientific-tools/visibility-v3/build_pickles_sed_bundle.py \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --libmags-table6 "$RUNNER_TEMP/table6.dat" \
+            --output "$RUNNER_TEMP/capture/pickles-sed-1nm.json"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'capture'/'pickles-sed-1nm.json'
+          j=json.loads(p.read_text())
+          if len(j['templates']) != 131 or j['wavelengthNm'] != list(range(380,781)):
+              raise SystemExit('capture SED shape/grid mismatch')
+          source_hashes=j['provenance']['pickles1998']['sourceSpectrumSha256']
+          if len(source_hashes) != 131:
+              raise SystemExit('capture SED source-spectrum count mismatch')
+          j['provenance']['pickles1998']['synphotSha256']=os.environ['ORIGINAL_PASS_SYNPHOT_RAW_SHA256']
+          j['provenance']['picklesDepagne2010']['table6Sha256']=os.environ['ORIGINAL_PASS_TABLE6_RAW_SHA256']
+          normalized=(json.dumps(j,indent=2,sort_keys=True)+'\n').encode()
+          normalized_sha=hashlib.sha256(normalized).hexdigest()
+          if normalized_sha != os.environ['ORIGINAL_PASS_SED_SHA256']:
+              raise SystemExit('capture SED parsed science differs from original PASS after removing volatile raw-response provenance')
+          actual=hashlib.sha256(p.read_bytes()).hexdigest()
+          print(json.dumps({'captureSedSha256':actual,'normalizedOriginalPassSedSha256':normalized_sha,'parsedScienceMatchesOriginalPass':True},sort_keys=True))
+          PY
+
+      - name: Build exact preregistered 675-spectrum LUT and verify identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python private-app/scientific-tools/visibility-v3/build_stellar_transport_lut.py \
+            --output "$RUNNER_TEMP/capture/stellar-transport-v2-lut.json"
+          actual="$(sha256sum "$RUNNER_TEMP/capture/stellar-transport-v2-lut.json" | awk '{print $1}')"
+          echo "LUT_SHA256=$actual" >> "$GITHUB_ENV"
+          test "$actual" = "$EXPECTED_LUT_SHA256"
+
+      - name: Re-run frozen 576-case gate on exact captured assets
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python tools/level_b_0081_reference_gate.py \
+            --app-dir private-app \
+            --sed-bundle "$RUNNER_TEMP/capture/pickles-sed-1nm.json" \
+            --lut "$RUNNER_TEMP/capture/stellar-transport-v2-lut.json" \
+            --output "$RUNNER_TEMP/capture/0081-capture-gate-result.json"
+
+      - name: Seal public-safe capture manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'capture'
+          sed_sha=hashlib.sha256((root/'pickles-sed-1nm.json').read_bytes()).hexdigest()
+          lut_sha=hashlib.sha256((root/'stellar-transport-v2-lut.json').read_bytes()).hexdigest()
+          result=json.loads((root/'0081-capture-gate-result.json').read_text())
+          if result['pass'] is not True or result['caseCount'] != 576 or result['atmosphericCaseCount'] != 192:
+              raise SystemExit('capture gate result is not the complete PASS')
+          if result['protocolSha256'] != os.environ['EXPECTED_PROTOCOL_SHA256']:
+              raise SystemExit('capture gate protocol mismatch')
+          if result['hashes']['sedBundleSha256'] != sed_sha or result['hashes']['lutSha256'] != lut_sha:
+              raise SystemExit('capture result asset-hash mismatch')
+          manifest={
+              'schemaVersion':1,
+              'mysticState':'MYSTIC-STATE-0081',
+              'sourceScienceApplicationSha':os.environ['APPLICATION_SHA'],
+              'captureRunId':os.environ['GITHUB_RUN_ID'],
+              'protocolSha256':os.environ['EXPECTED_PROTOCOL_SHA256'],
+              'sedBundleSha256':sed_sha,
+              'spectralRuntimeSha256':lut_sha,
+              'originalPassSedSha256':os.environ['ORIGINAL_PASS_SED_SHA256'],
+              'parsedScienceMatchesOriginalPassAfterRemovingVolatileRawResponseHashes':True,
+              'captureSynphotRawSha256':os.environ['CURRENT_SYNPHOT_RAW_SHA256'],
+              'captureTable6RawSha256':os.environ['CURRENT_TABLE6_RAW_SHA256'],
+              'uvspecSha256':os.environ['EXPECTED_UVSPEC_SHA256'],
+              'afglusSha256':os.environ['EXPECTED_AFGLUS_SHA256'],
+              'gate':{
+                  'caseCount':result['caseCount'],
+                  'atmosphericCaseCount':result['atmosphericCaseCount'],
+                  'maxAbsDeltaAvMag':result['statistics']['maxAbsDeltaAvMag'],
+                  'rmsDeltaAvMag':result['statistics']['rmsDeltaAvMag'],
+                  'maxLimit':result['limits']['maxAbsDeltaAvMag'],
+                  'rmsLimit':result['limits']['rmsDeltaAvMag'],
+                  'pass':result['pass'],
+              },
+              'claimBoundary':'computational-direct-transport-software-asset-only-not-empirical-validation',
+          }
+          (root/'0081-capture-manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(manifest,sort_keys=True))
+          PY
+
+      - name: Upload exact captured public-science assets and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-stellar-v2-capture-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/capture/pickles-sed-1nm.json
+            ${{ runner.temp }}/capture/stellar-transport-v2-lut.json
+            ${{ runner.temp }}/capture/0081-capture-gate-result.json
+            ${{ runner.temp }}/capture/0081-capture-manifest.json
+
+  publish:
+    needs: capture
+    if: needs.capture.result == 'success' && github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download exact capture artifact from this workflow run
+        uses: actions/download-artifact@v4
+        with:
+          name: level-b-stellar-v2-capture-${{ github.run_id }}
+          path: ${{ runner.temp }}/capture
+
+      - name: Independently verify publishable evidence
+        shell: bash
+        env:
+          EXPECTED_PROTOCOL_SHA256: aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef
+          EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'capture'
+          manifest=json.loads((root/'0081-capture-manifest.json').read_text())
+          result=json.loads((root/'0081-capture-gate-result.json').read_text())
+          sed_sha=hashlib.sha256((root/'pickles-sed-1nm.json').read_bytes()).hexdigest()
+          lut_sha=hashlib.sha256((root/'stellar-transport-v2-lut.json').read_bytes()).hexdigest()
+          assert manifest['mysticState']=='MYSTIC-STATE-0081'
+          assert manifest['captureRunId']==os.environ['GITHUB_RUN_ID']
+          assert manifest['protocolSha256']==os.environ['EXPECTED_PROTOCOL_SHA256']
+          assert manifest['spectralRuntimeSha256']==lut_sha==os.environ['EXPECTED_LUT_SHA256']
+          assert manifest['sedBundleSha256']==sed_sha
+          assert manifest['parsedScienceMatchesOriginalPassAfterRemovingVolatileRawResponseHashes'] is True
+          assert result['pass'] is True and result['caseCount']==576 and result['atmosphericCaseCount']==192
+          assert result['statistics']['maxAbsDeltaAvMag'] <= 0.025
+          assert result['statistics']['rmsDeltaAvMag'] <= 0.010
+          assert result['hashes']['sedBundleSha256']==sed_sha
+          assert result['hashes']['lutSha256']==lut_sha
+          print(json.dumps({'publishSedSha256':sed_sha,'publishLutSha256':lut_sha,'gateMax':result['statistics']['maxAbsDeltaAvMag'],'gateRms':result['statistics']['rmsDeltaAvMag']},sort_keys=True))
+          PY
+
+      - name: Checkout clean public promotion branch for asset commit
+        uses: actions/checkout@v4
+        with:
+          ref: execution/level-b-stellar-v2-promotion-clean
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Commit only verified public-science assets/evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p generated/level-b-stellar-v2
+          cp "$RUNNER_TEMP/capture/pickles-sed-1nm.json" generated/level-b-stellar-v2/pickles-sed-1nm.json
+          cp "$RUNNER_TEMP/capture/stellar-transport-v2-lut.json" generated/level-b-stellar-v2/stellar-transport-v2-lut.json
+          cp "$RUNNER_TEMP/capture/0081-capture-gate-result.json" generated/level-b-stellar-v2/0081-capture-gate-result.json
+          cp "$RUNNER_TEMP/capture/0081-capture-manifest.json" generated/level-b-stellar-v2/0081-capture-manifest.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add generated/level-b-stellar-v2
+          git diff --cached --stat
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'Publish validated MYSTIC-STATE-0081 stellar v2 assets'
+          git push origin HEAD:execution/level-b-stellar-v2-promotion-clean

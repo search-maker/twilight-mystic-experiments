@@ -15,10 +15,10 @@ const diagnostics = [];
 let failed = false;
 const browser = await chromium.launch({ headless: true });
 
-async function setControlValue(page, selector, value) {
+async function setValue(page, selector, value) {
   const locator = page.locator(selector);
-  const tagName = await locator.evaluate(el => el.tagName);
-  if (tagName === 'SELECT') {
+  const tag = await locator.evaluate(el => el.tagName);
+  if (tag === 'SELECT') {
     await locator.selectOption(String(value));
     return;
   }
@@ -34,62 +34,46 @@ async function setControlValue(page, selector, value) {
   }, value);
 }
 
-async function setStableInputs(page) {
-  await page.evaluate(() => {
-    const setValue = (el, value) => {
-      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
-      const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (descriptor?.set) descriptor.set.call(el, String(value));
-      else el.value = String(value);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-
-    const findInput = hints => [...document.querySelectorAll('input')].find(el => {
-      const hay = `${el.id} ${el.name} ${el.getAttribute('aria-label') || ''} ${el.closest('label')?.textContent || ''}`.toLowerCase();
-      return hints.some(h => hay.includes(h));
-    });
-
-    const lat = findInput(['latitude', 'lat', 'רוחב']);
-    const lon = findInput(['longitude', 'lon', 'lng', 'אורך']);
-    if (lat) setValue(lat, 31.778);
-    if (lon) setValue(lon, 35.235);
-
-    const date = document.querySelector('input[type="date"]');
-    if (date) setValue(date, '2026-08-17');
+async function chooseLevelBEngine(page) {
+  return page.evaluate(() => {
+    const select = document.querySelector('#visibilityEngineMode');
+    if (!(select instanceof HTMLSelectElement)) return { found: false, reason: 'visibilityEngineMode select missing' };
+    const options = [...select.options].map(o => ({ value: o.value, text: (o.textContent || '').trim() }));
+    const option = options.find(o => /level-b-v3-crumey-blackwell-equilibrium/i.test(o.value))
+      || options.find(o => /level\s*-?\s*b|mystic|sitewide|stellar\s+transport/i.test(`${o.value} ${o.text}`));
+    if (!option) return { found: false, options };
+    select.value = option.value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return { found: true, value: select.value, text: option.text, options };
   });
 }
 
-async function chooseLevelBEngine(page) {
-  return page.evaluate(() => {
-    const levelBPattern = /mystic|level\s*-?\s*b|level_b|sitewide|stellar\s+transport/i;
-    const allSelects = [...document.querySelectorAll('select')];
-    for (const select of allSelects) {
-      const options = [...select.options];
-      const option = options.find(o => levelBPattern.test(`${o.value} ${o.textContent || ''}`));
-      if (!option) continue;
-      select.value = option.value;
-      select.dispatchEvent(new Event('input', { bubbles: true }));
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return {
-        found: true,
-        id: select.id || null,
-        name: select.name || null,
-        value: select.value,
-        text: (option.textContent || '').trim(),
-        options: options.map(o => ({ value: o.value, text: (o.textContent || '').trim() })),
-      };
-    }
-    return {
-      found: false,
-      selects: allSelects.map(select => ({
-        id: select.id || null,
-        name: select.name || null,
-        value: select.value,
-        options: [...select.options].map(o => ({ value: o.value, text: (o.textContent || '').trim() })),
-      })),
-    };
+async function installFeatureValueAudit(page) {
+  await page.evaluate(() => {
+    const feature = document.querySelector('#calculatorFeature');
+    if (!feature) throw new Error('#calculatorFeature missing');
+    const proto = feature instanceof HTMLInputElement ? HTMLInputElement.prototype
+      : feature instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+      : HTMLElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (!descriptor?.get || !descriptor?.set) throw new Error('calculatorFeature value descriptor unavailable');
+    globalThis.__starsVisibilityQaFeatureHistory = [String(descriptor.get.call(feature))];
+    Object.defineProperty(feature, 'value', {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get() { return descriptor.get.call(this); },
+      set(nextValue) {
+        const value = String(nextValue);
+        globalThis.__starsVisibilityQaFeatureHistory.push(value);
+        descriptor.set.call(this, value);
+      },
+    });
   });
+}
+
+async function readFeatureValueAudit(page) {
+  return page.evaluate(() => [...(globalThis.__starsVisibilityQaFeatureHistory || [])]);
 }
 
 async function triggerCalculation(page) {
@@ -111,15 +95,8 @@ async function triggerCalculation(page) {
     control.click();
     return true;
   });
-  if (clicked) return 'visible-control';
-
-  const called = await page.evaluate(async () => {
-    if (typeof globalThis.calculate !== 'function') return false;
-    await globalThis.calculate();
-    return true;
-  });
-  if (called) return 'globalThis.calculate';
-  throw new Error('Could not find a visible calculation control or global calculate() function');
+  if (!clicked) throw new Error('Could not find a visible calculation control');
+  return 'visible-control';
 }
 
 for (const viewport of viewports) {
@@ -174,13 +151,16 @@ for (const viewport of viewports) {
     await page.locator('#threeStarMagnitudeBasis').waitFor({ state: 'attached', timeout: 10000 });
     await page.locator('#threeStarMagnitudeThreshold').waitFor({ state: 'attached', timeout: 10000 });
 
+    // Do not mutate latitude/longitude heuristically. The public fixture already
+    // supplies stable Jerusalem inputs; touching unrelated inputs can corrupt the
+    // hidden feature control and would test the harness rather than the product.
     diag.featureTag = await page.locator('#calculatorFeature').evaluate(el => el.tagName.toLowerCase());
-    await setControlValue(page, '#calculatorFeature', 'three-star');
-    await setControlValue(page, '#threeStarMagnitudeBasis', 'effective');
-    await setControlValue(page, '#threeStarMagnitudeThreshold', '1.7');
-    await setStableInputs(page);
+    await setValue(page, '#calculatorFeature', 'three-star');
+    await setValue(page, '#threeStarMagnitudeBasis', 'effective');
+    await setValue(page, '#threeStarMagnitudeThreshold', '1.7');
+
     diag.engineSelection = await chooseLevelBEngine(page);
-    assert(diag.engineSelection.found, 'A public MYSTIC/Level-B calculation engine option is available and selected');
+    assert(diag.engineSelection.found, 'Level-B equilibrium calculation engine is available and selected');
 
     diag.feature = await page.locator('#calculatorFeature').inputValue();
     diag.magnitudeBasis = await page.locator('#threeStarMagnitudeBasis').inputValue();
@@ -189,25 +169,10 @@ for (const viewport of viewports) {
     assert(diag.magnitudeBasis === 'effective', `Effective magnitude basis remains selected (got ${diag.magnitudeBasis})`);
     assert(Number(diag.magnitudeThreshold) === 1.7, `Magnitude threshold is 1.7 (got ${diag.magnitudeThreshold})`);
 
-    await page.evaluate(() => {
-      const feature = document.querySelector('#calculatorFeature');
-      globalThis.__starsVisibilityQaFeatureHistory = [feature?.value ?? null];
-      globalThis.__starsVisibilityQaFeatureTimer = setInterval(() => {
-        const value = document.querySelector('#calculatorFeature')?.value ?? null;
-        const history = globalThis.__starsVisibilityQaFeatureHistory;
-        if (history[history.length - 1] !== value) history.push(value);
-      }, 5);
-    });
-
+    await installFeatureValueAudit(page);
     diag.trigger = await triggerCalculation(page);
     await page.waitForTimeout(8000);
-    diag.featureHistoryDuringCalculation = await page.evaluate(() => {
-      clearInterval(globalThis.__starsVisibilityQaFeatureTimer);
-      delete globalThis.__starsVisibilityQaFeatureTimer;
-      const history = [...(globalThis.__starsVisibilityQaFeatureHistory || [])];
-      delete globalThis.__starsVisibilityQaFeatureHistory;
-      return history;
-    });
+    diag.featureHistoryDuringCalculation = await readFeatureValueAudit(page);
 
     const after = await page.locator('body').innerText();
     const featureAfter = await page.locator('#calculatorFeature').inputValue();
@@ -242,9 +207,6 @@ for (const viewport of viewports) {
     failed = true;
     diag.fatalError = String(error?.stack || error);
     try {
-      await page.evaluate(() => {
-        if (globalThis.__starsVisibilityQaFeatureTimer) clearInterval(globalThis.__starsVisibilityQaFeatureTimer);
-      });
       await page.screenshot({ path: `qa-artifacts/${viewport.name}-failure.png`, fullPage: true });
     } catch {}
   } finally {

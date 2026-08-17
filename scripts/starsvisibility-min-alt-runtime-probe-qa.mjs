@@ -33,6 +33,15 @@ try {
   await setInputValue('#minAlt', '89');
   await setInputValue('#visibilityEngineMode', 'level-b-v3-crumey-blackwell-equilibrium');
 
+  const disable = await page.evaluate(() => {
+    try {
+      return globalThis.eval('workerEnabled = false; ({ workerEnabled, engine: __levelBSitewideEngineMode() })');
+    } catch (error) {
+      return { error: String(error?.stack || error) };
+    }
+  });
+  if (disable?.error) throw new Error(`Could not disable worker for diagnostic: ${disable.error}`);
+
   const inputsBefore = await page.evaluate(() => ({
     feature: document.querySelector('#calculatorFeature')?.value ?? null,
     basis: document.querySelector('#threeStarMagnitudeBasis')?.value ?? null,
@@ -41,28 +50,6 @@ try {
     minAlt: document.querySelector('#minAlt')?.value ?? null,
     engine: document.querySelector('#visibilityEngineMode')?.value ?? null,
   }));
-
-  await page.evaluate(() => {
-    const input = document.querySelector('#minAlt');
-    if (!(input instanceof HTMLInputElement)) throw new Error('#minAlt input missing');
-    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-    if (!descriptor?.get || !descriptor?.set) throw new Error('HTMLInputElement value descriptor unavailable');
-    globalThis.__MIN_ALT_VALUE_READ_AUDIT__ = { reads: 0, values: [], writes: [] };
-    Object.defineProperty(input, 'value', {
-      configurable: true,
-      enumerable: descriptor.enumerable,
-      get() {
-        const value = String(descriptor.get.call(this));
-        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.reads += 1;
-        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.values.push(value);
-        return value;
-      },
-      set(nextValue) {
-        globalThis.__MIN_ALT_VALUE_READ_AUDIT__.writes.push(String(nextValue));
-        descriptor.set.call(this, String(nextValue));
-      },
-    });
-  });
 
   const clicked = await page.evaluate(() => {
     const controls = [...document.querySelectorAll('button, input[type="button"], input[type="submit"]')];
@@ -83,57 +70,44 @@ try {
     return true;
   });
   if (!clicked) throw new Error('Could not find calculation control');
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(12000);
 
   const runtime = await page.evaluate(() => {
     let result = null;
+    let metadata = null;
     try {
-      if (typeof threeStarResultData !== 'undefined' && threeStarResultData) {
-        result = {
-          found: threeStarResultData.found ?? null,
-          reason: threeStarResultData.reason ?? null,
-          eventTime: threeStarResultData.eventTime ?? null,
-          candidateCount: threeStarResultData.candidateCount ?? null,
-          eligibleCandidateCount: threeStarResultData.eligibleCandidateCount ?? null,
-          pointwiseCandidateCount: threeStarResultData.pointwiseCandidateCount ?? null,
-          visibilityIntervalCandidateCount: threeStarResultData.visibilityIntervalCandidateCount ?? null,
-          stars: Array.isArray(threeStarResultData.stars) ? threeStarResultData.stars.map(star => ({
-            name: star.name ?? null,
-            catalogId: star.catalogId ?? null,
-            apparentAltitude: star.apparentAltitude ?? null,
-          })) : [],
-        };
-      }
+      if (typeof threeStarResultData !== 'undefined' && threeStarResultData) result = JSON.parse(JSON.stringify(threeStarResultData));
+      if (typeof lastRunMetadata !== 'undefined' && lastRunMetadata) metadata = JSON.parse(JSON.stringify(lastRunMetadata));
     } catch (error) {
       result = { readError: String(error?.message || error) };
     }
-    const readAudit = globalThis.__MIN_ALT_VALUE_READ_AUDIT__
-      ? {
-          reads: globalThis.__MIN_ALT_VALUE_READ_AUDIT__.reads,
-          values: [...globalThis.__MIN_ALT_VALUE_READ_AUDIT__.values],
-          writes: [...globalThis.__MIN_ALT_VALUE_READ_AUDIT__.writes],
-        }
-      : null;
-    const minAltAfter = document.querySelector('#minAlt')?.value ?? null;
     return {
-      privateProbe: globalThis.__LEVEL_B_THREE_STAR_MIN_ALTITUDE_RUNTIME__ ?? null,
-      readAudit,
       result,
+      metadata,
+      resultCard: {
+        title: document.querySelector('#threeStarResultTitle')?.textContent ?? null,
+        empty: document.querySelector('#threeStarEmpty')?.textContent ?? null,
+        cardHidden: document.querySelector('#threeStarResult')?.hidden ?? null,
+      },
       inputsAfter: {
         feature: document.querySelector('#calculatorFeature')?.value ?? null,
-        minAlt: minAltAfter,
+        minAlt: document.querySelector('#minAlt')?.value ?? null,
         engine: document.querySelector('#visibilityEngineMode')?.value ?? null,
       },
     };
   });
 
-  const diagnostic = { url: page.url(), inputsBefore, ...runtime };
+  const diagnostic = { url: page.url(), disable, inputsBefore, ...runtime };
   console.log(JSON.stringify(diagnostic, null, 2));
-  if (!runtime.readAudit || runtime.readAudit.reads < 1) {
-    throw new Error('Active calculation never read #minAlt.value');
+
+  if (runtime.metadata?.calculationEngine !== 'level-b-v3-crumey-blackwell-equilibrium') {
+    throw new Error(`Main-thread diagnostic did not run Level-B equilibrium: ${runtime.metadata?.calculationEngine}`);
   }
-  if (!runtime.readAudit.values.every(value => value === '89')) {
-    throw new Error(`Runtime observed unexpected #minAlt values: ${JSON.stringify(runtime.readAudit.values)}`);
+  if (runtime.result?.found !== false) {
+    throw new Error(`Main-thread Level-B should reject the 89-degree fixture, got found=${runtime.result?.found}`);
+  }
+  if (!(Number(runtime.result?.candidateCount) > 0)) {
+    throw new Error(`Main-thread Level-B no-event diagnostics should retain candidates, got ${runtime.result?.candidateCount}`);
   }
 } finally {
   await context.close();

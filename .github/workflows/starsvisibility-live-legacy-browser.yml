@@ -1,0 +1,139 @@
+name: StarsVisibility live Legacy consecutive browser probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-live-legacy-browser.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APPLICATION_SHA: f51fbbb48372d41bca3beadedb61afeb0d231c07
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      SITE: https://starsvisibility.pages.dev
+    steps:
+      - name: Checkout exact private app for Playwright tooling
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+          cache: npm
+          cache-dependency-path: private-app/package-lock.json
+      - name: Install Playwright tooling
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run live Legacy consecutive probe
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/live-legacy-probe.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const pageErrors = [];
+          page.on('pageerror', error => pageErrors.push(error.message));
+          page.on('console', message => {
+            if (message.type() === 'error') console.log('BROWSER_CONSOLE_ERROR', message.text());
+          });
+          await page.goto(`${process.env.SITE}/?legacy-browser-probe=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.waitForSelector('#calculate', { timeout: 30000 });
+          const setup = await page.evaluate(() => {
+            const setValue = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return false;
+              el.value = String(value);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            };
+            const setChecked = (id, checked) => {
+              const el = document.getElementById(id);
+              if (!el) return false;
+              el.checked = Boolean(checked);
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            };
+            const ids = {};
+            ids.calculatorFeature = setValue('calculatorFeature', 'three-star');
+            ids.visibilityEngineMode = setValue('visibilityEngineMode', 'legacy');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            ids.date = setValue('date', '2026-08-11');
+            ids.lat = setValue('lat', 31.778);
+            ids.lon = setValue('lon', 35.235);
+            ids.timezone = setValue('timezone', 'Asia/Jerusalem');
+            ids.observerElevationM = setValue('observerElevationM', 800);
+            ids.threeStarCount = setValue('threeStarCount', 3);
+            ids.threeStarMagnitudeBasis = setValue('threeStarMagnitudeBasis', 'catalog');
+            ids.threeStarMagnitudeThreshold = setValue('threeStarMagnitudeThreshold', -5);
+            ids.threeCloseEnabled = setChecked('threeCloseEnabled', true);
+            ids.threeCloseMaxDiameterDeg = setValue('threeCloseMaxDiameterDeg', 15);
+            ids.threeCloseMagnitudeBasis = setValue('threeCloseMagnitudeBasis', 'catalog');
+            ids.threeCloseMagnitudeThreshold = setValue('threeCloseMagnitudeThreshold', -5);
+            ids.minAlt = setValue('minAlt', 0);
+            if (document.getElementById('kvMode')) setValue('kvMode', 'manual');
+            return {
+              ids,
+              engine: document.getElementById('visibilityEngineMode')?.value,
+              closeEnabled: document.getElementById('threeCloseEnabled')?.checked,
+              closeDiameter: document.getElementById('threeCloseMaxDiameterDeg')?.value,
+              closeBasis: document.getElementById('threeCloseMagnitudeBasis')?.value,
+              closeThreshold: document.getElementById('threeCloseMagnitudeThreshold')?.value,
+            };
+          });
+          console.log('SETUP', JSON.stringify(setup));
+          const result = await page.evaluate(async () => {
+            if (typeof calculate !== 'function') throw new Error('calculate() unavailable');
+            await calculate();
+            const data = eval('threeStarResultData');
+            const close = data?.closeTriple ?? null;
+            const section = document.getElementById('threeCloseResultSection');
+            return {
+              ordinaryFound: data?.found ?? null,
+              ordinaryReason: data?.reason ?? null,
+              close,
+              sectionExists: Boolean(section),
+              sectionHidden: section?.hidden ?? null,
+              sectionText: section?.innerText ?? '',
+              errorText: document.getElementById('error')?.textContent ?? '',
+              calculationStatus: document.getElementById('calculationStatus')?.textContent ?? '',
+            };
+          });
+          console.log('RESULT', JSON.stringify(result));
+          console.log('PAGE_ERRORS', JSON.stringify(pageErrors));
+          await page.screenshot({ path: '/tmp/live-legacy-consecutive.png', fullPage: true });
+          await browser.close();
+          if (!result.close?.enabled) throw new Error(`closeTriple not enabled: ${JSON.stringify(result)}`);
+          if (!result.sectionExists) throw new Error(`close result section missing: ${JSON.stringify(result)}`);
+          if (result.sectionHidden) throw new Error(`close result section hidden: ${JSON.stringify(result)}`);
+          if (!result.close?.found) throw new Error(`broad Legacy consecutive scenario returned no result: ${JSON.stringify(result)}`);
+          if (!Array.isArray(result.close?.stars) || result.close.stars.length !== 3) throw new Error(`expected three stars: ${JSON.stringify(result)}`);
+          if (pageErrors.length) throw new Error(`page errors: ${JSON.stringify(pageErrors)}`);
+          console.log('LIVE_LEGACY_CONSECUTIVE_BROWSER_PASS');
+          NODE
+          node /tmp/live-legacy-probe.mjs
+      - name: Upload browser screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-legacy-consecutive-browser-${{ github.run_id }}
+          path: /tmp/live-legacy-consecutive.png
+          if-no-files-found: warn
+          retention-days: 3

@@ -6,6 +6,7 @@ const html = await response.text();
 const marker = 'LEVEL-B-THREE-STAR-MIN-ALTITUDE-V1';
 const routingMarker = 'LEVEL-B-THREE-STAR-POINTWISE-SUPPORT-V1';
 const runtimeProbe = '__LEVEL_B_THREE_STAR_MIN_ALTITUDE_RUNTIME__';
+const count = needle => html.split(needle).length - 1;
 const result = {
   url: response.url,
   status: response.status,
@@ -14,6 +15,11 @@ const result = {
   routingMarkerPresent: html.includes(routingMarker),
   minimumAltitudeMarkerPresent: html.includes(marker),
   minimumAltitudeRuntimeProbePresent: html.includes(runtimeProbe),
+  recomputeFunctionCount: count('async function __levelBSitewideRecomputeThreeStar'),
+  routingMarkerCount: count(routingMarker),
+  minimumAltitudeMarkerCount: count(marker),
+  minimumAltitudeGuardCount: count('if (!meetsMinimumAltitudeAt(entry, timestampMs)) return false;'),
+  minimumAltitudeReaderCount: count('const rawMinStarAltitudeDeg = Number($("minAlt")?.value);'),
 };
 console.log(JSON.stringify(result, null, 2));
 if (!response.ok) throw new Error(`Preview returned HTTP ${response.status}`);

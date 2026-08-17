@@ -37,18 +37,37 @@ def import_ref(app: Path):
     return m
 
 
-def bracket(axis, value):
+def identity_coordinate(value):
+    return value
+
+
+def cosecant_altitude_coordinate(altitude_deg):
+    mu = math.sin(math.radians(float(altitude_deg)))
+    if not mu > 0:
+        raise ValueError('target altitude must be above the geometric horizon')
+    return 1.0 / mu
+
+
+def bracket(axis, value, coordinate=identity_coordinate):
     if value < axis[0] or value > axis[-1]: raise ValueError('outside LUT support')
     if value == axis[-1]: return len(axis)-2, len(axis)-1, 1.0
     for hi in range(1, len(axis)):
         if value < axis[hi]:
-            lo=hi-1; return lo, hi, (value-axis[lo])/(axis[hi]-axis[lo])
+            lo=hi-1
+            clo, chi, cv = coordinate(axis[lo]), coordinate(axis[hi]), coordinate(value)
+            return lo, hi, (cv-clo)/(chi-clo)
     raise AssertionError
 
 
 def interp_tau(lut, altitude, elevation, aod):
     aa=lut['axes']['targetAltitudeDeg']; ee=lut['axes']['observerElevationM']; oo=lut['axes']['aod550']
-    ab=bracket(aa, altitude); eb=bracket(ee, elevation); ob=bracket(oo, aod)
+    # The frozen libRadtran direct-beam reference is plane-parallel. At fixed
+    # atmosphere state, line-of-sight direct optical depth scales exactly with
+    # csc(target altitude)=1/mu0. Keep the preregistered altitude knots unchanged
+    # but interpolate tau in that physical coordinate rather than raw degrees.
+    ab=bracket(aa, altitude, cosecant_altitude_coordinate)
+    eb=bracket(ee, elevation)
+    ob=bracket(oo, aod)
     ne=len(ee); no=len(oo)
     def idx(ai,ei,oi): return ((ai*ne)+ei)*no+oi
     out=[]
@@ -107,9 +126,9 @@ def main():
     if lut.get('provenance',{}).get('validationProtocolSha256') != protocol:
         raise SystemExit('LUT protocol hash does not match gate protocol hash')
     passed=(maxerr<=MAX_LIMIT and rms<=RMS_LIMIT)
-    result={'schemaVersion':1,'gate':'MYSTIC-STATE-0077-stellar-transport-reference','caseCount':len(rows),'atmosphericCaseCount':144,'templates':[{'templateId':t['templateId'],'libraryNumber':t['libraryNumber'],'bMinusV':t['bMinusVLandoltBmVc']} for t in templates],'limits':{'maxAbsDeltaAvMag':MAX_LIMIT,'rmsDeltaAvMag':RMS_LIMIT},'statistics':{'maxAbsDeltaAvMag':maxerr,'rmsDeltaAvMag':rms},'pass':passed,'protocolSha256':protocol,'hashes':{'sedBundleSha256':sha256_file(args.sed_bundle),'lutSha256':sha256_file(args.lut),'johnsonVGridSha256':sha256_file(band_path)},'rows':rows}
+    result={'schemaVersion':1,'gate':'MYSTIC-STATE-0077-stellar-transport-reference','caseCount':len(rows),'atmosphericCaseCount':144,'templates':[{'templateId':t['templateId'],'libraryNumber':t['libraryNumber'],'bMinusV':t['bMinusVLandoltBmVc']} for t in templates],'limits':{'maxAbsDeltaAvMag':MAX_LIMIT,'rmsDeltaAvMag':RMS_LIMIT},'statistics':{'maxAbsDeltaAvMag':maxerr,'rmsDeltaAvMag':rms},'pass':passed,'protocolSha256':protocol,'interpolation':{'quantity':'directOpticalDepth','targetAltitudeCoordinate':'cosecant-altitude-1-over-sin-h','observerElevationCoordinate':'linear-meters','aod550Coordinate':'linear'},'hashes':{'sedBundleSha256':sha256_file(args.sed_bundle),'lutSha256':sha256_file(args.lut),'johnsonVGridSha256':sha256_file(band_path)},'rows':rows}
     args.output.parent.mkdir(parents=True,exist_ok=True); args.output.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-    print(json.dumps({k:result[k] for k in ['gate','caseCount','statistics','pass','protocolSha256','hashes']},sort_keys=True))
+    print(json.dumps({k:result[k] for k in ['gate','caseCount','statistics','pass','protocolSha256','interpolation','hashes']},sort_keys=True))
     raise SystemExit(0 if passed else 2)
 
 

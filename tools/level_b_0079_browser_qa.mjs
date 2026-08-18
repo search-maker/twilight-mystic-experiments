@@ -171,6 +171,35 @@ patched = replaceExactly(
 
 patched = replaceExactly(
   patched,
+  "  await page.waitForTimeout(500);\n  const skyMap = jsonClone(await globalEval(page, 'threeStarSkyMapData'));\n  assert(skyMap && typeof skyMap === 'object', 'sky-map route produced no state object');",
+  `  await page.waitForFunction(() => {
+    const lexical = expression => {
+      try { return window.eval(expression); } catch (_) { return null; }
+    };
+    const data = lexical("typeof threeStarSkyMapData !== 'undefined' ? threeStarSkyMapData : null");
+    const active = lexical("typeof activeSkyMapWorker !== 'undefined' ? activeSkyMapWorker : null");
+    const loading = document.querySelector('#skyMapLoading');
+    const content = document.querySelector('#skyMapContent');
+    const loadingText = String(loading?.textContent || '').trim();
+    const waiting = /Calculating practical sky positions|מחשב את מיקומי הכוכבים/.test(loadingText);
+    const terminalFailure = !active && Boolean(loading && !loading.hidden && loadingText && !waiting);
+    const terminalContent = !active && Boolean(content && !content.hidden);
+    return Boolean(data) || terminalFailure || terminalContent;
+  }, undefined, { timeout: 360000 });
+  const skyMap = jsonClone(await globalEval(page, 'threeStarSkyMapData'));
+  const skyMapUi = await page.evaluate(() => ({
+    loadingHidden: document.querySelector('#skyMapLoading')?.hidden ?? null,
+    loadingText: String(document.querySelector('#skyMapLoading')?.textContent || '').trim().slice(0, 500),
+    contentHidden: document.querySelector('#skyMapContent')?.hidden ?? null,
+    canvasWidth: document.querySelector('#threeStarSkyCanvas')?.width ?? null,
+    canvasHeight: document.querySelector('#threeStarSkyCanvas')?.height ?? null,
+  }));
+  assert(skyMap && typeof skyMap === 'object', 'sky-map worker reached terminal state without data: ' + JSON.stringify(skyMapUi));`,
+  'sky-map-worker-terminal-wait',
+);
+
+patched = replaceExactly(
+  patched,
   "async function runAnnualMonthAndExport(page, engine) {\n  await waitCalculateReady(page);\n  await selectEngine(page, engine);\n  await chooseFeature(page, 'three-star');\n  await page.evaluate(() => {",
   `async function runAnnualMonthAndExport(page, engine) {
   await waitCalculateReady(page);
@@ -186,7 +215,7 @@ patched = replaceExactly(
 
 writeFileSync(runtimeUrl, patched);
 try {
-  await import(`${runtimeUrl.href}?runner-fix-v8`);
+  await import(`${runtimeUrl.href}?runner-fix-v9`);
 } finally {
   try { unlinkSync(runtimeUrl); } catch (_) {}
 }

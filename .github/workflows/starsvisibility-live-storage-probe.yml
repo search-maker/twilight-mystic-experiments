@@ -1,0 +1,57 @@
+name: StarsVisibility live browser storage probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-live-storage-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser-storage:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.61.1 --no-save
+          npx playwright install --with-deps chromium
+      - name: Inspect live browser persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > storage-probe.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          const context = await browser.newContext();
+          const page = await context.newPage();
+          await page.goto(`https://starsvisibility.pages.dev/?storage-probe=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          const state = await page.evaluate(async () => {
+            const registrations = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+            const values = {};
+            for (const id of ['visibilityEngineMode','calculatorFeature','threeCloseEnabled','threeCloseMaxDiameterDeg','threeCloseMagnitudeBasis','threeCloseMagnitudeThreshold','kvMode','kv']) {
+              const el = document.getElementById(id);
+              values[id] = el ? { value: el.value ?? null, checked: 'checked' in el ? el.checked : null } : null;
+            }
+            return {
+              localStorageKeys: Object.keys(localStorage),
+              localStorageEntries: Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])),
+              sessionStorageKeys: Object.keys(sessionStorage),
+              sessionStorageEntries: Object.fromEntries(Object.keys(sessionStorage).map(k => [k, sessionStorage.getItem(k)])),
+              serviceWorkers: registrations.map(r => ({ scope: r.scope, active: r.active?.scriptURL ?? null })),
+              values,
+              url: location.href
+            };
+          });
+          console.log('BROWSER_PERSISTENCE', JSON.stringify(state));
+          await browser.close();
+          NODE
+          node storage-probe.mjs

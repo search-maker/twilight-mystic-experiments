@@ -1,0 +1,86 @@
+name: StarsVisibility live real-default Legacy consecutive probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-live-real-default-calc.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.61.1 --no-save
+          npx playwright install --with-deps chromium
+      - name: Calculate with real loaded defaults on both deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > real-default-probe.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          for (const site of ['https://starsvisibility.pages.dev','https://star-visibility.pages.dev']) {
+            const context = await browser.newContext();
+            const page = await context.newPage({ viewport: { width: 1440, height: 1200 } });
+            const pageErrors = [];
+            page.on('pageerror', e => pageErrors.push(e.message));
+            await page.goto(`${site}/?real-default-probe=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+            const before = await page.evaluate(() => {
+              const ids = ['visibilityEngineMode','calculatorFeature','date','lat','lon','timezone','observerElevationM','minAlt','threeStarCount','threeStarMagnitudeBasis','threeStarMagnitudeThreshold','threeCloseEnabled','threeCloseMaxDiameterDeg','threeCloseMagnitudeBasis','threeCloseMagnitudeThreshold','kvMode','kv'];
+              const values = {};
+              for (const id of ids) {
+                const el = document.getElementById(id);
+                values[id] = el ? { value: el.value ?? null, checked: 'checked' in el ? el.checked : null } : null;
+              }
+              return values;
+            });
+            const result = await page.evaluate(async () => {
+              const closeToggle = document.getElementById('threeCloseEnabled');
+              if (!closeToggle) throw new Error('threeCloseEnabled missing');
+              closeToggle.checked = true;
+              closeToggle.dispatchEvent(new Event('change', { bubbles: true }));
+              await calculate();
+              const data = eval('threeStarResultData');
+              const close = data?.closeTriple ?? null;
+              const section = document.getElementById('threeCloseResultSection');
+              return {
+                ordinaryFound: data?.found ?? null,
+                ordinaryReason: data?.reason ?? null,
+                close,
+                sectionExists: !!section,
+                sectionHidden: section?.hidden ?? null,
+                sectionText: section?.innerText ?? '',
+                errorText: document.getElementById('error')?.textContent ?? '',
+                localStorage: localStorage.getItem('starVisibilityUserSettingsV1')
+              };
+            });
+            console.log('SITE', site);
+            console.log('BEFORE', JSON.stringify(before));
+            console.log('RESULT', JSON.stringify(result));
+            console.log('PAGE_ERRORS', JSON.stringify(pageErrors));
+            await page.screenshot({ path: `real-default-${site.includes('starsvisibility.') ? 'canonical' : 'secondary'}.png`, fullPage: true });
+            await context.close();
+          }
+          await browser.close();
+          NODE
+          node real-default-probe.mjs
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-default-probe-${{ github.run_id }}
+          path: real-default-*.png
+          if-no-files-found: warn
+          retention-days: 3

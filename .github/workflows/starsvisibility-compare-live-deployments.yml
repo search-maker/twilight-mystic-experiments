@@ -1,0 +1,36 @@
+name: Compare StarsVisibility live deployments
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-compare-live-deployments.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare canonical and secondary deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+          for site in https://starsvisibility.pages.dev https://star-visibility.pages.dev; do
+            echo "=== $site ==="
+            marker="$(curl --fail --silent --show-error --location --max-time 20 -H 'Cache-Control: no-cache' "$site/.well-known/level-b-software-status.json?run=$GITHUB_RUN_ID" || true)"
+            echo "marker=$marker"
+            sha="$(printf '%s' "$marker" | python -c 'import json,sys; 
+try: print(json.load(sys.stdin).get("commitSha", ""))
+except Exception: print("")')"
+            echo "commitSha=${sha:-unavailable}"
+            html_file="$(mktemp)"
+            curl --fail --silent --show-error --location --max-time 30 -H 'Cache-Control: no-cache' "$site/?run=$GITHUB_RUN_ID" > "$html_file" || true
+            for marker_name in STARS-CLOSE-TRIPLE-MAGNITUDE-V1 STARS-CLOSE-TRIPLE-INDEPENDENT-RESULT-HOST-V1 LEGACY-THREE-STAR-CONSECUTIVE-MAIN-THREAD-V1; do
+              if grep -Fq "$marker_name" "$html_file"; then echo "$marker_name=present"; else echo "$marker_name=MISSING"; fi
+            done
+            if grep -Fq 'if (!result?.found || !close?.enabled)' "$html_file"; then echo 'oldResultGate=PRESENT'; else echo 'oldResultGate=absent'; fi
+            rm -f "$html_file"
+          done

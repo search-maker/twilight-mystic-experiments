@@ -10,72 +10,73 @@ permissions:
 
 jobs:
   isolate:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16.0'
-      - name: Install Playwright
+      - name: Install Playwright core
         shell: bash
         run: |
           set -euo pipefail
           npm init -y >/dev/null 2>&1
-          npm install playwright@1.61.1 --no-save
-          npx playwright install --with-deps chromium
-      - name: Compare Moon included vs ignored
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Compare Moon included vs ignored through UI
         shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
-          cat > isolate.mjs <<'NODE'
-          import { chromium } from 'playwright';
-          const browser = await chromium.launch({ headless: true });
-          const page = await browser.newPage();
-          await page.goto(`https://starsvisibility.pages.dev/?moon-isolate=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          cat > isolate-ui.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const pageErrors = [];
+          page.on('pageerror', e => pageErrors.push(e.message));
+          await page.goto(`${process.env.SITE}/?moon-isolate-ui=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.waitForSelector('#calculate', { timeout: 30000 });
           await page.evaluate(() => {
-            const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = String(value); };
-            const check = (id, value) => { const el = document.getElementById(id); if (el) el.checked = Boolean(value); };
-            set('calculatorFeature','three-star');
+            const raw = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return false;
+              if ('checked' in el && typeof value === 'boolean') el.checked = value;
+              else el.value = String(value);
+              return true;
+            };
+            raw('calculatorFeature','three-star');
             globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
-            set('lat',31.778); set('lon',35.235); set('timezone','Asia/Jerusalem'); set('observerElevationM',754);
-            set('minAlt',0); set('threeStarCount',3); set('threeStarMagnitudeBasis','effective'); set('threeStarMagnitudeThreshold',1.7);
-            check('threeCloseEnabled',true); set('threeCloseMaxDiameterDeg',4); set('threeCloseMagnitudeBasis','effective'); set('threeCloseMagnitudeThreshold',3);
+            raw('lat',31.778); raw('lon',35.235); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',754);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',0);
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
           });
-          const dates = ['2026-05-29','2026-05-30','2026-05-31','2026-06-01','2026-06-02'];
           for (const moonMode of ['on','off']) {
-            for (const date of dates) {
-              const result = await page.evaluate(async ({moonMode,date}) => {
+            for (const date of ['2026-05-30','2026-05-31','2026-06-01','2026-06-02']) {
+              await page.evaluate(({moonMode,date}) => {
                 document.getElementById('moonOn').value = moonMode;
                 document.getElementById('date').value = date;
-                await calculate();
-                const data = eval('threeStarResultData');
-                const close = data?.closeTriple ?? null;
-                const tryCall = (name, ...args) => {
-                  try {
-                    const fn = globalThis[name];
-                    if (typeof fn !== 'function') return { type: typeof fn, value: fn ?? null };
-                    return { type: 'function', arity: fn.length, value: fn(...args) };
-                  } catch (error) {
-                    return { error: String(error) };
-                  }
-                };
-                const t = close?.time ?? null;
+              }, {moonMode,date});
+              await page.click('#calculate');
+              await page.waitForTimeout(5500);
+              const row = await page.evaluate(({moonMode,date}) => {
+                const section = document.getElementById('threeCloseResultSection');
                 return {
                   moonMode,date,
-                  minutesAfterSunset: close?.minutesAfterSunset ?? null,
-                  sunAltitude: close?.sunAltitude ?? null,
-                  catalogIds: close?.catalogIds ?? [],
-                  actualDiameterDeg: close?.actualDiameterDeg ?? null,
-                  moonOn: document.getElementById('moonOn')?.value,
-                  moonAltitudeAtEvent: t ? tryCall('moonAltitude', t) : null,
-                  moonIlluminationAtEvent: t ? tryCall('moonIllumination', t) : null,
-                  moonBrightnessAtEvent: t ? tryCall('moonBrightnessNL', t) : null,
+                  uiMoon: document.getElementById('moonOn')?.value ?? null,
+                  sectionExists: !!section,
+                  sectionHidden: section?.hidden ?? null,
+                  sectionText: section?.innerText ?? '',
+                  errorText: document.getElementById('error')?.textContent ?? '',
+                  statusText: document.getElementById('calculationStatus')?.textContent ?? ''
                 };
               }, {moonMode,date});
-              console.log('MOON_CASE', JSON.stringify(result));
+              console.log('MOON_UI_CASE', JSON.stringify(row));
             }
           }
+          console.log('PAGE_ERRORS', JSON.stringify(pageErrors));
           await browser.close();
+          if (pageErrors.length) throw new Error(`page errors: ${JSON.stringify(pageErrors)}`);
           NODE
-          node isolate.mjs
+          node isolate-ui.mjs

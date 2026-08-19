@@ -1,0 +1,71 @@
+name: StarsVisibility consecutive sky-map production validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+      - name: Install browser driver
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Validate production feature
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate-production.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+          let marker=false;
+          for(let attempt=0;attempt<18;attempt++){
+            await page.goto(`${process.env.SITE}/?close-sky-production=${process.env.GITHUB_RUN_ID}-${attempt}`,{waitUntil:'networkidle',timeout:120000});
+            marker=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-CLOSE-TRIPLE-SKY-MAP-MODE-V1'));
+            if(marker) break;
+            await page.waitForTimeout(10000);
+          }
+          if(!marker) throw new Error('PRODUCTION_FEATURE_MARKER_MISSING_AFTER_WAIT');
+          await page.waitForSelector('#threeStarControls',{state:'attached',timeout:30000});
+          await page.evaluate(()=>{
+            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
+            raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
+            raw('date','2026-05-29'); raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','off');
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            document.getElementById('calculate')?.click();
+          });
+          await page.waitForFunction(()=>{try{return eval('threeStarResultData')?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
+          const result=await page.evaluate(()=>{const d=eval('threeStarResultData');return {regularMinutes:Number(d.minutesAfterSunset),closeTime:Number(d.closeTriple.time),closeMinutes:Number(d.closeTriple.minutesAfterSunset),keys:d.closeTriple.starMagnitudes.map(s=>String(s.key||'')),names:d.closeTriple.starMagnitudes.map(s=>s.name||s.catalogId||'')}});
+          const closeCards=page.locator('#threeCloseObjectList [data-sky-object-key]');
+          if(await closeCards.count()!==3) throw new Error('PRODUCTION_CLOSE_CARDS_NOT_CLICKABLE');
+          const key=await closeCards.first().getAttribute('data-sky-object-key');
+          await closeCards.first().click();
+          await page.waitForFunction(()=>{try{return eval('threeStarSkyMapData')?.resultMode==='consecutive'}catch{return false}},null,{timeout:180000});
+          const closeMap=await page.evaluate(()=>{const d=eval('threeStarSkyMapData');return {baseTime:Number(d.baseTime),frame0:Number(d.frames?.find(f=>Number(f.offsetMinutes)===0)?.time),primaryKeys:d.primaryKeys||[],selected:eval('skyMapSelectedObjectKey'),regularText:document.querySelector('#skyMapResultModeControl button[data-sky-map-result-mode="regular"]')?.textContent.trim(),closeText:document.querySelector('#skyMapResultModeControl button[data-sky-map-result-mode="consecutive"]')?.textContent.trim()}});
+          if(Math.abs(closeMap.baseTime-result.closeTime)>1||Math.abs(closeMap.frame0-result.closeTime)>1) throw new Error('PRODUCTION_CONSECUTIVE_TIME_MISMATCH');
+          if(!result.keys.every(k=>closeMap.primaryKeys.includes(k))||closeMap.selected!==key) throw new Error('PRODUCTION_CONSECUTIVE_PRIMARY_SELECTION_MISMATCH');
+          await page.locator('#skyMapResultModeControl button[data-sky-map-result-mode="regular"]').click();
+          await page.waitForFunction(()=>{try{return eval('threeStarSkyMapData')?.resultMode==='regular'}catch{return false}},null,{timeout:180000});
+          const regularBase=await page.evaluate(()=>Number(eval('threeStarSkyMapData')?.baseTime));
+          if(!Number.isFinite(regularBase)||regularBase===result.closeTime) throw new Error('PRODUCTION_REGULAR_SWITCH_FAILED');
+          console.log('CLOSE_SKY_MAP_PRODUCTION_PASS',JSON.stringify({result,closeMap,regularBase,errors}));
+          await browser.close();
+          if(errors.length) throw new Error(JSON.stringify(errors));
+          NODE
+          node validate-production.mjs

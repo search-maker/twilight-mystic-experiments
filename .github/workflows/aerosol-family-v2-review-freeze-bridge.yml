@@ -10,7 +10,7 @@ on:
 permissions:
   actions: write
   contents: read
-  issues: read
+  issues: write
 
 concurrency:
   group: aerosol-family-v2-review-freeze-bridge
@@ -24,8 +24,9 @@ jobs:
       github.event.comment.user.login == github.repository_owner &&
       github.event.comment.author_association == 'OWNER'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - name: Validate one-use review-freeze command and dispatch exact workflow
+      - name: Validate one-use command, dispatch exact workflow, and report completion
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,6 +40,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import time
           import urllib.error
           import urllib.parse
           import urllib.request
@@ -49,6 +51,7 @@ jobs:
           TARGET_WORKFLOW = 'aerosol-family-v2-seed-proof-review.yml'
           TARGET_ARTIFACT = 'aerosol-family-v2-r6-freeze-proof'
           DEFAULT_BRANCH = 'main'
+          CONTROL_ISSUE = 60
 
           issue_number = int(os.environ['ISSUE_NUMBER'])
           body = os.environ['COMMENT_BODY'].strip()
@@ -56,7 +59,7 @@ jobs:
           owner = os.environ['REPOSITORY_OWNER']
           association = os.environ['AUTHOR_ASSOCIATION']
 
-          if issue_number != 60:
+          if issue_number != CONTROL_ISSUE:
               raise SystemExit('refuse: bridge is bound to Issue #60 only')
           if author != owner or association != 'OWNER':
               raise SystemExit('refuse: command author must be the repository owner')
@@ -86,19 +89,23 @@ jobs:
                   detail = exc.read().decode('utf-8', errors='replace')
                   raise RuntimeError(f'GitHub API {exc.code} for {method} {path}: {detail}') from exc
 
-          def pages(path, key):
+          def pages(path, key=None):
               rows = []
               page = 1
               while True:
                   sep = '&' if '?' in path else '?'
                   data = request(f'{path}{sep}per_page=100&page={page}')
-                  batch = data.get(key, [])
+                  batch = data.get(key, []) if key else data
                   if not isinstance(batch, list):
-                      raise RuntimeError(f'GitHub response missing {key} list')
+                      raise RuntimeError(f'GitHub response missing list: {key or "root"}')
                   rows.extend(batch)
                   if len(batch) < 100:
                       return rows
                   page += 1
+
+          def grouped(value):
+              text = str(value or '')
+              return '-'.join(text[i:i + 4] for i in range(0, len(text), 4)) or 'none'
 
           repo = request(f'/repos/{REPOSITORY}')
           if repo.get('default_branch') != DEFAULT_BRANCH:
@@ -114,14 +121,14 @@ jobs:
               raise SystemExit('refuse: review-freeze proof artifact already exists')
 
           workflow_ref = urllib.parse.quote(TARGET_WORKFLOW, safe='')
-          runs = pages(
-              f'/repos/{REPOSITORY}/actions/workflows/{workflow_ref}/runs',
-              'workflow_runs',
-          )
-          active = [row for row in runs if str(row.get('status') or '') != 'completed']
+          run_path = f'/repos/{REPOSITORY}/actions/workflows/{workflow_ref}/runs'
+          before_runs = pages(run_path, 'workflow_runs')
+          before_ids = {int(row.get('id') or 0) for row in before_runs}
+
+          active = [row for row in before_runs if str(row.get('status') or '') != 'completed']
           if active:
               raise SystemExit('refuse: review-freeze workflow already has an active run')
-          prior_success = [row for row in runs if str(row.get('conclusion') or '') == 'success']
+          prior_success = [row for row in before_runs if str(row.get('conclusion') or '') == 'success']
           if prior_success:
               raise SystemExit('refuse: a successful review-freeze run already exists')
 
@@ -130,7 +137,77 @@ jobs:
               method='POST',
               payload={'ref': DEFAULT_BRANCH},
           )
-          print(f'dispatched {TARGET_WORKFLOW} on {DEFAULT_BRANCH} observed at {head_sha}')
-          print('scientific execution authorized: false')
-          print('solver dispatch capability: absent')
+
+          target_run = None
+          for _ in range(60):
+              now_runs = pages(run_path, 'workflow_runs')
+              candidates = [
+                  row for row in now_runs
+                  if int(row.get('id') or 0) not in before_ids
+                  and str(row.get('event') or '') == 'workflow_dispatch'
+                  and str(row.get('head_branch') or '') == DEFAULT_BRANCH
+                  and str(row.get('head_sha') or '') == head_sha
+              ]
+              if len(candidates) == 1:
+                  target_run = candidates[0]
+                  break
+              if len(candidates) > 1:
+                  raise SystemExit('refuse: ambiguous multiple new review-freeze runs on exact main head')
+              time.sleep(2)
+          if target_run is None:
+              raise SystemExit('refuse: could not identify exactly one newly dispatched review-freeze run')
+
+          run_id = int(target_run.get('id') or 0)
+          if run_id <= 0:
+              raise SystemExit('refuse: identified run has invalid id')
+
+          for _ in range(180):
+              target_run = request(f'/repos/{REPOSITORY}/actions/runs/{run_id}')
+              if str(target_run.get('status') or '') == 'completed':
+                  break
+              time.sleep(3)
+          else:
+              raise SystemExit('review-freeze run did not complete inside bridge window')
+
+          run_attempt = int(target_run.get('run_attempt') or 0)
+          if run_attempt != 1:
+              raise SystemExit('refuse: review-freeze run is not attempt 1')
+          if str(target_run.get('head_branch') or '') != DEFAULT_BRANCH:
+              raise SystemExit('refuse: completed run branch differs from exact dispatch branch')
+          if str(target_run.get('head_sha') or '') != head_sha:
+              raise SystemExit('refuse: completed run head differs from pre-dispatch main binding')
+          if str(target_run.get('event') or '') != 'workflow_dispatch':
+              raise SystemExit('refuse: completed run event is not workflow_dispatch')
+
+          run_artifacts = pages(f'/repos/{REPOSITORY}/actions/runs/{run_id}/artifacts', 'artifacts')
+          proof_artifacts = [row for row in run_artifacts if str(row.get('name') or '') == TARGET_ARTIFACT]
+          artifact = proof_artifacts[0] if len(proof_artifacts) == 1 else {}
+
+          marker = f'MYSTIC-R6-REVIEW-FREEZE-REPORT {grouped(run_id)}'
+          comments = pages(f'/repos/{REPOSITORY}/issues/{CONTROL_ISSUE}/comments')
+          if any(marker in str(row.get('body') or '') for row in comments):
+              print('report already present; no duplicate Issue #60 mutation')
+              raise SystemExit(0)
+
+          report = '\n'.join([
+              marker,
+              f'run_attempt: {run_attempt}',
+              f'status: {str(target_run.get("status") or "")}',
+              f'conclusion: {str(target_run.get("conclusion") or "")}',
+              f'head_branch: {str(target_run.get("head_branch") or "")}',
+              f'head_sha_grouped: {grouped(target_run.get("head_sha"))}',
+              f'event: {str(target_run.get("event") or "")}',
+              f'proof_artifact_count: {len(proof_artifacts)}',
+              f'proof_artifact_id_grouped: {grouped(artifact.get("id"))}',
+              f'proof_artifact_digest_grouped: {grouped(artifact.get("digest"))}',
+              f'proof_artifact_expired: {str(bool(artifact.get("expired"))).lower() if artifact else "n/a"}',
+              'scientific_execution_authorized: false',
+              'solver_execution_performed_by_bridge: false',
+          ])
+          request(
+              f'/repos/{REPOSITORY}/issues/{CONTROL_ISSUE}/comments',
+              method='POST',
+              payload={'body': report},
+          )
+          print(report)
           PY

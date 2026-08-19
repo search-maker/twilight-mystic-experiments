@@ -1,0 +1,61 @@
+name: StarsVisibility consecutive autoload PR validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+      - name: Install browser driver
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Validate first automatic calculation
+        env:
+          SITE: https://agent-fix-close-triple-autol.starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
+          const values={
+            date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},
+            threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},
+            threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}
+          };
+          const context=await browser.newContext({viewport:{width:1440,height:1200}});
+          await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),values);
+          const page=await context.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(`${process.env.SITE}/?autoload-pr=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          const marker=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-CLOSE-TRIPLE-AUTOLOAD-ORDER-V1'));
+          if(!marker) throw new Error('AUTOLOAD_FIX_MARKER_MISSING');
+          await page.waitForFunction(()=>{try{return document.getElementById('threeCloseEnabled')?.checked===true&&eval('threeStarResultData')?.closeTriple?.enabled===true&&eval('threeStarResultData')?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
+          const first=await page.evaluate(()=>{const d=eval('threeStarResultData');const s=JSON.parse(localStorage.getItem('starVisibilityUserSettingsV1')||'null');return {checked:document.getElementById('threeCloseEnabled')?.checked===true,aria:document.getElementById('threeCloseEnabled')?.getAttribute('aria-checked'),regularMinutes:Number(d?.minutesAfterSunset),closeEnabled:d?.closeTriple?.enabled===true,closeFound:d?.closeTriple?.found===true,closeMinutes:Number(d?.closeTriple?.minutesAfterSunset),visible:document.getElementById('threeCloseResultSection')?.hidden===false,saved:s?.values?.threeCloseEnabled,diameter:s?.values?.threeCloseMaxDiameterDeg,basis:s?.values?.threeCloseMagnitudeBasis,threshold:s?.values?.threeCloseMagnitudeThreshold};});
+          if(!first.checked||first.aria!=='true'||!first.closeEnabled||!first.closeFound||!first.visible) throw new Error(`FIRST_AUTO_BAD_${JSON.stringify(first)}`);
+          if(!(first.closeMinutes>40&&first.closeMinutes<55)) throw new Error(`FIRST_AUTO_TIME_BAD_${JSON.stringify(first)}`);
+          if(first.saved?.checked!==true||String(first.diameter?.value)!=='4'||String(first.basis?.value)!=='effective'||String(first.threshold?.value)!=='3') throw new Error(`PERSIST_BAD_${JSON.stringify(first)}`);
+          const state=await context.storageState(); await context.close();
+          const reloadContext=await browser.newContext({storageState:state,viewport:{width:1440,height:1200}}); const reloadPage=await reloadContext.newPage();
+          await reloadPage.goto(`${process.env.SITE}/?autoload-pr-reload=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await reloadPage.waitForFunction(()=>{try{return document.getElementById('threeCloseEnabled')?.checked===true&&eval('threeStarResultData')?.closeTriple?.enabled===true&&eval('threeStarResultData')?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
+          const reload=await reloadPage.evaluate(()=>({checked:document.getElementById('threeCloseEnabled')?.checked===true,closeEnabled:eval('threeStarResultData')?.closeTriple?.enabled===true,closeMinutes:Number(eval('threeStarResultData')?.closeTriple?.minutesAfterSunset),visible:document.getElementById('threeCloseResultSection')?.hidden===false}));
+          if(!reload.checked||!reload.closeEnabled||!reload.visible) throw new Error(`RELOAD_BAD_${JSON.stringify(reload)}`); await reloadContext.close();
+          const offContext=await browser.newContext(); await offContext.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),{...values,threeCloseEnabled:{checked:false}}); const offPage=await offContext.newPage();
+          await offPage.goto(`${process.env.SITE}/?autoload-pr-off=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await offPage.waitForFunction(()=>{try{return eval('threeStarResultData')?.found===true}catch{return false}},null,{timeout:180000});
+          const off=await offPage.evaluate(()=>({checked:document.getElementById('threeCloseEnabled')?.checked===true,closeEnabled:eval('threeStarResultData')?.closeTriple?.enabled===true,visible:document.getElementById('threeCloseResultSection')?.hidden===false}));
+          if(off.checked||off.closeEnabled||off.visible) throw new Error(`OFF_BAD_${JSON.stringify(off)}`); await offContext.close();
+          await browser.close(); if(errors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`); console.log('CONSECUTIVE_AUTOLOAD_PASS',JSON.stringify({first,reload,off}));
+          NODE
+          node validate.mjs

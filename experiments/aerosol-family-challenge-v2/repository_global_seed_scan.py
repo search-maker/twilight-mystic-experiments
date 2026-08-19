@@ -17,6 +17,18 @@ SURFACE_KEYS = (
     'issueComments', 'pullReviewComments', 'commitComments', 'issue60Comments',
 )
 
+# These fields describe the observation/transport lifecycle rather than the
+# collision surface.  They are intentionally removed recursively before the
+# two-pass fingerprint so a run changing from queued to completed (or a
+# timestamp advancing while pagination is in flight) does not create a false
+# instability.  All identifiers, names, hashes, bodies and other content are
+# retained because any of them can carry candidate-seed evidence.
+MUTABLE_OPERATIONAL_KEYS = frozenset({
+    'created_at', 'updated_at', 'started_at', 'completed_at',
+    'run_started_at', 'run_completed_at', 'cancelled_at', 'expires_at',
+    'status', 'state', 'state_reason', 'conclusion', 'run_attempt',
+})
+
 
 def req_json(url: str, token: str) -> Any:
     request = urllib.request.Request(
@@ -81,8 +93,40 @@ def _without_current_audit_self_metadata(context: dict[str, Any], current_run_id
     return out
 
 
+def _canonical_collision_value(value: Any, key: str | None = None) -> Any:
+    """Canonicalize collision-relevant GitHub data, ignoring only lifecycle noise."""
+    if isinstance(value, dict):
+        return {
+            name: _canonical_collision_value(value[name], name)
+            for name in sorted(value)
+            if name not in MUTABLE_OPERATIONAL_KEYS
+        }
+    if isinstance(value, list):
+        normalized = [_canonical_collision_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False),
+        )
+    return value
+
+
+def canonical_collision_context(context: dict[str, Any], current_run_id: int | None = None) -> dict[str, Any]:
+    """Return deterministic, collision-relevant rows for all audited surfaces.
+
+    Row identities and every non-operational field/content are retained; only
+    lifecycle timestamps/status fields are omitted.  Sorting rows and nested
+    arrays makes pagination/order drift harmless without weakening evidence
+    detection for names, heads, bodies, comments, or candidate-seed values.
+    """
+    filtered = _without_current_audit_self_metadata(context, current_run_id)
+    return {
+        key: _canonical_collision_value(filtered[key])
+        for key in SURFACE_KEYS
+    }
+
+
 def stable_context_sha256(context: dict[str, Any], current_run_id: int | None = None) -> str:
-    normalized = _without_current_audit_self_metadata(context, current_run_id)
+    normalized = canonical_collision_context(context, current_run_id)
     return hashlib.sha256(
         json.dumps(normalized, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
     ).hexdigest()
@@ -114,6 +158,7 @@ def evaluate_context(
     if len(candidates) != 72:
         raise ValueError('exactly 72 candidate seeds required')
     filtered = _without_current_audit_self_metadata(context, current_run_id)
+    canonical = canonical_collision_context(context, current_run_id)
 
     matching_audited_branches = [
         row for row in filtered['branches']
@@ -137,19 +182,18 @@ def evaluate_context(
     review_proof_identity_fresh = prior_review_proof_artifact_count == 0 if audit_mode == 'review-freeze' else None
 
     external: list[dict[str, Any]] = []
-    surfaces = (
-        ('branch-metadata', filtered['branches']),
-        ('workflow-run-metadata', filtered['runs']),
-        ('artifact-metadata', filtered['artifacts']),
-        ('all-state-pull-request-metadata-and-body', filtered['pulls']),
-        ('all-state-issue-metadata-and-body', filtered['issues']),
-        ('repository-issue-comment', filtered['issueComments']),
-        ('repository-pull-review-comment', filtered['pullReviewComments']),
-        ('repository-commit-comment', filtered['commitComments']),
-        ('issue60-comment', filtered['issue60Comments']),
-    )
     seen_surface_ids: set[tuple[str, str]] = set()
-    for surface, rows in surfaces:
+    for surface, rows in (
+        ('branch-metadata', canonical['branches']),
+        ('workflow-run-metadata', canonical['runs']),
+        ('artifact-metadata', canonical['artifacts']),
+        ('all-state-pull-request-metadata-and-body', canonical['pulls']),
+        ('all-state-issue-metadata-and-body', canonical['issues']),
+        ('repository-issue-comment', canonical['issueComments']),
+        ('repository-pull-review-comment', canonical['pullReviewComments']),
+        ('repository-commit-comment', canonical['commitComments']),
+        ('issue60-comment', canonical['issue60Comments']),
+    ):
         for row in rows:
             row_id = str(row.get('id') or row.get('number') or row.get('name') or row.get('url') or '')
             dedupe_key = (surface, row_id)

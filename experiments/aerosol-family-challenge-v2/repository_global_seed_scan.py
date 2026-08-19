@@ -23,12 +23,16 @@ SNAPSHOT_ID_SURFACES = tuple(key for key in SURFACE_KEYS if key != 'branches')
 # collision surface. They are intentionally removed recursively before the
 # two-pass fingerprint so a run changing from queued to completed (or a
 # timestamp advancing while pagination is in flight) does not create a false
-# instability. All identifiers, names, hashes, bodies and other content are
-# retained because any of them can carry candidate-seed evidence.
+# instability. GitHub also computes merge_commit_sha asynchronously for an
+# open pull request; that synthetic test-merge SHA is operational mergeability
+# metadata, not the PR head identity, and cannot carry candidate-seed evidence.
+# Stable branch/PR head SHAs, identifiers, names, bodies and other content are
+# retained because they can carry candidate-seed or reviewed-identity evidence.
 MUTABLE_OPERATIONAL_KEYS = frozenset({
     'created_at', 'updated_at', 'started_at', 'completed_at',
     'run_started_at', 'run_completed_at', 'cancelled_at', 'expires_at',
     'status', 'state', 'state_reason', 'conclusion', 'run_attempt',
+    'merge_commit_sha',
 })
 
 

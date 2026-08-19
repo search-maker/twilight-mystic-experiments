@@ -672,6 +672,48 @@ class AerosolFamilyChallengeV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "metadata changed between two complete enumerations"):
             repo_global_scan.require_two_pass_stability(first, second, current_run_id=99)
 
+    def test_repository_global_stability_ignores_status_timestamp_and_order_drift(self):
+        first = self.empty_repository_global_context()
+        second = copy.deepcopy(first)
+        seed = core.CANDIDATE_SEED_FIRST
+        first["runs"] = [
+            {"id": 2, "status": "queued", "updated_at": "2026-01-01T00:00:00Z", "display_title": "safe"},
+            {"id": 1, "status": "in_progress", "updated_at": "2026-01-01T00:00:01Z", "display_title": "safe"},
+        ]
+        second["runs"] = [
+            {"id": 1, "status": "completed", "updated_at": "2026-01-01T00:01:00Z", "display_title": "safe"},
+            {"id": 2, "status": "completed", "updated_at": "2026-01-01T00:01:01Z", "display_title": "safe"},
+        ]
+        first["artifacts"] = [{"id": 9, "name": "proof", "created_at": "2026-01-01T00:00:00Z", "workflow_run": {"id": 99}}]
+        second["artifacts"] = [{"id": 9, "name": "proof", "created_at": "2026-01-01T00:02:00Z", "workflow_run": {"id": 99}}]
+        self.assertEqual(
+            repo_global_scan.require_two_pass_stability(first, second, current_run_id=99),
+            repo_global_scan.require_two_pass_stability(second, first, current_run_id=99),
+        )
+        self.assertNotIn(str(seed), json.dumps(repo_global_scan.canonical_collision_context(first, 99), sort_keys=True))
+
+    def test_repository_global_stability_detects_collision_relevant_identity_and_content_changes(self):
+        seed = core.CANDIDATE_SEED_FIRST
+        cases = []
+        for surface, row_a, row_b in (
+            ("branches", {"name": "main", "commit": {"sha": "a" * 40}}, {"name": "main", "commit": {"sha": "b" * 40}}),
+            ("artifacts", {"id": 1, "name": "proof"}, {"id": 1, "name": str(seed)}),
+            ("pulls", {"number": 1, "body": "safe"}, {"number": 1, "body": str(seed)}),
+            ("issues", {"number": 2, "body": "safe"}, {"number": 2, "body": str(seed)}),
+            ("issueComments", {"id": 3, "body": "safe"}, {"id": 3, "body": str(seed)}),
+            ("pullReviewComments", {"id": 4, "body": "safe"}, {"id": 4, "body": str(seed)}),
+            ("commitComments", {"id": 5, "body": "safe"}, {"id": 5, "body": str(seed)}),
+        ):
+            first = self.empty_repository_global_context()
+            second = self.empty_repository_global_context()
+            first[surface] = [row_a]
+            second[surface] = [row_b]
+            cases.append((surface, first, second))
+        for surface, first, second in cases:
+            with self.subTest(surface=surface):
+                with self.assertRaisesRegex(RuntimeError, "metadata changed between two complete enumerations"):
+                    repo_global_scan.require_two_pass_stability(first, second)
+
     def test_repository_global_audit_binds_expected_branch_head_not_only_stable_metadata(self):
         ctx = self.empty_repository_global_context()
         ctx["branches"] = [{"name": "main", "commit": {"sha": "a" * 40}}]

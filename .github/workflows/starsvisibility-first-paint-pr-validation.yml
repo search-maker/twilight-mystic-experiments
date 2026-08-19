@@ -1,4 +1,4 @@
-name: StarsVisibility production load profile
+name: StarsVisibility production payload audit
 
 on:
   pull_request:
@@ -8,68 +8,32 @@ permissions:
   contents: read
 
 jobs:
-  profile:
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.16.0
-      - name: Install browser driver
-        run: |
-          npm init -y >/dev/null 2>&1
-          npm install playwright-core@1.61.1 --no-save
-          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Profile production startup
-        env:
-          SITE: https://starsvisibility.pages.dev
-        run: |
-          set -euo pipefail
-          cat > profile.mjs <<'NODE'
-          import { chromium } from 'playwright-core';
-          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
-          const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-          await context.addInitScript(() => {
-            window.__profile = { controlsVisibleAt: null, lcp: null, longTasks: [] };
-            new PerformanceObserver(list => { for (const e of list.getEntries()) window.__profile.lcp = { startTime: e.startTime, size: e.size, tag: e.element?.tagName || null, id: e.element?.id || null, cls: e.element?.className || null }; }).observe({ type: 'largest-contentful-paint', buffered: true });
-            try { new PerformanceObserver(list => { for (const e of list.getEntries()) window.__profile.longTasks.push({ startTime: e.startTime, duration: e.duration }); }).observe({ type: 'longtask', buffered: true }); } catch {}
-            const tick = () => {
-              if (window.__profile.controlsVisibleAt == null) {
-                const el = document.getElementById('mainControls'); const r = el?.getBoundingClientRect?.(); const s = el ? getComputedStyle(el) : null;
-                if (r && r.width > 0 && r.height > 0 && s && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0) window.__profile.controlsVisibleAt = performance.now();
-              }
-              if (performance.now() < 15000) requestAnimationFrame(tick);
-            };
-            requestAnimationFrame(tick);
-          });
-          const page = await context.newPage(); const pageErrors = []; page.on('pageerror', e => pageErrors.push(e.message));
-          const response = await page.goto(`${process.env.SITE}/?load-profile=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'load', timeout: 120000 });
-          await page.waitForTimeout(5000);
-          const result = await page.evaluate(() => {
-            const nav = performance.getEntriesByType('navigation')[0];
-            return {
-              nav: nav ? { responseStart:nav.responseStart,responseEnd:nav.responseEnd,domInteractive:nav.domInteractive,domContentLoadedEventEnd:nav.domContentLoadedEventEnd,loadEventEnd:nav.loadEventEnd,transferSize:nav.transferSize,encodedBodySize:nav.encodedBodySize,decodedBodySize:nav.decodedBodySize } : null,
-              paints:Object.fromEntries(performance.getEntriesByType('paint').map(e=>[e.name,e.startTime])), controlsVisibleAt:window.__profile.controlsVisibleAt,lcp:window.__profile.lcp,longTasks:window.__profile.longTasks.sort((a,b)=>b.duration-a.duration).slice(0,20),totalLongTaskMs:window.__profile.longTasks.reduce((s,e)=>s+e.duration,0),
-              resources:performance.getEntriesByType('resource').map(e=>({name:e.name,initiatorType:e.initiatorType,duration:e.duration,transferSize:e.transferSize,encodedBodySize:e.encodedBodySize,decodedBodySize:e.decodedBodySize})).sort((a,b)=>b.duration-a.duration).slice(0,15),
-              scripts:[...document.scripts].map(s=>({src:s.src||null,inlineChars:s.src?0:s.textContent.length})), htmlChars:document.documentElement.outerHTML.length,bodyTextChars:document.body?.innerText?.length||0,readyState:document.readyState,
-            };
-          });
-          result.status=response?.status()??null; result.pageErrors=pageErrors; console.log('LOAD_PROFILE',JSON.stringify(result)); if(pageErrors.length)throw new Error(`PAGE_ERRORS_${JSON.stringify(pageErrors)}`); await context.close(); await browser.close();
-          NODE
-          node profile.mjs
-      - name: Inspect inline app self-worker contract
+      - name: Audit production HTML payload
         env:
           SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
-          const url = process.env.SITE + '/?source-inspect=' + process.env.GITHUB_RUN_ID;
+          const url = process.env.SITE + '/?payload-audit=' + process.env.GITHUB_RUN_ID;
           const response = await fetch(url);
           const html = await response.text();
-          for (const needle of ['APP_SCRIPT_SOURCE','new Blob','__CALC_WORKER__','new Worker','document.currentScript']) {
-            const hits=[]; let from=0;
-            while(true){const i=html.indexOf(needle,from);if(i<0)break;hits.push(i);from=i+needle.length;}
-            console.log('NEEDLE', needle, 'COUNT', hits.length, 'POSITIONS', hits.slice(0,20).join(','));
-            for (const i of hits.slice(0,5)) console.log('SNIPPET', needle, JSON.stringify(html.slice(Math.max(0,i-260), Math.min(html.length,i+520))));
+          const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m,i)=>({i,start:m.index,chars:m[1].length,body:m[1]}));
+          scripts.sort((a,b)=>b.chars-a.chars);
+          const main=scripts[0];
+          console.log('HTML_CHARS',html.length,'SCRIPT_SIZES',scripts.map(s=>({i:s.i,start:s.start,chars:s.chars})).slice(0,20));
+          const lines=main.body.split('\n').map((text,index)=>({line:index+1,chars:text.length,text})).sort((a,b)=>b.chars-a.chars).slice(0,30);
+          console.log('TOP_LINES',JSON.stringify(lines.map(x=>({line:x.line,chars:x.chars,prefix:x.text.slice(0,220)}))));
+          for(const needle of ['STAR_CATALOG','starCatalog','CATALOG','catalog','BRIGHT','const stars','const STAR','STARS','hip','ra:', 'dec:']){
+            const hits=[];let from=0;while(true){const i=main.body.indexOf(needle,from);if(i<0)break;hits.push(i);from=i+needle.length;}console.log('NEEDLE',needle,'COUNT',hits.length,'FIRST',hits.slice(0,10));
           }
+          const bigLines=main.body.split('\n').map((text,index)=>({line:index+1,chars:text.length,text})).filter(x=>x.chars>5000);
+          console.log('BIG_LINE_COUNT',bigLines.length,'BIG_LINE_TOTAL',bigLines.reduce((s,x)=>s+x.chars,0));
+          for(const x of bigLines.slice(0,30)) console.log('BIG',x.line,x.chars,JSON.stringify(x.text.slice(0,400)));
           NODE

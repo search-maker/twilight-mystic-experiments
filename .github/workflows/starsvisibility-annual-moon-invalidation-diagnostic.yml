@@ -23,7 +23,7 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Test Moon change after annual calculation
+      - name: Test Moon change while annual calculation is running
         shell: bash
         env:
           SITE: https://starsvisibility.pages.dev
@@ -34,7 +34,7 @@ jobs:
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
           const page=await browser.newPage({viewport:{width:1440,height:1200}});
           const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?moon-invalidation=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.goto(`${process.env.SITE}/?moon-running-invalidation=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
           await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
           await page.evaluate(()=>{
             const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
@@ -46,29 +46,26 @@ jobs:
             raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','combined');
             document.getElementById('calculateAnnual')?.click();
           });
-          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:180000});
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===true,null,{timeout:10000});
           await page.waitForTimeout(500);
-          async function snapshot(){
-            return await page.evaluate(()=>{
-              let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
-              let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
-              const canvas=document.getElementById('annualChart');
-              const rect=canvas?.getBoundingClientRect?.();
-              const parent=canvas?.parentElement;
-              const grand=parent?.parentElement;
-              let current=null; try{current=eval('annualExportsAreCurrent')();}catch(_){}
-              return {moon:document.getElementById('moonOn')?.value,rows:rows.length,points:points.length,exportDisabled:document.getElementById('exportAnnualCsv')?.disabled,exportsCurrent:current,tableHidden:document.getElementById('annualTableWrap')?.hidden??null,canvasHidden:canvas?.hidden??null,canvasDisplay:canvas?getComputedStyle(canvas).display:null,canvasVisibility:canvas?getComputedStyle(canvas).visibility:null,canvasRect:rect?{width:rect.width,height:rect.height}:null,parent:{id:parent?.id||'',className:parent?.className||'',hidden:parent?.hidden??null,display:parent?getComputedStyle(parent).display:null},grand:{id:grand?.id||'',className:grand?.className||'',hidden:grand?.hidden??null,display:grand?getComputedStyle(grand).display:null},dataUrl:canvas?.toDataURL?.('image/png')||''};
-            });
-          }
-          const before=await snapshot();
+          const duringBefore=await page.evaluate(()=>({moon:document.getElementById('moonOn')?.value,calculateDisabled:document.getElementById('calculateAnnual')?.disabled,cancelHidden:document.getElementById('cancelAnnual')?.hidden}));
           await page.evaluate(()=>{
             const moon=document.getElementById('moonOn'); moon.value='off'; moon.dispatchEvent(new Event('change',{bubbles:true}));
           });
-          await page.waitForTimeout(500);
-          const after=await snapshot();
-          const report={before:{...before,dataUrlLength:before.dataUrl.length},after:{...after,dataUrlLength:after.dataUrl.length},sameCanvasImage:before.dataUrl===after.dataUrl,errors};
-          delete report.before.dataUrl; delete report.after.dataUrl;
-          console.log('MOON_INVALIDATION_VISIBILITY',JSON.stringify(report));
+          const duringAfter=await page.evaluate(()=>{
+            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
+            return {moon:document.getElementById('moonOn')?.value,calculateDisabled:document.getElementById('calculateAnnual')?.disabled,cancelHidden:document.getElementById('cancelAnnual')?.hidden,rows:rows.length};
+          });
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false,null,{timeout:180000});
+          await page.waitForTimeout(800);
+          const final=await page.evaluate(()=>{
+            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
+            let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
+            const compact=rows.map(x=>({date:x?.date??null,closeMinutes:x?.closeTriple?.minutesAfterSunset??null,closeStars:x?.closeTriple?.stars??[]}));
+            let current=null; try{current=eval('annualExportsAreCurrent')();}catch(_){}
+            return {moon:document.getElementById('moonOn')?.value,rows:compact,points:points.map(p=>({minutes:p?.minutes??null,sunAltitude:p?.sunAltitude??null})),exportsCurrent:current,exportDisabled:document.getElementById('exportAnnualCsv')?.disabled,chartHidden:document.getElementById('annualChartWrap')?.hidden??null,progress:document.getElementById('annualProgressText')?.textContent??''};
+          });
+          console.log('MOON_TOGGLE_DURING_RUN',JSON.stringify({duringBefore,duringAfter,final,errors}));
           await browser.close();
           if(errors.length)throw new Error(JSON.stringify(errors));
           NODE

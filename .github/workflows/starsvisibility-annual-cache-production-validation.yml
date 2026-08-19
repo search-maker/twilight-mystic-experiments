@@ -1,0 +1,97 @@
+name: StarsVisibility Annual cache production validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-annual-cache-production-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install browser driver
+        shell: bash
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Validate production rejects stale Annual cache
+        shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
+          const page=await browser.newPage({viewport:{width:1440,height:1200}});
+          const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+          let marker=false;
+          for(let attempt=0;attempt<18;attempt++){
+            await page.goto(`${process.env.SITE}/?annual-cache-production=${process.env.GITHUB_RUN_ID}-${attempt}`,{waitUntil:'networkidle',timeout:120000});
+            marker=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-ANNUAL-CACHE-EXACT-MATCH-V1'));
+            if(marker) break;
+            await page.waitForTimeout(10000);
+          }
+          if(!marker) throw new Error('PRODUCTION_EXACT_CACHE_MARKER_MISSING_AFTER_WAIT');
+          await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
+          const setup=await page.evaluate(()=>{
+            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
+            raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
+            raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','off');
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','minutes');
+            const snap=eval('currentAnnualSettingsSnapshot')();
+            const key=eval('hashAnnualSettings')(snap.settingsJson);
+            const period=eval('currentAnnualPeriod')();
+            const dates=eval('annualDateStrings')(period,'weekly');
+            const poisonIndex=2;
+            const poison=dates.map((date,i)=>({date,pending:false,provisional:false,found:false,timeZone:'Asia/Jerusalem',closeTriple:{found:true,minutesAfterSunset:i===poisonIndex?56.36:46.84,sunAltitude:-9.5,stars:['28 Bet Ser','35 Kap Ser','41 Gam Ser']}}));
+            localStorage.setItem(key,JSON.stringify({schemaVersion:4,modelVersion:eval('THREE_STAR_MODEL_VERSION'),settingsJson:snap.settingsJson,createdAt:Date.now(),lastAccessedAt:Date.now(),results:poison}));
+            const strict=JSON.parse(snap.settingsJson);
+            return {key,dates,poisonIndex,strict};
+          });
+          await page.evaluate(()=>document.getElementById('calculateAnnual')?.click());
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:240000});
+          await page.waitForTimeout(500);
+          const result=await page.evaluate((setup)=>{
+            let rows=[];try{rows=eval('annualResults')||[]}catch(_){}
+            const cached=JSON.parse(localStorage.getItem(setup.key)||'null');
+            const off=eval('currentAnnualSettingsSnapshot')();
+            document.getElementById('moonOn').value='on';
+            const on=eval('currentAnnualSettingsSnapshot')();
+            document.getElementById('moonOn').value='off';
+            return {
+              rowDate:rows[setup.poisonIndex]?.date??null,
+              rowMinutes:rows[setup.poisonIndex]?.closeTriple?.minutesAfterSunset??null,
+              schemaVersion:cached?.schemaVersion??null,
+              exactCacheContract:cached?.exactCacheContract??null,
+              exactBuildFingerprint:cached?.exactBuildFingerprint??null,
+              resultsDigest:cached?.resultsDigest??null,
+              offKey:eval('hashAnnualSettings')(off.settingsJson),
+              onKey:eval('hashAnnualSettings')(on.settingsJson),
+              final:(()=>{try{return eval('annualResultsFinal')}catch{return null}})()
+            };
+          },setup);
+          if(result.rowMinutes===56.36) throw new Error('PRODUCTION_REPLAYED_SCHEMA4_POISON');
+          if(result.schemaVersion!==5) throw new Error('PRODUCTION_DID_NOT_SAVE_SCHEMA5');
+          if(result.exactCacheContract!=='annual-cache-exact-match-v1') throw new Error('PRODUCTION_EXACT_CONTRACT_MISSING');
+          if(!/^sha256:[0-9a-f]{64}$/.test(String(result.exactBuildFingerprint||''))) throw new Error('PRODUCTION_BUILD_FINGERPRINT_MISSING');
+          if(!result.resultsDigest) throw new Error('PRODUCTION_RESULTS_DIGEST_MISSING');
+          if(result.offKey===result.onKey) throw new Error('PRODUCTION_MOON_DETAIL_DID_NOT_CHANGE_KEY');
+          if(result.final!==true) throw new Error('PRODUCTION_RESULT_NOT_FINAL');
+          console.log('ANNUAL_EXACT_CACHE_PRODUCTION_PASS',JSON.stringify({setup,result,errors}));
+          await browser.close();
+          if(errors.length) throw new Error(JSON.stringify(errors));
+          NODE
+          node validate.mjs

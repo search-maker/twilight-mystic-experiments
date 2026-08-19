@@ -1,0 +1,160 @@
+# REVIEW-ONLY CONTROL-PLANE OBSERVER.
+# Reports completed review-freeze workflow identity/artifact metadata to Issue #60.
+# It cannot dispatch workflows, modify repository contents, authorize science, or run a solver.
+name: aerosol-family-v2-review-freeze-observer
+
+on:
+  workflow_run:
+    workflows: [aerosol-family-v2-seed-proof-review]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-family-v2-review-freeze-observer.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: aerosol-family-v2-review-freeze-observer
+  cancel-in-progress: false
+
+jobs:
+  report-review-freeze:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report completed review-freeze identity without scientific action
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          REPOSITORY = os.environ['GITHUB_REPOSITORY']
+          TOKEN = os.environ['GH_TOKEN']
+          EVENT_NAME = os.environ['EVENT_NAME']
+          EVENT_RUN_ID = os.environ.get('EVENT_RUN_ID', '').strip()
+          TARGET_WORKFLOW = 'aerosol-family-v2-seed-proof-review.yml'
+          TARGET_ARTIFACT = 'aerosol-family-v2-r6-freeze-proof'
+          ISSUE_NUMBER = 60
+
+          headers = {
+              'Authorization': f'Bearer {TOKEN}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'aerosol-family-v2-review-freeze-observer',
+          }
+
+          def request(path, *, method='GET', payload=None):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              req = urllib.request.Request(
+                  'https://api.github.com' + path,
+                  data=data,
+                  method=method,
+                  headers=headers,
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=90) as response:
+                      raw = response.read()
+                      return None if not raw else json.loads(raw)
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode('utf-8', errors='replace')
+                  raise RuntimeError(f'GitHub API {exc.code} for {method} {path}: {detail}') from exc
+
+          def pages(path, key=None):
+              rows = []
+              page = 1
+              while True:
+                  sep = '&' if '?' in path else '?'
+                  data = request(f'{path}{sep}per_page=100&page={page}')
+                  batch = data.get(key, []) if key else data
+                  if not isinstance(batch, list):
+                      raise RuntimeError(f'GitHub response missing list: {key or "root"}')
+                  rows.extend(batch)
+                  if len(batch) < 100:
+                      return rows
+                  page += 1
+
+          def grouped(value):
+              text = str(value or '')
+              return '-'.join(text[i:i + 4] for i in range(0, len(text), 4)) or 'none'
+
+          if EVENT_NAME == 'workflow_run':
+              if not EVENT_RUN_ID.isdigit():
+                  raise SystemExit('refuse: workflow_run event lacks a numeric run id')
+              run = request(f'/repos/{REPOSITORY}/actions/runs/{int(EVENT_RUN_ID)}')
+          elif EVENT_NAME == 'push':
+              workflow_ref = urllib.parse.quote(TARGET_WORKFLOW, safe='')
+              runs = pages(
+                  f'/repos/{REPOSITORY}/actions/workflows/{workflow_ref}/runs',
+                  'workflow_runs',
+              )
+              runs = [row for row in runs if str(row.get('event') or '') == 'workflow_dispatch']
+              if not runs:
+                  raise SystemExit('no review-freeze workflow_dispatch run exists to report')
+              run = max(runs, key=lambda row: int(row.get('id') or 0))
+          else:
+              raise SystemExit(f'unsupported observer event: {EVENT_NAME}')
+
+          run_id = int(run.get('id') or 0)
+          if run_id <= 0:
+              raise SystemExit('refuse: invalid review-freeze run id')
+
+          for _ in range(120):
+              run = request(f'/repos/{REPOSITORY}/actions/runs/{run_id}')
+              if str(run.get('status') or '') == 'completed':
+                  break
+              time.sleep(3)
+          else:
+              raise SystemExit('review-freeze run did not complete inside observer window')
+
+          if str(run.get('event') or '') != 'workflow_dispatch':
+              raise SystemExit('refuse: target run was not created by workflow_dispatch')
+
+          artifacts = pages(f'/repos/{REPOSITORY}/actions/runs/{run_id}/artifacts', 'artifacts')
+          proof_artifacts = [row for row in artifacts if str(row.get('name') or '') == TARGET_ARTIFACT]
+
+          marker = f'MYSTIC-R6-REVIEW-FREEZE-REPORT {grouped(run_id)}'
+          comments = pages(f'/repos/{REPOSITORY}/issues/{ISSUE_NUMBER}/comments')
+          if any(marker in str(row.get('body') or '') for row in comments):
+              print('report already present; no duplicate Issue #60 mutation')
+              raise SystemExit(0)
+
+          artifact = proof_artifacts[0] if len(proof_artifacts) == 1 else {}
+          digest = str(artifact.get('digest') or '')
+          report = '\n'.join([
+              marker,
+              f'run_attempt: {int(run.get("run_attempt") or 0)}',
+              f'status: {str(run.get("status") or "")}',
+              f'conclusion: {str(run.get("conclusion") or "")}',
+              f'head_branch: {str(run.get("head_branch") or "")}',
+              f'head_sha_grouped: {grouped(run.get("head_sha"))}',
+              f'event: {str(run.get("event") or "")}',
+              f'proof_artifact_count: {len(proof_artifacts)}',
+              f'proof_artifact_id_grouped: {grouped(artifact.get("id"))}',
+              f'proof_artifact_digest_grouped: {grouped(digest)}',
+              f'proof_artifact_expired: {str(bool(artifact.get("expired"))).lower() if artifact else "n/a"}',
+              'scientific_execution_authorized: false',
+              'solver_execution_performed_by_observer: false',
+          ])
+          request(
+              f'/repos/{REPOSITORY}/issues/{ISSUE_NUMBER}/comments',
+              method='POST',
+              payload={'body': report},
+          )
+          print(report)
+          PY

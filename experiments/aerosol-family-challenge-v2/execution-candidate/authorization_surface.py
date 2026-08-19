@@ -198,7 +198,19 @@ def build_surface(
         if current_pr is not None and int(row.get("number") or 0) == int(current_pr):
             continue
         positive.update(positive_candidate_claims(_row_text(row), ordinal))
-    for rows in (issues, issue_comments, review_comments, commit_comments):
+
+    issue60_comment_ids = {
+        str(row.get("id") or "")
+        for row in issue60_comments
+        if row.get("id")
+    }
+    for row in issues:
+        positive.update(positive_candidate_claims(_row_text(row), ordinal))
+    for row in issue_comments:
+        if str(row.get("id") or "") in issue60_comment_ids:
+            continue
+        positive.update(positive_candidate_claims(_row_text(row), ordinal))
+    for rows in (review_comments, commit_comments):
         for row in rows:
             positive.update(positive_candidate_claims(_row_text(row), ordinal))
     for row in issue60_comments:

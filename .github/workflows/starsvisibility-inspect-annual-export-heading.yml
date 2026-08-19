@@ -1,0 +1,63 @@
+name: StarsVisibility annual export heading inspect
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-inspect-annual-export-heading.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install browser driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Inspect live annual functions and headers
+        shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > inspect.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
+          const page = await browser.newPage({viewport:{width:1400,height:1000}});
+          await page.goto(`${process.env.SITE}/?inspect-annual=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.waitForSelector('#annualChartMetric',{timeout:30000});
+          const info = await page.evaluate(() => {
+            const getFn = name => { try { const fn = eval(name); return typeof fn === 'function' ? fn.toString() : String(fn); } catch (e) { return 'ERR '+e; } };
+            const raw = (id,v) => { const e=document.getElementById(id); if(!e) return false; if('checked' in e && typeof v==='boolean') e.checked=v; else e.value=String(v); return true; };
+            raw('calculatorFeature','three-star');
+            raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            raw('annualResultKind','regular');
+            const metric = document.getElementById('annualChartMetric')?.value || 'combined';
+            let regularHeader=null, consecutiveHeader=null, alteredHeader=null;
+            try { regularHeader = eval('annualChartHeader')(metric); } catch(e) { regularHeader={error:String(e)}; }
+            raw('annualResultKind','consecutive');
+            try { consecutiveHeader = eval('annualChartHeader')(metric); } catch(e) { consecutiveHeader={error:String(e)}; }
+            raw('threeStarMagnitudeThreshold',9.9); raw('threeStarMagnitudeBasis','catalog');
+            try { alteredHeader = eval('annualChartHeader')(metric); } catch(e) { alteredHeader={error:String(e)}; }
+            return {
+              uiLanguage: (()=>{try{return eval('uiLanguage')}catch{return null}})(), metric,
+              regularHeader, consecutiveHeader, alteredHeader,
+              exportAnnualCsv: getFn('exportAnnualCsv'),
+              annualChartHeader: getFn('annualChartHeader')
+            };
+          });
+          console.log('INSPECT', JSON.stringify(info));
+          await browser.close();
+          NODE
+          node inspect.mjs

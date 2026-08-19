@@ -1,0 +1,53 @@
+name: Report StarsVisibility consecutive sky-map validation
+
+on:
+  push:
+    branches:
+      - execution/diagnose-rekhasim-close-triple-may-2026
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: search-maker/twilight-mystic-experiments
+      BRANCH: execution/diagnose-rekhasim-close-triple-may-2026
+      TARGET_WORKFLOW: StarsVisibility consecutive sky-map mode validation
+    steps:
+      - name: Wait for validator and report to diagnostic PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=""
+          conclusion=""
+          for attempt in $(seq 1 36); do
+            row="$(gh run list --repo "$REPO" --workflow "$TARGET_WORKFLOW" --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion,headSha --jq '.[0] | [.databaseId,.status,(.conclusion // ""),.headSha] | @tsv' 2>/dev/null || true)"
+            if [ -n "$row" ]; then
+              IFS=$'\t' read -r run_id status conclusion head_sha <<< "$row"
+              if [ "$status" = "completed" ]; then break; fi
+            fi
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            body="### Consecutive sky-map validation reporter\n\nCould not locate the validator workflow run for branch \`$BRANCH\`."
+            gh issue comment 248 --repo "$REPO" --body "$body"
+            exit 0
+          fi
+          gh run view "$run_id" --repo "$REPO" --log > validator.log 2>&1 || true
+          tail -n 140 validator.log > validator-tail.log
+          {
+            echo "### Consecutive sky-map validation — ${conclusion:-unknown}"
+            echo
+            echo "Validator run: $run_id"
+            echo
+            echo '```text'
+            cat validator-tail.log
+            echo '```'
+          } > report.md
+          gh issue comment 248 --repo "$REPO" --body-file report.md

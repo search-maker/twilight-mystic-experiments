@@ -1,0 +1,154 @@
+name: StarsVisibility consecutive autoload validation
+
+on:
+  push:
+    branches:
+      - execution/diagnose-rekhasim-close-triple-may-2026
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+      - name: Install browser driver
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Validate persisted consecutive settings on first automatic calculation
+        env:
+          SITE: https://agent-fix-close-triple-autol.starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate-autoload.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const baseValues = {
+            date: { value: '2026-05-29' },
+            lat: { value: '32.74907' },
+            lon: { value: '35.09901' },
+            timezone: { value: 'Asia/Jerusalem' },
+            observerElevationM: { value: '105' },
+            observerMode: { value: 'ordinaryOrGuided' },
+            minAlt: { value: '3' },
+            moonOn: { value: 'off' },
+            threeStarCount: { value: '3' },
+            threeStarMagnitudeBasis: { value: 'effective' },
+            threeStarMagnitudeThreshold: { value: '1.7' },
+            threeCloseEnabled: { checked: true },
+            threeCloseMaxDiameterDeg: { value: '4' },
+            threeCloseMagnitudeBasis: { value: 'effective' },
+            threeCloseMagnitudeThreshold: { value: '3' },
+          };
+
+          async function waitForDeployment(page) {
+            for (let attempt = 0; attempt < 30; attempt++) {
+              await page.goto(`${process.env.SITE}/?autoload-ready=${process.env.GITHUB_RUN_ID}-${attempt}`, { waitUntil: 'networkidle', timeout: 120000 });
+              const ready = await page.evaluate(() => document.documentElement.outerHTML.includes('STARS-CLOSE-TRIPLE-AUTOLOAD-ORDER-V1'));
+              if (ready) return;
+              await page.waitForTimeout(10000);
+            }
+            throw new Error('AUTOLOAD_FIX_MARKER_MISSING_AFTER_WAIT');
+          }
+
+          const seedContext = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await seedContext.addInitScript(values => {
+            localStorage.setItem('starVisibilityUserSettingsV1', JSON.stringify({ version: 4, mode: 'evening', values }));
+          }, baseValues);
+          const page = await seedContext.newPage();
+          const errors = [];
+          page.on('pageerror', error => errors.push(error.message));
+          await waitForDeployment(page);
+
+          await page.waitForFunction(() => document.getElementById('threeCloseEnabled')?.checked === true, null, { timeout: 30000 });
+          await page.waitForFunction(() => {
+            try {
+              const data = eval('threeStarResultData');
+              return data?.found === true && data?.closeTriple?.enabled === true && data?.closeTriple?.found === true;
+            } catch { return false; }
+          }, null, { timeout: 180000 });
+
+          const first = await page.evaluate(() => {
+            const data = eval('threeStarResultData');
+            const saved = JSON.parse(localStorage.getItem('starVisibilityUserSettingsV1') || 'null');
+            return {
+              checked: document.getElementById('threeCloseEnabled')?.checked === true,
+              ariaChecked: document.getElementById('threeCloseEnabled')?.getAttribute('aria-checked'),
+              regularMinutes: Number(data?.minutesAfterSunset),
+              closeEnabled: data?.closeTriple?.enabled === true,
+              closeFound: data?.closeTriple?.found === true,
+              closeMinutes: Number(data?.closeTriple?.minutesAfterSunset),
+              closeNames: (data?.closeTriple?.starMagnitudes || []).map(star => star.name || star.catalogId || ''),
+              resultVisible: document.getElementById('threeCloseResultSection')?.hidden === false,
+              savedClose: saved?.values?.threeCloseEnabled || null,
+              savedDiameter: saved?.values?.threeCloseMaxDiameterDeg || null,
+              savedBasis: saved?.values?.threeCloseMagnitudeBasis || null,
+              savedThreshold: saved?.values?.threeCloseMagnitudeThreshold || null,
+            };
+          });
+          if (!first.checked || first.ariaChecked !== 'true') throw new Error(`FIRST_LOAD_SWITCH_NOT_RESTORED_${JSON.stringify(first)}`);
+          if (!first.closeEnabled || !first.closeFound || !first.resultVisible) throw new Error(`FIRST_AUTO_CALC_MISSING_CLOSE_${JSON.stringify(first)}`);
+          if (!(first.closeMinutes > 40 && first.closeMinutes < 55)) throw new Error(`FIRST_AUTO_CLOSE_TIME_UNEXPECTED_${JSON.stringify(first)}`);
+          if (first.savedClose?.checked !== true) throw new Error(`CLOSE_SETTING_NOT_PERSISTED_${JSON.stringify(first.savedClose)}`);
+          if (String(first.savedDiameter?.value) !== '4' || String(first.savedBasis?.value) !== 'effective' || String(first.savedThreshold?.value) !== '3') {
+            throw new Error(`CLOSE_DETAIL_SETTINGS_NOT_PERSISTED_${JSON.stringify(first)}`);
+          }
+
+          const storageState = await seedContext.storageState();
+          await seedContext.close();
+
+          const reloadContext = await browser.newContext({ storageState, viewport: { width: 1440, height: 1200 } });
+          const reloadPage = await reloadContext.newPage();
+          const reloadErrors = [];
+          reloadPage.on('pageerror', error => reloadErrors.push(error.message));
+          await reloadPage.goto(`${process.env.SITE}/?autoload-reload=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await reloadPage.waitForFunction(() => {
+            try {
+              return document.getElementById('threeCloseEnabled')?.checked === true
+                && eval('threeStarResultData')?.closeTriple?.enabled === true
+                && eval('threeStarResultData')?.closeTriple?.found === true;
+            } catch { return false; }
+          }, null, { timeout: 180000 });
+          const reload = await reloadPage.evaluate(() => ({
+            checked: document.getElementById('threeCloseEnabled')?.checked === true,
+            closeEnabled: eval('threeStarResultData')?.closeTriple?.enabled === true,
+            closeMinutes: Number(eval('threeStarResultData')?.closeTriple?.minutesAfterSunset),
+            visible: document.getElementById('threeCloseResultSection')?.hidden === false,
+          }));
+          if (!reload.checked || !reload.closeEnabled || !reload.visible) throw new Error(`RELOAD_AUTO_CLOSE_MISSING_${JSON.stringify(reload)}`);
+          await reloadContext.close();
+
+          const offValues = { ...baseValues, threeCloseEnabled: { checked: false } };
+          const offContext = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await offContext.addInitScript(values => {
+            localStorage.setItem('starVisibilityUserSettingsV1', JSON.stringify({ version: 4, mode: 'evening', values }));
+          }, offValues);
+          const offPage = await offContext.newPage();
+          const offErrors = [];
+          offPage.on('pageerror', error => offErrors.push(error.message));
+          await offPage.goto(`${process.env.SITE}/?autoload-off=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await offPage.waitForFunction(() => {
+            try { return eval('threeStarResultData')?.found === true; } catch { return false; }
+          }, null, { timeout: 180000 });
+          const off = await offPage.evaluate(() => ({
+            checked: document.getElementById('threeCloseEnabled')?.checked === true,
+            closeEnabled: eval('threeStarResultData')?.closeTriple?.enabled === true,
+            closeVisible: document.getElementById('threeCloseResultSection')?.hidden === false,
+          }));
+          if (off.checked || off.closeEnabled || off.closeVisible) throw new Error(`DISABLED_CLOSE_REGRESSION_${JSON.stringify(off)}`);
+          await offContext.close();
+
+          await browser.close();
+          const allErrors = [...errors, ...reloadErrors, ...offErrors];
+          if (allErrors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(allErrors)}`);
+          console.log('CONSECUTIVE_AUTOLOAD_PASS', JSON.stringify({ first, reload, off }));
+          NODE
+          node validate-autoload.mjs

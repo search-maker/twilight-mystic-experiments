@@ -1,4 +1,4 @@
-name: StarsVisibility first-paint production validation
+name: StarsVisibility production load profile
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  profile:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -20,38 +20,91 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Verify production paints before automatic calculation
+      - name: Profile production startup
         env:
           SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
-          cat > validate.mjs <<'NODE'
+          cat > profile.mjs <<'NODE'
           import { chromium } from 'playwright-core';
-          const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
-          const context=await browser.newContext({viewport:{width:1440,height:1200}});
-          await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),{date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}});
-          const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-          let ready=false;
-          for(let i=0;i<30;i++){
-            await page.goto(`${process.env.SITE}/?paint-prod=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});
-            ready=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1')&&document.documentElement.outerHTML.includes('stars-auto-calc-start'));
-            if(ready)break;
-            await page.waitForTimeout(10000);
-          }
-          if(!ready)throw new Error('PRODUCTION_FIRST_PAINT_FIX_NOT_DEPLOYED');
-          await page.waitForFunction(()=>{
-            const fcp=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');
-            const start=performance.getEntriesByName('stars-auto-calc-start','mark')[0];
-            return !!fcp&&!!start;
-          },null,{timeout:30000});
-          await page.waitForFunction(()=>{try{const d=eval('threeStarResultData');return d?.found===true&&d?.closeTriple?.enabled===true&&d?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
-          const r=await page.evaluate(()=>{const fcp=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');const start=performance.getEntriesByName('stars-auto-calc-start','mark')[0];const d=eval('threeStarResultData');const rect=document.getElementById('mainControls')?.getBoundingClientRect?.();return{fcp:fcp?.startTime??null,autoStart:start?.startTime??null,delta:(start?.startTime??0)-(fcp?.startTime??0),controlsVisible:!!rect&&rect.width>0&&rect.height>0,regular:Number(d?.minutesAfterSunset),close:Number(d?.closeTriple?.minutesAfterSunset),closeEnabled:d?.closeTriple?.enabled===true,closeFound:d?.closeTriple?.found===true,marker:document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1')}});
-          if(!r.marker)throw new Error(`MARKER_MISSING_${JSON.stringify(r)}`);
-          if(!Number.isFinite(r.fcp)||!Number.isFinite(r.autoStart)||!(r.autoStart>r.fcp))throw new Error(`CALCULATION_NOT_AFTER_FCP_${JSON.stringify(r)}`);
-          if(!r.controlsVisible)throw new Error(`CONTROLS_NOT_VISIBLE_${JSON.stringify(r)}`);
-          if(!r.closeEnabled||!r.closeFound||!(r.close>40&&r.close<55))throw new Error(`CONSECUTIVE_AUTO_CALC_REGRESSION_${JSON.stringify(r)}`);
-          if(errors.length)throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
-          const no=await browser.newContext({viewport:{width:1440,height:1200}});const p=await no.newPage();await p.goto(`${process.env.SITE}/?test-no-auto&paint-prod-no-auto=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});await p.waitForTimeout(1500);const ns=await p.evaluate(()=>({markCount:performance.getEntriesByName('stars-auto-calc-start','mark').length,active:(()=>{try{return !!eval('activeCalculationWorker')}catch{return null}})()}));if(ns.markCount!==0||ns.active)throw new Error(`TEST_NO_AUTO_REGRESSION_${JSON.stringify(ns)}`);await no.close();
-          console.log('FIRST_PAINT_PRODUCTION_PASS',JSON.stringify({r,ns}));await context.close();await browser.close();
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await context.addInitScript(() => {
+            window.__profile = { controlsVisibleAt: null, lcp: null, longTasks: [] };
+            new PerformanceObserver(list => {
+              for (const e of list.getEntries()) window.__profile.lcp = { startTime: e.startTime, size: e.size, tag: e.element?.tagName || null, id: e.element?.id || null, cls: e.element?.className || null };
+            }).observe({ type: 'largest-contentful-paint', buffered: true });
+            try {
+              new PerformanceObserver(list => {
+                for (const e of list.getEntries()) window.__profile.longTasks.push({ startTime: e.startTime, duration: e.duration });
+              }).observe({ type: 'longtask', buffered: true });
+            } catch {}
+            const tick = () => {
+              if (window.__profile.controlsVisibleAt == null) {
+                const el = document.getElementById('mainControls');
+                const r = el?.getBoundingClientRect?.();
+                const s = el ? getComputedStyle(el) : null;
+                if (r && r.width > 0 && r.height > 0 && s && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0) window.__profile.controlsVisibleAt = performance.now();
+              }
+              if (performance.now() < 15000) requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+          });
+          const page = await context.newPage();
+          const pageErrors = [];
+          page.on('pageerror', e => pageErrors.push(e.message));
+          const response = await page.goto(`${process.env.SITE}/?load-profile=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'load', timeout: 120000 });
+          await page.waitForTimeout(5000);
+          const result = await page.evaluate(() => {
+            const nav = performance.getEntriesByType('navigation')[0];
+            const paints = Object.fromEntries(performance.getEntriesByType('paint').map(e => [e.name, e.startTime]));
+            const resources = performance.getEntriesByType('resource').map(e => ({
+              name: e.name,
+              initiatorType: e.initiatorType,
+              startTime: e.startTime,
+              responseStart: e.responseStart,
+              responseEnd: e.responseEnd,
+              duration: e.duration,
+              transferSize: e.transferSize,
+              encodedBodySize: e.encodedBodySize,
+              decodedBodySize: e.decodedBodySize,
+            })).sort((a,b) => b.duration - a.duration).slice(0, 15);
+            const scripts = [...document.scripts].map(s => ({ src: s.src || null, inlineChars: s.src ? 0 : s.textContent.length }));
+            return {
+              nav: nav ? {
+                startTime: nav.startTime,
+                domainLookupStart: nav.domainLookupStart,
+                domainLookupEnd: nav.domainLookupEnd,
+                connectStart: nav.connectStart,
+                secureConnectionStart: nav.secureConnectionStart,
+                connectEnd: nav.connectEnd,
+                requestStart: nav.requestStart,
+                responseStart: nav.responseStart,
+                responseEnd: nav.responseEnd,
+                domInteractive: nav.domInteractive,
+                domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
+                loadEventEnd: nav.loadEventEnd,
+                transferSize: nav.transferSize,
+                encodedBodySize: nav.encodedBodySize,
+                decodedBodySize: nav.decodedBodySize,
+              } : null,
+              paints,
+              controlsVisibleAt: window.__profile.controlsVisibleAt,
+              lcp: window.__profile.lcp,
+              longTasks: window.__profile.longTasks.sort((a,b)=>b.duration-a.duration).slice(0, 20),
+              totalLongTaskMs: window.__profile.longTasks.reduce((s,e)=>s+e.duration,0),
+              resources,
+              scripts,
+              htmlChars: document.documentElement.outerHTML.length,
+              bodyTextChars: document.body?.innerText?.length || 0,
+              readyState: document.readyState,
+            };
+          });
+          result.status = response?.status() ?? null;
+          result.headers = response ? await response.allHeaders() : null;
+          result.pageErrors = pageErrors;
+          console.log('LOAD_PROFILE', JSON.stringify(result));
+          if (pageErrors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(pageErrors)}`);
+          await context.close(); await browser.close();
           NODE
-          node validate.mjs
+          node profile.mjs

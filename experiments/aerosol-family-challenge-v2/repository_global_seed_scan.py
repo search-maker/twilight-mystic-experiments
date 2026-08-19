@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,13 @@ SURFACE_KEYS = (
     'branches', 'runs', 'artifacts', 'pulls', 'issues',
     'issueComments', 'pullReviewComments', 'commitComments', 'issue60Comments',
 )
+SNAPSHOT_ID_SURFACES = tuple(key for key in SURFACE_KEYS if key != 'branches')
 
 # These fields describe the observation/transport lifecycle rather than the
-# collision surface.  They are intentionally removed recursively before the
+# collision surface. They are intentionally removed recursively before the
 # two-pass fingerprint so a run changing from queued to completed (or a
 # timestamp advancing while pagination is in flight) does not create a false
-# instability.  All identifiers, names, hashes, bodies and other content are
+# instability. All identifiers, names, hashes, bodies and other content are
 # retained because any of them can carry candidate-seed evidence.
 MUTABLE_OPERATIONAL_KEYS = frozenset({
     'created_at', 'updated_at', 'started_at', 'completed_at',
@@ -110,11 +112,153 @@ def _canonical_collision_value(value: Any, key: str | None = None) -> Any:
     return value
 
 
+def _numeric_row_id(row: dict[str, Any], surface_key: str) -> int:
+    try:
+        value = int(row.get('id') or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f'{surface_key} row lacks a numeric id required for snapshot fencing') from exc
+    if value <= 0:
+        raise RuntimeError(f'{surface_key} row lacks a positive id required for snapshot fencing')
+    return value
+
+
+def _dedupe_rows_by_id(rows: list[dict[str, Any]], surface_key: str) -> list[dict[str, Any]]:
+    """Collapse pagination duplicates while refusing conflicting content for one stable row id."""
+    by_id: dict[int, dict[str, Any]] = {}
+    canonical_by_id: dict[int, Any] = {}
+    for row in rows:
+        row_id = _numeric_row_id(row, surface_key)
+        canonical = _canonical_collision_value(row)
+        if row_id in canonical_by_id and canonical_by_id[row_id] != canonical:
+            raise RuntimeError(f'{surface_key} row {row_id} changed within one complete enumeration')
+        by_id[row_id] = row
+        canonical_by_id[row_id] = canonical
+    return [by_id[row_id] for row_id in sorted(by_id)]
+
+
+def _dedupe_branches(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_name: dict[str, dict[str, Any]] = {}
+    canonical_by_name: dict[str, Any] = {}
+    for row in rows:
+        name = str(row.get('name') or '')
+        if not name:
+            raise RuntimeError('branch row lacks a stable name required for snapshot fencing')
+        canonical = _canonical_collision_value(row)
+        if name in canonical_by_name and canonical_by_name[name] != canonical:
+            raise RuntimeError(f'branch {name} changed within one complete enumeration')
+        by_name[name] = row
+        canonical_by_name[name] = canonical
+    return [by_name[name] for name in sorted(by_name)]
+
+
+def build_snapshot_fence(context: dict[str, Any], current_run_id: int | None = None) -> dict[str, Any]:
+    """Fence the exact first-enumeration universe while allowing later harmless append-only churn.
+
+    Branches are fenced by the complete first-pass branch-name set. Other GitHub surfaces are
+    fenced by their first-pass high-water numeric row id. The current audit run's own Actions
+    row/artifacts are removed before the fence is constructed.
+    """
+    filtered = _without_current_audit_self_metadata(context, current_run_id)
+    branch_names = [str(row.get('name') or '') for row in _dedupe_branches(filtered['branches'])]
+    max_ids: dict[str, int] = {}
+    for key in SNAPSHOT_ID_SURFACES:
+        rows = _dedupe_rows_by_id(filtered[key], key)
+        max_ids[key] = max((_numeric_row_id(row, key) for row in rows), default=0)
+    return {
+        'mode': 'FIRST_COMPLETE_ENUMERATION_HIGH_WATER_V1',
+        'branchNames': branch_names,
+        'maxIds': max_ids,
+    }
+
+
+def apply_snapshot_fence(
+    context: dict[str, Any],
+    fence: dict[str, Any],
+    current_run_id: int | None = None,
+) -> dict[str, Any]:
+    """Return only rows belonging to the first-pass snapshot fence.
+
+    Rows created after the fence are ignored for stability only. Existing fenced rows must remain
+    present and byte-semantically stable after lifecycle normalization, so edits/deletions and
+    branch-head movement still fail the two-pass comparison.
+    """
+    filtered = _without_current_audit_self_metadata(context, current_run_id)
+    expected_branches = {str(name) for name in fence.get('branchNames', [])}
+    branches = _dedupe_branches(filtered['branches'])
+    branch_map = {str(row.get('name') or ''): row for row in branches}
+    missing = sorted(expected_branches - set(branch_map))
+    if missing:
+        raise RuntimeError(f'snapshot-fenced branches disappeared during audit: {missing}')
+
+    out: dict[str, Any] = {
+        'branches': [branch_map[name] for name in sorted(expected_branches)],
+    }
+    max_ids = fence.get('maxIds')
+    if not isinstance(max_ids, dict):
+        raise ValueError('snapshot fence requires maxIds object')
+    for key in SNAPSHOT_ID_SURFACES:
+        high_water = int(max_ids.get(key, 0) or 0)
+        rows = _dedupe_rows_by_id(filtered[key], key)
+        out[key] = [row for row in rows if _numeric_row_id(row, key) <= high_water]
+    return out
+
+
+def post_fence_rows(
+    context: dict[str, Any],
+    fence: dict[str, Any],
+    current_run_id: int | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return rows that arrived after the first-pass snapshot fence."""
+    filtered = _without_current_audit_self_metadata(context, current_run_id)
+    expected_branches = {str(name) for name in fence.get('branchNames', [])}
+    branches = _dedupe_branches(filtered['branches'])
+    out: dict[str, list[dict[str, Any]]] = {
+        'branches': [row for row in branches if str(row.get('name') or '') not in expected_branches],
+    }
+    max_ids = fence.get('maxIds')
+    if not isinstance(max_ids, dict):
+        raise ValueError('snapshot fence requires maxIds object')
+    for key in SNAPSHOT_ID_SURFACES:
+        high_water = int(max_ids.get(key, 0) or 0)
+        rows = _dedupe_rows_by_id(filtered[key], key)
+        out[key] = [row for row in rows if _numeric_row_id(row, key) > high_water]
+    return out
+
+
+def find_post_fence_seed_collisions(
+    context: dict[str, Any],
+    fence: dict[str, Any],
+    candidates: set[int],
+    current_run_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Fail closed if a newly arrived row itself carries a candidate seed literal."""
+    external: list[dict[str, Any]] = []
+    for key, rows in post_fence_rows(context, fence, current_run_id).items():
+        for row in rows:
+            canonical = _canonical_collision_value(row)
+            hits = seed_literals(canonical, candidates)
+            if hits:
+                row_id = str(row.get('id') or row.get('number') or row.get('name') or row.get('url') or '')
+                external.append({'surface': key, 'id': row_id, 'seeds': hits})
+    return external
+
+
+def external_review_proof_artifacts(
+    context: dict[str, Any],
+    current_run_id: int | None = None,
+) -> list[dict[str, Any]]:
+    filtered = _without_current_audit_self_metadata(context, current_run_id)
+    return [
+        row for row in filtered['artifacts']
+        if str(row.get('name') or '') == REVIEW_PROOF_ARTIFACT_NAME
+    ]
+
+
 def canonical_collision_context(context: dict[str, Any], current_run_id: int | None = None) -> dict[str, Any]:
     """Return deterministic, collision-relevant rows for all audited surfaces.
 
     Row identities and every non-operational field/content are retained; only
-    lifecycle timestamps/status fields are omitted.  Sorting rows and nested
+    lifecycle timestamps/status fields are omitted. Sorting rows and nested
     arrays makes pagination/order drift harmless without weakening evidence
     detection for names, heads, bodies, comments, or candidate-seed values.
     """
@@ -137,7 +281,7 @@ def require_two_pass_stability(first: dict[str, Any], second: dict[str, Any], cu
     second_sha = stable_context_sha256(second, current_run_id)
     if first_sha != second_sha:
         raise RuntimeError(
-            'repository-global metadata changed between two complete enumerations; refuse this audit and rerun from a fresh attempt-1 workflow run'
+            'snapshot-fenced repository-global metadata changed between two complete enumerations; refuse this audit and start a fresh attempt-1 workflow run'
         )
     return second_sha
 
@@ -152,6 +296,8 @@ def evaluate_context(
     audit_mode: str = 'review-freeze',
     expected_branch_name: str | None = None,
     expected_repo_head: str | None = None,
+    snapshot_fence: dict[str, Any] | None = None,
+    post_fence_arrival_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     if audit_mode not in AUDIT_MODES:
         raise ValueError(f'unsupported audit mode: {audit_mode}')
@@ -204,6 +350,11 @@ def evaluate_context(
             if hits:
                 external.append({'surface': surface, 'id': row_id, 'seeds': hits})
 
+    fence_value = snapshot_fence or {}
+    fence_sha = hashlib.sha256(
+        json.dumps(fence_value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
+    ).hexdigest() if fence_value else None
+
     return {
         'branchCountEnumerated': len(filtered['branches']),
         'workflowRunCountEnumerated': len(filtered['runs']),
@@ -229,6 +380,11 @@ def evaluate_context(
         'repositoryGlobalDoubleEnumerationStable': stable_double_enumeration_passed,
         'repositoryGlobalEnumerationPassCount': 2 if stable_double_enumeration_passed else 1,
         'repositoryGlobalStableContextSha256': stable_context_sha256_value,
+        'repositoryGlobalSnapshotFence': snapshot_fence,
+        'repositoryGlobalSnapshotFenceSha256': fence_sha,
+        'repositoryGlobalPostFenceArrivalCounts': post_fence_arrival_counts or {},
+        'repositoryGlobalPostFenceCandidateSeedCollisionCount': 0,
+        'postFenceArrivalsDeferredToMandatoryAuthorizationRecheck': True,
         'currentAuditRunSelfMetadataExclusion': {
             'runId': current_run_id,
             'workflowRunMetadataExcluded': current_run_id is not None,
@@ -241,15 +397,16 @@ def evaluate_context(
         'allRepositoryPullReviewCommentsInspected': True,
         'allRepositoryCommitCommentsInspected': True,
         'surfaceContract': [
-            'all repository branches metadata',
-            'all repository Actions run metadata except the current audit run self-row',
-            'all repository Actions artifact metadata except metadata produced by the current audit run itself',
-            'all-state pull request metadata and bodies',
-            'all-state issue metadata and bodies',
-            'all repository issue comments',
-            'all repository pull-review comments',
-            'all repository commit comments',
-            'all Issue #60 comments',
+            'first-pass-fenced repository branches metadata with original branch heads stable across both complete enumerations',
+            'first-pass-fenced repository Actions run metadata except the current audit run self-row',
+            'first-pass-fenced repository Actions artifact metadata except metadata produced by the current audit run itself',
+            'first-pass-fenced all-state pull request metadata and bodies',
+            'first-pass-fenced all-state issue metadata and bodies',
+            'first-pass-fenced repository issue comments',
+            'first-pass-fenced repository pull-review comments',
+            'first-pass-fenced repository commit comments',
+            'first-pass-fenced Issue #60 comments',
+            'post-fence arrivals are ignored only for snapshot stability and are scanned immediately for candidate-seed literals',
         ],
         'rawHistoricalArtifactBytesRequiredForThisGate': False,
         'authorizationTimeRecheckStillRequired': True,
@@ -275,11 +432,45 @@ def collect(repository: str, issue_number: int, token: str) -> dict[str, Any]:
     }
 
 
-def collect_stable(repository: str, issue_number: int, token: str, current_run_id: int | None) -> tuple[dict[str, Any], str]:
-    first = collect(repository, issue_number, token)
-    second = collect(repository, issue_number, token)
-    stable_sha = require_two_pass_stability(first, second, current_run_id)
-    return second, stable_sha
+def collect_stable(
+    repository: str,
+    issue_number: int,
+    token: str,
+    current_run_id: int | None,
+    candidates: set[int],
+    audit_mode: str,
+) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, int]]:
+    first_raw = collect(repository, issue_number, token)
+    fence = build_snapshot_fence(first_raw, current_run_id)
+    first = apply_snapshot_fence(first_raw, fence, current_run_id)
+
+    second_raw = collect(repository, issue_number, token)
+    post_fence = post_fence_rows(second_raw, fence, current_run_id)
+    post_fence_counts = {key: len(rows) for key, rows in post_fence.items()}
+    post_fence_collisions = find_post_fence_seed_collisions(second_raw, fence, candidates, current_run_id)
+    if post_fence_collisions:
+        raise RuntimeError(
+            'candidate seed appeared on repository-global metadata created after the snapshot fence; refuse this audit'
+        )
+    if audit_mode == 'review-freeze' and external_review_proof_artifacts(second_raw, current_run_id):
+        raise RuntimeError('review-freeze proof artifact already exists outside the current audit run')
+
+    second = apply_snapshot_fence(second_raw, fence, current_run_id)
+    stable_sha = require_two_pass_stability(first, second)
+    return second, stable_sha, fence, post_fence_counts
+
+
+def final_expected_branch_head(repository: str, branch_name: str, token: str) -> str:
+    encoded = urllib.parse.quote(branch_name, safe='')
+    row = req_json(f'https://api.github.com/repos/{repository}/branches/{encoded}', token)
+    return str((row.get('commit') or {}).get('sha') or '')
+
+
+def final_review_proof_artifacts(repository: str, token: str, current_run_id: int | None) -> list[dict[str, Any]]:
+    rows = pages(f'https://api.github.com/repos/{repository}/actions/artifacts', token, 'artifacts')
+    context = {key: [] for key in SURFACE_KEYS}
+    context['artifacts'] = rows
+    return external_review_proof_artifacts(context, current_run_id)
 
 
 def main() -> int:
@@ -300,16 +491,38 @@ def main() -> int:
     seeds = ledger.get('candidateSeeds') if isinstance(ledger, dict) else None
     if not isinstance(seeds, list) or len(seeds) != 72 or len(set(seeds)) != 72:
         raise SystemExit('candidate seed ledger must contain exactly 72 unique seeds')
-    context, stable_sha = collect_stable(args.repository, args.issue_number, token, args.current_run_id)
+    candidates = set(seeds)
+
+    context, stable_sha, snapshot_fence, post_fence_counts = collect_stable(
+        args.repository,
+        args.issue_number,
+        token,
+        args.current_run_id,
+        candidates,
+        args.audit_mode,
+    )
+
+    final_head = final_expected_branch_head(args.repository, args.expected_branch_name, token)
+    if final_head != args.expected_repo_head:
+        raise RuntimeError(
+            f'audited branch moved before proof completion: expected {args.expected_repo_head}, observed {final_head}'
+        )
+    if args.audit_mode == 'review-freeze' and final_review_proof_artifacts(
+        args.repository, token, args.current_run_id
+    ):
+        raise RuntimeError('review-freeze proof artifact appeared before proof completion')
+
     out = evaluate_context(
         context,
-        set(seeds),
+        candidates,
         args.current_run_id,
         stable_double_enumeration_passed=True,
         stable_context_sha256_value=stable_sha,
         audit_mode=args.audit_mode,
         expected_branch_name=args.expected_branch_name,
         expected_repo_head=args.expected_repo_head,
+        snapshot_fence=snapshot_fence,
+        post_fence_arrival_counts=post_fence_counts,
     )
     args.output.write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
     passed = (

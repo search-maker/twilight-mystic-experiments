@@ -12,7 +12,7 @@ jobs:
   inspect:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -24,40 +24,77 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Inspect live annual functions and headers
+      - name: Validate preview heading and CSV routing
         shell: bash
         env:
-          SITE: https://starsvisibility.pages.dev
+          SITE: https://agent-fix-annual-consecutive.starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > inspect.mjs <<'NODE'
           import { chromium } from 'playwright-core';
           const browser = await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
           const page = await browser.newPage({viewport:{width:1400,height:1000}});
-          await page.goto(`${process.env.SITE}/?inspect-annual=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          let markerFound = false;
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            await page.goto(`${process.env.SITE}/?validate-annual=${process.env.GITHUB_RUN_ID}-${attempt}`,{waitUntil:'networkidle',timeout:120000});
+            const html = await page.content();
+            if (html.includes('STARS-ANNUAL-CONSECUTIVE-CSV-HEADING-FIX-V1')) { markerFound = true; break; }
+            await page.waitForTimeout(8000);
+          }
+          if (!markerFound) throw new Error('preview does not contain the annual consecutive CSV/heading fix marker');
           await page.waitForSelector('#annualChartMetric',{state:'attached',timeout:30000});
-          const info = await page.evaluate(() => {
-            const getFn = name => { try { const fn = eval(name); return typeof fn === 'function' ? fn.toString() : String(fn); } catch (e) { return 'ERR '+e; } };
-            const raw = (id,v) => { const e=document.getElementById(id); if(!e) return false; if('checked' in e && typeof v==='boolean') e.checked=v; else e.value=String(v); return true; };
+          const result = await page.evaluate(async () => {
+            const raw = (id,v) => { const e=document.getElementById(id); if(!e)return false; if('checked' in e&&typeof v==='boolean')e.checked=v; else e.value=String(v); return true; };
             raw('calculatorFeature','three-star');
             raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
             raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            const metric=document.getElementById('annualChartMetric')?.value||'combined';
             raw('annualResultKind','regular');
-            const metric = document.getElementById('annualChartMetric')?.value || 'combined';
-            let regularHeader=null, consecutiveHeader=null, alteredHeader=null;
-            try { regularHeader = eval('annualChartHeader')(metric); } catch(e) { regularHeader={error:String(e)}; }
+            const regularHeader=eval('annualChartHeader')(metric);
             raw('annualResultKind','consecutive');
-            try { consecutiveHeader = eval('annualChartHeader')(metric); } catch(e) { consecutiveHeader={error:String(e)}; }
-            raw('threeStarMagnitudeThreshold',9.9); raw('threeStarMagnitudeBasis','catalog');
-            try { alteredHeader = eval('annualChartHeader')(metric); } catch(e) { alteredHeader={error:String(e)}; }
-            return {
-              uiLanguage: (()=>{try{return eval('uiLanguage')}catch{return null}})(), metric,
-              regularHeader, consecutiveHeader, alteredHeader,
-              exportAnnualCsv: getFn('exportAnnualCsv'),
-              annualChartHeader: getFn('annualChartHeader')
-            };
+            const consecutiveHeader=eval('annualChartHeader')(metric);
+
+            const synthetic=[{
+              found:true,date:'2026-05-31',timeZone:'Asia/Jerusalem',sunsetTime:1000,time:1500,
+              minutesAfterSunset:11.111,sunAltitude:-2.222,requiredCount:3,magnitudeBasis:'effective',magnitudeThreshold:1.7,
+              completingStars:['REG A','REG B','REG C'],modelVersion:'legacy-preview-test',excludedKnownObjects:[],
+              closeTriple:{enabled:true,found:true,time:2000,minutesAfterSunset:53.5,sunAltitude:-10.62,
+                stars:['28 Bet Ser','35 Kap Ser','41 Gam Ser'],magnitudeBasis:'effective',magnitudeThreshold:3,actualDiameterDeg:3.0996}
+            }];
+            let forceError=null;
+            try { eval('annualResults = synthetic'); } catch(e) { forceError='annualResults: '+String(e); }
+            try { eval('annualExportsAreCurrent = () => true'); } catch(e) { forceError=(forceError?forceError+'; ':'')+'annualExportsAreCurrent: '+String(e); }
+            if(forceError) return {regularHeader,consecutiveHeader,forceError,csvText:''};
+
+            let captured=null;
+            const oldCreate=URL.createObjectURL;
+            const oldRevoke=URL.revokeObjectURL;
+            const oldClick=HTMLAnchorElement.prototype.click;
+            URL.createObjectURL=blob=>{captured=blob;return 'blob:captured-annual-csv';};
+            URL.revokeObjectURL=()=>{};
+            HTMLAnchorElement.prototype.click=function(){};
+            try { eval('exportAnnualCsv')(); }
+            finally {
+              URL.createObjectURL=oldCreate;
+              URL.revokeObjectURL=oldRevoke;
+              HTMLAnchorElement.prototype.click=oldClick;
+            }
+            const csvText=captured?await captured.text():'';
+            return {regularHeader,consecutiveHeader,forceError,csvText};
           });
-          console.log('INSPECT', JSON.stringify(info));
+          console.log('PREVIEW_VALIDATION',JSON.stringify(result));
+          if (result.forceError) throw new Error(result.forceError);
+          const regularSubtitle=String(result.regularHeader?.subtitle||'');
+          const consecutiveSubtitle=String(result.consecutiveHeader?.subtitle||'');
+          if (!regularSubtitle.includes('1.7')) throw new Error('regular chart lost its magnitude metadata');
+          if (consecutiveSubtitle.includes('1.7')) throw new Error('consecutive chart still contains regular magnitude 1.7');
+          if (!consecutiveSubtitle.includes('Jerusalem')) throw new Error('consecutive chart lost location metadata');
+          if (!consecutiveSubtitle.includes('4') || !consecutiveSubtitle.includes('3')) throw new Error('consecutive chart lost consecutive diameter/threshold metadata');
+          if (!result.csvText.includes('53.500')) throw new Error('consecutive CSV does not contain closeTriple minutes');
+          if (!result.csvText.includes('-10.6200')) throw new Error('consecutive CSV does not contain closeTriple Sun altitude');
+          if (!result.csvText.includes('28 Bet Ser | 35 Kap Ser | 41 Gam Ser')) throw new Error('consecutive CSV does not contain closeTriple stars');
+          if (result.csvText.includes('11.111')) throw new Error('consecutive CSV still exported regular minutes');
+          console.log('PREVIEW_VALIDATION_PASS');
           await browser.close();
           NODE
           node inspect.mjs

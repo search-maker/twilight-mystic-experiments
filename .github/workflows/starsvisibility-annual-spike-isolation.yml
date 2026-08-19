@@ -1,0 +1,88 @@
+name: StarsVisibility annual spike isolation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-annual-spike-isolation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  isolate-spikes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install browser driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Isolate Moon on reported weekly spike dates
+        shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > annual-spikes.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const errors = [];
+          page.on('pageerror', e => errors.push(e.message));
+          await page.goto(`${process.env.SITE}/?annual-spike-isolation=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.waitForSelector('#calculate', { timeout: 30000 });
+          await page.evaluate(() => {
+            const raw = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return;
+              if ('checked' in el && typeof value === 'boolean') el.checked = value;
+              else el.value = String(value);
+            };
+            raw('calculatorFeature','three-star');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            raw('lat',31.778); raw('lon',35.235); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',754);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3);
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+          });
+          const dates = ['2026-01-01','2026-01-08','2026-01-29','2026-02-05','2026-04-23','2026-04-30','2026-05-21','2026-05-28','2026-06-04','2026-08-27','2026-09-03'];
+          for (const moonMode of ['on','off']) {
+            for (const date of dates) {
+              await page.evaluate(({moonMode,date}) => {
+                document.getElementById('moonOn').value = moonMode;
+                document.getElementById('date').value = date;
+              }, {moonMode,date});
+              await page.click('#calculate');
+              await page.waitForTimeout(5200);
+              const row = await page.evaluate(({moonMode,date}) => {
+                const text = document.getElementById('threeCloseResultSection')?.innerText ?? '';
+                const m = text.match(/Minutes after sunset\s+([0-9.]+)/i);
+                const s = text.match(/Sun altitude\s+(-?[0-9.]+)/i);
+                const diameter = text.match(/Actual maximum separation\s+([0-9.]+)/i);
+                const lines = text.split('\n').map(x => x.trim()).filter(Boolean);
+                return {
+                  moonMode,date,
+                  minutes: m ? Number(m[1]) : null,
+                  sunAltitude: s ? Number(s[1]) : null,
+                  diameter: diameter ? Number(diameter[1]) : null,
+                  sectionText: text,
+                  errorText: document.getElementById('error')?.textContent ?? '',
+                  uiMinAlt: document.getElementById('minAlt')?.value ?? null,
+                  uiMoon: document.getElementById('moonOn')?.value ?? null,
+                  lines
+                };
+              }, {moonMode,date});
+              console.log('SPIKE_CASE', JSON.stringify(row));
+            }
+          }
+          console.log('PAGE_ERRORS', JSON.stringify(errors));
+          await browser.close();
+          if (errors.length) throw new Error(JSON.stringify(errors));
+          NODE
+          node annual-spikes.mjs

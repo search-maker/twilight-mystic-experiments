@@ -1,0 +1,119 @@
+# REVIEW-ONLY TEMPLATE. Install on the default branch only after package review.
+# It freezes preregistration evidence but does not install the scientific runtime and cannot invoke a scientific solver.
+name: aerosol-family-v2-seed-proof-review
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+jobs:
+  seed-proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact default-branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_REF_NAME" = "${{ github.event.repository.default_branch }}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git ls-files -z > tracked-files.nul
+      - name: Read candidate metadata
+        id: seeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('experiments/aerosol-family-challenge-v2/design.review.json'))
+          print(f"base={d['sourceBindings']['publicRepoMainSha']}")
+          PY
+      - name: Exact tracked-tree byte scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/aerosol-family-challenge-v2
+          python experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py \
+            --repo-root . --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-family-challenge-v2/seed-self-ledger-paths.json \
+            --output evidence/aerosol-family-challenge-v2/tracked-seed-scan.json
+      - name: Stable repository-global seed collision surface scan
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode review-freeze \
+            --expected-branch-name "$GITHUB_REF_NAME" \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output evidence/aerosol-family-challenge-v2/repository-global-seed-scan.json
+      - name: Merge exact-head seed proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2/merge_seed_proof.py \
+            --design experiments/aerosol-family-challenge-v2/design.review.json \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --tracked evidence/aerosol-family-challenge-v2/tracked-seed-scan.json \
+            --repository-global evidence/aerosol-family-challenge-v2/repository-global-seed-scan.json \
+            --repo-head "$GITHUB_SHA" --source-base-main-sha "${{ steps.seeds.outputs.base }}" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode review-freeze \
+            --output evidence/aerosol-family-challenge-v2/seed-freshness-proof.json
+      - name: Freeze preregistration bytes before any solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2/freeze.py \
+            --design experiments/aerosol-family-challenge-v2/design.review.json \
+            --analysis-contract experiments/aerosol-family-challenge-v2/analysis-contract.v3.json \
+            --seed-audit evidence/aerosol-family-challenge-v2/seed-freshness-proof.json \
+            --manifest-out evidence/aerosol-family-challenge-v2/manifest.frozen.json \
+            --freeze-out evidence/aerosol-family-challenge-v2/freeze-record.json
+      - name: Hash exact proof bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd evidence/aerosol-family-challenge-v2
+          sha256sum \
+            tracked-seed-scan.json \
+            repository-global-seed-scan.json \
+            seed-freshness-proof.json \
+            manifest.frozen.json \
+            freeze-record.json \
+            > proof-bundle.sha256
+          sha256sum -c proof-bundle.sha256
+      - name: Persist review proof bundle
+        id: proof_upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-r6-freeze-proof
+          path: evidence/aerosol-family-challenge-v2/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record immutable run linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Aerosol-family v2 R6 review-only freeze proof"
+            echo "- repository head: \`$GITHUB_SHA\`"
+            echo "- workflow run id: \`$GITHUB_RUN_ID\`"
+            echo "- artifact id: \`${{ steps.proof_upload.outputs.artifact-id }}\`"
+            echo "- artifact digest: \`${{ steps.proof_upload.outputs.artifact-digest }}\`"
+            echo "- scientific execution authorized: false"
+            echo "- solver execution performed: false"
+            echo "- permanent evidence-only preservation commit still required before authorization"
+          } >> "$GITHUB_STEP_SUMMARY"

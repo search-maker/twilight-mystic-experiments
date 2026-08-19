@@ -1,0 +1,182 @@
+name: StarsVisibility consecutive sky-map mode validation
+
+on:
+  push:
+    branches:
+      - execution/diagnose-rekhasim-close-triple-may-2026
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+      - name: Install browser driver
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Validate Regular and Consecutive sky-map modes
+        env:
+          SITE: https://ac8f922b.starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const errors = [];
+          page.on('pageerror', error => errors.push(error.message));
+          await page.goto(`${process.env.SITE}/?close-sky-map-mode=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.waitForSelector('#threeStarControls', { state: 'attached', timeout: 30000 });
+
+          const setup = await page.evaluate(() => {
+            const html = document.documentElement.outerHTML;
+            if (!html.includes('STARS-CLOSE-TRIPLE-SKY-MAP-MODE-V1')) throw new Error('FEATURE_MARKER_MISSING');
+            const set = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return;
+              if ('checked' in el && typeof value === 'boolean') el.checked = value;
+              else el.value = String(value);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            set('calculatorFeature', 'three-star');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            set('date', '2026-05-29');
+            set('lat', 32.74907);
+            set('lon', 35.09901);
+            set('timezone', 'Asia/Jerusalem');
+            set('observerElevationM', 105);
+            set('observerMode', 'ordinaryOrGuided');
+            set('minAlt', 3);
+            set('moonOn', 'off');
+            set('threeStarCount', 3);
+            set('threeStarMagnitudeBasis', 'effective');
+            set('threeStarMagnitudeThreshold', 1.7);
+            set('threeCloseEnabled', true);
+            set('threeCloseMaxDiameterDeg', 4);
+            set('threeCloseMagnitudeBasis', 'effective');
+            set('threeCloseMagnitudeThreshold', 3);
+            return { lang: document.documentElement.lang || '' };
+          });
+
+          await page.evaluate(() => document.getElementById('calculate')?.click());
+          await page.waitForFunction(() => {
+            try {
+              const data = eval('threeStarResultData');
+              return data?.closeTriple?.found === true && Array.isArray(data.closeTriple.starMagnitudes) && data.closeTriple.starMagnitudes.length === 3;
+            } catch { return false; }
+          }, null, { timeout: 180000 });
+
+          const result = await page.evaluate(() => {
+            const data = eval('threeStarResultData');
+            return {
+              regularFound: data?.found === true,
+              regularMinutes: Number(data?.minutesAfterSunset),
+              closeTime: Number(data?.closeTriple?.time),
+              closeMinutes: Number(data?.closeTriple?.minutesAfterSunset),
+              closeKeys: (data?.closeTriple?.starMagnitudes || []).map(star => String(star.key || '')),
+              closeNames: (data?.closeTriple?.starMagnitudes || []).map(star => star.name || star.catalogId || ''),
+            };
+          });
+          if (!result.regularFound) throw new Error('REGULAR_RESULT_NOT_FOUND');
+          if (!Number.isFinite(result.closeTime)) throw new Error('CLOSE_TIME_MISSING');
+          if (result.closeKeys.some(key => !key)) throw new Error('CLOSE_KEYS_MISSING');
+
+          const closeCards = page.locator('#threeCloseObjectList [data-sky-object-key]');
+          if (await closeCards.count() !== 3) throw new Error(`CLOSE_CARD_COUNT_${await closeCards.count()}`);
+          const closeCardAttrs = await closeCards.first().evaluate(el => ({ role: el.getAttribute('role'), tabIndex: el.getAttribute('tabindex'), key: el.dataset.skyObjectKey }));
+          if (closeCardAttrs.role !== 'button' || closeCardAttrs.tabIndex !== '0' || !closeCardAttrs.key) throw new Error('CLOSE_CARD_ACCESSIBILITY_MISSING');
+
+          const clickedCloseKey = closeCardAttrs.key;
+          await closeCards.first().click();
+          await page.waitForFunction(() => {
+            try { return eval('threeStarSkyMapData')?.resultMode === 'consecutive'; } catch { return false; }
+          }, null, { timeout: 180000 });
+
+          const consecutive = await page.evaluate(() => {
+            const data = eval('threeStarSkyMapData');
+            const selected = eval('skyMapSelectedObjectKey');
+            const buttons = [...document.querySelectorAll('#skyMapResultModeControl button')].map(button => ({
+              mode: button.dataset.skyMapResultMode,
+              text: button.textContent.trim(),
+              active: button.classList.contains('active'),
+              pressed: button.getAttribute('aria-pressed'),
+              disabled: button.disabled,
+            }));
+            return {
+              open: document.getElementById('threeStarSkyMapView')?.open === true,
+              baseTime: Number(data?.baseTime),
+              frame0Time: Number(data?.frames?.find(frame => Number(frame.offsetMinutes) === 0)?.time),
+              mode: data?.resultMode,
+              primaryKeys: data?.primaryKeys || [],
+              primaryNames: data?.primaryNames || [],
+              selected,
+              buttons,
+            };
+          });
+          if (!consecutive.open) throw new Error('MAP_NOT_OPEN_FROM_CLOSE_CARD');
+          if (consecutive.mode !== 'consecutive') throw new Error('CONSECUTIVE_MODE_NOT_ACTIVE');
+          if (Math.abs(consecutive.baseTime - result.closeTime) > 1) throw new Error(`CLOSE_BASE_TIME_MISMATCH_${consecutive.baseTime}_${result.closeTime}`);
+          if (Math.abs(consecutive.frame0Time - result.closeTime) > 1) throw new Error('CLOSE_FRAME_ZERO_TIME_MISMATCH');
+          if (!result.closeKeys.every(key => consecutive.primaryKeys.includes(key))) throw new Error('CLOSE_PRIMARY_KEYS_MISMATCH');
+          if (consecutive.selected !== clickedCloseKey) throw new Error('CLICKED_CLOSE_STAR_NOT_SELECTED');
+          const closeButton = consecutive.buttons.find(button => button.mode === 'consecutive');
+          const regularButton = consecutive.buttons.find(button => button.mode === 'regular');
+          if (!closeButton?.active || closeButton?.pressed !== 'true' || closeButton.disabled) throw new Error('CONSECUTIVE_MODE_BUTTON_STATE_BAD');
+          if (!regularButton || regularButton.disabled) throw new Error('REGULAR_MODE_BUTTON_UNAVAILABLE');
+
+          const regularCards = page.locator('#threeStarObjectList [data-sky-object-key]');
+          if (await regularCards.count() < 1) throw new Error('REGULAR_CARDS_MISSING');
+          const regularKey = await regularCards.first().getAttribute('data-sky-object-key');
+          await regularCards.first().click();
+          await page.waitForFunction(() => {
+            try { return eval('threeStarSkyMapData')?.resultMode === 'regular'; } catch { return false; }
+          }, null, { timeout: 180000 });
+          const regular = await page.evaluate(() => {
+            const data = eval('threeStarSkyMapData');
+            return {
+              baseTime: Number(data?.baseTime),
+              mode: data?.resultMode,
+              selected: eval('skyMapSelectedObjectKey'),
+              regularActive: document.querySelector('#skyMapResultModeControl button[data-sky-map-result-mode="regular"]')?.classList.contains('active') === true,
+              closeActive: document.querySelector('#skyMapResultModeControl button[data-sky-map-result-mode="consecutive"]')?.classList.contains('active') === true,
+            };
+          });
+          if (regular.mode !== 'regular' || !regular.regularActive || regular.closeActive) throw new Error('REGULAR_MODE_BUTTON_STATE_BAD');
+          if (!Number.isFinite(regular.baseTime) || regular.baseTime === result.closeTime) throw new Error('REGULAR_BASE_TIME_DID_NOT_CHANGE');
+          if (regularKey && regular.selected !== regularKey) throw new Error('CLICKED_REGULAR_STAR_NOT_SELECTED');
+
+          await page.locator('#skyMapResultModeControl button[data-sky-map-result-mode="consecutive"]').click();
+          await page.waitForFunction(() => {
+            try { return eval('threeStarSkyMapData')?.resultMode === 'consecutive'; } catch { return false; }
+          }, null, { timeout: 180000 });
+          const switchedCloseTime = await page.evaluate(() => Number(eval('threeStarSkyMapData')?.baseTime));
+          if (Math.abs(switchedCloseTime - result.closeTime) > 1) throw new Error('MODE_SWITCH_TO_CLOSE_TIME_BAD');
+
+          const secondClose = closeCards.nth(1);
+          const secondKey = await secondClose.getAttribute('data-sky-object-key');
+          await secondClose.focus();
+          await page.keyboard.press('Enter');
+          await page.waitForFunction(key => {
+            try { return eval('threeStarSkyMapData')?.resultMode === 'consecutive' && eval('skyMapSelectedObjectKey') === key; } catch { return false; }
+          }, secondKey, { timeout: 30000 });
+
+          const labels = await page.evaluate(() => [...document.querySelectorAll('#skyMapResultModeControl button')].map(button => button.textContent.trim()));
+          if (!(labels.includes('Regular') && labels.includes('Consecutive')) && !(labels.includes('רגילים') && labels.includes('רצופים'))) {
+            throw new Error(`MODE_LABELS_BAD_${JSON.stringify(labels)}`);
+          }
+
+          console.log('CLOSE_SKY_MAP_MODE_PASS', JSON.stringify({ setup, result, consecutive, regular, labels, errors }));
+          await browser.close();
+          if (errors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
+          NODE
+          node validate.mjs

@@ -1,0 +1,175 @@
+# REVIEW-ONLY EVIDENCE TRANSPORT. NO SCIENTIFIC EXECUTION.
+name: aerosol-family-v2-r6-evidence-preserve-once
+
+on:
+  push:
+    branches:
+      - agent/aerosol-family-r6-evidence-preserve-once
+    paths:
+      - .github/workflows/aerosol-family-v2-r6-evidence-preserve-once.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  preserve-proof-byte-for-byte:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact preservation parent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7dcb96c3c7ea13deef7bb451811b87863fe9e3e3
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify immutable proof and create one evidence-only commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN_SHA: 7dcb96c3c7ea13deef7bb451811b87863fe9e3e3
+          SOURCE_RUN_ID: '32273507697'
+          SOURCE_HEAD_SHA: 1c23fe5bbaa1d81e758dcdeb97f083a70fc01f38
+          ARTIFACT_ID: '9373166090'
+          ARTIFACT_NAME: aerosol-family-v2-r6-freeze-proof
+          ARTIFACT_DIGEST: sha256:79809cf33d48513e52825b8dc93dd6a06f901453cd9d2a854881185c2a3c3956
+          TARGET_BRANCH: agent/aerosol-family-r6-evidence-preservation
+          TARGET_DIR: evidence/aerosol-family-challenge-v2
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN_SHA"
+
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN_SHA"
+          git merge-base --is-ancestor "$SOURCE_HEAD_SHA" "$EXPECTED_MAIN_SHA"
+
+          changed="$(git diff --name-only "$SOURCE_HEAD_SHA" "$EXPECTED_MAIN_SHA" | sort)"
+          allowed="$(printf '%s\n' \
+            .github/workflows/aerosol-family-v2-review-freeze-bootstrap.yml \
+            .github/workflows/aerosol-family-v2-review-freeze-bridge.yml \
+            experiments/aerosol-family-challenge-v2/SEED_FRESHNESS_GUARD.md \
+            experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py \
+            tests/test_aerosol_family_seed_snapshot_fence.py | sort)"
+          test "$changed" = "$allowed"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          jq -e --arg head "$SOURCE_HEAD_SHA" '
+            .status == "completed" and
+            .conclusion == "success" and
+            .event == "workflow_dispatch" and
+            .run_attempt == 1 and
+            .head_branch == "main" and
+            .head_sha == $head
+          ' source-run.json >/dev/null
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > artifact.json
+          jq -e --arg name "$ARTIFACT_NAME" --arg digest "$ARTIFACT_DIGEST" --argjson run "$SOURCE_RUN_ID" '
+            .name == $name and
+            .digest == $digest and
+            .expired == false and
+            .workflow_run.id == $run
+          ' artifact.json >/dev/null
+
+          mkdir proof
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir proof
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('proof')
+          expected = sorted([
+              'freeze-record.json',
+              'manifest.frozen.json',
+              'proof-bundle.sha256',
+              'repository-global-seed-scan.json',
+              'seed-freshness-proof.json',
+              'tracked-seed-scan.json',
+          ])
+          actual = sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file())
+          if actual != expected:
+              raise SystemExit(f'refuse: artifact file universe mismatch: {actual!r}')
+          if any(p.is_dir() for p in root.iterdir()):
+              raise SystemExit('refuse: unexpected artifact subdirectory')
+
+          proof = json.loads((root / 'seed-freshness-proof.json').read_text())
+          if proof.get('status') != 'PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK':
+              raise SystemExit('refuse: proof status mismatch')
+          checks = {
+              'auditMode': 'review-freeze',
+              'repositoryHead': '1c23fe5bbaa1d81e758dcdeb97f083a70fc01f38',
+              'auditedBranchName': 'main',
+              'candidateSeedCount': 72,
+              'externalCollisionCount': 0,
+              'repositoryGlobalCollisionCount': 0,
+              'trackedTreeExternalCollisionCount': 0,
+              'repositoryGlobalDoubleEnumerationStable': True,
+              'repositoryGlobalEnumerationPassCount': 2,
+              'priorReviewProofArtifactCount': 0,
+              'reviewProofIdentityFresh': True,
+              'authorizationPermitted': False,
+              'authorizationTimeRecheckStillRequired': True,
+          }
+          for key, value in checks.items():
+              if proof.get(key) != value:
+                  raise SystemExit(f'refuse: {key} mismatch: {proof.get(key)!r}')
+
+          freeze = json.loads((root / 'freeze-record.json').read_text())
+          if freeze.get('status') != 'FROZEN_REVIEW_PACKAGE_NOT_AUTHORIZATION':
+              raise SystemExit('refuse: freeze status mismatch')
+          if freeze.get('scientificExecutionAuthorized') is not False or freeze.get('solverExecutionAuthorized') is not False or freeze.get('resultsOpened') is not False:
+              raise SystemExit('refuse: freeze authorization/result flags are not false')
+
+          manifest = json.loads((root / 'manifest.frozen.json').read_text())
+          if manifest.get('status') != 'FROZEN_MANIFEST_SEED_FRESHNESS_PROVEN_REVIEW_ONLY':
+              raise SystemExit('refuse: frozen manifest status mismatch')
+          if manifest.get('scientificExecutionAuthorized') is not False or manifest.get('solverExecutionAuthorized') is not False or manifest.get('resultsOpened') is not False:
+              raise SystemExit('refuse: manifest authorization/result flags are not false')
+          PY
+
+          (cd proof && sha256sum -c proof-bundle.sha256)
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$TARGET_BRANCH" >/dev/null 2>&1; then
+            echo "refuse: evidence branch already exists" >&2
+            exit 2
+          fi
+          if git ls-tree -r --name-only "$EXPECTED_MAIN_SHA" -- "$TARGET_DIR" | grep -q .; then
+            echo "refuse: evidence paths already exist on preservation parent" >&2
+            exit 2
+          fi
+
+          git switch -c "$TARGET_BRANCH" "$EXPECTED_MAIN_SHA"
+          mkdir -p "$TARGET_DIR"
+          cp proof/* "$TARGET_DIR"/
+          git add -- "$TARGET_DIR"
+
+          staged="$(git diff --cached --name-only | sort)"
+          expected_staged="$(printf '%s\n' \
+            "$TARGET_DIR/freeze-record.json" \
+            "$TARGET_DIR/manifest.frozen.json" \
+            "$TARGET_DIR/proof-bundle.sha256" \
+            "$TARGET_DIR/repository-global-seed-scan.json" \
+            "$TARGET_DIR/seed-freshness-proof.json" \
+            "$TARGET_DIR/tracked-seed-scan.json" | sort)"
+          test "$staged" = "$expected_staged"
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Preserve aerosol-family v2 R6 review-freeze evidence"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN_SHA"
+          committed="$(git diff-tree --no-commit-id --name-only -r HEAD | sort)"
+          test "$committed" = "$expected_staged"
+
+          for f in freeze-record.json manifest.frozen.json proof-bundle.sha256 repository-global-seed-scan.json seed-freshness-proof.json tracked-seed-scan.json; do
+            test "$(git show "HEAD:$TARGET_DIR/$f" | sha256sum | awk '{print $1}')" = "$(sha256sum "proof/$f" | awk '{print $1}')"
+          done
+
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN_SHA"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          echo "evidence_commit=$(git rev-parse HEAD)"
+          echo "scientific_execution_authorized=false"
+          echo "solver_execution_performed=false"

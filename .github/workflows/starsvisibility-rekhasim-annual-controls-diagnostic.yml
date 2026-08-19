@@ -23,7 +23,7 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Inspect Annual worker lifecycle source
+      - name: Prove Annual cache can replay a stale bad point
         shell: bash
         env:
           SITE: https://starsvisibility.pages.dev
@@ -32,26 +32,61 @@ jobs:
           cat > inspect.mjs <<'NODE'
           import { chromium } from 'playwright-core';
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
-          const page=await browser.newPage();
+          const page=await browser.newPage({viewport:{width:1440,height:1200}});
           const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?annual-worker-source=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
-          await page.waitForSelector('#calculateAnnual',{state:'attached',timeout:30000});
-          const out=await page.evaluate(()=>{
-            const get=(name,max=30000)=>{try{return eval(name).toString().slice(0,max)}catch(e){return String(e)}};
-            const globals={};
-            for(const name of ['annualBatch','annualResults','annualChartPoints','annualResultsFinal']){
-              try{const v=eval(name); globals[name]=Array.isArray(v)?{type:'array',length:v.length}:v&&typeof v==='object'?{type:'object',keys:Object.keys(v)}:v;}catch(e){globals[name]=String(e)}
-            }
+          await page.goto(`${process.env.SITE}/?annual-cache-poison=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
+          const seed=await page.evaluate(()=>{
+            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
+            raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
+            raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','off');
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            raw('annualCalendar','gregorian-year'); raw('annualYear','2026'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','minutes');
+
+            const period=eval('currentAnnualPeriod')();
+            const dates=eval('annualDateStrings')(period,'weekly');
+            const offSnap=eval('currentAnnualSettingsSnapshot')();
+            const offKey=eval('hashAnnualSettings')(offSnap.settingsJson);
+            raw('moonOn','on');
+            const onSnap=eval('currentAnnualSettingsSnapshot')();
+            const onKey=eval('hashAnnualSettings')(onSnap.settingsJson);
+            raw('moonOn','off');
+
+            const results=dates.map((date,i)=>({
+              date, pending:false, provisional:false, found:false,
+              sunsetTime:null, timeZone:'Asia/Jerusalem',
+              closeTriple:{
+                found:true, date, timeZone:'Asia/Jerusalem', time:null, sunsetTime:null,
+                minutesAfterSunset:i===20?56.36:46.84,
+                sunAltitude:i===20?-10.9:-9.5,
+                stars:['28 Bet Ser','35 Kap Ser','41 Gam Ser'],
+                magnitudeBasis:'effective', magnitudeThreshold:3, actualDiameterDeg:3.1
+              }
+            }));
+            const modelVersion=eval('THREE_STAR_MODEL_VERSION');
+            const poisoned={schemaVersion:4,modelVersion,settingsJson:offSnap.settingsJson,results,createdAt:Date.now(),lastAccessedAt:Date.now()};
+            localStorage.setItem(offKey,JSON.stringify(poisoned));
+            return {offKey,onKey,keysDiffer:offKey!==onKey,settingsDiffer:offSnap.settingsJson!==onSnap.settingsJson,modelVersion,date20:dates[20],poison:results[20].closeTriple.minutesAfterSunset};
+          });
+          await page.evaluate(()=>document.getElementById('calculateAnnual')?.click());
+          await page.waitForTimeout(1200);
+          const replay=await page.evaluate(()=>{
+            let rows=[];let points=[];
+            try{rows=eval('annualResults')||[]}catch(_){}
+            try{points=eval('annualChartPoints')||[]}catch(_){}
             return {
-              calculateAnnualResults:get('calculateAnnualResults',40000),
-              cancelAnnualCalculation:get('cancelAnnualCalculation',16000),
-              clearAnnualBatchResults:get('clearAnnualBatchResults',16000),
-              setAnnualUiState:get('setAnnualUiState',12000),
-              globals
+              moon:document.getElementById('moonOn')?.value,
+              final:(()=>{try{return eval('annualResultsFinal')}catch{return null}})(),
+              rowsCount:rows.length,
+              row20:{date:rows[20]?.date??null,minutes:rows[20]?.closeTriple?.minutesAfterSunset??null},
+              point20:points[20]?{minutes:points[20].minutes,value:points[20].value,date:points[20].result?.date??null}:null,
+              progress:document.getElementById('annualProgressText')?.textContent??'',
+              exportDisabled:document.getElementById('exportAnnualCsv')?.disabled??null
             };
           });
-          console.log('ANNUAL_LIFECYCLE_SOURCE',JSON.stringify(out));
-          console.log('PAGE_ERRORS',JSON.stringify(errors));
+          console.log('ANNUAL_CACHE_POISON_REPLAY',JSON.stringify({seed,replay,errors}));
           await browser.close();
           if(errors.length)throw new Error(JSON.stringify(errors));
           NODE

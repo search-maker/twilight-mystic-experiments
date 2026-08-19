@@ -1,0 +1,499 @@
+name: Aerosol-family v2 scientific execution
+run-name: Aerosol-family v2 ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - "dispatch/aerosol-family-challenge-v2-ordinal-*"
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: aerosol-family-v2-scientific-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      ordinal: ${{ steps.identity.outputs.ordinal }}
+      matrix2: ${{ steps.matrices.outputs.matrix2 }}
+      matrix4: ${{ steps.matrices.outputs.matrix4 }}
+      matrix6: ${{ steps.matrices.outputs.matrix6 }}
+      matrix8: ${{ steps.matrices.outputs.matrix8 }}
+    steps:
+      - name: Checkout exact dispatch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse alternate trigger, rerun, wrong branch or non-one-file authorization
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^dispatch/aerosol-family-challenge-v2-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          AUTH_PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$AUTH_PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-family-challenge-v2/authorization.json
+          python - <<'PY' > authorization-meta.env
+          import json
+          from pathlib import Path
+          a=json.loads(Path('experiments/aerosol-family-challenge-v2/authorization.json').read_text())
+          n=a.get('scientificOrdinal')
+          if not isinstance(n,int) or n <= 0: raise SystemExit('authorization scientificOrdinal invalid')
+          print(f'ORDINAL={n}')
+          print(f'AUTH_BRANCH={a.get("authorizationBranch","")}')
+          print(f'DISPATCH_BRANCH={a.get("dispatchBranch","")}')
+          print(f'EXECUTION_KEY={a.get("executionKey","")}')
+          PY
+          source authorization-meta.env
+          test "$ORDINAL" = "$BRANCH_ORDINAL"
+          test "$AUTH_BRANCH" = "authorization/aerosol-family-challenge-v2-ordinal-$ORDINAL"
+          test "$DISPATCH_BRANCH" = "$GITHUB_REF_NAME"
+          test "$EXECUTION_KEY" = "aerosol-family-challenge-v2:numerical:$ORDINAL"
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "dispatch_branch=$DISPATCH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+          git ls-files -z > tracked-files.nul
+      - name: Resolve exact still-open Draft authorization PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.loads(Path('auth-pr-pages.json').read_text())
+          prs=[row for page in pages for row in page]
+          matches=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(matches)!=1: raise SystemExit(f'expected exactly one authorization PR at dispatch head, got {len(matches)}')
+          p=matches[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None:
+              raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main': raise SystemExit('authorization PR base drift')
+          if (p.get('head') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY'] or (p.get('base') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY']:
+              raise SystemExit('authorization PR must remain same-repository')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Resolve exactly one successful attempt-1 zero-runtime authorization review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-run-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.loads(Path('auth-review-run-pages.json').read_text())
+          runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(good)!=1: raise SystemExit(f'expected exactly one successful attempt-1 authorization review, got {len(good)}')
+          if len(same)!=1: raise SystemExit(f'authorization review identity has {len(same)} total runs; rerun/retry is forbidden')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RUN_ID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts?per_page=100" > auth-review-artifacts.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          rows=json.loads(Path('auth-review-artifacts.json').read_text()).get('artifacts',[])
+          expected=f'aerosol-family-v2-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one unexpired authorization-review artifact {expected}, got {len(good)}')
+          Path('auth-review-artifact-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          ARTIFACT_ID="$(python -c 'import json;print(json.load(open("auth-review-artifact-selected.json"))["id"])')"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          matches=list(Path('auth-review-artifact').rglob('authorization-review.json'))
+          if len(matches)!=1: raise SystemExit('authorization-review.json not uniquely present in review artifact')
+          review=json.loads(matches[0].read_text())
+          pr=json.loads(Path('auth-pr-selected.json').read_text())
+          if review.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME': raise SystemExit('authorization review status drift')
+          if review.get('headSha')!=os.environ['GITHUB_SHA'] or review.get('prNumber')!=pr.get('number'): raise SystemExit('authorization review identity drift')
+          if review.get('runAttempt')!=1 or review.get('conclusion')!='success': raise SystemExit('authorization review attempt/conclusion drift')
+          if review.get('scientificRuntimeSetupPerformed') is not False or review.get('scientificExecutionPerformed') is not False: raise SystemExit('authorization review was not zero-runtime')
+          PY
+      - name: Exact tracked-tree candidate-seed scan on authorization head
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p execution-preflight
+          python experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py \
+            --repo-root . --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-family-challenge-v2/seed-self-ledger-paths.json \
+            --output execution-preflight/tracked-seed-scan.json
+      - name: Stable repository-global authorization-recheck seed audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "${{ steps.identity.outputs.auth_branch }}" \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output execution-preflight/repository-global-seed-scan.json
+      - name: Merge exact authorization-head seed proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_BASE="$(python -c 'import json; print(json.load(open("experiments/aerosol-family-challenge-v2/design.review.json"))["sourceBindings"]["publicRepoMainSha"])')"
+          python experiments/aerosol-family-challenge-v2/merge_seed_proof.py \
+            --design experiments/aerosol-family-challenge-v2/design.review.json \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2/candidate-seed-ledger.v1.json \
+            --tracked execution-preflight/tracked-seed-scan.json \
+            --repository-global execution-preflight/repository-global-seed-scan.json \
+            --repo-head "$GITHUB_SHA" --source-base-main-sha "$SOURCE_BASE" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --output execution-preflight/seed-freshness-proof.json
+      - name: Capture complete dispatch identity surface and Issue 60 marker
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          PYTHONPATH=experiments/aerosol-family-challenge-v2/execution-candidate \
+          python experiments/aerosol-family-challenge-v2/execution-candidate/authorization_surface.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --authorization experiments/aerosol-family-challenge-v2/authorization.json \
+            --current-pr "$PR_NUMBER" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --marker-head "$GITHUB_SHA" \
+            --marker-parent "${{ steps.identity.outputs.parent }}" \
+            --output execution-preflight/freshness.json
+      - name: Evaluate exact one-use dispatch guard before scientific runtime setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2/execution-candidate python - <<'PY'
+          import importlib.util, json, os
+          from pathlib import Path
+          from guard import evaluate
+          root=Path('.')
+          base=root/'experiments/aerosol-family-challenge-v2'
+          spec=importlib.util.spec_from_file_location('afc2_guard_core',base/'core.py')
+          if spec is None or spec.loader is None: raise SystemExit('cannot load core')
+          core=importlib.util.module_from_spec(spec); spec.loader.exec_module(core)
+          auth=json.loads((base/'authorization.json').read_text())
+          manifest=json.loads((root/'evidence/aerosol-family-challenge-v2/manifest.frozen.json').read_text())
+          freeze=json.loads((root/'evidence/aerosol-family-challenge-v2/freeze-record.json').read_text())
+          seed=json.loads((root/'execution-preflight/seed-freshness-proof.json').read_text())
+          fresh=json.loads((root/'execution-preflight/freshness.json').read_text())
+          pr=json.loads((root/'auth-pr-selected.json').read_text())
+          review_run=json.loads((root/'auth-review-selected.json').read_text())
+          review_file=list((root/'auth-review-artifact').rglob('authorization-review.json'))[0]
+          review=json.loads(review_file.read_text())
+          parent='${{ steps.identity.outputs.parent }}'
+          ctx={
+            'githubActions':True, 'eventName':os.environ['GITHUB_EVENT_NAME'], 'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'refName':os.environ['GITHUB_REF_NAME'], 'headSha':os.environ['GITHUB_SHA'], 'dispatchBranchHeadSha':os.environ['GITHUB_SHA'],
+            'authorizationHead':os.environ['GITHUB_SHA'], 'parentSha':parent,
+            'authorizationCommitParentCount':1,
+            'authorizationCommitChangedPaths':['experiments/aerosol-family-challenge-v2/authorization.json'],
+            'pr':{'number':pr['number'], 'state':pr['state'], 'draft':pr['draft'], 'merged':pr.get('merged_at') is not None, 'headBranch':pr['head']['ref'], 'headSha':pr['head']['sha']},
+            'authorizationReview':{'status':review['status'], 'headSha':review['headSha'], 'prNumber':review['prNumber'], 'runAttempt':review_run['run_attempt'], 'conclusion':review_run['conclusion'], 'scientificRuntimeSetupPerformed':False, 'scientificExecutionPerformed':False},
+            'freshness':fresh,
+            'issue60Markers':fresh.get('matchingAuthorizationMarkerBodies',[]),
+            'priorRunsOnDispatch':fresh.get('candidatePriorScientificRunIds',[]),
+            'priorCaseArtifactNames':fresh.get('priorCaseArtifactNames',[]),
+            'issue60Comments':fresh.get('issue60CommentBodies',[]),
+            'currentRunId':int(os.environ['GITHUB_RUN_ID']),
+          }
+          paths={
+            'manifest':root/'evidence/aerosol-family-challenge-v2/manifest.frozen.json',
+            'freeze':root/'evidence/aerosol-family-challenge-v2/freeze-record.json',
+            'transport':base/'execution-candidate/transport-contract.v3.json',
+            'adapter':base/'adapter.py',
+            'executor':base/'execution-candidate/executor.py',
+            'workflow':root/'.github/workflows/aerosol-family-v2-execution.yml',
+            'authorizationGuard':base/'execution-candidate/authorization_guard.py',
+            'dispatchGuard':base/'execution-candidate/dispatch_guard.py',
+            'freshness':base/'execution-candidate/freshness.py',
+            'authorizationReviewWorkflow':root/'.github/workflows/aerosol-family-v2-authorization-review.yml',
+          }
+          out=evaluate(core,freeze,manifest,auth,seed,ctx,paths)
+          if out.get('status')!='EXACT_ONE_USE_AEROSOL_FAMILY_V2_DISPATCH_AUTHORIZED': raise SystemExit('dispatch guard did not authorize exact one-use execution')
+          Path('execution-preflight/execution-guard.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          Path('execution-preflight/guard-context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Emit four exact 144-case preregistered matrices
+        id: matrices
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest=json.loads(Path('evidence/aerosol-family-challenge-v2/manifest.frozen.json').read_text())
+          cases=manifest.get('cases',[])
+          if len(cases)!=576: raise SystemExit('frozen manifest is not 576 cases')
+          seen=set(); by={2:[],4:[],6:[],8:[]}
+          for row in cases:
+              cid=row.get('caseId'); dep=float(row.get('sunDepressionDeg'))
+              if not isinstance(cid,str) or cid in seen: raise SystemExit('duplicate/invalid caseId')
+              seen.add(cid)
+              key=int(dep)
+              if dep!=float(key) or key not in by: raise SystemExit('unexpected sun-depression shard')
+              by[key].append({'caseId':cid})
+          if len(seen)!=576 or any(len(by[k])!=144 for k in by): raise SystemExit({k:len(v) for k,v in by.items()})
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
+              for key in (2,4,6,8):
+                  value=json.dumps({'include':by[key]},sort_keys=True,separators=(',',':'))
+                  f.write(f'matrix{key}={value}\n')
+          Path('execution-preflight/matrices.json').write_text(json.dumps(by,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Persist pre-solver guard evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-preflight-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            execution-preflight/
+            auth-pr-selected.json
+            auth-review-selected.json
+            auth-review-artifact-selected.json
+            experiments/aerosol-family-challenge-v2/authorization.json
+          if-no-files-found: error
+          compression-level: 0
+      - name: Consume dispatch identity exactly once before any scientific runtime setup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          MARKER="ORDINAL${ORDINAL}_AEROSOL_FAMILY_V2_DISPATCH_CONSUMED"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          fresh=json.loads(Path('execution-preflight/freshness.json').read_text())
+          marker=f'ORDINAL{os.environ["ORDINAL"]}_AEROSOL_FAMILY_V2_DISPATCH_CONSUMED'
+          if any(marker.lower() in str(x).lower() for x in fresh.get('issue60CommentBodies',[])):
+              raise SystemExit('dispatch identity already consumed')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$MARKER" > execution-preflight/consumed-marker-response.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          row=json.loads(Path('execution-preflight/consumed-marker-response.json').read_text())
+          expected=f'ORDINAL{os.environ["ORDINAL"]}_AEROSOL_FAMILY_V2_DISPATCH_CONSUMED'
+          if row.get('body')!=expected or not row.get('id'): raise SystemExit('consumed marker write was not exact')
+          PY
+
+  cases-dep2:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix2) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps: &case_steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aerosol-family-v2
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Fetch exact same-run preflight guard artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > current-run-artifacts.json
+          ARTIFACT_ID="$(python - <<'PY'
+          import json, os
+          rows=json.load(open('current-run-artifacts.json')).get('artifacts',[])
+          expected=f'aerosol-family-v2-preflight-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one preflight artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > preflight.zip
+          unzip -q preflight.zip -d preflight
+          test -f preflight/execution-preflight/execution-guard.json
+      - name: Capture exact runtime identity before solver execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+          python - <<'PY'
+          import json
+          row=json.load(open('runtime-report.json'))
+          if row.get('scientificSolverExecuted') is not False: raise SystemExit('runtime report is not pre-solver')
+          PY
+      - name: Execute exactly one preregistered case
+        shell: micromamba-shell {0}
+        env:
+          CASE_ID: ${{ matrix.caseId }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2/execution-candidate python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          from executor import execute_case
+          uvspec=shutil.which('uvspec')
+          if not uvspec: raise SystemExit('uvspec missing')
+          execute_case(Path('.'), Path('evidence/aerosol-family-challenge-v2/manifest.frozen.json'), Path('preflight/execution-preflight/execution-guard.json'), Path('runtime-report.json'), os.environ['CASE_ID'], Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data', Path('case-output'), Path(uvspec), timeout_seconds=1800, allow_execution=True)
+          PY
+      - name: Persist immutable raw case evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}/
+          if-no-files-found: error
+          compression-level: 0
+
+  cases-dep4:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix4) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps: *case_steps
+
+  cases-dep6:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix6) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps: *case_steps
+
+  cases-dep8:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix8) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps: *case_steps
+
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases-dep2.result == 'success' && needs.cases-dep4.result == 'success' && needs.cases-dep6.result == 'success' && needs.cases-dep8.result == 'success' }}
+    needs: [preflight, cases-dep2, cases-dep4, cases-dep6, cases-dep8]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Enumerate exact current-run case artifact metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > artifact-pages.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.loads(Path('artifact-pages.json').read_text())
+          rows=[]
+          for page in pages: rows.extend(page.get('artifacts',[]))
+          cases=[a for a in rows if str(a.get('name') or '').startswith('aerosol-family-v2-case-') and not a.get('expired',False)]
+          if len(cases)!=576: raise SystemExit(f'expected exactly 576 current-run case artifacts, got {len(cases)}')
+          if len({a['name'] for a in cases})!=576: raise SystemExit('duplicate current-run case artifact name')
+          Path('case-artifacts.json').write_text(json.dumps({'artifacts':cases},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Download exact current-run case artifact ZIPs and open only after identity enumeration
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p case-artifacts case-zips
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          rows=json.load(open('case-artifacts.json'))['artifacts']
+          for row in rows:
+              name=row['name']; aid=row['id']
+              z=Path('case-zips')/(name+'.zip')
+              with z.open('wb') as fh:
+                  subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{aid}/zip"],stdout=fh,check=True)
+              target=Path('case-artifacts')/name; target.mkdir()
+              subprocess.run(['unzip','-q',str(z),'-d',str(target)],check=True)
+          PY
+      - name: Run frozen preregistered acquisition and paired analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2/execution-candidate/aggregate_results.py \
+            --repository-root . \
+            --artifact-root case-artifacts \
+            --artifact-metadata case-artifacts.json \
+            --manifest evidence/aerosol-family-challenge-v2/manifest.frozen.json \
+            --analysis-contract experiments/aerosol-family-challenge-v2/analysis-contract.v3.json \
+            --freeze-record evidence/aerosol-family-challenge-v2/freeze-record.json \
+            --output-acquisition acquisition-manifest.json \
+            --output-analysis analysis-index.json \
+            --output-spectral-dir spectral-analysis
+      - name: Persist preregistered analysis evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-analysis
+          path: |
+            case-artifacts.json
+            acquisition-manifest.json
+            analysis-index.json
+            spectral-analysis/
+          if-no-files-found: error
+          compression-level: 0

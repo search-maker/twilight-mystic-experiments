@@ -1,0 +1,81 @@
+name: StarsVisibility Moon isolation diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-moon-isolation-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  isolate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.61.1 --no-save
+          npx playwright install --with-deps chromium
+      - name: Compare Moon included vs ignored
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > isolate.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          await page.goto(`https://starsvisibility.pages.dev/?moon-isolate=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.evaluate(() => {
+            const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = String(value); };
+            const check = (id, value) => { const el = document.getElementById(id); if (el) el.checked = Boolean(value); };
+            set('calculatorFeature','three-star');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            set('lat',31.778); set('lon',35.235); set('timezone','Asia/Jerusalem'); set('observerElevationM',754);
+            set('minAlt',0); set('threeStarCount',3); set('threeStarMagnitudeBasis','effective'); set('threeStarMagnitudeThreshold',1.7);
+            check('threeCloseEnabled',true); set('threeCloseMaxDiameterDeg',4); set('threeCloseMagnitudeBasis','effective'); set('threeCloseMagnitudeThreshold',3);
+          });
+          const dates = ['2026-05-29','2026-05-30','2026-05-31','2026-06-01','2026-06-02'];
+          for (const moonMode of ['on','off']) {
+            for (const date of dates) {
+              const result = await page.evaluate(async ({moonMode,date}) => {
+                document.getElementById('moonOn').value = moonMode;
+                document.getElementById('date').value = date;
+                await calculate();
+                const data = eval('threeStarResultData');
+                const close = data?.closeTriple ?? null;
+                const tryCall = (name, ...args) => {
+                  try {
+                    const fn = globalThis[name];
+                    if (typeof fn !== 'function') return { type: typeof fn, value: fn ?? null };
+                    return { type: 'function', arity: fn.length, value: fn(...args) };
+                  } catch (error) {
+                    return { error: String(error) };
+                  }
+                };
+                const t = close?.time ?? null;
+                return {
+                  moonMode,date,
+                  minutesAfterSunset: close?.minutesAfterSunset ?? null,
+                  sunAltitude: close?.sunAltitude ?? null,
+                  catalogIds: close?.catalogIds ?? [],
+                  actualDiameterDeg: close?.actualDiameterDeg ?? null,
+                  moonOn: document.getElementById('moonOn')?.value,
+                  moonAltitudeAtEvent: t ? tryCall('moonAltitude', t) : null,
+                  moonIlluminationAtEvent: t ? tryCall('moonIllumination', t) : null,
+                  moonBrightnessAtEvent: t ? tryCall('moonBrightnessNL', t) : null,
+                };
+              }, {moonMode,date});
+              console.log('MOON_CASE', JSON.stringify(result));
+            }
+          }
+          await browser.close();
+          NODE
+          node isolate.mjs

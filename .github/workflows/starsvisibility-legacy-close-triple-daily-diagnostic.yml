@@ -1,0 +1,247 @@
+name: StarsVisibility Legacy consecutive daily diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-legacy-close-triple-daily-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SITE: https://starsvisibility.pages.dev
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.61.1 --no-save
+          npx playwright install --with-deps chromium
+
+      - name: Run focused Jerusalem 2026 daily diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > diagnostic.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          import { writeFile } from 'node:fs/promises';
+
+          const site = process.env.SITE;
+          const runId = process.env.GITHUB_RUN_ID || Date.now();
+          const markerResponse = await fetch(`${site}/.well-known/level-b-software-status.json?diagnostic=${runId}`, {
+            headers: { 'Cache-Control': 'no-cache' }
+          });
+          const marker = markerResponse.ok ? await markerResponse.json() : null;
+          console.log('LIVE_MARKER', JSON.stringify(marker));
+
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const pageErrors = [];
+          const consoleErrors = [];
+          page.on('pageerror', error => pageErrors.push(error.message));
+          page.on('console', message => {
+            if (message.type() === 'error') consoleErrors.push(message.text());
+          });
+
+          await page.goto(`${site}/?close-triple-daily-diagnostic=${runId}`, {
+            waitUntil: 'networkidle',
+            timeout: 120000,
+          });
+          await page.waitForSelector('#calculate', { timeout: 30000 });
+
+          const setup = await page.evaluate(() => {
+            const setRaw = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return false;
+              if ('checked' in el && typeof value === 'boolean') el.checked = value;
+              else el.value = String(value);
+              return true;
+            };
+
+            const observerLike = {};
+            for (const el of [...document.querySelectorAll('[id]')]) {
+              if (/observer|trained|expert|bonus/i.test(el.id)) {
+                observerLike[el.id] = {
+                  tag: el.tagName,
+                  type: el.type || null,
+                  value: 'value' in el ? el.value : null,
+                  checked: 'checked' in el ? el.checked : null,
+                };
+              }
+            }
+
+            const before = {};
+            for (const id of [
+              'calculatorFeature','visibilityEngineMode','date','lat','lon','timezone','observerElevationM','minAlt',
+              'threeStarCount','threeStarMagnitudeBasis','threeStarMagnitudeThreshold','threeCloseEnabled',
+              'threeCloseMaxDiameterDeg','threeCloseMagnitudeBasis','threeCloseMagnitudeThreshold','kvMode','kv'
+            ]) {
+              const el = document.getElementById(id);
+              before[id] = el ? { value: el.value ?? null, checked: 'checked' in el ? el.checked : null } : null;
+            }
+
+            setRaw('calculatorFeature', 'three-star');
+            if (document.getElementById('visibilityEngineMode')) setRaw('visibilityEngineMode', 'legacy');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            setRaw('lat', 31.7780);
+            setRaw('lon', 35.2350);
+            setRaw('timezone', 'Asia/Jerusalem');
+            setRaw('observerElevationM', 754);
+            setRaw('threeStarCount', 3);
+            setRaw('threeStarMagnitudeBasis', 'effective');
+            setRaw('threeStarMagnitudeThreshold', 1.7);
+            setRaw('threeCloseEnabled', true);
+            setRaw('threeCloseMaxDiameterDeg', 4);
+            setRaw('threeCloseMagnitudeBasis', 'effective');
+            setRaw('threeCloseMagnitudeThreshold', 3);
+            // Match the graph scenario without imposing an extra altitude floor.
+            setRaw('minAlt', 0);
+
+            const after = {};
+            for (const id of [
+              'calculatorFeature','visibilityEngineMode','date','lat','lon','timezone','observerElevationM','minAlt',
+              'threeStarCount','threeStarMagnitudeBasis','threeStarMagnitudeThreshold','threeCloseEnabled',
+              'threeCloseMaxDiameterDeg','threeCloseMagnitudeBasis','threeCloseMagnitudeThreshold','kvMode','kv'
+            ]) {
+              const el = document.getElementById(id);
+              after[id] = el ? { value: el.value ?? null, checked: 'checked' in el ? el.checked : null } : null;
+            }
+            return { before, after, observerLike };
+          });
+          console.log('SETUP', JSON.stringify(setup));
+
+          function datesBetween(start, end) {
+            const dates = [];
+            const d = new Date(`${start}T00:00:00Z`);
+            const last = new Date(`${end}T00:00:00Z`);
+            while (d <= last) {
+              dates.push(d.toISOString().slice(0, 10));
+              d.setUTCDate(d.getUTCDate() + 1);
+            }
+            return dates;
+          }
+
+          const dates = [
+            ...datesBetween('2026-01-01', '2026-01-15'),
+            ...datesBetween('2026-04-15', '2026-06-10'),
+          ];
+
+          const rows = [];
+          for (const date of dates) {
+            const row = await page.evaluate(async (date) => {
+              const dateEl = document.getElementById('date');
+              if (!dateEl) throw new Error('date control missing');
+              dateEl.value = date;
+              if (typeof calculate !== 'function') throw new Error('calculate() unavailable');
+              await calculate();
+              const data = eval('threeStarResultData');
+              const close = data?.closeTriple ?? null;
+              return {
+                date,
+                ordinaryFound: data?.found ?? null,
+                ordinaryTime: data?.time ?? data?.eventTime ?? null,
+                ordinaryMinutesAfterSunset: data?.minutesAfterSunset ?? null,
+                closeEnabled: close?.enabled ?? null,
+                found: close?.found ?? null,
+                time: close?.time ?? close?.eventTime ?? null,
+                minutesAfterSunset: close?.minutesAfterSunset ?? null,
+                sunAltitude: close?.sunAltitude ?? null,
+                actualDiameterDeg: close?.actualDiameterDeg ?? null,
+                maxDiameterDeg: close?.maxDiameterDeg ?? null,
+                magnitudeBasis: close?.magnitudeBasis ?? null,
+                magnitudeThreshold: close?.magnitudeThreshold ?? null,
+                catalogIds: Array.isArray(close?.catalogIds) ? close.catalogIds : [],
+                stars: Array.isArray(close?.stars) ? close.stars : [],
+                starMagnitudes: Array.isArray(close?.starMagnitudes) ? close.starMagnitudes : [],
+                candidateCount: close?.candidateCount ?? null,
+                errorText: document.getElementById('error')?.textContent ?? '',
+              };
+            }, date);
+            rows.push(row);
+            console.log('DAY', JSON.stringify(row));
+          }
+
+          let previous = null;
+          const transitions = [];
+          for (const row of rows) {
+            const ids = [...row.catalogIds].sort().join('|');
+            if (previous) {
+              const prevIds = [...previous.catalogIds].sort().join('|');
+              const deltaMinutes = Number.isFinite(row.minutesAfterSunset) && Number.isFinite(previous.minutesAfterSunset)
+                ? row.minutesAfterSunset - previous.minutesAfterSunset
+                : null;
+              const transition = {
+                from: previous.date,
+                to: row.date,
+                deltaMinutes,
+                tripleChanged: ids !== prevIds,
+                fromCatalogIds: previous.catalogIds,
+                toCatalogIds: row.catalogIds,
+                fromDiameterDeg: previous.actualDiameterDeg,
+                toDiameterDeg: row.actualDiameterDeg,
+                flag: Number.isFinite(deltaMinutes) && Math.abs(deltaMinutes) >= 2,
+              };
+              if (transition.tripleChanged || transition.flag) {
+                transitions.push(transition);
+                console.log('TRANSITION', JSON.stringify(transition));
+              }
+            }
+            previous = row;
+          }
+
+          const evidence = {
+            generatedAt: new Date().toISOString(),
+            site,
+            liveMarker: marker,
+            setup,
+            pageErrors,
+            consoleErrors,
+            rows,
+            transitions,
+          };
+          await writeFile('legacy-close-triple-daily-diagnostic.json', JSON.stringify(evidence, null, 2) + '\n');
+
+          const csvHeader = [
+            'date','minutesAfterSunset','sunAltitude','actualDiameterDeg','catalogIds','stars','candidateCount','errorText'
+          ];
+          const csvEscape = value => {
+            const text = Array.isArray(value) ? value.join('|') : String(value ?? '');
+            return `"${text.replaceAll('"', '""')}"`;
+          };
+          const csv = [csvHeader.join(',')];
+          for (const row of rows) {
+            csv.push(csvHeader.map(key => csvEscape(row[key])).join(','));
+          }
+          await writeFile('legacy-close-triple-daily-diagnostic.csv', csv.join('\n') + '\n');
+
+          console.log('PAGE_ERRORS', JSON.stringify(pageErrors));
+          console.log('CONSOLE_ERRORS', JSON.stringify(consoleErrors));
+          console.log('TRANSITION_COUNT', transitions.length);
+          await browser.close();
+
+          if (pageErrors.length) throw new Error(`page errors: ${JSON.stringify(pageErrors)}`);
+          if (!rows.length || rows.some(row => row.closeEnabled !== true)) throw new Error('closeTriple was not enabled for every diagnostic row');
+          console.log('LEGACY_CLOSE_TRIPLE_DAILY_DIAGNOSTIC_COMPLETE');
+          NODE
+          node diagnostic.mjs
+
+      - name: Upload public-safe diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-close-triple-daily-diagnostic-${{ github.run_id }}
+          path: |
+            legacy-close-triple-daily-diagnostic.json
+            legacy-close-triple-daily-diagnostic.csv
+          if-no-files-found: warn
+          retention-days: 7

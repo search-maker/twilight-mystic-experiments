@@ -1,4 +1,4 @@
-name: StarsVisibility first-paint PR validation
+name: StarsVisibility first-paint production validation
 
 on:
   pull_request:
@@ -20,9 +20,9 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Verify first contentful paint precedes automatic calculation
+      - name: Verify production paints before automatic calculation
         env:
-          SITE: https://0857889c.starsvisibility.pages.dev
+          SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
@@ -31,7 +31,14 @@ jobs:
           const context=await browser.newContext({viewport:{width:1440,height:1200}});
           await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),{date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}});
           const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?paint-verify=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
+          let ready=false;
+          for(let i=0;i<30;i++){
+            await page.goto(`${process.env.SITE}/?paint-prod=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});
+            ready=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1')&&document.documentElement.outerHTML.includes('stars-auto-calc-start'));
+            if(ready)break;
+            await page.waitForTimeout(10000);
+          }
+          if(!ready)throw new Error('PRODUCTION_FIRST_PAINT_FIX_NOT_DEPLOYED');
           await page.waitForFunction(()=>{
             const fcp=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');
             const start=performance.getEntriesByName('stars-auto-calc-start','mark')[0];
@@ -44,7 +51,7 @@ jobs:
           if(!r.controlsVisible)throw new Error(`CONTROLS_NOT_VISIBLE_${JSON.stringify(r)}`);
           if(!r.closeEnabled||!r.closeFound||!(r.close>40&&r.close<55))throw new Error(`CONSECUTIVE_AUTO_CALC_REGRESSION_${JSON.stringify(r)}`);
           if(errors.length)throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
-          const no=await browser.newContext({viewport:{width:1440,height:1200}});const p=await no.newPage();await p.goto(`${process.env.SITE}/?test-no-auto&paint-no-auto=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});await p.waitForTimeout(1500);const ns=await p.evaluate(()=>({markCount:performance.getEntriesByName('stars-auto-calc-start','mark').length,active:(()=>{try{return !!eval('activeCalculationWorker')}catch{return null}})()}));if(ns.markCount!==0||ns.active)throw new Error(`TEST_NO_AUTO_REGRESSION_${JSON.stringify(ns)}`);await no.close();
-          console.log('FIRST_PAINT_PR_PASS',JSON.stringify({r,ns}));await context.close();await browser.close();
+          const no=await browser.newContext({viewport:{width:1440,height:1200}});const p=await no.newPage();await p.goto(`${process.env.SITE}/?test-no-auto&paint-prod-no-auto=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});await p.waitForTimeout(1500);const ns=await p.evaluate(()=>({markCount:performance.getEntriesByName('stars-auto-calc-start','mark').length,active:(()=>{try{return !!eval('activeCalculationWorker')}catch{return null}})()}));if(ns.markCount!==0||ns.active)throw new Error(`TEST_NO_AUTO_REGRESSION_${JSON.stringify(ns)}`);await no.close();
+          console.log('FIRST_PAINT_PRODUCTION_PASS',JSON.stringify({r,ns}));await context.close();await browser.close();
           NODE
           node validate.mjs

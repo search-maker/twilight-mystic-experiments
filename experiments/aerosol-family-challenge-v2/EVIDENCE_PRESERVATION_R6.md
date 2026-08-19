@@ -1,0 +1,14 @@
+# R6 proof/freeze evidence preservation lifecycle
+
+This file describes a review-only sequence. It does not allocate a scientific ordinal, authorize dispatch, install the scientific runtime, execute `uvspec`, or open results.
+
+1. Review and merge the review-only aerosol-family v2 package plus the seed-proof workflow to the repository default branch. The `workflow_dispatch` trigger is intentionally not treated as usable before that merge because GitHub only receives that trigger when the workflow file exists on the default branch.
+2. From the exact then-current default-branch HEAD, run the seed-proof workflow exactly once. The workflow checks out `$GITHUB_SHA`, scans exact tracked bytes, performs two complete repository-global metadata enumerations, excludes only its own run/artifact self-metadata, and refuses if the two external metadata snapshots differ.
+3. The workflow creates, before any solver is allowed, these exact files under `evidence/aerosol-family-challenge-v2/`: `tracked-seed-scan.json`, `repository-global-seed-scan.json`, `seed-freshness-proof.json`, `manifest.frozen.json`, `freeze-record.json`, and `proof-bundle.sha256`.
+4. The same run uploads those six files as artifact `aerosol-family-v2-r6-freeze-proof` and records the artifact id/digest and exact repository HEAD in the job summary. The Actions artifact is transport evidence, not the permanent archive.
+5. Before any authorization is created, copy the six files byte-for-byte into a separate evidence-only commit at the same predeclared paths. Do not alter the design, analysis contract, seeds, adapter, runtime bindings, or transport while preserving the evidence. These future evidence paths are predeclared in `seed-self-ledger-paths.json`, so later exact-head seed scans can distinguish frozen self-ledger seed bytes from external historical collisions.
+6. Merge/review that evidence-only preservation change before authorization. A future authorization must then perform a fresh exact-head seed/identity recheck against the then-live repository state. The old review proof is historical freeze evidence only; it never substitutes for the authorization-time recheck.
+
+A change in repository-global metadata during the two complete enumerations makes the review proof fail closed. A new attempt must start from a fresh workflow run; GitHub Re-run is not a scientific execution retry and must not be used to bypass the attempt-1 governance boundary when a later authorization/dispatch is considered.
+
+The review proof is one-use by identity: its workflow must be attempt 1 and `review-freeze` mode refuses if repository artifact metadata already records an earlier `aerosol-family-v2-r6-freeze-proof`. After the proof is preserved, later freshness checks use `authorization-recheck` mode rather than creating a second freeze proof.

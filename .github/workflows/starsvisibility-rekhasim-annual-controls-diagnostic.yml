@@ -12,7 +12,7 @@ jobs:
   inspect:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -23,7 +23,7 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Inspect annual controls and batch values
+      - name: Check Hebrew annual tooltip date mapping
         shell: bash
         env:
           SITE: https://starsvisibility.pages.dev
@@ -33,21 +33,43 @@ jobs:
           import { chromium } from 'playwright-core';
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
           const page=await browser.newPage({viewport:{width:1440,height:1200}});
-          await page.goto(`${process.env.SITE}/?annual-controls=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
-          await page.waitForSelector('#calculateAnnual',{state:'attached',timeout:30000});
-          const info=await page.evaluate(()=>{
-            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return false;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);return true;};
-            raw('calculatorFeature','three-star'); raw('moonOn','off'); raw('minAlt',3);
+          const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(`${process.env.SITE}/?annual-tooltip=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
+          await page.evaluate(()=>{
+            try { eval('uiLanguage = "he"'); eval('applyUiLanguage')(); } catch(_) {}
+            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
+            raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
+            raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','on');
             raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
             raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
-            const controls=Array.from(document.querySelectorAll('input,select,button')).filter(el=>/annual/i.test((el.id||'')+' '+(el.name||'')+' '+(el.textContent||''))).map(el=>({tag:el.tagName,id:el.id||'',type:el.type||'',value:el.value??'',text:(el.textContent||'').trim().slice(0,200),hidden:el.hidden||false,disabled:el.disabled||false}));
-            let batch=null, batchError=null;
-            try { batch=eval('collectThreeStarBatchValues')(); } catch(e) { batchError=String(e); }
-            const pick={};
-            for(const key of ['moonOn','minAlt','threeStarCount','threeStarMagnitudeBasis','threeStarMagnitudeThreshold','threeCloseEnabled','threeCloseMaxDiameterDeg','threeCloseMagnitudeBasis','threeCloseMagnitudeThreshold','excludeKnownVenus','excludeKnownJupiter','excludeKnownSirius','excludeKnownMars','excludeKnownCanopus','excludeKnownAlphaCentauri','excludeKnownArcturus']) pick[key]=batch?.[key]??null;
-            return {controls,annualResultKind:document.getElementById('annualResultKind')?{value:document.getElementById('annualResultKind').value,html:document.getElementById('annualResultKind').outerHTML}:null,pick,batchError};
+            raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','minutes');
+            document.getElementById('calculateAnnual')?.click();
           });
-          console.log('ANNUAL_BATCH_INFO',JSON.stringify(info));
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:180000});
+          await page.waitForTimeout(700);
+          const base=await page.evaluate(()=>{
+            let rows=[];try{rows=eval('annualResults')||[];}catch(_){}
+            let points=[];try{points=eval('annualChartPoints')||[];}catch(_){}
+            return {lang:(()=>{try{return eval('uiLanguage')}catch{return null}})(),rows:rows.map(x=>({date:x?.date??null,minutes:x?.closeTriple?.minutesAfterSunset??null})),points:points.map(p=>{const o={};for(const k of Object.keys(p||{})){const v=p[k];if(v==null||['string','number','boolean'].includes(typeof v))o[k]=v;}return o;})};
+          });
+          const canvas=page.locator('#annualChart');
+          const box=await canvas.boundingBox();
+          const hovers=[];
+          if(box){
+            for(let i=0;i<base.points.length;i++){
+              const p=base.points[i];
+              const px=Number(p.x);
+              if(!Number.isFinite(px))continue;
+              await page.mouse.move(box.x+px,box.y+box.height/2);
+              await page.waitForTimeout(100);
+              const texts=await page.evaluate(()=>Array.from(document.querySelectorAll('body *')).filter(el=>{const s=getComputedStyle(el);const r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0&&/2026-05-|דקות לאחר השקיעה/.test((el.textContent||''));}).map(el=>({id:el.id||'',className:el.className||'',text:(el.textContent||'').trim()})).filter(x=>x.text.length<300));
+              hovers.push({i,x:px,row:base.rows[i]??null,texts:texts.slice(-10)});
+            }
+          }
+          console.log('HEBREW_TOOLTIP_MAPPING',JSON.stringify({base,box,hovers,errors}));
           await browser.close();
+          if(errors.length)throw new Error(JSON.stringify(errors));
           NODE
           node inspect.mjs

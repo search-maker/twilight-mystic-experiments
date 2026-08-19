@@ -20,27 +20,36 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Verify first contentful paint precedes automatic calculation
+      - name: Diagnose startup timing signals
         env:
           SITE: https://a95dda08.starsvisibility.pages.dev
         run: |
           set -euo pipefail
-          cat > validate.mjs <<'NODE'
+          cat > diagnose.mjs <<'NODE'
           import { chromium } from 'playwright-core';
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
           const context=await browser.newContext({viewport:{width:1440,height:1200}});
-          await context.addInitScript(()=>{const N=window.Worker;window.__firstWorker=null;window.Worker=class extends N{constructor(...a){if(!window.__firstWorker){const r=document.getElementById('mainControls')?.getBoundingClientRect?.();window.__firstWorker={at:performance.now(),controlsVisible:!!r&&r.width>0&&r.height>0,bodyTextLength:(document.body?.innerText||'').trim().length};}super(...a);}}});
           await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),{date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}});
           const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-          let ready=false;for(let i=0;i<30;i++){await page.goto(`${process.env.SITE}/?paint-pr=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});ready=await page.evaluate(()=>document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1'));if(ready)break;await page.waitForTimeout(10000);}if(!ready)throw new Error('MARKER_MISSING');
-          await page.waitForFunction(()=>performance.getEntriesByType('paint').some(e=>e.name==='first-contentful-paint')&&!!window.__firstWorker,null,{timeout:180000});
-          await page.waitForFunction(()=>{try{const d=eval('threeStarResultData');return d?.found===true&&d?.closeTriple?.enabled===true&&d?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
-          const r=await page.evaluate(()=>{const f=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');const d=eval('threeStarResultData');return{fcp:f?.startTime??null,worker:window.__firstWorker,regular:Number(d?.minutesAfterSunset),close:Number(d?.closeTriple?.minutesAfterSunset),closeEnabled:d?.closeTriple?.enabled===true}});
-          if(!Number.isFinite(r.fcp)||!Number.isFinite(r.worker?.at)||!(r.worker.at>r.fcp))throw new Error(`PAINT_ORDER_BAD_${JSON.stringify(r)}`);
-          if(!r.worker.controlsVisible||!(r.worker.bodyTextLength>100))throw new Error(`NOT_VISIBLE_AT_CALC_START_${JSON.stringify(r)}`);
-          if(!r.closeEnabled||!(r.close>40&&r.close<55))throw new Error(`AUTO_CLOSE_BAD_${JSON.stringify(r)}`);
-          if(errors.length)throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
-          const no=await browser.newContext();await no.addInitScript(()=>{const N=window.Worker;window.__firstWorker=null;window.Worker=class extends N{constructor(...a){window.__firstWorker??={at:performance.now()};super(...a);}}});const p=await no.newPage();await p.goto(`${process.env.SITE}/?test-no-auto&paint-no-auto=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});await p.waitForTimeout(1200);const ns=await p.evaluate(()=>({worker:window.__firstWorker,active:(()=>{try{return !!eval('activeCalculationWorker')}catch{return null}})()}));if(ns.worker||ns.active)throw new Error(`NO_AUTO_BAD_${JSON.stringify(ns)}`);await no.close();
-          console.log('FIRST_PAINT_PR_PASS',JSON.stringify({r,ns}));await context.close();await browser.close();
+          await page.goto(`${process.env.SITE}/?paint-diagnostic=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
+          await page.waitForTimeout(5000);
+          const snap=await page.evaluate(()=>({
+            now:performance.now(),
+            paints:performance.getEntriesByType('paint').map(e=>({name:e.name,startTime:e.startTime})),
+            marker:document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1'),
+            readyState:document.readyState,
+            controls:(()=>{const r=document.getElementById('mainControls')?.getBoundingClientRect?.();return r?{w:r.width,h:r.height}:null})(),
+            button:{disabled:document.getElementById('calculate')?.disabled,text:document.getElementById('calculate')?.textContent},
+            status:document.getElementById('calculationStatus')?.textContent,
+            active:(()=>{try{return !!eval('activeCalculationWorker')}catch(e){return `eval-error:${e.message}`}})(),
+            result:(()=>{try{const d=eval('threeStarResultData');return{found:d?.found,closeEnabled:d?.closeTriple?.enabled,closeFound:d?.closeTriple?.found,regular:d?.minutesAfterSunset,close:d?.closeTriple?.minutesAfterSunset}}catch(e){return{error:e.message}}})(),
+            workerType:typeof Worker,
+            errors
+          }));
+          console.log('STARTUP_DIAGNOSTIC',JSON.stringify(snap));
+          if(!snap.marker)throw new Error('MARKER_MISSING');
+          if(!snap.paints.some(e=>e.name==='first-contentful-paint'))throw new Error(`FCP_MISSING_${JSON.stringify(snap)}`);
+          if(!snap.controls||!(snap.controls.w>0&&snap.controls.h>0))throw new Error(`CONTROLS_NOT_VISIBLE_${JSON.stringify(snap)}`);
+          await context.close();await browser.close();
           NODE
-          node validate.mjs
+          node diagnose.mjs

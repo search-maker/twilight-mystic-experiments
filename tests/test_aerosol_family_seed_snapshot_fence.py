@@ -50,6 +50,52 @@ class SnapshotFenceTests(unittest.TestCase):
         self.assertEqual(len(post['issueComments']), 1)
         self.assertEqual(len(post['branches']), 1)
 
+    def test_open_pr_synthetic_merge_sha_lifecycle_drift_is_ignored(self):
+        first_raw = self.baseline()
+        first_raw['pulls'] = [{
+            'id': 50,
+            'number': 252,
+            'title': 'authorization review',
+            'body': 'safe',
+            'head': {'ref': 'authorization/example', 'sha': 'd' * 40},
+            'base': {'ref': 'main', 'sha': 'a' * 40},
+            'merge_commit_sha': None,
+        }]
+        fence = scan.build_snapshot_fence(first_raw)
+        first = scan.apply_snapshot_fence(first_raw, fence)
+
+        second_raw = copy.deepcopy(first_raw)
+        second_raw['pulls'][0]['merge_commit_sha'] = 'e' * 40
+        second = scan.apply_snapshot_fence(second_raw, fence)
+
+        self.assertEqual(scan.require_two_pass_stability(first, second), scan.stable_context_sha256(second))
+
+    def test_open_pr_head_and_body_remain_collision_relevant(self):
+        first_raw = self.baseline()
+        first_raw['pulls'] = [{
+            'id': 50,
+            'number': 252,
+            'title': 'authorization review',
+            'body': 'safe',
+            'head': {'ref': 'authorization/example', 'sha': 'd' * 40},
+            'base': {'ref': 'main', 'sha': 'a' * 40},
+            'merge_commit_sha': None,
+        }]
+        fence = scan.build_snapshot_fence(first_raw)
+        first = scan.apply_snapshot_fence(first_raw, fence)
+
+        moved_head_raw = copy.deepcopy(first_raw)
+        moved_head_raw['pulls'][0]['head']['sha'] = 'f' * 40
+        moved_head = scan.apply_snapshot_fence(moved_head_raw, fence)
+        with self.assertRaisesRegex(RuntimeError, 'metadata changed between two complete enumerations'):
+            scan.require_two_pass_stability(first, moved_head)
+
+        edited_body_raw = copy.deepcopy(first_raw)
+        edited_body_raw['pulls'][0]['body'] = 'changed collision-relevant content'
+        edited_body = scan.apply_snapshot_fence(edited_body_raw, fence)
+        with self.assertRaisesRegex(RuntimeError, 'metadata changed between two complete enumerations'):
+            scan.require_two_pass_stability(first, edited_body)
+
     def test_post_fence_candidate_seed_is_still_fail_closed(self):
         seed = 1234567
         first_raw = self.baseline()

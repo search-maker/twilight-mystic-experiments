@@ -12,7 +12,7 @@ jobs:
   inspect:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -23,43 +23,113 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Inspect annual cache contract
+      - name: Validate exact-match Annual cache in deployed preview
         shell: bash
         env:
-          SITE: https://starsvisibility.pages.dev
+          SITE: https://agent-harden-annual-cache-ex.starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > inspect.mjs <<'NODE'
           import { chromium } from 'playwright-core';
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
-          const page=await browser.newPage();
+          const page=await browser.newPage({viewport:{width:1440,height:1200}});
           const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?annual-cache-contract=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
-          await page.waitForSelector('#calculateAnnual',{state:'attached',timeout:30000});
-          const out=await page.evaluate(()=>{
-            const get=(name,max=24000)=>{try{return eval(name).toString().slice(0,max)}catch(e){return String(e)}};
+          await page.goto(`${process.env.SITE}/?annual-exact-cache=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
+
+          const setup=await page.evaluate(()=>{
+            const html=document.documentElement.outerHTML;
+            if(!html.includes('STARS-ANNUAL-CACHE-EXACT-MATCH-V1')) throw new Error('EXACT_CACHE_MARKER_MISSING');
             const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
             raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
             raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
             raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','off');
             raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
             raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
-            raw('annualCalendar','gregorian-year'); raw('annualYear','2026'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','minutes');
-            let snapshot=null;try{snapshot=eval('currentAnnualSettingsSnapshot')()}catch(e){snapshot=String(e)}
-            let modelVersion=null;try{modelVersion=eval('THREE_STAR_MODEL_VERSION')}catch(e){modelVersion=String(e)}
-            return {
-              currentAnnualSettingsSnapshot:get('currentAnnualSettingsSnapshot'),
-              collectThreeStarBatchValues:get('collectThreeStarBatchValues'),
-              hashAnnualSettings:get('hashAnnualSettings'),
-              saveAnnualCache:get('saveAnnualCache'),
-              pruneAnnualCache:get('pruneAnnualCache'),
-              calculateAnnualResults:get('calculateAnnualResults',40000),
-              snapshot,modelVersion,
-              localStorageKeys:Object.keys(localStorage).filter(k=>k.startsWith('threeStarAnnualCache')).sort()
-            };
+            raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','minutes');
+            const snap=eval('currentAnnualSettingsSnapshot')();
+            const key=eval('hashAnnualSettings')(snap.settingsJson);
+            const parsed=JSON.parse(snap.settingsJson);
+            const period=eval('currentAnnualPeriod')();
+            const dates=eval('annualDateStrings')(period,'weekly');
+            const poison=dates.map((date,i)=>({date,pending:false,provisional:false,found:false,timeZone:'Asia/Jerusalem',closeTriple:{found:true,minutesAfterSunset:i===2?56.36:46.84,sunAltitude:-9.5,stars:['28 Bet Ser','35 Kap Ser','41 Gam Ser']}}));
+            const record={schemaVersion:4,modelVersion:eval('THREE_STAR_MODEL_VERSION'),settingsJson:snap.settingsJson,createdAt:Date.now(),lastAccessedAt:Date.now(),results:poison};
+            localStorage.setItem(key,JSON.stringify(record));
+            return {key,parsed,dates,poisonIndex:2,poisonDate:dates[2]};
           });
-          console.log('ANNUAL_CACHE_CONTRACT',JSON.stringify(out));
-          console.log('PAGE_ERRORS',JSON.stringify(errors));
+
+          await page.click('#calculateAnnual');
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:240000});
+          await page.waitForTimeout(500);
+
+          const afterSchema4=await page.evaluate((setup)=>{
+            let rows=[];try{rows=eval('annualResults')||[]}catch(_){}
+            const cached=JSON.parse(localStorage.getItem(setup.key)||'null');
+            return {
+              row:rows[setup.poisonIndex]?{date:rows[setup.poisonIndex].date,minutes:rows[setup.poisonIndex].closeTriple?.minutesAfterSunset}:null,
+              cache:{schemaVersion:cached?.schemaVersion,exactCacheContract:cached?.exactCacheContract,exactBuildFingerprint:cached?.exactBuildFingerprint,resultsDigest:cached?.resultsDigest,rowMinutes:cached?.results?.[setup.poisonIndex]?.closeTriple?.minutesAfterSunset},
+              final:(()=>{try{return eval('annualResultsFinal')}catch{return null}})()
+            };
+          },setup);
+          if(afterSchema4.row?.minutes===56.36) throw new Error('SCHEMA4_POISON_REPLAYED');
+          if(afterSchema4.cache.schemaVersion!==5) throw new Error('SCHEMA5_NOT_SAVED');
+          if(!/^sha256:[0-9a-f]{64}$/.test(String(afterSchema4.cache.exactBuildFingerprint||''))) throw new Error('BUILD_FINGERPRINT_MISSING');
+          if(!afterSchema4.cache.resultsDigest) throw new Error('RESULT_DIGEST_MISSING');
+
+          const tamper=await page.evaluate((setup)=>{
+            const snap=eval('currentAnnualSettingsSnapshot')();
+            const key=eval('hashAnnualSettings')(snap.settingsJson);
+            const cached=JSON.parse(localStorage.getItem(key)||'null');
+            cached.results[setup.poisonIndex].closeTriple.minutesAfterSunset=56.36;
+            localStorage.setItem(key,JSON.stringify(cached));
+            return {key,digest:cached.resultsDigest};
+          },setup);
+          await page.click('#calculateAnnual');
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:240000});
+          await page.waitForTimeout(400);
+          const afterDigestTamper=await page.evaluate((setup)=>{
+            let rows=[];try{rows=eval('annualResults')||[]}catch(_){}
+            return {minutes:rows[setup.poisonIndex]?.closeTriple?.minutesAfterSunset??null};
+          },setup);
+          if(afterDigestTamper.minutes===56.36) throw new Error('DIGEST_TAMPER_REPLAYED');
+
+          const exactReuse=await page.evaluate((setup)=>{
+            const snap=eval('currentAnnualSettingsSnapshot')();
+            const key=eval('hashAnnualSettings')(snap.settingsJson);
+            const cached=JSON.parse(localStorage.getItem(key)||'null');
+            cached.results[setup.poisonIndex].closeTriple.minutesAfterSunset=49.123456;
+            cached.resultsDigest=eval('annualExactResultDigest')(cached.results);
+            localStorage.setItem(key,JSON.stringify(cached));
+            return {key};
+          },setup);
+          const start=Date.now();
+          await page.click('#calculateAnnual');
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:30000});
+          await page.waitForTimeout(250);
+          const exactReuseResult=await page.evaluate((setup)=>{
+            let rows=[];try{rows=eval('annualResults')||[]}catch(_){}
+            const off=eval('currentAnnualSettingsSnapshot')();
+            document.getElementById('moonOn').value='on';
+            const on=eval('currentAnnualSettingsSnapshot')();
+            document.getElementById('moonOn').value='off';
+            document.getElementById('threeCloseMaxDiameterDeg').value='4.1';
+            const diameter=eval('currentAnnualSettingsSnapshot')();
+            document.getElementById('threeCloseMaxDiameterDeg').value='4';
+            return {
+              minutes:rows[setup.poisonIndex]?.closeTriple?.minutesAfterSunset??null,
+              offKey:eval('hashAnnualSettings')(off.settingsJson),
+              onKey:eval('hashAnnualSettings')(on.settingsJson),
+              diameterKey:eval('hashAnnualSettings')(diameter.settingsJson),
+              strictSettings:JSON.parse(off.settingsJson)
+            };
+          },setup);
+          if(exactReuseResult.minutes!==49.123456) throw new Error('EXACT_MATCH_CACHE_NOT_REUSED');
+          if(exactReuseResult.offKey===exactReuseResult.onKey) throw new Error('MOON_DETAIL_DID_NOT_CHANGE_KEY');
+          if(exactReuseResult.offKey===exactReuseResult.diameterKey) throw new Error('DIAMETER_DETAIL_DID_NOT_CHANGE_KEY');
+          if(exactReuseResult.strictSettings.exactCacheContract!=='annual-cache-exact-match-v1') throw new Error('STRICT_CONTRACT_MISSING');
+          if(!/^sha256:[0-9a-f]{64}$/.test(String(exactReuseResult.strictSettings.exactBuildFingerprint||''))) throw new Error('STRICT_BUILD_FINGERPRINT_MISSING');
+
+          console.log('ANNUAL_EXACT_CACHE_PREVIEW_PASS',JSON.stringify({setup,afterSchema4,tamper,afterDigestTamper,exactReuseMs:Date.now()-start,exactReuseResult,errors}));
           await browser.close();
           if(errors.length)throw new Error(JSON.stringify(errors));
           NODE

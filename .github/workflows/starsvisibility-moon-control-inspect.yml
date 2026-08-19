@@ -1,0 +1,55 @@
+name: StarsVisibility moon control inspect
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-moon-control-inspect.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.61.1 --no-save
+          npx playwright install --with-deps chromium
+      - name: Inspect moon-related live controls and globals
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > inspect.mjs <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          await page.goto(`https://starsvisibility.pages.dev/?moon-inspect=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          const state = await page.evaluate(() => {
+            const elements = [...document.querySelectorAll('[id]')]
+              .filter(el => /moon|lunar|ירח/i.test(`${el.id} ${el.textContent || ''}`))
+              .map(el => ({
+                id: el.id,
+                tag: el.tagName,
+                type: el.type || null,
+                value: 'value' in el ? el.value : null,
+                checked: 'checked' in el ? el.checked : null,
+                text: (el.textContent || '').trim().slice(0, 200),
+              }));
+            const globals = Object.getOwnPropertyNames(globalThis)
+              .filter(name => /moon|lunar/i.test(name))
+              .sort();
+            return { elements, globals };
+          });
+          console.log('MOON_INSPECT', JSON.stringify(state));
+          await browser.close();
+          NODE
+          node inspect.mjs

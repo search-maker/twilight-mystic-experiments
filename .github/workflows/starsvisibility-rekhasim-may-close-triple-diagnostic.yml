@@ -1,0 +1,140 @@
+name: StarsVisibility Rekhasim May close-triple diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-rekhasim-may-close-triple-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install browser driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Diagnose live Rekhasim close-triple spike with Moon off
+        shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > diagnose.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+          const errors = [];
+          page.on('pageerror', e => errors.push(e.message));
+          await page.goto(`${process.env.SITE}/?rekhasim-may-diagnostic=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'networkidle', timeout: 120000 });
+          await page.waitForSelector('#calculate', { state: 'attached', timeout: 30000 });
+
+          const initial = await page.evaluate(() => {
+            const wanted = /moon|threeStar|threeClose|known|observer|lat|lon|timezone|elevation|minAlt/i;
+            return Array.from(document.querySelectorAll('input,select,textarea')).filter(el => wanted.test(el.id || el.name || '')).map(el => ({
+              id: el.id || '', name: el.name || '', type: el.type || el.tagName,
+              value: el.value ?? '', checked: 'checked' in el ? !!el.checked : null,
+              selected: el.tagName === 'SELECT' ? Array.from(el.selectedOptions || []).map(o => ({value:o.value,text:o.textContent})) : null
+            }));
+          });
+          console.log('INITIAL_CONTROLS', JSON.stringify(initial));
+
+          await page.evaluate(() => {
+            const raw = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) return false;
+              if ('checked' in el && typeof value === 'boolean') el.checked = value;
+              else el.value = String(value);
+              return true;
+            };
+            raw('calculatorFeature','three-star');
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = 'legacy';
+            raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3);
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            raw('moonOn','off');
+          });
+
+          async function runCase(date, patch = {}) {
+            await page.evaluate(({date,patch}) => {
+              const raw = (id, value) => {
+                const el = document.getElementById(id);
+                if (!el) return false;
+                if ('checked' in el && typeof value === 'boolean') el.checked = value;
+                else el.value = String(value);
+                return true;
+              };
+              raw('date', date);
+              for (const [id,value] of Object.entries(patch || {})) raw(id,value);
+            }, {date,patch});
+            await page.click('#calculate');
+            await page.waitForTimeout(5200);
+            return await page.evaluate(({date,patch}) => {
+              const text = document.getElementById('threeCloseResultSection')?.innerText ?? '';
+              const m = text.match(/Minutes after sunset\s+([0-9.]+)/i) || text.match(/דקות לאחר השקיעה\s+([0-9.]+)/);
+              const s = text.match(/Sun altitude\s+(-?[0-9.]+)/i) || text.match(/גובה השמש[^-0-9]*(-?[0-9.]+)/);
+              const d = text.match(/Actual maximum separation\s+([0-9.]+)/i) || text.match(/(?:קוטר|מרחק)[^0-9]*([0-9.]+)°/);
+              return {
+                date, patch,
+                minutes: m ? Number(m[1]) : null,
+                sunAltitude: s ? Number(s[1]) : null,
+                diameter: d ? Number(d[1]) : null,
+                moon: document.getElementById('moonOn')?.value ?? null,
+                minAlt: document.getElementById('minAlt')?.value ?? null,
+                lat: document.getElementById('lat')?.value ?? null,
+                lon: document.getElementById('lon')?.value ?? null,
+                elevation: document.getElementById('observerElevationM')?.value ?? null,
+                sectionText: text,
+                errorText: document.getElementById('error')?.textContent ?? ''
+              };
+            }, {date,patch});
+          }
+
+          const dates = [];
+          for (let day = 14; day <= 28; day += 1) dates.push(`2026-05-${String(day).padStart(2,'0')}`);
+          for (const date of dates) {
+            const row = await runCase(date, { moonOn:'off', minAlt:3, threeCloseMaxDiameterDeg:4, threeCloseMagnitudeThreshold:3 });
+            console.log('REKHASIM_DAILY', JSON.stringify(row));
+          }
+
+          for (const [label, patch] of [
+            ['MINALT0', {moonOn:'off', minAlt:0, threeCloseMaxDiameterDeg:4, threeCloseMagnitudeThreshold:3}],
+            ['DIAM5', {moonOn:'off', minAlt:3, threeCloseMaxDiameterDeg:5, threeCloseMagnitudeThreshold:3}],
+            ['THRESH25', {moonOn:'off', minAlt:3, threeCloseMaxDiameterDeg:4, threeCloseMagnitudeThreshold:2.5}],
+            ['MOONON', {moonOn:'on', minAlt:3, threeCloseMaxDiameterDeg:4, threeCloseMagnitudeThreshold:3}]
+          ]) {
+            const row = await runCase('2026-05-21', patch);
+            console.log('REKHASIM_SENSITIVITY_' + label, JSON.stringify(row));
+          }
+
+          const jerusalem = await page.evaluate(() => {
+            document.getElementById('lat').value = '31.778';
+            document.getElementById('lon').value = '35.235';
+            document.getElementById('observerElevationM').value = '754';
+            document.getElementById('moonOn').value = 'off';
+            document.getElementById('minAlt').value = '3';
+            document.getElementById('threeCloseMaxDiameterDeg').value = '4';
+            document.getElementById('threeCloseMagnitudeThreshold').value = '3';
+            return true;
+          });
+          if (jerusalem) {
+            const row = await runCase('2026-05-21', { moonOn:'off', minAlt:3, threeCloseMaxDiameterDeg:4, threeCloseMagnitudeThreshold:3 });
+            console.log('JERUSALEM_BASELINE', JSON.stringify(row));
+          }
+
+          console.log('PAGE_ERRORS', JSON.stringify(errors));
+          await browser.close();
+          if (errors.length) throw new Error(JSON.stringify(errors));
+          NODE
+          node diagnose.mjs

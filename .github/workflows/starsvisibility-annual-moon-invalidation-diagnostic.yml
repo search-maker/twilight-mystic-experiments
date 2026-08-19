@@ -23,50 +23,43 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Test Moon change while annual calculation is running
+      - name: Compare May Moon-on and Moon-off annual runs
         shell: bash
         env:
           SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
-          cat > invalidation.mjs <<'NODE'
+          cat > compare.mjs <<'NODE'
           import { chromium } from 'playwright-core';
           const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
           const page=await browser.newPage({viewport:{width:1440,height:1200}});
           const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?moon-running-invalidation=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.goto(`${process.env.SITE}/?moon-may-compare=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
           await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
           await page.evaluate(()=>{
             const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
             raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
             raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
-            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','on');
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3);
             raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
             raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
             raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','combined');
-            document.getElementById('calculateAnnual')?.click();
           });
-          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===true,null,{timeout:10000});
-          await page.waitForTimeout(500);
-          const duringBefore=await page.evaluate(()=>({moon:document.getElementById('moonOn')?.value,calculateDisabled:document.getElementById('calculateAnnual')?.disabled,cancelHidden:document.getElementById('cancelAnnual')?.hidden}));
-          await page.evaluate(()=>{
-            const moon=document.getElementById('moonOn'); moon.value='off'; moon.dispatchEvent(new Event('change',{bubbles:true}));
-          });
-          const duringAfter=await page.evaluate(()=>{
-            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
-            return {moon:document.getElementById('moonOn')?.value,calculateDisabled:document.getElementById('calculateAnnual')?.disabled,cancelHidden:document.getElementById('cancelAnnual')?.hidden,rows:rows.length};
-          });
-          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false,null,{timeout:180000});
-          await page.waitForTimeout(800);
-          const final=await page.evaluate(()=>{
-            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
-            let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
-            const compact=rows.map(x=>({date:x?.date??null,closeMinutes:x?.closeTriple?.minutesAfterSunset??null,closeStars:x?.closeTriple?.stars??[]}));
-            let current=null; try{current=eval('annualExportsAreCurrent')();}catch(_){}
-            return {moon:document.getElementById('moonOn')?.value,rows:compact,points:points.map(p=>({minutes:p?.minutes??null,sunAltitude:p?.sunAltitude??null})),exportsCurrent:current,exportDisabled:document.getElementById('exportAnnualCsv')?.disabled,chartHidden:document.getElementById('annualChartWrap')?.hidden??null,progress:document.getElementById('annualProgressText')?.textContent??''};
-          });
-          console.log('MOON_TOGGLE_DURING_RUN',JSON.stringify({duringBefore,duringAfter,final,errors}));
+          async function run(moon){
+            await page.evaluate(moon=>{const e=document.getElementById('moonOn');e.value=moon;e.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('calculateAnnual')?.click();},moon);
+            await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===true,null,{timeout:10000});
+            await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:180000});
+            await page.waitForTimeout(500);
+            return await page.evaluate(()=>{
+              let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
+              let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
+              return {moon:document.getElementById('moonOn')?.value,rows:rows.map(x=>({date:x?.date??null,closeMinutes:x?.closeTriple?.minutesAfterSunset??null,closeSunAltitude:x?.closeTriple?.sunAltitude??null,closeStars:x?.closeTriple?.stars??[]})),points:points.map(p=>({minutes:p?.minutes??null,sunAltitude:p?.sunAltitude??null}))};
+            });
+          }
+          const on=await run('on');
+          const off=await run('off');
+          console.log('MOON_MAY_COMPARE',JSON.stringify({on,off,errors}));
           await browser.close();
           if(errors.length)throw new Error(JSON.stringify(errors));
           NODE
-          node invalidation.mjs
+          node compare.mjs

@@ -1,17 +1,31 @@
-# Aerosol-family challenge v2 — R6 review package
+# Twilight MYSTIC Experiments
 
-This is a review-only, additive clean-room v2 package for a 576-case paired aerosol-family/season MYSTIC diagnostic. Historical v1 remains `PREREGISTERED_NOT_RUN`; exact historical v1 generator/lock bytes were not recovered, so R6 does not claim byte equivalence to v1 and does not rewrite v1 evidence.
+Public, execution-only repository for preregistered libRadtran/MYSTIC twilight diagnostics.
 
-The design candidate is 24 analysis cells × 3 paired-seed replicates × 8 aerosol states = 576 cases. Within each eight-state comparison group, Sun depression, view geometry, AOD550, photon budget, numerical method and Monte-Carlo seed are identical; only four Shettle haze families × two seasons change. The three source-bound view templates are g02 `(altitude 10°, relative azimuth 30°, observer elevation 0 m)`, g04 `(30°, 90°, 0 m)`, and g06 `(45°, 180°, 0 m)`. Sun depression and AOD are swept independently by v2.
+This repository intentionally contains no application code, user data, credentials, or private repository history. Its only purpose is to make bounded scientific experiments and their audits independently inspectable.
 
-R6 uses 72 deterministic SHA-256-derived candidate group seeds. They are **not yet freshness-proven**. `freeze.py` remains fail-closed until an exact default-branch HEAD passes the exact tracked-tree byte scan and **two complete, byte-stable repository-global enumerations** over branches, Actions runs/artifact metadata, all-state PRs/issues, repository-wide issue/pull-review/commit comments, and Issue #60. Only the current audit run and proof-artifact metadata produced by that same run are excluded as self-evidence. A successful review run must persist the proof plus frozen manifest/freeze record, and a later evidence-only preservation commit is required before authorization. A second exact-head recheck remains mandatory at authorization time.
+## Current experiment
 
-R6 preserves the constructible authorization lifecycle so the authorization document never embeds the SHA of the Git commit that contains itself. The parent commit and all frozen payload byte hashes are inside the document; the authorization HEAD is bound externally by Git commit metadata, an attempt-1 zero-runtime Draft PR review, one exact Issue #60 marker, and the later dispatch ref. A regression test constructs this one-file authorization commit in a real temporary Git repository.
+`corrected-spectral-convergence-v1` repeats the previously intended 12-case ALIS-versus-conventional-reference convergence diagnostic after a structural input failure prevented the reference cases from running.
 
-The radiance transport candidate remains hard-disabled. It uses the reviewed full-spectrum VROOM path: a 401-node 1-nm calculation grid over 380–780 nm with raw `mc.rad.spc` / `mc.rad.std.spc` validated on the 8001-node 0.05-nm serialized grid. Every completed case is contracted to retain the rendered input and its hash, runtime provenance, raw radiance and MC-standard-deviation spectra, flux/std files, seed, syntax/solver logs, and per-member hashes.
+The correction is narrow:
 
-The analysis contract is frozen before results. It computes state-vs-rural/spring-summer paired log contrasts first, then summarizes the three independent paired-seed replicates. Photopic, scotopic, S/P, Johnson-V and full spectral contrasts are fixed. Descriptive fractional-change bands are reported separately from the preregistered directional strong-ratio flag (`>=1.5` or `<=2/3`; very large at `>=2` or `<=0.5`). No epsilon substitution, independent-quadrature CRN error bar, post-result retuning, Koomen fitting, production-threshold change, or human/field-factor retuning is permitted.
+- the requested wavelength domain remains 380–780 nm;
+- the conventional-reference custom wavelength grid now also spans exactly 380–780 nm;
+- the same 15 diagnostic nodes from 470–660 nm are preserved;
+- all 12 seeds are fresh;
+- numerical gates, photon ceilings, geometry, no-retry policy, and success boundaries remain frozen.
 
-No scientific result is contained in this package. The scientific execution and authorization workflows remain hard-disabled templates. The seed-proof workflow is a review-only template intended to be installed on the default branch; GitHub workflow_dispatch is not treated as usable before that merge. Once installed, it performs a stable two-pass repository-global seed audit, freezes the manifest/freeze record before any solver, and persists the six-file proof bundle as an Actions artifact. That artifact is transport evidence only: R6 requires a later evidence-only preservation commit before authorization. No scientific execution is authorized by R6.
+## Safety boundary
 
-R6 also makes the preregistration proof identity one-use: the default-branch review-freeze workflow is accepted only on Actions attempt 1 and refuses if an earlier `aerosol-family-v2-r6-freeze-proof` artifact metadata record already exists. Later pre-dispatch freshness is a separate `authorization-recheck` mode; it cannot substitute for or recreate the original freeze proof.
+The committed `experiment/authorization.json` is disabled. Contract CI never runs MYSTIC. Scientific execution can occur only from a one-purpose authorization commit on the exact branch `authorization/corrected-spectral-convergence-v1`, after exact-head contract CI is green.
+
+A successful result does not establish physical validity, observational validity, LUT readiness, production readiness, or permission to change any default model.
+
+## Workflows
+
+- `contract.yml`: static validation and unit tests only.
+- `execution.yml`: exact one-shot MYSTIC execution; no manual dispatch.
+- `audit.yml`: read-only audit of the exact uploaded artifact after the execution workflow completes, including failed execution artifacts.
+
+No license is granted by publication of this repository.

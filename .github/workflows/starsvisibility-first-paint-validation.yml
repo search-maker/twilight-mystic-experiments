@@ -1,0 +1,146 @@
+name: StarsVisibility first-paint startup validation
+
+on:
+  push:
+    branches:
+      - execution/validate-starsvisibility-first-paint
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+      - name: Install browser driver
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Verify visible paint precedes automatic calculation
+        env:
+          SITE: https://5e1e2200.starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > validate-first-paint.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await context.addInitScript(() => {
+            const NativeWorker = window.Worker;
+            window.__starsFirstWorker = null;
+            window.Worker = class InstrumentedWorker extends NativeWorker {
+              constructor(...args) {
+                if (window.__starsFirstWorker == null) {
+                  const controls = document.getElementById('mainControls');
+                  const rect = controls?.getBoundingClientRect?.();
+                  window.__starsFirstWorker = {
+                    at: performance.now(),
+                    controlsVisible: !!rect && rect.width > 0 && rect.height > 0,
+                    bodyTextLength: (document.body?.innerText || '').trim().length,
+                  };
+                }
+                super(...args);
+              }
+            };
+          });
+          await context.addInitScript(values => {
+            localStorage.setItem('starVisibilityUserSettingsV1', JSON.stringify({ version: 4, mode: 'evening', values }));
+          }, {
+            date: { value: '2026-05-29' },
+            lat: { value: '32.74907' },
+            lon: { value: '35.09901' },
+            timezone: { value: 'Asia/Jerusalem' },
+            observerElevationM: { value: '105' },
+            observerMode: { value: 'ordinaryOrGuided' },
+            minAlt: { value: '3' },
+            moonOn: { value: 'off' },
+            threeStarCount: { value: '3' },
+            threeStarMagnitudeBasis: { value: 'effective' },
+            threeStarMagnitudeThreshold: { value: '1.7' },
+            threeCloseEnabled: { checked: true },
+            threeCloseMaxDiameterDeg: { value: '4' },
+            threeCloseMagnitudeBasis: { value: 'effective' },
+            threeCloseMagnitudeThreshold: { value: '3' },
+          });
+
+          const page = await context.newPage();
+          const pageErrors = [];
+          page.on('pageerror', error => pageErrors.push(error.message));
+
+          let ready = false;
+          for (let attempt = 0; attempt < 30; attempt++) {
+            await page.goto(`${process.env.SITE}/?first-paint=${process.env.GITHUB_RUN_ID}-${attempt}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+            ready = await page.evaluate(() => document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1'));
+            if (ready) break;
+            await page.waitForTimeout(10000);
+          }
+          if (!ready) throw new Error('FIRST_PAINT_FIX_MARKER_MISSING_AFTER_WAIT');
+
+          await page.waitForFunction(() => {
+            const fcp = performance.getEntriesByType('paint').find(entry => entry.name === 'first-contentful-paint');
+            return !!fcp && !!window.__starsFirstWorker;
+          }, null, { timeout: 180000 });
+
+          await page.waitForFunction(() => {
+            try {
+              const data = eval('threeStarResultData');
+              return data?.found === true && data?.closeTriple?.enabled === true && data?.closeTriple?.found === true;
+            } catch { return false; }
+          }, null, { timeout: 180000 });
+
+          const result = await page.evaluate(() => {
+            const fcp = performance.getEntriesByType('paint').find(entry => entry.name === 'first-contentful-paint');
+            const data = eval('threeStarResultData');
+            return {
+              fcpAt: fcp?.startTime ?? null,
+              worker: window.__starsFirstWorker,
+              marker: document.documentElement.outerHTML.includes('STARS-INITIAL-CALC-AFTER-FIRST-PAINT-V1'),
+              controlsVisibleNow: (() => {
+                const rect = document.getElementById('mainControls')?.getBoundingClientRect?.();
+                return !!rect && rect.width > 0 && rect.height > 0;
+              })(),
+              regularMinutes: Number(data?.minutesAfterSunset),
+              closeEnabled: data?.closeTriple?.enabled === true,
+              closeMinutes: Number(data?.closeTriple?.minutesAfterSunset),
+            };
+          });
+
+          if (!Number.isFinite(result.fcpAt) || !Number.isFinite(result.worker?.at)) throw new Error(`TIMING_MISSING_${JSON.stringify(result)}`);
+          if (!(result.worker.at > result.fcpAt)) throw new Error(`CALCULATION_STARTED_BEFORE_FIRST_CONTENTFUL_PAINT_${JSON.stringify(result)}`);
+          if (!result.worker.controlsVisible || !(result.worker.bodyTextLength > 100) || !result.controlsVisibleNow) throw new Error(`SITE_NOT_VISIBLE_BEFORE_CALC_${JSON.stringify(result)}`);
+          if (!result.closeEnabled || !(result.closeMinutes > 40 && result.closeMinutes < 55)) throw new Error(`CONSECUTIVE_AUTO_CALC_REGRESSION_${JSON.stringify(result)}`);
+          if (pageErrors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(pageErrors)}`);
+
+          const noAuto = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await noAuto.addInitScript(() => {
+            const NativeWorker = window.Worker;
+            window.__starsFirstWorker = null;
+            window.Worker = class InstrumentedWorker extends NativeWorker {
+              constructor(...args) {
+                if (window.__starsFirstWorker == null) window.__starsFirstWorker = { at: performance.now() };
+                super(...args);
+              }
+            };
+          });
+          const noAutoPage = await noAuto.newPage();
+          await noAutoPage.goto(`${process.env.SITE}/?test-no-auto&first-paint-no-auto=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+          await noAutoPage.waitForTimeout(1200);
+          const noAutoState = await noAutoPage.evaluate(() => ({
+            worker: window.__starsFirstWorker,
+            active: (() => { try { return !!eval('activeCalculationWorker'); } catch { return null; } })(),
+          }));
+          if (noAutoState.worker || noAutoState.active) throw new Error(`TEST_NO_AUTO_REGRESSION_${JSON.stringify(noAutoState)}`);
+          await noAuto.close();
+
+          console.log('FIRST_PAINT_STARTUP_PASS', JSON.stringify({ result, noAutoState }));
+          await context.close();
+          await browser.close();
+          NODE
+          node validate-first-paint.mjs

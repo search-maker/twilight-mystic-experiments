@@ -1,0 +1,70 @@
+name: StarsVisibility annual Moon invalidation diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-annual-moon-invalidation-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-invalidation:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install browser driver
+        shell: bash
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright-core@1.61.1 --no-save
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: Test Moon change after annual calculation
+        shell: bash
+        env:
+          SITE: https://starsvisibility.pages.dev
+        run: |
+          set -euo pipefail
+          cat > invalidation.mjs <<'NODE'
+          import { chromium } from 'playwright-core';
+          const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
+          const page=await browser.newPage({viewport:{width:1440,height:1200}});
+          const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(`${process.env.SITE}/?moon-invalidation=${process.env.GITHUB_RUN_ID}`,{waitUntil:'networkidle',timeout:120000});
+          await page.waitForSelector('#annualResultKind',{state:'attached',timeout:30000});
+          await page.evaluate(()=>{
+            const raw=(id,v)=>{const e=document.getElementById(id);if(!e)return;if('checked' in e&&typeof v==='boolean')e.checked=v;else e.value=String(v);};
+            raw('calculatorFeature','three-star'); globalThis.__STAR_VISIBILITY_ENGINE_MODE__='legacy';
+            raw('lat',32.74907); raw('lon',35.09901); raw('timezone','Asia/Jerusalem'); raw('observerElevationM',105);
+            raw('observerMode','ordinaryOrGuided'); raw('minAlt',3); raw('moonOn','on');
+            raw('threeStarCount',3); raw('threeStarMagnitudeBasis','effective'); raw('threeStarMagnitudeThreshold',1.7);
+            raw('threeCloseEnabled',true); raw('threeCloseMaxDiameterDeg',4); raw('threeCloseMagnitudeBasis','effective'); raw('threeCloseMagnitudeThreshold',3);
+            raw('annualCalendar','gregorian-month'); raw('annualMonth','2026-05'); raw('annualCadence','weekly'); raw('annualResultKind','consecutive'); raw('annualChartMetric','combined');
+            document.getElementById('calculateAnnual')?.click();
+          });
+          await page.waitForFunction(()=>document.getElementById('calculateAnnual')?.disabled===false && document.getElementById('exportAnnualCsv')?.disabled===false,null,{timeout:180000});
+          await page.waitForTimeout(500);
+          const before=await page.evaluate(()=>{
+            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
+            let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
+            return {moon:document.getElementById('moonOn')?.value,rows:rows.length,points:points.length,exportDisabled:document.getElementById('exportAnnualCsv')?.disabled,tableHidden:document.getElementById('annualTableWrap')?.hidden??null,canvasWidth:document.getElementById('annualChart')?.width??null,canvasHeight:document.getElementById('annualChart')?.height??null};
+          });
+          await page.evaluate(()=>{
+            const moon=document.getElementById('moonOn'); moon.value='off'; moon.dispatchEvent(new Event('change',{bubbles:true}));
+          });
+          await page.waitForTimeout(500);
+          const after=await page.evaluate(()=>{
+            let rows=[]; try{rows=eval('annualResults')||[];}catch(_){}
+            let points=[]; try{points=eval('annualChartPoints')||[];}catch(_){}
+            let current=null; try{current=eval('annualExportsAreCurrent')();}catch(_){}
+            return {moon:document.getElementById('moonOn')?.value,rows:rows.length,points:points.length,exportDisabled:document.getElementById('exportAnnualCsv')?.disabled,exportsCurrent:current,tableHidden:document.getElementById('annualTableWrap')?.hidden??null,canvasWidth:document.getElementById('annualChart')?.width??null,canvasHeight:document.getElementById('annualChart')?.height??null};
+          });
+          console.log('MOON_INVALIDATION',JSON.stringify({before,after,errors}));
+          await browser.close();
+          if(errors.length)throw new Error(JSON.stringify(errors));
+          NODE
+          node invalidation.mjs

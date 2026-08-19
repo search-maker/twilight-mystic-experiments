@@ -59,11 +59,22 @@ class AuthorizationSurfaceTests(unittest.TestCase):
         p = self.payload()
         head, parent = "3" * 40, "4" * 40
         marker = self.freshness.authorization_marker(29, head, parent, 250)
-        p["issue60Comments"].append({"id": 9, "body": marker})
+        row = {"id": 9, "body": marker}
+        p["issueComments"].append(dict(row))
+        p["issue60Comments"].append(dict(row))
         out = self.surface.build_surface(p, 29, current_pr=250, current_run_id=777, marker_head=head, marker_parent=parent)
         self.assertEqual(out["matchingAuthorizationMarkers"], 1)
         self.assertEqual(out["matchingAuthorizationMarkerBodies"], [marker])
         self.assertEqual(out["positiveCandidateClaimsExcludingCurrent"], 0)
+
+    def test_matching_marker_outside_issue60_remains_a_positive_claim(self):
+        p = self.payload()
+        head, parent = "3" * 40, "4" * 40
+        marker = self.freshness.authorization_marker(29, head, parent, 250)
+        p["issueComments"].append({"id": 10, "body": marker})
+        out = self.surface.build_surface(p, 29, current_pr=250, current_run_id=777, marker_head=head, marker_parent=parent)
+        self.assertEqual(out["matchingAuthorizationMarkers"], 0)
+        self.assertGreater(out["positiveCandidateClaimsExcludingCurrent"], 0)
 
     def test_prior_execution_key_use_fails_freshness_surface(self):
         p = self.payload()

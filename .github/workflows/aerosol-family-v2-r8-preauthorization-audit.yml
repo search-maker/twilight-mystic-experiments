@@ -1,0 +1,227 @@
+name: Aerosol-family v2 R8 fresh preauthorization audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-preauthorization-audit.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: aerosol-family-v2-r8-preauthorization-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  preauthorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact candidate main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove exact attempt-1 main and zero-runtime audit surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-family-v2-r8-preauthorization-audit.yml').read_text()
+          forbidden=(
+              'setup-'+'micromamba', 'rubin-'+'libradtran', 'command -v '+'uvspec',
+              '--allow-'+'execution', 'git '+'push ', 'workflow_'+'dispatch:',
+              'repository_'+'dispatch:', 'schedule'+':'
+          )
+          found=[token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'preauthorization workflow exposed runtime/dispatch/write transition: {found}')
+          PY
+          git ls-files -z > tracked-files.nul
+          mkdir -p preauthorization-evidence
+      - name: Exact tracked-tree candidate-seed scan on current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2-r8/tracked_tree_seed_scan.py \
+            --repo-root . --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --allow-self-ledger-json experiments/aerosol-family-challenge-v2-r8/seed-self-ledger-paths.json \
+            --output preauthorization-evidence/tracked-seed-scan.json
+      - name: Stable two-pass repository-global candidate-seed audit on current main
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # authorization-recheck is intentionally reused here only as the scanner mechanism
+          # that permits the already-preserved review-freeze artifact. This step does not
+          # create or review an authorization document and the merger keeps authorizationPermitted=false.
+          python experiments/aerosol-family-challenge-v2-r8/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name main \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output preauthorization-evidence/repository-global-seed-scan.json
+      - name: Merge exact-main seed proof without authorizing execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_BASE="$(python -c 'import json; from pathlib import Path; d=json.load(open("experiments/aerosol-family-challenge-v2-r8/design.review.json")); print(json.load(open(Path(d["baseDesignPath"]))) ["sourceBindings"]["publicRepoMainSha"])')"
+          python experiments/aerosol-family-challenge-v2-r8/merge_seed_proof.py \
+            --design experiments/aerosol-family-challenge-v2-r8/design.review.json \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --tracked preauthorization-evidence/tracked-seed-scan.json \
+            --repository-global preauthorization-evidence/repository-global-seed-scan.json \
+            --repo-head "$GITHUB_SHA" --source-base-main-sha "$SOURCE_BASE" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --output preauthorization-evidence/seed-freshness-proof.json
+      - name: Derive fresh global identity and run existing preauthorization guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r8/execution-candidate python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from authorization_guard import preauthorize
+          from authorization_surface import (
+              AUTHORIZATION_PATH,
+              REQUIRED_MAIN_PATHS,
+              _latest_consumed_ordinal,
+              build_surface,
+              collect,
+          )
+          from preauthorization_ordinal import derive_next_global_ordinal
+
+          root=Path('.')
+          evidence=root/'preauthorization-evidence'
+          token=os.environ['GITHUB_TOKEN']
+          payload=collect(os.environ['GITHUB_REPOSITORY'], token)
+          latest=_latest_consumed_ordinal(payload, '__preauthorization_no_candidate__', -1)
+          if not isinstance(latest,int) or latest <= 0:
+              raise SystemExit('cannot derive a positive latest consumed global scientific ordinal')
+          candidate,ordinal_observations=derive_next_global_ordinal(
+              payload,latest,current_run_id=int(os.environ['GITHUB_RUN_ID'])
+          )
+          required_ok=all((root/path).is_file() for path in REQUIRED_MAIN_PATHS)
+          surface=build_surface(
+              payload,
+              candidate,
+              current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              active_authorization_path_on_main_exists=(root/AUTHORIZATION_PATH).exists(),
+              candidate_code_paths_on_main_inspected=required_ok,
+          )
+          guard=preauthorize({
+              'freshness':surface,
+              'authorizationCreated':False,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificExecutionPerformed':False,
+          },candidate)
+          seed=json.loads((evidence/'seed-freshness-proof.json').read_text())
+          expected_seed_status='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK'
+          if seed.get('status') != expected_seed_status:
+              raise SystemExit('exact-main seed proof did not pass')
+          if seed.get('repositoryHead') != os.environ['GITHUB_SHA']:
+              raise SystemExit('seed proof is not bound to exact current main')
+          if seed.get('auditedBranchName') != 'main' or seed.get('auditedBranchHeadMatchesRepositoryHead') is not True:
+              raise SystemExit('seed proof did not observe exact main branch head')
+          if seed.get('externalCollisionCount') != 0:
+              raise SystemExit('candidate seed collision detected')
+          if seed.get('repositoryGlobalDoubleEnumerationStable') is not True or seed.get('repositoryGlobalEnumerationPassCount') != 2:
+              raise SystemExit('repository-global seed audit was not a stable double enumeration')
+          if seed.get('authorizationPermitted') is not False:
+              raise SystemExit('seed proof may not authorize execution')
+          ledger=json.loads((root/'experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json').read_text())
+          seeds=ledger.get('candidateSeeds')
+          canonical=hashlib.sha256(json.dumps(seeds,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          if seed.get('candidateSeedCanonicalSha256') != canonical:
+              raise SystemExit('candidate seed canonical identity drift')
+          report={
+              'schemaVersion':1,
+              'stageId':'aerosol-family-challenge-v2-r8-preauthorization',
+              'status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED',
+              'exactMainSha':os.environ['GITHUB_SHA'],
+              'runId':int(os.environ['GITHUB_RUN_ID']),
+              'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'latestPriorConsumedScientificOrdinal':surface['latestPriorConsumedScientificOrdinal'],
+              'nextAvailableScientificOrdinal':surface['nextAvailableScientificOrdinal'],
+              'globalOrdinalMaxObserved':max(row['ordinal'] for row in ordinal_observations),
+              'globalOrdinalObservationCount':len(ordinal_observations),
+              'authorizationBranch':guard['authorizationBranch'],
+              'dispatchBranch':guard['dispatchBranch'],
+              'executionKey':guard['executionKey'],
+              'identityGuardStatus':guard['status'],
+              'seedProofStatus':seed['status'],
+              'seedAuditMechanismMode':'authorization-recheck',
+              'seedAuditMechanismPurpose':'PREAUTHORIZATION_EXACT_MAIN_COLLISION_RECHECK_WITH_PRIOR_REVIEW_FREEZE_EVIDENCE_PERMITTED',
+              'candidateSeedCanonicalSha256':canonical,
+              'scientificOrdinalAllocated':False,
+              'authorizationCreated':False,
+              'dispatchCreated':False,
+              'authorizationCreationPermitted':guard['authorizationCreationPermitted'] is True,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'githubRerunAllowed':False,
+              'retryAllowed':False,
+              'resumeAllowed':False,
+          }
+          raw=json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          report['reportSha256']=hashlib.sha256(raw).hexdigest()
+          (evidence/'global-ordinal-surface.json').write_text(json.dumps({'latestConsumed':latest,'nextCandidate':candidate,'observations':ordinal_observations},indent=2,sort_keys=True)+'\n')
+          (evidence/'freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          (evidence/'preauthorization.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'status':report['status'],
+              'latestPriorConsumedScientificOrdinal':report['latestPriorConsumedScientificOrdinal'],
+              'nextAvailableScientificOrdinal':report['nextAvailableScientificOrdinal'],
+              'exactMainSha':report['exactMainSha'],
+              'scientificOrdinalAllocated':False,
+          },sort_keys=True))
+          PY
+      - name: Persist zero-runtime preauthorization evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-r8-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Print terminal non-allocation readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r=json.loads(Path('preauthorization-evidence/preauthorization.json').read_text())
+          print(f'AFC2-R8-PREAUTHORIZATION-READBACK run={os.environ["GITHUB_RUN_ID"]}')
+          print(f'exact_main={r["exactMainSha"]}')
+          print(f'attempt={r["runAttempt"]}')
+          print(f'status={r["status"]}')
+          print(f'latest_consumed={r["latestPriorConsumedScientificOrdinal"]}')
+          print(f'next_if_separately_allocated={r["nextAvailableScientificOrdinal"]}')
+          print('authorization_created=false')
+          print('scientific_identity_allocated=false')
+          print('dispatch_created=false')
+          print('scientific_runtime=false')
+          print('solver_execution=false')
+          PY

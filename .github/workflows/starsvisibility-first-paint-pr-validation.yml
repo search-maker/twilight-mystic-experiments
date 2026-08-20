@@ -1,4 +1,4 @@
-name: StarsVisibility known-object production validation
+name: StarsVisibility responsive calculation preview validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -20,83 +20,100 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Validate production clean defaults and persisted override
+      - name: Validate responsiveness, numerical parity, defaults, and hidden WIP link
         env:
-          SITE: https://starsvisibility.pages.dev
+          SITE: https://agent-responsive-calculation.starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
           import { chromium } from 'playwright-core';
 
-          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
-          const ids = [
-            'excludeKnownVenus',
-            'excludeKnownJupiter',
-            'excludeKnownSirius',
-            'excludeKnownMars',
-            'excludeKnownCanopus',
-            'excludeKnownAlphaCentauri',
-            'excludeKnownArcturus',
-          ];
-          const read = page => page.evaluate(ids => Object.fromEntries(ids.map(id => [id, document.getElementById(id)?.checked ?? null])), ids);
+          const browser = await chromium.launch({headless:true, executablePath:process.env.CHROME_PATH});
+          const settings={date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}};
 
-          const fresh = await browser.newContext();
-          await fresh.addInitScript(() => localStorage.removeItem('starVisibilityThreeStarSelectionV1'));
-          const freshPage = await fresh.newPage();
-          const freshErrors = [];
-          freshPage.on('pageerror', error => freshErrors.push(error.message));
-          let marker = false;
-          for (let i = 0; i < 30; i++) {
-            await freshPage.goto(`${process.env.SITE}/?known-prod=${process.env.GITHUB_RUN_ID}-${i}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
-            marker = await freshPage.evaluate(() => document.documentElement.outerHTML.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1'));
-            if (marker) break;
-            await freshPage.waitForTimeout(10000);
-          }
-          if (!marker) throw new Error('DEFAULT_FOUR_PRODUCTION_NOT_DEPLOYED');
-          const clean = await read(freshPage);
-          const cleanExpected = {
-            excludeKnownVenus: true,
-            excludeKnownJupiter: true,
-            excludeKnownSirius: true,
-            excludeKnownMars: true,
-            excludeKnownCanopus: false,
-            excludeKnownAlphaCentauri: false,
-            excludeKnownArcturus: false,
-          };
-          if (JSON.stringify(clean) !== JSON.stringify(cleanExpected)) throw new Error(`CLEAN_DEFAULT_BAD_${JSON.stringify(clean)}`);
-          if (freshErrors.length) throw new Error(`FRESH_PAGE_ERRORS_${JSON.stringify(freshErrors)}`);
-          await fresh.close();
-
-          const saved = await browser.newContext();
-          await saved.addInitScript(() => {
-            localStorage.setItem('starVisibilityThreeStarSelectionV1', JSON.stringify({
-              count: '3',
-              magnitudeBasis: 'known-exclusions',
-              magnitudeThreshold: '1.7',
-              excludedKnownObjects: ['canopus', 'arcturus'],
-            }));
+          const context=await browser.newContext({viewport:{width:1440,height:1200}});
+          await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),settings);
+          await context.addInitScript(()=>{
+            const Native=window.Worker;
+            window.__workerCount=0;
+            window.Worker=class extends Native{constructor(...args){window.__workerCount++;super(...args);}};
+            window.__heartbeatMaxGap=0;
+            let last=performance.now();
+            setInterval(()=>{const now=performance.now();window.__heartbeatMaxGap=Math.max(window.__heartbeatMaxGap,now-last);last=now;},25);
           });
-          const savedPage = await saved.newPage();
-          const savedErrors = [];
-          savedPage.on('pageerror', error => savedErrors.push(error.message));
-          await savedPage.goto(`${process.env.SITE}/?known-prod-saved=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
-          const restored = await read(savedPage);
-          const restoredExpected = {
-            excludeKnownVenus: false,
-            excludeKnownJupiter: false,
-            excludeKnownSirius: false,
-            excludeKnownMars: false,
-            excludeKnownCanopus: true,
-            excludeKnownAlphaCentauri: false,
-            excludeKnownArcturus: true,
-          };
-          if (JSON.stringify(restored) !== JSON.stringify(restoredExpected)) throw new Error(`SAVED_OVERRIDE_BAD_${JSON.stringify(restored)}`);
-          const basis = await savedPage.locator('#threeStarMagnitudeBasis').inputValue();
-          if (basis !== 'known-exclusions') throw new Error(`SAVED_BASIS_BAD_${basis}`);
-          if (savedErrors.length) throw new Error(`SAVED_PAGE_ERRORS_${JSON.stringify(savedErrors)}`);
-          await saved.close();
+          const requests=[];
+          context.on('request',request=>{if(request.url().includes('stars-builtin-catalog-'))requests.push(request.url());});
+          const page=await context.newPage();
+          const errors=[]; page.on('pageerror',e=>errors.push(e.message));
 
-          console.log('KNOWN_OBJECT_PRODUCTION_PASS', JSON.stringify({ clean, restored, basis }));
+          let deployed=false;
+          for(let i=0;i<30;i++){
+            await page.goto(`${process.env.SITE}/?responsive=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});
+            deployed=await page.evaluate(()=>{
+              const html=document.documentElement.outerHTML;
+              return html.includes('STARS-BUILTIN-CATALOG-MAIN-THREAD-LAZY-V1')
+                && html.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1')
+                && !document.getElementById('workInProgressCalculatorLink');
+            });
+            if(deployed) break;
+            await page.waitForTimeout(10000);
+          }
+          if(!deployed) throw new Error('RESPONSIVE_PREVIEW_NOT_DEPLOYED');
+
+          await page.waitForFunction(()=>window.__workerCount>=1 && document.getElementById('calculate')?.disabled===true,null,{timeout:120000});
+          const beforeLang=await page.evaluate(()=>document.documentElement.lang);
+          const clickStarted=Date.now();
+          await page.locator('#languageToggle').click({timeout:2000});
+          await page.waitForFunction(before=>document.documentElement.lang!==before,beforeLang,{timeout:2000});
+          const clickLatencyMs=Date.now()-clickStarted;
+
+          await page.waitForFunction(()=>{try{const d=eval('threeStarResultData');return d?.found===true&&d?.closeTriple?.enabled===true&&d?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
+          const result=await page.evaluate(()=>{
+            const d=eval('threeStarResultData');
+            return {
+              workerCount:window.__workerCount,
+              heartbeatMaxGap:window.__heartbeatMaxGap,
+              regular:Number(d?.minutesAfterSunset),
+              close:Number(d?.closeTriple?.minutesAfterSunset),
+              closeEnabled:d?.closeTriple?.enabled===true,
+              closeFound:d?.closeTriple?.found===true,
+              lazyMain:globalThis.__STARS_BUILT_IN_CATALOG_MAIN_THREAD_LAZY__===true,
+              mainCatalogCount:(()=>{try{return eval('builtInStars.length')}catch{return null}})(),
+              pageCatalogScript:Boolean(document.querySelector('script[data-stars-builtin-catalog]')),
+              wipButton:Boolean(document.getElementById('workInProgressCalculatorLink')),
+            };
+          });
+          if(result.workerCount<1) throw new Error(`WORKER_NOT_USED_${JSON.stringify(result)}`);
+          if(!result.lazyMain || result.mainCatalogCount!==0 || result.pageCatalogScript) throw new Error(`MAIN_THREAD_CATALOG_NOT_LAZY_${JSON.stringify(result)}`);
+          if(result.wipButton) throw new Error(`WIP_BUTTON_STILL_PRESENT_${JSON.stringify(result)}`);
+          if(clickLatencyMs>1000) throw new Error(`BUSY_UI_CLICK_TOO_SLOW_${clickLatencyMs}_${JSON.stringify(result)}`);
+          if(Math.abs(result.regular-30.9375)>0.000001||Math.abs(result.close-46.859375)>0.000001||!result.closeEnabled||!result.closeFound) throw new Error(`RESULT_PARITY_BAD_${JSON.stringify(result)}`);
+          if(!requests.length) throw new Error(`WORKER_CATALOG_REQUEST_NOT_OBSERVED_${JSON.stringify(result)}`);
+          if(errors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
+          await context.close();
+
+          const defaultsContext=await browser.newContext();
+          await defaultsContext.addInitScript(()=>{
+            localStorage.removeItem('starVisibilityThreeStarSelectionV1');
+            localStorage.removeItem('starVisibilityUserSettingsV1');
+          });
+          const defaultsPage=await defaultsContext.newPage();
+          await defaultsPage.goto(`${process.env.SITE}/?defaults=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
+          const defaults=await defaultsPage.evaluate(()=>Object.fromEntries([
+            'excludeKnownVenus','excludeKnownJupiter','excludeKnownSirius','excludeKnownMars','excludeKnownCanopus','excludeKnownAlphaCentauri','excludeKnownArcturus'
+          ].map(id=>[id,document.getElementById(id)?.checked??null])));
+          const expected={excludeKnownVenus:true,excludeKnownJupiter:true,excludeKnownSirius:true,excludeKnownMars:true,excludeKnownCanopus:false,excludeKnownAlphaCentauri:false,excludeKnownArcturus:false};
+          if(JSON.stringify(defaults)!==JSON.stringify(expected)) throw new Error(`DEFAULTS_BAD_${JSON.stringify(defaults)}`);
+          await defaultsContext.close();
+
+          const devContext=await browser.newContext();
+          const devPage=await devContext.newPage();
+          await devPage.goto(`${process.env.SITE}/work-in-progress/?devback=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
+          const devBack=await devPage.evaluate(()=>Boolean(document.getElementById('stableCalculatorLink')));
+          if(!devBack) throw new Error('DEVELOPMENT_BACK_LINK_MISSING');
+          await devContext.close();
+
+          console.log('RESPONSIVE_PREVIEW_PASS',JSON.stringify({clickLatencyMs,result,requests:[...new Set(requests)],defaults,devBack}));
           await browser.close();
           NODE
           node validate.mjs

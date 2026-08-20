@@ -7,51 +7,135 @@ on:
       - .github/workflows/aerosol-family-v2-r7-review-freeze-diagnostic.yml
 permissions:
   actions: read
-  contents: read
+  contents: write
   issues: write
 jobs:
-  diagnose:
+  preserve-evidence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      EXPECTED_MAIN: 8327931dfa0e8784fff5b99c1eaabb31710d9d16
+      PROOF_RUN_ID: "32332748627"
+      ARTIFACT_ID: "9393646843"
+      ARTIFACT_NAME: aerosol-family-v2-r7-freeze-proof
+      ARTIFACT_ZIP_SHA256: 48329baf0301e4bee2638fc82d9329955dd473c99bef6463a30b4cd335954dd5
+      PROOF_BUNDLE_SHA256: fac2e200d9cc65715b542c3d745343a263577bf68d4e4fbfbbbeb85ae5d7652b
+      TARGET_BRANCH: evidence/aerosol-family-challenge-v2-r7-review-freeze
+      TARGET_DIR: evidence/aerosol-family-challenge-v2-r7
     steps:
-      - name: Read R7 review-freeze control-plane state
+      - name: Checkout exact reviewed main
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.EXPECTED_MAIN }}
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Fail closed on drift or duplicate target
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          live="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+          test "$live" = "$EXPECTED_MAIN" || { echo "refuse: main moved expected=$EXPECTED_MAIN live=$live"; exit 2; }
+          if git ls-remote --exit-code --heads origin "refs/heads/${TARGET_BRANCH}" >/dev/null 2>&1; then
+            echo "refuse: target evidence branch already exists: ${TARGET_BRANCH}"
+            exit 3
+          fi
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PROOF_RUN_ID}")"
+          test "$(jq -r '.status' <<<"$run_json")" = completed
+          test "$(jq -r '.conclusion' <<<"$run_json")" = success
+          test "$(jq -r '.run_attempt' <<<"$run_json")" = 1
+          test "$(jq -r '.head_branch' <<<"$run_json")" = main
+          test "$(jq -r '.head_sha' <<<"$run_json")" = "$EXPECTED_MAIN"
+          art_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}")"
+          test "$(jq -r '.name' <<<"$art_json")" = "$ARTIFACT_NAME"
+          test "$(jq -r '.expired' <<<"$art_json")" = false
+          test "$(jq -r '.digest' <<<"$art_json")" = "sha256:${ARTIFACT_ZIP_SHA256}"
+          test "$(jq -r '.workflow_run.id' <<<"$art_json")" = "$PROOF_RUN_ID"
+          test "$(jq -r '.workflow_run.head_sha' <<<"$art_json")" = "$EXPECTED_MAIN"
+      - name: Download and verify exact proof artifact bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/afc2-r7-proof /tmp/afc2-r7-proof.zip
+          curl --fail --silent --show-error -L \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/afc2-r7-proof.zip
+          echo "${ARTIFACT_ZIP_SHA256}  /tmp/afc2-r7-proof.zip" | sha256sum -c -
+          mkdir /tmp/afc2-r7-proof
+          unzip -q /tmp/afc2-r7-proof.zip -d /tmp/afc2-r7-proof
+          expected=$'freeze-record.json\nmanifest.frozen.json\nproof-bundle.sha256\nrepository-global-seed-scan.json\nseed-freshness-proof.json\ntracked-seed-scan.json'
+          observed="$(find /tmp/afc2-r7-proof -maxdepth 1 -type f -printf '%f\n' | sort)"
+          test "$observed" = "$expected" || { printf 'unexpected artifact file set:\n%s\n' "$observed"; exit 4; }
+          cd /tmp/afc2-r7-proof
+          echo "${PROOF_BUNDLE_SHA256}  proof-bundle.sha256" | sha256sum -c -
+          sha256sum -c proof-bundle.sha256
           python3 - <<'PY'
-          import json, os, urllib.parse, urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
-          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r7-freeze-diagnostic'}
-          def req(path,method='GET',payload=None):
-              data=None if payload is None else json.dumps(payload).encode()
-              r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=headers)
-              with urllib.request.urlopen(r,timeout=90) as x:
-                  raw=x.read(); return None if not raw else json.loads(raw)
-          def pages(path,key):
-              out=[]; page=1
-              while True:
-                  sep='&' if '?' in path else '?'
-                  data=req(f'{path}{sep}per_page=100&page={page}')
-                  rows=data.get(key,[])
-                  if not isinstance(rows,list): raise RuntimeError(f'missing {key}')
-                  out.extend(rows)
-                  if len(rows)<100:return out
-                  page+=1
-          def workflow_runs(filename):
-              ref=urllib.parse.quote(filename,safe='')
-              return pages(f'/repos/{repo}/actions/workflows/{ref}/runs','workflow_runs')
-          def compact(rows):
-              rows=sorted(rows,key=lambda r:int(r.get('id') or 0),reverse=True)
-              return [{k:r.get(k) for k in ('id','event','status','conclusion','run_attempt','head_branch','head_sha','created_at','updated_at')} for r in rows[:5]]
-          bootstrap=workflow_runs('aerosol-family-v2-r7-review-freeze-bootstrap.yml')
-          proof=workflow_runs('aerosol-family-v2-r7-seed-proof-review.yml')
-          observer=workflow_runs('aerosol-family-v2-r7-review-freeze-observer.yml')
-          artifacts=pages(f'/repos/{repo}/actions/artifacts','artifacts')
-          proof_artifacts=[{k:a.get(k) for k in ('id','name','size_in_bytes','expired','created_at','updated_at','digest')} for a in artifacts if str(a.get('name') or '')=='aerosol-family-v2-r7-freeze-proof']
-          live=str((req(f'/repos/{repo}/branches/main').get('commit') or {}).get('sha') or '')
-          body='AFC2-R7-FREEZE-DIAG-1\n```json\n'+json.dumps({'liveMain':live,'bootstrapRuns':compact(bootstrap),'proofRuns':compact(proof),'observerRuns':compact(observer),'proofArtifacts':proof_artifacts},sort_keys=True,indent=2)+'\n```'
-          req(f'/repos/{repo}/issues/60/comments','POST',{'body':body})
-          print(body)
+          import json
+          from pathlib import Path
+          root=Path('/tmp/afc2-r7-proof')
+          proof=json.loads((root/'seed-freshness-proof.json').read_text())
+          freeze=json.loads((root/'freeze-record.json').read_text())
+          manifest=json.loads((root/'manifest.frozen.json').read_text())
+          assert proof['status']=='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK'
+          assert proof['auditMode']=='review-freeze'
+          assert proof['repositoryHead']=='8327931dfa0e8784fff5b99c1eaabb31710d9d16'
+          assert proof['repositoryGlobalCollisionCount']==0
+          assert proof['externalCollisionCount']==0
+          assert proof['repositoryGlobalDoubleEnumerationStable'] is True
+          assert proof['repositoryGlobalEnumerationPassCount']==2
+          assert proof['authorizationPermitted'] is False
+          assert proof['authorizationTimeRecheckStillRequired'] is True
+          assert freeze['status']=='FROZEN_REVIEW_PACKAGE_NOT_AUTHORIZATION'
+          assert freeze['resultsOpened'] is False
+          assert freeze['scientificExecutionAuthorized'] is False
+          assert freeze['solverExecutionAuthorized'] is False
+          assert freeze['authorizationTimeSeedRecheckStillRequired'] is True
+          assert len(manifest['cases'])==576
+          assert manifest['resultsOpened'] is False
+          assert manifest['scientificExecutionAuthorized'] is False
+          assert manifest['solverExecutionAuthorized'] is False
           PY
+      - name: Create exact evidence-only commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$TARGET_DIR"
+          cp /tmp/afc2-r7-proof/freeze-record.json "$TARGET_DIR/freeze-record.json"
+          cp /tmp/afc2-r7-proof/manifest.frozen.json "$TARGET_DIR/manifest.frozen.json"
+          cp /tmp/afc2-r7-proof/proof-bundle.sha256 "$TARGET_DIR/proof-bundle.sha256"
+          cp /tmp/afc2-r7-proof/repository-global-seed-scan.json "$TARGET_DIR/repository-global-seed-scan.json"
+          cp /tmp/afc2-r7-proof/seed-freshness-proof.json "$TARGET_DIR/seed-freshness-proof.json"
+          cp /tmp/afc2-r7-proof/tracked-seed-scan.json "$TARGET_DIR/tracked-seed-scan.json"
+          git switch -c "$TARGET_BRANCH"
+          git add -- \
+            "$TARGET_DIR/freeze-record.json" \
+            "$TARGET_DIR/manifest.frozen.json" \
+            "$TARGET_DIR/proof-bundle.sha256" \
+            "$TARGET_DIR/repository-global-seed-scan.json" \
+            "$TARGET_DIR/seed-freshness-proof.json" \
+            "$TARGET_DIR/tracked-seed-scan.json"
+          expected=$'evidence/aerosol-family-challenge-v2-r7/freeze-record.json\nevidence/aerosol-family-challenge-v2-r7/manifest.frozen.json\nevidence/aerosol-family-challenge-v2-r7/proof-bundle.sha256\nevidence/aerosol-family-challenge-v2-r7/repository-global-seed-scan.json\nevidence/aerosol-family-challenge-v2-r7/seed-freshness-proof.json\nevidence/aerosol-family-challenge-v2-r7/tracked-seed-scan.json'
+          observed="$(git diff --cached --name-only | sort)"
+          test "$observed" = "$expected" || { printf 'refuse unexpected staged scope:\n%s\n' "$observed"; exit 5; }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Preserve AFC2 R7 review-freeze evidence"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git rev-parse HEAD > /tmp/evidence-commit.txt
+      - name: Record evidence preservation linkage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit="$(cat /tmp/evidence-commit.txt)"
+          body="AFC2-R7-EVIDENCE-PRESERVED branch=${TARGET_BRANCH} commit=${commit} parent=${EXPECTED_MAIN} proof_run=${PROOF_RUN_ID} artifact=${ARTIFACT_ID} artifact_digest=sha256:${ARTIFACT_ZIP_SHA256} proof_bundle_sha256=${PROOF_BUNDLE_SHA256} status=EVIDENCE_ONLY_NOT_AUTHORIZATION"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$body" >/dev/null
+          echo "$body"

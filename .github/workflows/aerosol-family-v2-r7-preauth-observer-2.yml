@@ -1,0 +1,53 @@
+name: aerosol-family-v2-r7-preauth-observer-2
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-preauth-observer-2]
+    paths: [.github/workflows/aerosol-family-v2-r7-preauth-observer-2.yml]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Resolve exact preauth audit run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_HEAD: 86fb1ec41d8218934555beafbfa52cff53b5c36d
+          TARGET_BRANCH: status/aerosol-family-v2-r7-preauth-audit-1
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${TARGET_BRANCH}&event=push&per_page=100" > /tmp/runs.json
+            python3 - <<'PY' > /tmp/selected.json || true
+          import json, os
+          pages=json.load(open('/tmp/runs.json'))
+          rows=[r for p in pages for r in p.get('workflow_runs',[])]
+          rows=[r for r in rows if r.get('head_sha')==os.environ['TARGET_HEAD'] and r.get('name')=='aerosol-family-v2-r7-preauth-audit']
+          if len(rows)!=1: raise SystemExit(2)
+          print(json.dumps(rows[0], sort_keys=True))
+          PY
+            if test -s /tmp/selected.json; then
+              status="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["status"])')"
+              if test "$status" = completed; then break; fi
+            fi
+            sleep 10
+          done
+          test -s /tmp/selected.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/selected.json'))
+          out={k:r.get(k) for k in ('id','name','status','conclusion','run_attempt','head_branch','head_sha','created_at','updated_at')}
+          open('preauth-readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          git add -- preauth-readback.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Record AFC2 R7 preauthorization audit readback"
+          git push origin HEAD

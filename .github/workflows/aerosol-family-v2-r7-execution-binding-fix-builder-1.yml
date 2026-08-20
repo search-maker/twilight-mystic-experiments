@@ -1,0 +1,57 @@
+name: aerosol-family-v2-r7-execution-binding-fix-builder-1
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-execution-binding-fix-builder-1]
+    paths: [.github/workflows/aerosol-family-v2-r7-execution-binding-fix-builder-1.yml]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TARGET_BRANCH: fix/aerosol-family-v2-r7-execution-source-binding
+      EXPECTED_BASE: 82e753efa1f241cb0d33456996eaa2cdec4e2ea4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Patch execution source binding and regression coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          python - <<'PY'
+          from pathlib import Path
+
+          wf=Path('.github/workflows/aerosol-family-v2-r7-execution.yml')
+          text=wf.read_text()
+          old='SOURCE_BASE="$(python -c \'import json; print(json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]["publicRepoMainSha"])\')"'
+          new='SOURCE_BASE="$(python -c \'import json; from pathlib import Path; d=json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json")); print(json.load(open(Path(d["baseDesignPath"])))["sourceBindings"]["publicRepoMainSha"])\')"'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one stale execution SOURCE_BASE expression, got {text.count(old)}')
+          wf.write_text(text.replace(old,new))
+
+          test=Path('tests/test_aerosol_family_r7_authorization_source_binding.py')
+          test.write_text('''from __future__ import annotations\n\nimport json\nimport re\nimport unittest\nfrom pathlib import Path\n\n\nROOT = Path(__file__).resolve().parents[1]\nAUTH_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-authorization-review.yml"\nEXEC_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-execution.yml"\nR7_DESIGN = ROOT / "experiments/aerosol-family-challenge-v2-r7/design.review.json"\n\n\nclass R7AuthorizationSourceBindingRegression(unittest.TestCase):\n    def test_bound_base_design_path_is_repo_root_relative_and_resolves(self):\n        design = json.loads(R7_DESIGN.read_text())\n        base_design_path = Path(design["baseDesignPath"])\n        self.assertFalse(base_design_path.is_absolute())\n        resolved = ROOT / base_design_path\n        self.assertTrue(resolved.is_file(), resolved)\n        base_design = json.loads(resolved.read_text())\n        source_base = base_design["sourceBindings"]["publicRepoMainSha"]\n        self.assertRegex(source_base, re.compile(r"^[0-9a-f]{40}$"))\n\n    def _assert_workflow_uses_repo_root_relative_base_design_path(self, path: Path):\n        text = path.read_text()\n        self.assertIn('Path(d["baseDesignPath"])', text)\n        self.assertIn('["sourceBindings"]["publicRepoMainSha"]', text)\n        self.assertNotIn(\n            'Path("experiments/aerosol-family-challenge-v2-r7") / d["baseDesignPath"]',\n            text,\n        )\n        self.assertNotIn(\n            'json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]',\n            text,\n        )\n\n    def test_authorization_review_uses_repo_root_relative_base_design_path(self):\n        self._assert_workflow_uses_repo_root_relative_base_design_path(AUTH_WORKFLOW)\n\n    def test_scientific_execution_uses_repo_root_relative_base_design_path(self):\n        self._assert_workflow_uses_repo_root_relative_base_design_path(EXEC_WORKFLOW)\n\n\nif __name__ == "__main__":\n    unittest.main()\n''')
+          PY
+      - name: Run focused regression
+        run: python -m unittest tests.test_aerosol_family_r7_authorization_source_binding -v
+      - name: Commit exact two-file fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git status --short | sed 's/^...//')
+          test "${#changed[@]}" = 2
+          printf '%s\n' "${changed[@]}" | sort > /tmp/changed.txt
+          printf '%s\n' '.github/workflows/aerosol-family-v2-r7-execution.yml' 'tests/test_aerosol_family_r7_authorization_source_binding.py' | sort > /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- .github/workflows/aerosol-family-v2-r7-execution.yml tests/test_aerosol_family_r7_authorization_source_binding.py
+          git commit -m 'Fix AFC2 R7 execution source-base binding'
+          git push origin HEAD:"$TARGET_BRANCH"

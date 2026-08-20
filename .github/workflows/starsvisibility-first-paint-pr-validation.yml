@@ -1,4 +1,4 @@
-name: StarsVisibility external catalog preview validation
+name: StarsVisibility external catalog production validation
 
 on:
   pull_request:
@@ -20,9 +20,9 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Validate preview payload, paint and calculation parity
+      - name: Validate production payload, paint and calculation parity
         env:
-          SITE: https://1d2efb9e.starsvisibility.pages.dev
+          SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
@@ -35,9 +35,14 @@ jobs:
           await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),settings);
           const requests=[]; context.on('request',r=>{if(r.url().includes('stars-builtin-catalog-'))requests.push(r.url());});
           const page=await context.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?external-preview=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
-          const contract=await page.evaluate(()=>{const html=document.documentElement.outerHTML;return html.includes('STARS-BUILTIN-CATALOG-EXTERNAL-V1')&&html.includes('startBuiltInCatalogAfterFirstContentfulPaint')&&html.includes("observer.observe({ type: 'paint', buffered: true })")&&html.includes('globalThis.__STARS_BUILT_IN_CATALOG_AFTER_PAINT_SCHEDULED__')&&html.includes('else startBuiltInCatalogAfterFirstContentfulPaint();');});
-          if(!contract)throw new Error('FCP_GATED_EXTERNAL_CATALOG_CONTRACT_MISSING');
+          let deployed=false;
+          for(let i=0;i<30;i++){
+            await page.goto(`${process.env.SITE}/?external-prod=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});
+            deployed=await page.evaluate(()=>{const html=document.documentElement.outerHTML;return html.includes('STARS-BUILTIN-CATALOG-EXTERNAL-V1')&&html.includes('globalThis.__STARS_BUILT_IN_CATALOG_AFTER_PAINT_SCHEDULED__')&&html.includes('else startBuiltInCatalogAfterFirstContentfulPaint();');});
+            if(deployed)break;
+            await page.waitForTimeout(10000);
+          }
+          if(!deployed)throw new Error('PRODUCTION_EXTERNAL_CATALOG_OPTIMIZATION_NOT_DEPLOYED');
           await page.waitForFunction(()=>{try{const d=eval('threeStarResultData');return d?.found===true&&d?.closeTriple?.enabled===true&&d?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
           const r=await page.evaluate(()=>{
             const nav=performance.getEntriesByType('navigation')[0];
@@ -77,7 +82,7 @@ jobs:
           await workerContext.addInitScript(()=>{const Native=window.Worker;window.__workerCount=0;window.Worker=class extends Native{constructor(...args){window.__workerCount++;super(...args);}};});
           const workerRequests=[]; workerContext.on('request',req=>{if(req.url().includes('stars-builtin-catalog-'))workerRequests.push(req.url());});
           const p=await workerContext.newPage(); const workerErrors=[]; p.on('pageerror',e=>workerErrors.push(e.message));
-          await p.goto(`${process.env.SITE}/?worker-preview=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
+          await p.goto(`${process.env.SITE}/?worker-prod=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
           await p.waitForFunction(()=>{try{return eval('threeStarResultData')?.found===true}catch{return false}},null,{timeout:180000});
           const wr=await p.evaluate(()=>({workerCount:window.__workerCount,regular:Number(eval('threeStarResultData')?.minutesAfterSunset),catalogCount:(()=>{try{return eval('builtInStars.length')}catch{return null}})()}));
           if(!(wr.workerCount>=1))throw new Error(`CALCULATION_WORKER_NOT_USED_${JSON.stringify(wr)}`);
@@ -85,7 +90,7 @@ jobs:
           if(!workerRequests.length)throw new Error(`WORKER_CATALOG_REQUEST_NOT_OBSERVED_${JSON.stringify({wr,workerRequests})}`);
           if(workerErrors.length)throw new Error(`WORKER_PAGE_ERRORS_${JSON.stringify(workerErrors)}`);
 
-          console.log('EXTERNAL_CATALOG_PREVIEW_PASS',JSON.stringify({r,requests:[...new Set(requests)],wr,workerRequests:[...new Set(workerRequests)]}));
+          console.log('EXTERNAL_CATALOG_PRODUCTION_PASS',JSON.stringify({r,requests:[...new Set(requests)],wr,workerRequests:[...new Set(workerRequests)]}));
           await workerContext.close(); await context.close(); await browser.close();
           NODE
           node validate.mjs

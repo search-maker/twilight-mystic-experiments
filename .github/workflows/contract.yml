@@ -39,7 +39,7 @@ jobs:
 
   jerusalem-bright-stars-2026:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     env:
       TARGET_URL: https://starsvisibility.pages.dev/
     steps:
@@ -51,43 +51,23 @@ jobs:
         run: |
           npm install --no-save playwright
           npx playwright install --with-deps chromium
-      - name: Run Jerusalem annual bright-star report
+      - name: Probe live StarsVisibility calculation source
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/jerusalem-bright-stars-live-qa.mjs')
-          s = p.read_text()
-          wait_old = "await page.waitForSelector('#annualYear', { timeout: 30_000 });"
-          wait_new = "await page.waitForSelector('#annualYear', { state: 'attached', timeout: 30_000 });"
-          if wait_old in s:
-              s = s.replace(wait_old, wait_new, 1)
-
-          helper_old = '''function replaceAtLeastOnce(source, needle, replacement, label) {
-            const count = countOccurrences(source, needle);
-            if (count < 1) throw new Error(`${label}: expected at least one match, found ${count}`);
-            return source.split(needle).join(replacement);
-          }'''
-          helper_new = r'''function replaceAtLeastOnce(source, needle, replacement, label) {
-            const count = countOccurrences(source, needle);
-            if (count >= 1) return source.split(needle).join(replacement);
-            const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const flexiblePattern = needle.trim().split(/\s+/).map(escapeRegex).join('\\s+');
-            const flexibleRegex = new RegExp(flexiblePattern, 'g');
-            const flexibleMatches = source.match(flexibleRegex) || [];
-            if (flexibleMatches.length < 1) throw new Error(`${label}: expected at least one exact or whitespace-flexible match, found 0`);
-            return source.replace(flexibleRegex, replacement);
-          }'''
-          if helper_old not in s:
-              raise SystemExit('replaceAtLeastOnce helper anchor missing')
-          s = s.replace(helper_old, helper_new, 1)
-          p.write_text(s)
-          PY
-          node --check scripts/jerusalem-bright-stars-live-qa.mjs
-          node scripts/jerusalem-bright-stars-live-qa.mjs
-      - name: Upload Jerusalem report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jerusalem-bright-stars-2026
-          path: qa-artifacts/
-          if-no-files-found: warn
+          node --input-type=module - <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          try {
+            const page = await browser.newPage();
+            const response = await page.goto(process.env.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+            if (!response?.ok()) throw new Error(`HTTP ${response?.status()}`);
+            const source = await page.evaluate(() => globalThis.eval('APP_SCRIPT_SOURCE'));
+            console.log(`APP_SCRIPT_SOURCE_LENGTH=${source.length}`);
+            for (const term of ['selectionMagnitude', 'threeStarMagnitudeBasis !==', 'effectiveMagnitudeForSelection', 'qualifyingObjectAt']) {
+              const index = source.indexOf(term);
+              console.log(`\n===== ${term} @ ${index} =====`);
+              console.log(index >= 0 ? source.slice(Math.max(0, index - 1200), Math.min(source.length, index + 2600)) : 'NOT FOUND');
+            }
+          } finally {
+            await browser.close();
+          }
+          NODE

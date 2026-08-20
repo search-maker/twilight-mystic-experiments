@@ -1,4 +1,4 @@
-name: StarsVisibility responsive preview startup diagnostic
+name: StarsVisibility responsive calculation preview validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -20,38 +20,117 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Diagnose automatic calculation startup
+      - name: Validate Worker routing, responsiveness, result parity, defaults, and hidden WIP link
         env:
           SITE: https://agent-responsive-calculation.starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
           import { chromium } from 'playwright-core';
-          const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
-          const settings={date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}};
-          const context=await browser.newContext({viewport:{width:1440,height:1200}});
-          await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),settings);
-          await context.addInitScript(()=>{const Native=window.Worker;window.__workerCount=0;window.Worker=class extends Native{constructor(...args){window.__workerCount++;super(...args);}};});
-          const page=await context.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          await page.goto(`${process.env.SITE}/?startup-diag=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
-          await page.waitForTimeout(7000);
-          const diag=await page.evaluate(()=>({
-            readyState:document.readyState,
-            fcp:performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint')?.startTime??null,
-            autoMarks:performance.getEntriesByName('stars-auto-calc-start').map(e=>e.startTime),
-            workerCount:window.__workerCount,
-            workerEnabled:(()=>{try{return eval('workerEnabled')}catch(e){return `ERR:${e.message}`}})(),
-            appScriptLength:(()=>{try{return eval('APP_SCRIPT_SOURCE.length')}catch(e){return `ERR:${e.message}`}})(),
-            activeWorker:(()=>{try{return Boolean(eval('activeCalculationWorker'))}catch{return null}})(),
-            calculateDisabled:document.getElementById('calculate')?.disabled??null,
-            calculateClass:document.getElementById('calculate')?.className??null,
-            lazyMain:globalThis.__STARS_BUILT_IN_CATALOG_MAIN_THREAD_LAZY__===true,
-            mainCatalogCount:(()=>{try{return eval('builtInStars.length')}catch{return null}})(),
-            pageCatalogScript:Boolean(document.querySelector('script[data-stars-builtin-catalog]')),
-            result:(()=>{try{const d=eval('threeStarResultData');return d?{found:d.found,minutes:d.minutesAfterSunset,close:d.closeTriple&&{enabled:d.closeTriple.enabled,found:d.closeTriple.found,minutes:d.closeTriple.minutesAfterSunset}}:null}catch{return null}})(),
-            feature:document.getElementById('calculatorFeature')?.value??null,
-          }));
-          console.log('STARTUP_DIAG',JSON.stringify({diag,errors}));
-          await context.close(); await browser.close();
+
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const settings = {
+            date:{value:'2026-05-29'}, lat:{value:'32.74907'}, lon:{value:'35.09901'}, timezone:{value:'Asia/Jerusalem'},
+            observerElevationM:{value:'105'}, observerMode:{value:'ordinaryOrGuided'}, minAlt:{value:'3'}, moonOn:{value:'off'},
+            threeStarCount:{value:'3'}, threeStarMagnitudeBasis:{value:'effective'}, threeStarMagnitudeThreshold:{value:'1.7'},
+            threeCloseEnabled:{checked:true}, threeCloseMaxDiameterDeg:{value:'4'}, threeCloseMagnitudeBasis:{value:'effective'}, threeCloseMagnitudeThreshold:{value:'3'}
+          };
+
+          const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+          await context.addInitScript(v => localStorage.setItem('starVisibilityUserSettingsV1', JSON.stringify({ version:4, mode:'evening', values:v })), settings);
+          await context.addInitScript(() => {
+            const Native = window.Worker;
+            window.__workerCount = 0;
+            window.Worker = class extends Native { constructor(...args) { window.__workerCount++; super(...args); } };
+            window.__heartbeatMaxGap = 0;
+            let last = performance.now();
+            setInterval(() => { const now = performance.now(); window.__heartbeatMaxGap = Math.max(window.__heartbeatMaxGap, now - last); last = now; }, 25);
+          });
+          const catalogRequests = [];
+          context.on('request', request => { if (request.url().includes('stars-builtin-catalog-')) catalogRequests.push(request.url()); });
+          const page = await context.newPage();
+          const errors = [];
+          page.on('pageerror', error => errors.push(error.message));
+          await page.goto(`${process.env.SITE}/?responsive=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
+
+          const markerState = await page.evaluate(() => {
+            const html = document.documentElement.outerHTML;
+            return {
+              workerRouting: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-WORKER-V1'),
+              obsoleteMainThread: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-MAIN-THREAD-V1'),
+              lazyCatalog: html.includes('STARS-BUILTIN-CATALOG-MAIN-THREAD-LAZY-V1'),
+              wipButton: Boolean(document.getElementById('workInProgressCalculatorLink')),
+            };
+          });
+          if (!markerState.workerRouting || markerState.obsoleteMainThread || !markerState.lazyCatalog || markerState.wipButton) {
+            throw new Error(`PREVIEW_MARKERS_BAD_${JSON.stringify(markerState)}`);
+          }
+
+          await page.waitForFunction(() => window.__workerCount >= 1, null, { timeout:120000 });
+          const activeDuringProbe = await page.evaluate(() => { try { return Boolean(eval('activeCalculationWorker')); } catch { return false; } });
+          const beforeLang = await page.evaluate(() => document.documentElement.lang);
+          const clickStarted = Date.now();
+          await page.locator('#languageToggle').click({ timeout:2000 });
+          await page.waitForFunction(before => document.documentElement.lang !== before, beforeLang, { timeout:2000 });
+          const clickLatencyMs = Date.now() - clickStarted;
+
+          await page.waitForFunction(() => {
+            try {
+              const d = eval('threeStarResultData');
+              return d?.found === true && d?.closeTriple?.enabled === true && d?.closeTriple?.found === true && eval('calculationResultsFinal') === true;
+            } catch { return false; }
+          }, null, { timeout:180000 });
+
+          const result = await page.evaluate(() => {
+            const d = eval('threeStarResultData');
+            return {
+              workerCount: window.__workerCount,
+              heartbeatMaxGap: window.__heartbeatMaxGap,
+              regular: Number(d?.minutesAfterSunset),
+              close: Number(d?.closeTriple?.minutesAfterSunset),
+              closeEnabled: d?.closeTriple?.enabled === true,
+              closeFound: d?.closeTriple?.found === true,
+              final: eval('calculationResultsFinal') === true,
+              lazyMain: globalThis.__STARS_BUILT_IN_CATALOG_MAIN_THREAD_LAZY__ === true,
+              mainCatalogCount: (() => { try { return eval('builtInStars.length'); } catch { return null; } })(),
+              pageCatalogScript: Boolean(document.querySelector('script[data-stars-builtin-catalog]')),
+              wipButton: Boolean(document.getElementById('workInProgressCalculatorLink')),
+            };
+          });
+
+          if (result.workerCount < 1) throw new Error(`WORKER_NOT_USED_${JSON.stringify(result)}`);
+          if (!result.lazyMain || result.mainCatalogCount !== 0 || result.pageCatalogScript) throw new Error(`MAIN_THREAD_CATALOG_NOT_LAZY_${JSON.stringify(result)}`);
+          if (result.wipButton) throw new Error(`WIP_BUTTON_STILL_PRESENT_${JSON.stringify(result)}`);
+          if (clickLatencyMs > 1000) throw new Error(`BUSY_UI_CLICK_TOO_SLOW_${clickLatencyMs}_${JSON.stringify(result)}`);
+          if (Math.abs(result.regular - 30.9375) > 0.000001 || Math.abs(result.close - 46.859375) > 0.000001 || !result.closeEnabled || !result.closeFound || !result.final) {
+            throw new Error(`RESULT_PARITY_BAD_${JSON.stringify(result)}`);
+          }
+          if (!catalogRequests.length) throw new Error(`WORKER_CATALOG_REQUEST_NOT_OBSERVED_${JSON.stringify(result)}`);
+          if (errors.length) throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
+          await context.close();
+
+          const defaultsContext = await browser.newContext();
+          await defaultsContext.addInitScript(() => {
+            localStorage.removeItem('starVisibilityThreeStarSelectionV1');
+            localStorage.removeItem('starVisibilityUserSettingsV1');
+          });
+          const defaultsPage = await defaultsContext.newPage();
+          await defaultsPage.goto(`${process.env.SITE}/?defaults=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
+          const defaults = await defaultsPage.evaluate(() => Object.fromEntries([
+            'excludeKnownVenus','excludeKnownJupiter','excludeKnownSirius','excludeKnownMars','excludeKnownCanopus','excludeKnownAlphaCentauri','excludeKnownArcturus'
+          ].map(id => [id, document.getElementById(id)?.checked ?? null])));
+          const expected = { excludeKnownVenus:true, excludeKnownJupiter:true, excludeKnownSirius:true, excludeKnownMars:true, excludeKnownCanopus:false, excludeKnownAlphaCentauri:false, excludeKnownArcturus:false };
+          if (JSON.stringify(defaults) !== JSON.stringify(expected)) throw new Error(`DEFAULTS_BAD_${JSON.stringify(defaults)}`);
+          await defaultsContext.close();
+
+          const devContext = await browser.newContext();
+          const devPage = await devContext.newPage();
+          await devPage.goto(`${process.env.SITE}/work-in-progress/?devback=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
+          const devBack = await devPage.evaluate(() => Boolean(document.getElementById('stableCalculatorLink')));
+          if (!devBack) throw new Error('DEVELOPMENT_BACK_LINK_MISSING');
+          await devContext.close();
+
+          console.log('RESPONSIVE_PREVIEW_PASS', JSON.stringify({ activeDuringProbe, clickLatencyMs, result, catalogRequests:[...new Set(catalogRequests)], defaults, devBack }));
+          await browser.close();
           NODE
           node validate.mjs

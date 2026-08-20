@@ -1,0 +1,160 @@
+name: aerosol-family-v2-r8-review-builder-5
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-review-builder-5
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-review-builder-5.yml
+permissions:
+  contents: write
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_BRANCH: review/aerosol-family-challenge-v2-r8
+      SOURCE_BUILDER_BRANCH: status/aerosol-family-v2-r8-review-builder-1
+      RESULT_BRANCH: status/aerosol-family-v2-r8-review-builder-5-result
+      EXPECTED_BASE: 3b5f1fa0a9af76bd9f8fa97b6cac0091d71e5b51
+      ARTIFACT_NAME: aerosol-family-v2-r8-review-bundle-2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Recover proven generator at exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$SOURCE_BUILDER_BRANCH" "$TARGET_BRANCH"
+          git show "origin/$SOURCE_BUILDER_BRANCH:.github/workflows/aerosol-family-v2-r8-review-builder-1.yml" > /tmp/builder1.yml
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+          lines=Path('/tmp/builder1.yml').read_text().splitlines()
+          starts=[i for i,x in enumerate(lines) if x.strip()=="python - <<'PY'"]
+          if not starts: raise SystemExit('generation heredoc missing')
+          start=starts[0]+1
+          end=next((i for i in range(start,len(lines)) if lines[i].strip()=='PY'),None)
+          if end is None: raise SystemExit('generation heredoc terminator missing')
+          script=textwrap.dedent('\n'.join(lines[start:end]))+'\n'
+          Path('/tmp/generate_r8.py').write_text(script)
+          compile(script,'/tmp/generate_r8.py','exec')
+          PY
+          git checkout -B r8-review-work "origin/$TARGET_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          test ! -e experiments/aerosol-family-challenge-v2-r8
+      - name: Generate and prove R8 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/generate_r8.py
+          python -m compileall -q experiments/aerosol-family-challenge-v2-r8 tests/test_aerosol_family_challenge_v2_r8.py
+          python -m unittest tests.test_aerosol_family_challenge_v2_r8 -v
+          python -m unittest tests.test_aerosol_family_challenge_v2_r7 -v
+      - name: Freeze exact 19-path bundle and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            .github/workflows/aerosol-family-v2-r8-review-freeze-bootstrap.yml
+            .github/workflows/aerosol-family-v2-r8-review-freeze-observer.yml
+            .github/workflows/aerosol-family-v2-r8-seed-proof-review.yml
+            experiments/aerosol-family-challenge-v2-r8/adapter.py
+            experiments/aerosol-family-challenge-v2-r8/analysis-contract.v3.json
+            experiments/aerosol-family-challenge-v2-r8/analysis.py
+            experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json
+            experiments/aerosol-family-challenge-v2-r8/core.py
+            experiments/aerosol-family-challenge-v2-r8/derived_channels.py
+            experiments/aerosol-family-challenge-v2-r8/design.review.json
+            experiments/aerosol-family-challenge-v2-r8/freeze.py
+            experiments/aerosol-family-challenge-v2-r8/merge_seed_proof.py
+            experiments/aerosol-family-challenge-v2-r8/repository_global_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/seed-collision-review.v3.json
+            experiments/aerosol-family-challenge-v2-r8/seed-freshness-proof.template.json
+            experiments/aerosol-family-challenge-v2-r8/seed-self-ledger-paths.json
+            experiments/aerosol-family-challenge-v2-r8/tracked_tree_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat
+            tests/test_aerosol_family_challenge_v2_r8.py
+          )
+          mapfile -t changed < <(git status --short --untracked-files=all | sed 's/^...//' | sort)
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected.txt
+          printf '%s\n' "${changed[@]}" > /tmp/changed.txt
+          test "${#changed[@]}" = 19
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          rm -rf /tmp/r8-bundle
+          mkdir -p /tmp/r8-bundle
+          for p in "${expected[@]}"; do mkdir -p "/tmp/r8-bundle/$(dirname "$p")"; cp -- "$p" "/tmp/r8-bundle/$p"; done
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('/tmp/r8-bundle')
+          rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file()):
+              rel=p.relative_to(root).as_posix(); data=p.read_bytes()
+              rows.append({'path':rel,'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)})
+          if len(rows)!=19: raise SystemExit(f'expected 19 bundled files, got {len(rows)}')
+          ledger=json.loads((root/'experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json').read_text())
+          design=json.loads((root/'experiments/aerosol-family-challenge-v2-r8/design.review.json').read_text())
+          out={'schemaVersion':1,'expectedBase':os.environ['EXPECTED_BASE'],'fileCount':19,'files':rows,'candidateSeedCanonicalSha256':ledger['candidateSeedCanonicalSha256'],'seedNamespace':ledger['namespace'],'scientificScopeChange':design['scientificScopeChange'],'scientificExecutionAuthorized':design['scientificExecutionAuthorized'],'solverExecutionAuthorized':design['solverExecutionAuthorized'],'resultsOpened':design['resultsOpened']}
+          Path('/tmp/r8-review-bundle-manifest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Upload complete immutable review bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            /tmp/r8-bundle/
+            /tmp/r8-review-bundle-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          include-hidden-files: true
+      - name: Re-download and verify uploaded ZIP before readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > /tmp/artifacts.json
+          python - <<'PY' > /tmp/artifact-id.txt
+          import json,os
+          from pathlib import Path
+          arts=json.loads(Path('/tmp/artifacts.json').read_text()).get('artifacts',[])
+          good=[a for a in arts if a.get('name')==os.environ['ARTIFACT_NAME'] and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one bundle artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          ARTIFACT_ID="$(cat /tmp/artifact-id.txt)"
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" -o /tmp/uploaded.zip
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          manifest=json.loads(Path('/tmp/r8-review-bundle-manifest.json').read_text())
+          expected={f"r8-bundle/{r['path']}":r for r in manifest['files']}
+          expected['r8-review-bundle-manifest.json']=None
+          with zipfile.ZipFile('/tmp/uploaded.zip') as z:
+              files=sorted(n for n in z.namelist() if not n.endswith('/'))
+              if files != sorted(expected):
+                  raise SystemExit(f'uploaded ZIP paths mismatch: {set(files)^set(expected)}')
+              for name,row in expected.items():
+                  data=z.read(name)
+                  if row is not None:
+                      if hashlib.sha256(data).hexdigest()!=row['sha256'] or len(data)!=row['size']:
+                          raise SystemExit(f'uploaded ZIP byte mismatch: {name}')
+          print('UPLOADED_ZIP_VERIFIED_19_PATHS')
+          PY
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          arts=json.loads(Path('/tmp/artifacts.json').read_text()).get('artifacts',[])
+          good=[a for a in arts if a.get('name')==os.environ['ARTIFACT_NAME'] and not a.get('expired',False)]
+          manifest=json.loads(Path('/tmp/r8-review-bundle-manifest.json').read_text())
+          a=good[0]
+          out={'status':'R8_REVIEW_BUNDLE_VERIFIED_READY_NOT_PUBLISHED','runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'headSha':os.environ['GITHUB_SHA'],'expectedBase':os.environ['EXPECTED_BASE'],'artifactId':a['id'],'artifactName':a['name'],'artifactDigest':a.get('digest'),'artifactSize':a.get('size_in_bytes'),'fileCount':manifest['fileCount'],'uploadedZipVerifiedFileCount':19,'candidateSeedCanonicalSha256':manifest['candidateSeedCanonicalSha256'],'seedNamespace':manifest['seedNamespace']}
+          Path('/tmp/readback.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/r8-review-builder-5-readback.json" -f message='Record verified AFC2 R8 review bundle readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

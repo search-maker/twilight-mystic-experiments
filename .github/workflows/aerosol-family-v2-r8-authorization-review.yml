@@ -1,0 +1,206 @@
+name: Aerosol-family v2 R8 authorization review
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - "experiments/aerosol-family-challenge-v2-r8/authorization.json"
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: aerosol-family-v2-r8-authorization-review-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorization-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove review is attempt-1 and zero-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.action }}" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-family-v2-r8-authorization-review.yml').read_text()
+          forbidden=(
+              'setup-'+'micromamba', 'rubin-'+'libradtran', 'command -v '+'uvspec',
+              '--allow-'+'execution', 'workflow_'+'dispatch:', 'repository_'+'dispatch:', 'sche'+'dule:'
+          )
+          found=[token for token in forbidden if token in text]
+          if found:
+              raise SystemExit(f'authorization review exposed scientific runtime/dispatch: {found}')
+          PY
+      - name: Bind authorization identity and exact one-file commit
+        id: meta
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          LIVE_MAIN="$(git rev-parse origin/main)"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          mapfile -t PARENTS < <(git cat-file -p "$PR_HEAD_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$LIVE_MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$PR_HEAD_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-family-challenge-v2-r8/authorization.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          a=json.loads(Path('experiments/aerosol-family-challenge-v2-r8/authorization.json').read_text())
+          n=a.get('scientificOrdinal')
+          if not isinstance(n,int) or n <= 0: raise SystemExit('invalid scientificOrdinal')
+          print(f'ordinal={n}')
+          print(f'auth_branch={a.get("authorizationBranch","")}')
+          print(f'dispatch_branch={a.get("dispatchBranch","")}')
+          PY
+          git ls-files -z > tracked-files.nul
+          echo "live_main=$LIVE_MAIN" >> "$GITHUB_OUTPUT"
+          echo "parent=${PARENTS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Enforce branch identity from authorization document
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.head_ref }}" = "${{ steps.meta.outputs.auth_branch }}"
+          test "${{ steps.meta.outputs.auth_branch }}" = "authorization/aerosol-family-challenge-v2-r8-ordinal-${{ steps.meta.outputs.ordinal }}"
+          test "${{ steps.meta.outputs.dispatch_branch }}" = "dispatch/aerosol-family-challenge-v2-r8-ordinal-${{ steps.meta.outputs.ordinal }}"
+      - name: Exact tracked-tree candidate-seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p authorization-review-evidence
+          python experiments/aerosol-family-challenge-v2-r8/tracked_tree_seed_scan.py \
+            --repo-root . --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --allow-self-ledger-json experiments/aerosol-family-challenge-v2-r8/seed-self-ledger-paths.json \
+            --output authorization-review-evidence/tracked-seed-scan.json
+      - name: Stable repository-global authorization-recheck seed audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2-r8/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "${{ github.head_ref }}" \
+            --expected-repo-head "${{ github.event.pull_request.head.sha }}" \
+            --output authorization-review-evidence/repository-global-seed-scan.json
+      - name: Merge authorization-time seed proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_BASE="$(python -c 'import json; from pathlib import Path; d=json.load(open("experiments/aerosol-family-challenge-v2-r8/design.review.json")); print(json.load(open(Path(d["baseDesignPath"])))["sourceBindings"]["publicRepoMainSha"])')"
+          python experiments/aerosol-family-challenge-v2-r8/merge_seed_proof.py \
+            --design experiments/aerosol-family-challenge-v2-r8/design.review.json \
+            --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json \
+            --tracked authorization-review-evidence/tracked-seed-scan.json \
+            --repository-global authorization-review-evidence/repository-global-seed-scan.json \
+            --repo-head "${{ github.event.pull_request.head.sha }}" \
+            --source-base-main-sha "$SOURCE_BASE" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --output authorization-review-evidence/seed-freshness-proof.json
+      - name: Capture complete authorization identity surface
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r8/execution-candidate \
+          python experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization_surface.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --authorization experiments/aerosol-family-challenge-v2-r8/authorization.json \
+            --current-pr "${{ github.event.pull_request.number }}" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --output authorization-review-evidence/freshness.json
+      - name: Review exact enabled authorization with zero scientific execution
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r8/execution-candidate python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from authorization_guard import review
+          fresh=json.loads(Path('authorization-review-evidence/freshness.json').read_text())
+          ctx={
+            'liveMain':'${{ steps.meta.outputs.live_main }}',
+            'headSha':os.environ['PR_HEAD_SHA'],
+            'parentSha':'${{ steps.meta.outputs.parent }}',
+            'parentCount':1,
+            'changedPaths':['experiments/aerosol-family-challenge-v2-r8/authorization.json'],
+            'authorizationPath':'experiments/aerosol-family-challenge-v2-r8/authorization.json',
+            'eventName':os.environ['GITHUB_EVENT_NAME'],
+            'eventAction':'opened',
+            'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'freshness':fresh,
+            'pr':{
+              'number':int(os.environ['PR_NUMBER']), 'state':os.environ['PR_STATE'],
+              'draft':os.environ['PR_DRAFT'].lower()=='true', 'merged':os.environ['PR_MERGED'].lower()=='true',
+              'headBranch':os.environ['PR_HEAD_BRANCH'], 'baseBranch':'main',
+              'headRepo':os.environ['PR_HEAD_REPO'], 'baseRepo':os.environ['PR_BASE_REPO'], 'headSha':os.environ['PR_HEAD_SHA'],
+            },
+          }
+          paths={
+            'manifest':Path('evidence/aerosol-family-challenge-v2-r8/manifest.frozen.json'),
+            'freeze':Path('evidence/aerosol-family-challenge-v2-r8/freeze-record.json'),
+            'transport':Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/transport-contract.v3.json'),
+            'adapter':Path('experiments/aerosol-family-challenge-v2-r8/adapter.py'),
+            'executor':Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/executor.py'),
+            'workflow':Path('.github/workflows/aerosol-family-v2-r8-execution.yml'),
+            'authorizationGuard':Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization_guard.py'),
+            'dispatchGuard':Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/dispatch_guard.py'),
+            'freshness':Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/freshness.py'),
+            'authorizationReviewWorkflow':Path('.github/workflows/aerosol-family-v2-r8-authorization-review.yml'),
+            'dispatchPublisherWorkflow':Path('.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml'),
+          }
+          auth=json.loads(Path('experiments/aerosol-family-challenge-v2-r8/authorization.json').read_text())
+          out=review(auth,ctx,paths)
+          out['headSha']=ctx['headSha']; out['prNumber']=ctx['pr']['number']; out['runAttempt']=ctx['runAttempt']; out['conclusion']='success'
+          out['scientificRuntimeSetupPerformed']=False; out['scientificExecutionPerformed']=False
+          Path('authorization-review-evidence/authorization-context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+          Path('authorization-review-evidence/authorization-review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Persist zero-runtime authorization review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-family-v2-r8-authorization-review-ordinal-${{ steps.meta.outputs.ordinal }}
+          path: |
+            authorization-review-evidence/
+            experiments/aerosol-family-challenge-v2-r8/authorization.json
+          if-no-files-found: error
+          compression-level: 0

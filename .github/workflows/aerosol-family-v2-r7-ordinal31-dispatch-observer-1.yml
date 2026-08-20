@@ -1,0 +1,85 @@
+name: aerosol-family-v2-r7-ordinal31-dispatch-observer-1
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-ordinal31-dispatch-observer-1]
+    paths: [.github/workflows/aerosol-family-v2-r7-ordinal31-dispatch-observer-1.yml]
+permissions:
+  actions: read
+  contents: write
+  issues: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TARGET_BRANCH: dispatch/aerosol-family-challenge-v2-r7-ordinal-31
+      TARGET_SHA: a89bc4e0852617891e623e81de9834b90684e3a1
+      RESULT_BRANCH: status/aerosol-family-v2-r7-ordinal31-dispatch-observer-1-result
+      EXPECTED_WORKFLOW: Aerosol-family v2 R7 scientific execution
+    steps:
+      - name: Observe exact scientific run without rerun
+        id: observe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          target_id=""
+          for i in $(seq 1 60); do
+            gh api --paginate --slurp -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r7-execution.yml/runs" -f branch="$TARGET_BRANCH" -f event=push -f per_page=100 > /tmp/pages.json
+            target_id="$(python3 - <<'PY'
+          import json, os
+          pages=json.load(open('/tmp/pages.json'))
+          rows=[r for p in pages for r in p.get('workflow_runs',[])]
+          m=[r for r in rows if r.get('head_sha')==os.environ['TARGET_SHA'] and r.get('head_branch')==os.environ['TARGET_BRANCH'] and r.get('name')==os.environ['EXPECTED_WORKFLOW'] and r.get('event')=='push']
+          if len(m)>1: raise SystemExit(f'expected at most one target run, got {len(m)}')
+          print(m[0]['id'] if m else '')
+          PY
+          )"
+            if [ -n "$target_id" ]; then
+              status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${target_id}" --jq '.status')"
+              if [ "$status" = completed ]; then break; fi
+            fi
+            sleep 10
+          done
+          test -n "$target_id"
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${target_id}")"
+          test "$(jq -r '.status' <<<"$run_json")" = completed
+          test "$(jq -r '.run_attempt' <<<"$run_json")" = 1
+          test "$(jq -r '.head_sha' <<<"$run_json")" = "$TARGET_SHA"
+          test "$(jq -r '.head_branch' <<<"$run_json")" = "$TARGET_BRANCH"
+          test "$(jq -r '.name' <<<"$run_json")" = "$EXPECTED_WORKFLOW"
+          printf '%s\n' "$run_json" > /tmp/run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${target_id}/jobs?per_page=100" > /tmp/jobs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${target_id}/artifacts?per_page=100" > /tmp/artifacts-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > /tmp/comments-pages.json
+          python3 - <<'PY'
+          import json, os
+          run=json.load(open('/tmp/run.json'))
+          jpages=json.load(open('/tmp/jobs-pages.json'))
+          apages=json.load(open('/tmp/artifacts-pages.json'))
+          cpages=json.load(open('/tmp/comments-pages.json'))
+          jobs=[j for p in jpages for j in p.get('jobs',[])]
+          arts=[a for p in apages for a in p.get('artifacts',[])]
+          comments=[c for p in cpages for c in p]
+          consumed='ORDINAL31_AEROSOL_FAMILY_V2_R7_DISPATCH_CONSUMED'
+          out={
+            'runId':run['id'],'runAttempt':run['run_attempt'],'status':run['status'],'conclusion':run['conclusion'],
+            'headSha':run['head_sha'],'headBranch':run['head_branch'],'event':run['event'],'workflowName':run['name'],
+            'createdAt':run.get('created_at'),'updatedAt':run.get('updated_at'),
+            'jobs':[{'id':j['id'],'name':j['name'],'status':j['status'],'conclusion':j['conclusion'],'steps':[{'number':s.get('number'),'name':s.get('name'),'status':s.get('status'),'conclusion':s.get('conclusion')} for s in j.get('steps',[])]} for j in jobs],
+            'artifacts':[{'id':a['id'],'name':a['name'],'size':a['size_in_bytes'],'expired':a['expired'],'digest':a.get('digest')} for a in arts],
+            'consumedMarkerCount':sum(1 for c in comments if (c.get('body') or '').strip()==consumed),
+          }
+          open('/tmp/readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          echo "target_id=$target_id" >> "$GITHUB_OUTPUT"
+      - name: Publish observer readback only after terminal state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/ordinal31-dispatch-observer-1-readback.json" -f message='Record AFC2 R7 ordinal31 dispatch observer readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

@@ -19,6 +19,7 @@ R8_RETIRED_MARKER = re.compile(
     r"^ORDINAL([0-9]+)_AEROSOL_FAMILY_V2_R8_AUTHORIZATION_RETIRED_UNDISPATCHED$", re.I
 )
 PUBLISHER_WORKFLOW = '.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml'
+AUTH_REVIEW_WORKFLOW = '.github/workflows/aerosol-family-v2-r8-authorization-review.yml'
 
 def retired_authorization_marker(ordinal: int) -> str:
     return f'ORDINAL{ordinal}_AEROSOL_FAMILY_V2_R8_AUTHORIZATION_RETIRED_UNDISPATCHED'
@@ -166,14 +167,40 @@ def _retired_undispatched_proof(payload: dict[str, Any], ordinal: int) -> None:
     if pr.get('state') != 'closed' or pr.get('merged_at') is not None:
         raise GlobalOrdinalRefusal(f'ordinal {ordinal} retired allocation PR must be closed and unmerged')
 
+    auth_review_runs=[
+        row for row in payload.get('runs', [])
+        if str(row.get('head_branch') or '') == auth_branch
+        and str(row.get('head_sha') or '').lower() == auth_head
+        and str(row.get('path') or '') == AUTH_REVIEW_WORKFLOW
+        and str(row.get('event') or '') == 'pull_request'
+    ]
+    if len(auth_review_runs) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must have exactly one authorization-review run on the allocated head')
+    auth_review=auth_review_runs[0]
+    if (
+        int(auth_review.get('run_attempt') or 0) != 1
+        or auth_review.get('status') != 'completed'
+        or auth_review.get('conclusion') != 'success'
+    ):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} authorization review is not successful attempt-1 evidence')
+
+    publisher_branches=[row for row in payload.get('branches', []) if str(row.get('name') or '') == publisher_branch]
+    if len(publisher_branches) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must preserve exactly one publisher request branch')
+    publisher_head=str(((publisher_branches[0].get('commit') or {}).get('sha') or '')).lower()
+    if not re.fullmatch(r'[0-9a-f]{40}', publisher_head):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} publisher request branch head is invalid')
+
     publisher_runs=[
         row for row in payload.get('runs', [])
         if str(row.get('head_branch') or '') == publisher_branch
         and str(row.get('path') or '') == PUBLISHER_WORKFLOW
         and str(row.get('event') or '') == 'push'
     ]
-    if not publisher_runs:
-        raise GlobalOrdinalRefusal(f'ordinal {ordinal} has no publisher attempt to justify retirement')
+    if len(publisher_runs) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must have exactly one publisher attempt to justify retirement')
+    if str(publisher_runs[0].get('head_sha') or '').lower() != publisher_head:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} publisher run head differs from preserved request branch head')
     if any(
         int(row.get('run_attempt') or 0) != 1
         or row.get('status') != 'completed'

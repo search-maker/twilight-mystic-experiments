@@ -1,0 +1,217 @@
+name: aerosol-family-v2-r7-authorization-builder-3
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-authorization-builder-3]
+    paths: [.github/workflows/aerosol-family-v2-r7-authorization-builder-3.yml]
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_MAIN: b4ff2bd96b28ab3569b80959f074effff75e49a1
+      AUDIT_RUN_ID: "32385498522"
+      AUDIT_HEAD: cdd6719f79d01d82e9822fd4c57a72f54308ad95
+      AUDIT_ARTIFACT_ID: "9412915441"
+      AUDIT_ARTIFACT_DIGEST: 3978f92fcbb51ef45e298f15c831e6b17653cb2684a07cf10ceb0542e6c1febf
+      FAILED_AUTH_HEAD: b9acc4779deed4e4f961c3447e451262ec42a824
+      AUTH_BRANCH: authorization/aerosol-family-challenge-v2-r7-ordinal-31
+      HISTORY_BRANCH: history/aerosol-family-challenge-v2-r7-ordinal-31-auth-review-failed-1
+      DISPATCH_BRANCH: dispatch/aerosol-family-challenge-v2-r7-ordinal-31
+      RESULT_BRANCH: status/aerosol-family-v2-r7-authorization-builder-3-result
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.EXPECTED_MAIN }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify exact audit-4 evidence and live reusable identity
+        id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')" = "$EXPECTED_MAIN"
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${AUDIT_RUN_ID}")"
+          test "$(jq -r '.name' <<<"$run_json")" = aerosol-family-v2-r7-preauth-audit-4
+          test "$(jq -r '.event' <<<"$run_json")" = push
+          test "$(jq -r '.status' <<<"$run_json")" = completed
+          test "$(jq -r '.conclusion' <<<"$run_json")" = success
+          test "$(jq -r '.run_attempt' <<<"$run_json")" = 1
+          test "$(jq -r '.head_sha' <<<"$run_json")" = "$AUDIT_HEAD"
+          art_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUDIT_ARTIFACT_ID}")"
+          test "$(jq -r '.name' <<<"$art_json")" = aerosol-family-v2-r7-preauth-audit-4
+          test "$(jq -r '.expired' <<<"$art_json")" = false
+          test "$(jq -r '.digest' <<<"$art_json")" = "sha256:${AUDIT_ARTIFACT_DIGEST}"
+          test "$(jq -r '.workflow_run.id' <<<"$art_json")" = "$AUDIT_RUN_ID"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUDIT_ARTIFACT_ID}/zip" > /tmp/audit.zip
+          echo "${AUDIT_ARTIFACT_DIGEST}  /tmp/audit.zip" | sha256sum -c -
+          mkdir /tmp/audit
+          unzip -q /tmp/audit.zip -d /tmp/audit
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('/tmp/audit')
+          def one(name):
+              rows=list(root.rglob(name))
+              if len(rows)!=1: raise SystemExit(f'{name}: expected one, got {len(rows)}')
+              return json.loads(rows[0].read_text())
+          s=one('seed-proof.json'); f=one('freshness.json'); g=one('global.json'); t=one('tracked.json')
+          assert s['status']=='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK'
+          assert s['auditMode']=='authorization-recheck'
+          assert s['repositoryHead']=='b4ff2bd96b28ab3569b80959f074effff75e49a1'
+          assert s['sourceBaseMainSha']=='34edfef1bb9a236f15e6ed456c3e8ef8871a4fc9'
+          assert s['candidateSeedCanonicalSha256']=='bf5254ff59450ae935705966c51d367a003e97afbcff98a7622b1c310c3ace3b'
+          assert s['candidateSeedCount']==72 and s['externalCollisionCount']==0
+          assert s['repositoryGlobalDoubleEnumerationStable'] is True and s['repositoryGlobalEnumerationPassCount']==2
+          assert t['exactHeadTrackedTreeByteScanPassed'] is True and t['trackedTreeExternalCollisionCount']==0
+          assert g['repositoryGlobalCollisionSurfaceScanPassed'] is True and g['repositoryGlobalDoubleEnumerationStable'] is True
+          assert g['repositoryGlobalEnumerationPassCount']==2 and g['repositoryGlobalCollisionCount']==0
+          assert f['latestPriorConsumedScientificOrdinal']==30 and f['nextAvailableScientificOrdinal']==31
+          assert f['candidatePriorScientificRunCount']==0 and f['candidateExecutionKeyPriorUseCount']==0
+          assert f['positiveCandidateClaimsExcludingCurrent']==0
+          assert f['authorizationBranchExists'] is True
+          assert f['authorizationBranchHeadSha']=='b9acc4779deed4e4f961c3447e451262ec42a824'
+          assert f['authorizationBranchReusableAfterFailedReview'] is True
+          assert f['dispatchBranchExists'] is False
+          assert f['activeAuthorizationPathOnMainExists'] is False and f['matchingAuthorizationMarkers']==0
+          assert f['priorCaseArtifactNames']==[] and f['candidateCodePathsOnMainInspected'] is True
+          PY
+          test "$(git ls-remote origin "refs/heads/${AUTH_BRANCH}" | awk '{print $1}')" = "$FAILED_AUTH_HEAD"
+          test "$(git ls-remote origin "refs/heads/${HISTORY_BRANCH}" | awk '{print $1}')" = "$FAILED_AUTH_HEAD"
+          if git ls-remote --exit-code --heads origin "refs/heads/${DISPATCH_BRANCH}" >/dev/null 2>&1; then echo 'dispatch branch exists'; exit 4; fi
+          printf '{"scientificOrdinal":31}\n' > /tmp/candidate.json
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7/execution-candidate python experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_surface.py --repository "$GITHUB_REPOSITORY" --authorization /tmp/candidate.json --current-run-id "$GITHUB_RUN_ID" --output /tmp/fresh-now.json
+          python3 - <<'PY'
+          import json
+          f=json.load(open('/tmp/fresh-now.json'))
+          assert f['latestPriorConsumedScientificOrdinal']==30 and f['nextAvailableScientificOrdinal']==31
+          assert f['candidatePriorScientificRunCount']==0 and f['candidateExecutionKeyPriorUseCount']==0
+          assert f['positiveCandidateClaimsExcludingCurrent']==0
+          assert f['authorizationBranchExists'] is True
+          assert f['authorizationBranchHeadSha']=='b9acc4779deed4e4f961c3447e451262ec42a824'
+          assert f['authorizationBranchReusableAfterFailedReview'] is True
+          assert f['dispatchBranchExists'] is False
+          assert f['activeAuthorizationPathOnMainExists'] is False and f['matchingAuthorizationMarkers']==0
+          assert f['priorCaseArtifactNames']==[] and f['candidateCodePathsOnMainInspected'] is True
+          PY
+      - name: Construct, validate, and atomically advance one-file authorization ref
+        id: publish
+        if: steps.gate.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('.')
+          def sha(path): return hashlib.sha256((root/path).read_bytes()).hexdigest()
+          a={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r7-authorization',
+            'status':'AUTHORIZED_PENDING_SEPARATE_DISPATCH',
+            'repositoryFullName':'search-maker/twilight-mystic-experiments',
+            'enabled':True,
+            'scientificExecutionAuthorized':True,
+            'solverExecutionAuthorized':True,
+            'dispatchAuthorized':False,
+            'automaticDispatch':False,
+            'consumed':False,
+            'executionKey':'aerosol-family-challenge-v2-r7:numerical:31',
+            'scientificOrdinal':31,
+            'authorizationBranch':'authorization/aerosol-family-challenge-v2-r7-ordinal-31',
+            'dispatchBranch':'dispatch/aerosol-family-challenge-v2-r7-ordinal-31',
+            'exactAuthorizationParentCommit':'b4ff2bd96b28ab3569b80959f074effff75e49a1',
+            'exactAuthorizationCommit':None,
+            'manifestRawSha256':sha('evidence/aerosol-family-challenge-v2-r7/manifest.frozen.json'),
+            'freezeRecordRawSha256':sha('evidence/aerosol-family-challenge-v2-r7/freeze-record.json'),
+            'transportContractRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/execution-candidate/transport-contract.v3.json'),
+            'adapterRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/adapter.py'),
+            'executorRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/execution-candidate/executor.py'),
+            'workflowRawSha256':sha('.github/workflows/aerosol-family-v2-r7-execution.yml'),
+            'authorizationGuardRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_guard.py'),
+            'dispatchGuardRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/execution-candidate/dispatch_guard.py'),
+            'freshnessGuardRawSha256':sha('experiments/aerosol-family-challenge-v2-r7/execution-candidate/freshness.py'),
+            'authorizationReviewWorkflowRawSha256':sha('.github/workflows/aerosol-family-v2-r7-authorization-review.yml'),
+            'runtimeLockRawSha256':'3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5',
+            'githubRerunAllowed':False,
+            'retryAllowed':False,
+            'resumeAllowed':False,
+            'protectedHoldoutOpeningAuthorized':False,
+            'modelFittingAuthorized':False,
+            'modelSelectionAuthorized':False,
+            'tier2Authorized':False,
+            'productionPromotionAuthorized':False,
+          }
+          p=root/'experiments/aerosol-family-challenge-v2-r7/authorization.json'
+          p.write_text(json.dumps(a,indent=2,sort_keys=True)+'\n')
+          PY
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7/execution-candidate python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from authorization_guard import validate_enabled_document
+          root=Path('.')
+          a=json.loads((root/'experiments/aerosol-family-challenge-v2-r7/authorization.json').read_text())
+          paths={
+            'manifest':root/'evidence/aerosol-family-challenge-v2-r7/manifest.frozen.json',
+            'freeze':root/'evidence/aerosol-family-challenge-v2-r7/freeze-record.json',
+            'transport':root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/transport-contract.v3.json',
+            'adapter':root/'experiments/aerosol-family-challenge-v2-r7/adapter.py',
+            'executor':root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/executor.py',
+            'workflow':root/'.github/workflows/aerosol-family-v2-r7-execution.yml',
+            'authorizationGuard':root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_guard.py',
+            'dispatchGuard':root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/dispatch_guard.py',
+            'freshness':root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/freshness.py',
+            'authorizationReviewWorkflow':root/'.github/workflows/aerosol-family-v2-r7-authorization-review.yml',
+          }
+          validate_enabled_document(a,'b4ff2bd96b28ab3569b80959f074effff75e49a1',paths)
+          PY
+          git add -- experiments/aerosol-family-challenge-v2-r7/authorization.json
+          test "$(git diff --cached --name-only)" = experiments/aerosol-family-challenge-v2-r7/authorization.json
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Allocate fresh AFC2 R7 ordinal 31 authorization"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          AUTH_HEAD="$(git rev-parse HEAD)"
+          git push --force-with-lease="refs/heads/${AUTH_BRANCH}:${FAILED_AUTH_HEAD}" origin "HEAD:refs/heads/${AUTH_BRANCH}"
+          test "$(git ls-remote origin "refs/heads/${AUTH_BRANCH}" | awk '{print $1}')" = "$AUTH_HEAD"
+          test "$(git ls-remote origin "refs/heads/${HISTORY_BRANCH}" | awk '{print $1}')" = "$FAILED_AUTH_HEAD"
+          echo "authorization_head=${AUTH_HEAD}" >> "$GITHUB_OUTPUT"
+      - name: Publish builder terminal readback
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          AUTH_HEAD: ${{ steps.publish.outputs.authorization_head }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          out={
+            'runId':int(os.environ['GITHUB_RUN_ID']),
+            'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'expectedMain':os.environ['EXPECTED_MAIN'],
+            'auditRunId':int(os.environ['AUDIT_RUN_ID']),
+            'gateOutcome':os.environ.get('GATE_OUTCOME'),
+            'publishOutcome':os.environ.get('PUBLISH_OUTCOME'),
+            'authorizationHead':os.environ.get('AUTH_HEAD') or None,
+            'authorizationBranch':os.environ['AUTH_BRANCH'],
+            'failedAuthorizationHeadPreserved':os.environ['FAILED_AUTH_HEAD'],
+            'historyBranch':os.environ['HISTORY_BRANCH'],
+            'dispatchBranch':os.environ['DISPATCH_BRANCH'],
+            'status':'FRESH_AUTHORIZATION_BRANCH_CREATED_NOT_REVIEWED_NOT_DISPATCHED' if os.environ.get('GATE_OUTCOME')=='success' and os.environ.get('PUBLISH_OUTCOME')=='success' else 'AUTHORIZATION_BUILDER_FAIL',
+          }
+          open('/tmp/readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/authorization-builder-3-readback.json" -f message='Record AFC2 R7 authorization builder-3 readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

@@ -10,6 +10,19 @@ GENERIC_ALLOCATION_MARKER = re.compile(
     r"^ORDINAL([0-9]+)_.+_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED(?:\s|$)", re.I
 )
 GENERIC_CONSUMED_MARKER = re.compile(r"^ORDINAL([0-9]+)_.+_DISPATCH_CONSUMED$", re.I)
+R8_ALLOCATION_MARKER = re.compile(
+    r"^ORDINAL([0-9]+)_AEROSOL_FAMILY_V2_R8_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED "
+    r"commit=([0-9a-f]{40}) parent=([0-9a-f]{40}) pr=([1-9][0-9]*)$",
+    re.I,
+)
+R8_RETIRED_MARKER = re.compile(
+    r"^ORDINAL([0-9]+)_AEROSOL_FAMILY_V2_R8_AUTHORIZATION_RETIRED_UNDISPATCHED$", re.I
+)
+PUBLISHER_WORKFLOW = '.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml'
+AUTH_REVIEW_WORKFLOW = '.github/workflows/aerosol-family-v2-r8-authorization-review.yml'
+
+def retired_authorization_marker(ordinal: int) -> str:
+    return f'ORDINAL{ordinal}_AEROSOL_FAMILY_V2_R8_AUTHORIZATION_RETIRED_UNDISPATCHED'
 
 
 class GlobalOrdinalRefusal(RuntimeError):
@@ -91,6 +104,7 @@ def authoritative_global_ordinal_observations(
         for pattern,reason in (
             (GENERIC_ALLOCATION_MARKER,"exact-allocation-marker"),
             (GENERIC_CONSUMED_MARKER,"exact-consumed-marker"),
+            (R8_RETIRED_MARKER,"exact-retired-undispatched-marker"),
         ):
             match=pattern.match(body)
             if match:
@@ -115,6 +129,92 @@ def authoritative_global_ordinal_observations(
     return sorted(out,key=lambda row:(int(row["ordinal"]),str(row["surface"]),str(row["id"]),str(row["reason"])))
 
 
+
+def _retired_undispatched_proof(payload: dict[str, Any], ordinal: int) -> None:
+    comments=[str(row.get('body') or '').strip() for row in payload.get('issue60Comments', [])]
+    retired=retired_authorization_marker(ordinal)
+    if sum(1 for body in comments if body.lower() == retired.lower()) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} lacks exactly one retired-undispatched marker')
+
+    allocations=[]
+    for body in comments:
+        match=R8_ALLOCATION_MARKER.fullmatch(body)
+        if match and int(match.group(1)) == ordinal:
+            allocations.append(match)
+    if len(allocations) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} lacks exactly one R8 allocation marker')
+    allocation=allocations[0]
+    auth_head=allocation.group(2).lower()
+    pr_number=int(allocation.group(4))
+    auth_branch=f'authorization/aerosol-family-challenge-v2-r8-ordinal-{ordinal}'
+    dispatch_branch=f'dispatch/aerosol-family-challenge-v2-r8-ordinal-{ordinal}'
+    publisher_branch=f'status/aerosol-family-v2-r8-dispatch-publisher-ordinal-{ordinal}'
+
+    auth_rows=[row for row in payload.get('branches', []) if str(row.get('name') or '') == auth_branch]
+    if len(auth_rows) != 1 or str(((auth_rows[0].get('commit') or {}).get('sha') or '')).lower() != auth_head:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} retired authorization branch/head evidence drift')
+    if any(str(row.get('name') or '') == dispatch_branch for row in payload.get('branches', [])):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} has a dispatch branch and cannot be retired undispatched')
+
+    matching_prs=[]
+    for pr in payload.get('pulls', []):
+        head=pr.get('head') or {}
+        if int(pr.get('number') or 0) == pr_number and head.get('ref') == auth_branch and str(head.get('sha') or '').lower() == auth_head:
+            matching_prs.append(pr)
+    if len(matching_prs) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} retired allocation PR evidence missing/drifted')
+    pr=matching_prs[0]
+    if pr.get('state') != 'closed' or pr.get('merged_at') is not None:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} retired allocation PR must be closed and unmerged')
+
+    auth_review_runs=[
+        row for row in payload.get('runs', [])
+        if str(row.get('head_branch') or '') == auth_branch
+        and str(row.get('head_sha') or '').lower() == auth_head
+        and str(row.get('path') or '') == AUTH_REVIEW_WORKFLOW
+        and str(row.get('event') or '') == 'pull_request'
+    ]
+    if len(auth_review_runs) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must have exactly one authorization-review run on the allocated head')
+    auth_review=auth_review_runs[0]
+    if (
+        int(auth_review.get('run_attempt') or 0) != 1
+        or auth_review.get('status') != 'completed'
+        or auth_review.get('conclusion') != 'success'
+    ):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} authorization review is not successful attempt-1 evidence')
+
+    publisher_branches=[row for row in payload.get('branches', []) if str(row.get('name') or '') == publisher_branch]
+    if len(publisher_branches) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must preserve exactly one publisher request branch')
+    publisher_head=str(((publisher_branches[0].get('commit') or {}).get('sha') or '')).lower()
+    if not re.fullmatch(r'[0-9a-f]{40}', publisher_head):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} publisher request branch head is invalid')
+
+    publisher_runs=[
+        row for row in payload.get('runs', [])
+        if str(row.get('head_branch') or '') == publisher_branch
+        and str(row.get('path') or '') == PUBLISHER_WORKFLOW
+        and str(row.get('event') or '') == 'push'
+    ]
+    if len(publisher_runs) != 1:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} must have exactly one publisher attempt to justify retirement')
+    if str(publisher_runs[0].get('head_sha') or '').lower() != publisher_head:
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} publisher run head differs from preserved request branch head')
+    if any(
+        int(row.get('run_attempt') or 0) != 1
+        or row.get('status') != 'completed'
+        or row.get('conclusion') != 'failure'
+        for row in publisher_runs
+    ):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} publisher history is not terminal attempt-1 failure only')
+    if any(str(row.get('head_branch') or '') == dispatch_branch for row in payload.get('runs', [])):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} has a scientific dispatch-branch run and cannot be retired undispatched')
+    consumed=f'ORDINAL{ordinal}_AEROSOL_FAMILY_V2_R8_DISPATCH_CONSUMED'
+    if any(body.lower() == consumed.lower() for body in comments):
+        raise GlobalOrdinalRefusal(f'ordinal {ordinal} has a dispatch-consumed marker and cannot be retired undispatched')
+
+
 def derive_next_global_ordinal(
     payload: dict[str, Any],
     latest_consumed: int,
@@ -126,9 +226,18 @@ def derive_next_global_ordinal(
     observations=authoritative_global_ordinal_observations(payload,current_run_id=current_run_id)
     if not observations:
         raise GlobalOrdinalRefusal("no authoritative global scientific ordinal observations")
+    retired_ordinals=sorted({
+        int(match.group(1))
+        for row in payload.get("issue60Comments", [])
+        if (match := R8_RETIRED_MARKER.fullmatch(str(row.get("body") or "").strip()))
+    })
+    for ordinal in retired_ordinals:
+        _retired_undispatched_proof(payload, ordinal)
     observed_max=max(int(row["ordinal"]) for row in observations)
-    if observed_max != latest_consumed:
+    if observed_max < latest_consumed:
         raise GlobalOrdinalRefusal(
-            f"global identity surface is ahead of latest consumed ordinal: consumed={latest_consumed} observed={observed_max}"
+            f"global identity surface is behind latest consumed ordinal: consumed={latest_consumed} observed={observed_max}"
         )
-    return latest_consumed+1,observations
+    for ordinal in range(latest_consumed + 1, observed_max + 1):
+        _retired_undispatched_proof(payload, ordinal)
+    return observed_max+1,observations

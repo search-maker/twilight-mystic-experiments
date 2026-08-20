@@ -64,6 +64,8 @@ class R8Transport(unittest.TestCase):
     def test_publisher_performs_actual_git_push_then_marker_then_explicit_dispatch(self):
         text=PUB.read_text()
         self.assertIn('git push origin "$AUTH_HEAD:refs/heads/$DISPATCH_BRANCH"',text)
+        self.assertIn('export ORDINAL AUTH_HEAD AUTH_BRANCH DISPATCH_BRANCH AUTH_PARENT',text)
+        self.assertLess(text.index('export ORDINAL AUTH_HEAD AUTH_BRANCH DISPATCH_BRANCH AUTH_PARENT'),text.index("os.environ['AUTH_BRANCH']"))
         self.assertNotIn('/git/refs',text)
         self.assertIn('ORDINAL${ORDINAL}_AEROSOL_FAMILY_V2_R8_DISPATCH_CONSUMED',text)
         self.assertIn('aerosol-family-v2-r8-execution.yml/dispatches',text)

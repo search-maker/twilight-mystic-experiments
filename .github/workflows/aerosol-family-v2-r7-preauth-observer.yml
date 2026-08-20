@@ -1,0 +1,46 @@
+name: aerosol-family-v2-r7-preauth-observer
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-preauth-observer-1]
+    paths: [.github/workflows/aerosol-family-v2-r7-preauth-observer.yml]
+permissions:
+  actions: read
+  issues: write
+  contents: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Observe exact audit run and record readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_HEAD: 86fb1ec41d8218934555beafbfa52cff53b5c36d
+          TARGET_BRANCH: status/aerosol-family-v2-r7-preauth-audit-1
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${TARGET_BRANCH}&event=push&per_page=100" > /tmp/runs.json
+            python3 - <<'PY' > /tmp/selected.json
+          import json, os
+          pages=json.load(open('/tmp/runs.json'))
+          rows=[r for p in pages for r in p.get('workflow_runs',[])]
+          rows=[r for r in rows if r.get('head_sha')==os.environ['TARGET_HEAD'] and r.get('name')=='aerosol-family-v2-r7-preauth-audit']
+          if len(rows)!=1: raise SystemExit(2)
+          print(json.dumps(rows[0]))
+          PY
+            if test -s /tmp/selected.json; then
+              status="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["status"])')"
+              if test "$status" = completed; then break; fi
+            fi
+            sleep 10
+          done
+          test -s /tmp/selected.json
+          run_id="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["id"])')"
+          status="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["status"])')"
+          conclusion="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["conclusion"])')"
+          attempt="$(python3 -c 'import json; print(json.load(open("/tmp/selected.json"))["run_attempt"])')"
+          body="AFC2-R7-PREAUTH-AUDIT-OBSERVED run=${run_id} attempt=${attempt} status=${status} conclusion=${conclusion} head=${TARGET_HEAD}"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$body" >/dev/null
+          echo "$body"

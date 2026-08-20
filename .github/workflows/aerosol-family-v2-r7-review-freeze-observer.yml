@@ -1,0 +1,46 @@
+# REVIEW-ONLY observer. Reports R7 review-freeze terminal identity to Issue #60.
+name: aerosol-family-v2-r7-review-freeze-observer
+on:
+  workflow_run:
+    workflows: [aerosol-family-v2-r7-seed-proof-review]
+    types: [completed]
+permissions:
+  actions: read
+  contents: read
+  issues: write
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report immutable R7 review result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; run_id=int(os.environ['RUN_ID']); artifact_name='aerosol-family-v2-r7-freeze-proof'
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r7-review-observer'}
+          def req(path,method='GET',payload=None):
+              data=None if payload is None else json.dumps(payload).encode(); r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=h)
+              with urllib.request.urlopen(r,timeout=90) as x:
+                  raw=x.read(); return None if not raw else json.loads(raw)
+          def pages(path,key=None):
+              out=[]; page=1
+              while True:
+                  sep='&' if '?' in path else '?'; data=req(f'{path}{sep}per_page=100&page={page}'); batch=data.get(key,[]) if key else data
+                  out.extend(batch)
+                  if len(batch)<100:return out
+                  page+=1
+          run=req(f'/repos/{repo}/actions/runs/{run_id}')
+          arts=pages(f'/repos/{repo}/actions/runs/{run_id}/artifacts','artifacts'); proof=[a for a in arts if str(a.get('name') or '')==artifact_name]
+          marker=f'AFC2-R7-REVIEW-FREEZE-READBACK run={run_id}'
+          comments=pages(f'/repos/{repo}/issues/60/comments')
+          if any(marker in str(c.get('body') or '') for c in comments): raise SystemExit(0)
+          a=proof[0] if len(proof)==1 else {}
+          body='\n'.join([marker,f"attempt={int(run.get('run_attempt') or 0)}",f"status={run.get('status')}",f"conclusion={run.get('conclusion')}",f"head_branch={run.get('head_branch')}",f"head_sha={run.get('head_sha')}",f"artifact_count={len(proof)}",f"artifact_id={a.get('id')}",f"artifact_digest={a.get('digest')}",'scientific_execution_authorized=false','solver_execution_performed=false'])
+          req(f'/repos/{repo}/issues/60/comments','POST',{'body':body}); print(body)
+          PY

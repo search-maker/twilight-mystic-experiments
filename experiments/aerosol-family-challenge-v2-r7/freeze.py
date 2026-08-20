@@ -23,6 +23,7 @@ EXACT_BLOBS={
     'analysis-contract.v3.json':'d2411cd7636d3d34a0b9132a48fbcea4ccf35d76',
     'analysis.py':'50b64b5c8a7a9d28a1c7174c1a1fda8d7380799d',
     'derived_channels.py':'ccfd04d4c21188966351f4257e92893d7ce340c7',
+    'adapter.py':'108af0a95274ee88fccf9d51d32f88ef0186bfaf',
     'wavelength-grid-1nm.dat':'3bb3db96580d555ef758f57cabd6cac55b61cebb',
 }
 

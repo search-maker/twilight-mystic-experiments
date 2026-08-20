@@ -32,6 +32,14 @@ class AerosolFamilyR7Continuation(unittest.TestCase):
             self.assertNotEqual(a['seed'],b['seed'])
         self.assertEqual('NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY',new['scientificScopeChange'])
 
+    def test_copied_science_files_are_exact_r6_git_blobs(self):
+        import hashlib
+        for name in ('analysis-contract.v3.json','analysis.py','derived_channels.py','adapter.py','wavelength-grid-1nm.dat'):
+            a=(R6/name).read_bytes(); b=(R7/name).read_bytes()
+            self.assertEqual(a,b,name)
+            blob=lambda d: hashlib.sha1(b'blob '+str(len(d)).encode()+b'\0'+d).hexdigest()
+            self.assertEqual(blob(a),blob(b),name)
+
     def test_r7_review_is_fail_closed_and_non_authorizing(self):
         design=json.loads((R7/'design.review.json').read_text())
         self.assertFalse(design['scientificExecutionAuthorized']); self.assertFalse(design['solverExecutionAuthorized']); self.assertFalse(design['resultsOpened'])

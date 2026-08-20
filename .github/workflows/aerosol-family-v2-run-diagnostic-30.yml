@@ -1,0 +1,52 @@
+name: AFC2 ordinal 30 terminal diagnostic
+
+on:
+  push:
+    branches:
+      - "status/aerosol-family-v2-run-diagnostic-30"
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Enumerate exact run jobs and artifacts read-only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ID=32310090959
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" > jobs-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" > artifact-pages.json
+          python - <<'PY' > report.txt
+          import json
+          jobs_pages=json.load(open('jobs-pages.json'))
+          art_pages=json.load(open('artifact-pages.json'))
+          jobs=[j for p in jobs_pages for j in p.get('jobs',[])]
+          arts=[a for p in art_pages for a in p.get('artifacts',[])]
+          cases=[j for j in jobs if str(j.get('name','')).startswith('cases-')]
+          failed=[j for j in jobs if j.get('conclusion')=='failure']
+          cancelled=[j for j in jobs if j.get('conclusion')=='cancelled']
+          skipped=[j for j in jobs if j.get('conclusion')=='skipped']
+          case_arts=[a for a in arts if str(a.get('name','')).startswith('aerosol-family-v2-case-')]
+          analysis_jobs=[j for j in jobs if j.get('name')=='analysis']
+          analysis_arts=[a for a in arts if 'analysis' in str(a.get('name','')).lower()]
+          other_arts=[a for a in arts if a not in case_arts and a not in analysis_arts]
+          fmt=lambda rows: [(r.get('id'),r.get('name'),r.get('conclusion')) for r in rows]
+          print('AFC2-RUN-DIAG ordinal=30 run=32310090959')
+          print('jobs_total=',len(jobs),'cases_total=',len(cases),'cases_success=',sum(j.get('conclusion')=='success' for j in cases),'cases_failure=',sum(j.get('conclusion')=='failure' for j in cases),'cases_cancelled=',sum(j.get('conclusion')=='cancelled' for j in cases),'cases_skipped=',sum(j.get('conclusion')=='skipped' for j in cases),sep='')
+          print('failed_jobs='+repr(fmt(failed)))
+          print('cancelled_jobs='+repr(fmt(cancelled)))
+          print('skipped_jobs='+repr(fmt(skipped)))
+          print('analysis_jobs='+repr(fmt(analysis_jobs)))
+          print('artifacts_total=',len(arts),' case_artifacts=',len(case_arts),' analysis_artifacts=',len(analysis_arts),sep='')
+          print('analysis_artifact_metadata='+repr([(a.get('id'),a.get('name'),a.get('digest'),a.get('expired')) for a in analysis_arts]))
+          print('other_artifact_metadata='+repr([(a.get('id'),a.get('name'),a.get('digest'),a.get('expired')) for a in other_arts]))
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$(cat report.txt)"

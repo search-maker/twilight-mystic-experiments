@@ -1,4 +1,4 @@
-name: StarsVisibility external catalog production validation
+name: StarsVisibility known-object default validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 6
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -20,77 +20,77 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Validate production payload, paint and calculation parity
+      - name: Validate clean defaults and persisted override
         env:
-          SITE: https://starsvisibility.pages.dev
+          SITE: https://dc8e8574.starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
           import { chromium } from 'playwright-core';
 
-          const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH});
-          const settings={date:{value:'2026-05-29'},lat:{value:'32.74907'},lon:{value:'35.09901'},timezone:{value:'Asia/Jerusalem'},observerElevationM:{value:'105'},observerMode:{value:'ordinaryOrGuided'},minAlt:{value:'3'},moonOn:{value:'off'},threeStarCount:{value:'3'},threeStarMagnitudeBasis:{value:'effective'},threeStarMagnitudeThreshold:{value:'1.7'},threeCloseEnabled:{checked:true},threeCloseMaxDiameterDeg:{value:'4'},threeCloseMagnitudeBasis:{value:'effective'},threeCloseMagnitudeThreshold:{value:'3'}};
+          const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+          const ids = [
+            'excludeKnownVenus',
+            'excludeKnownJupiter',
+            'excludeKnownSirius',
+            'excludeKnownMars',
+            'excludeKnownCanopus',
+            'excludeKnownAlphaCentauri',
+            'excludeKnownArcturus',
+          ];
+          const read = page => page.evaluate(ids => Object.fromEntries(ids.map(id => [id, document.getElementById(id)?.checked ?? null])), ids);
 
-          const context=await browser.newContext({viewport:{width:1440,height:1200}});
-          await context.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),settings);
-          const requests=[]; context.on('request',r=>{if(r.url().includes('stars-builtin-catalog-'))requests.push(r.url());});
-          const page=await context.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-          let deployed=false;
-          for(let i=0;i<30;i++){
-            await page.goto(`${process.env.SITE}/?external-prod=${process.env.GITHUB_RUN_ID}-${i}`,{waitUntil:'domcontentloaded',timeout:120000});
-            deployed=await page.evaluate(()=>{const html=document.documentElement.outerHTML;return html.includes('STARS-BUILTIN-CATALOG-EXTERNAL-V1')&&html.includes('globalThis.__STARS_BUILT_IN_CATALOG_AFTER_PAINT_SCHEDULED__')&&html.includes('else startBuiltInCatalogAfterFirstContentfulPaint();');});
-            if(deployed)break;
-            await page.waitForTimeout(10000);
-          }
-          if(!deployed)throw new Error('PRODUCTION_EXTERNAL_CATALOG_OPTIMIZATION_NOT_DEPLOYED');
-          await page.waitForFunction(()=>{try{const d=eval('threeStarResultData');return d?.found===true&&d?.closeTriple?.enabled===true&&d?.closeTriple?.found===true}catch{return false}},null,{timeout:180000});
-          const r=await page.evaluate(()=>{
-            const nav=performance.getEntriesByType('navigation')[0];
-            const fcp=performance.getEntriesByType('paint').find(e=>e.name==='first-contentful-paint');
-            const cat=performance.getEntriesByType('resource').find(e=>e.name.includes('stars-builtin-catalog-'));
-            const d=eval('threeStarResultData');
-            return {
-              htmlDecoded:nav?.decodedBodySize??null,
-              htmlEncoded:nav?.encodedBodySize??null,
-              htmlTransfer:nav?.transferSize??null,
-              responseEnd:nav?.responseEnd??null,
-              domInteractive:nav?.domInteractive??null,
-              fcp:fcp?.startTime??null,
-              catalogStart:cat?.startTime??null,
-              catalogDuration:cat?.duration??null,
-              catalogDecoded:cat?.decodedBodySize??null,
-              catalogCount:(()=>{try{return eval('builtInStars.length')}catch{return null}})(),
-              workerEnabled:(()=>{try{return eval('workerEnabled')}catch{return null}})(),
-              regular:Number(d?.minutesAfterSunset),
-              close:Number(d?.closeTriple?.minutesAfterSunset),
-              closeEnabled:d?.closeTriple?.enabled===true,
-              closeFound:d?.closeTriple?.found===true,
-            };
+          const fresh = await browser.newContext();
+          const freshPage = await fresh.newPage();
+          const freshErrors = [];
+          freshPage.on('pageerror', error => freshErrors.push(error.message));
+          await freshPage.goto(`${process.env.SITE}/?known-default=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+          const marker = await freshPage.evaluate(() => document.documentElement.outerHTML.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1'));
+          if (!marker) throw new Error('DEFAULT_FOUR_MARKER_MISSING');
+          const clean = await read(freshPage);
+          const cleanExpected = {
+            excludeKnownVenus: true,
+            excludeKnownJupiter: true,
+            excludeKnownSirius: true,
+            excludeKnownMars: true,
+            excludeKnownCanopus: false,
+            excludeKnownAlphaCentauri: false,
+            excludeKnownArcturus: false,
+          };
+          if (JSON.stringify(clean) !== JSON.stringify(cleanExpected)) throw new Error(`CLEAN_DEFAULT_BAD_${JSON.stringify(clean)}`);
+          if (freshErrors.length) throw new Error(`FRESH_PAGE_ERRORS_${JSON.stringify(freshErrors)}`);
+          await fresh.close();
+
+          const saved = await browser.newContext();
+          await saved.addInitScript(() => {
+            localStorage.setItem('starVisibilityThreeStarSelectionV1', JSON.stringify({
+              count: '3',
+              magnitudeBasis: 'known-exclusions',
+              magnitudeThreshold: '1.7',
+              excludedKnownObjects: ['canopus', 'arcturus'],
+            }));
           });
-          if(!(r.htmlDecoded>0&&r.htmlDecoded<1500000))throw new Error(`HTML_NOT_REDUCED_${JSON.stringify(r)}`);
-          if(!(r.htmlEncoded>0&&r.htmlEncoded<400000))throw new Error(`COMPRESSED_HTML_NOT_REDUCED_${JSON.stringify(r)}`);
-          if(!Number.isFinite(r.fcp)||!Number.isFinite(r.catalogStart)||!(r.catalogStart>r.fcp))throw new Error(`CATALOG_NOT_AFTER_FCP_${JSON.stringify(r)}`);
-          if(r.catalogCount!==9090)throw new Error(`CATALOG_COUNT_BAD_${JSON.stringify(r)}`);
-          if(r.workerEnabled!==true)throw new Error(`WORKER_CONTRACT_BAD_${JSON.stringify(r)}`);
-          if(Math.abs(r.regular-30.9375)>0.000001||Math.abs(r.close-46.859375)>0.000001||!r.closeEnabled||!r.closeFound)throw new Error(`RESULT_PARITY_BAD_${JSON.stringify(r)}`);
-          if(!requests.length)throw new Error(`CATALOG_REQUEST_NOT_OBSERVED_${JSON.stringify(r)}`);
-          if(errors.length)throw new Error(`PAGE_ERRORS_${JSON.stringify(errors)}`);
+          const savedPage = await saved.newPage();
+          const savedErrors = [];
+          savedPage.on('pageerror', error => savedErrors.push(error.message));
+          await savedPage.goto(`${process.env.SITE}/?known-saved=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+          const restored = await read(savedPage);
+          const restoredExpected = {
+            excludeKnownVenus: false,
+            excludeKnownJupiter: false,
+            excludeKnownSirius: false,
+            excludeKnownMars: false,
+            excludeKnownCanopus: true,
+            excludeKnownAlphaCentauri: false,
+            excludeKnownArcturus: true,
+          };
+          if (JSON.stringify(restored) !== JSON.stringify(restoredExpected)) throw new Error(`SAVED_OVERRIDE_BAD_${JSON.stringify(restored)}`);
+          const basis = await savedPage.locator('#threeStarMagnitudeBasis').inputValue();
+          if (basis !== 'known-exclusions') throw new Error(`SAVED_BASIS_BAD_${basis}`);
+          if (savedErrors.length) throw new Error(`SAVED_PAGE_ERRORS_${JSON.stringify(savedErrors)}`);
+          await saved.close();
 
-          const workerContext=await browser.newContext({viewport:{width:1440,height:1200}});
-          const workerSettings={...settings,threeCloseEnabled:{checked:false}};
-          await workerContext.addInitScript(v=>localStorage.setItem('starVisibilityUserSettingsV1',JSON.stringify({version:4,mode:'evening',values:v})),workerSettings);
-          await workerContext.addInitScript(()=>{const Native=window.Worker;window.__workerCount=0;window.Worker=class extends Native{constructor(...args){window.__workerCount++;super(...args);}};});
-          const workerRequests=[]; workerContext.on('request',req=>{if(req.url().includes('stars-builtin-catalog-'))workerRequests.push(req.url());});
-          const p=await workerContext.newPage(); const workerErrors=[]; p.on('pageerror',e=>workerErrors.push(e.message));
-          await p.goto(`${process.env.SITE}/?worker-prod=${process.env.GITHUB_RUN_ID}`,{waitUntil:'domcontentloaded',timeout:120000});
-          await p.waitForFunction(()=>{try{return eval('threeStarResultData')?.found===true}catch{return false}},null,{timeout:180000});
-          const wr=await p.evaluate(()=>({workerCount:window.__workerCount,regular:Number(eval('threeStarResultData')?.minutesAfterSunset),catalogCount:(()=>{try{return eval('builtInStars.length')}catch{return null}})()}));
-          if(!(wr.workerCount>=1))throw new Error(`CALCULATION_WORKER_NOT_USED_${JSON.stringify(wr)}`);
-          if(Math.abs(wr.regular-30.9375)>0.000001)throw new Error(`WORKER_RESULT_PARITY_BAD_${JSON.stringify(wr)}`);
-          if(!workerRequests.length)throw new Error(`WORKER_CATALOG_REQUEST_NOT_OBSERVED_${JSON.stringify({wr,workerRequests})}`);
-          if(workerErrors.length)throw new Error(`WORKER_PAGE_ERRORS_${JSON.stringify(workerErrors)}`);
-
-          console.log('EXTERNAL_CATALOG_PRODUCTION_PASS',JSON.stringify({r,requests:[...new Set(requests)],wr,workerRequests:[...new Set(workerRequests)]}));
-          await workerContext.close(); await context.close(); await browser.close();
+          console.log('KNOWN_OBJECT_DEFAULT_PASS', JSON.stringify({ clean, restored, basis }));
+          await browser.close();
           NODE
           node validate.mjs

@@ -125,6 +125,8 @@ class R8PreauthorizationAudit(unittest.TestCase):
         self.assertIn('id: upload',text)
         self.assertIn('steps.upload.outputs.artifact-id',text)
         self.assertIn('steps.upload.outputs.artifact-digest',text)
+        self.assertIn("re.fullmatch(r'[0-9a-f]{64}', artifact_digest)",text)
+        self.assertIn("f'artifact_digest=sha256:{artifact_digest}'",text)
         self.assertIn("method='POST'",text)
         self.assertIn('/issues/60/comments',text)
         self.assertIn('AFC2-R8-PREAUTHORIZATION-RUN',text)

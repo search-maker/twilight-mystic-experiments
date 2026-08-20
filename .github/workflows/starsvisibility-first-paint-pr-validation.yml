@@ -1,4 +1,4 @@
-name: StarsVisibility responsive calculation preview validation
+name: StarsVisibility responsive production validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -20,9 +20,9 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Validate Worker routing, responsiveness, result parity, defaults, and hidden WIP link
+      - name: Validate production Worker routing, responsiveness, result parity, defaults, and hidden WIP link
         env:
-          SITE: https://agent-responsive-calculation.starsvisibility.pages.dev
+          SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
@@ -51,19 +51,25 @@ jobs:
           const page = await context.newPage();
           const errors = [];
           page.on('pageerror', error => errors.push(error.message));
-          await page.goto(`${process.env.SITE}/?responsive=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
 
-          const markerState = await page.evaluate(() => {
-            const html = document.documentElement.outerHTML;
-            return {
-              workerRouting: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-WORKER-V1'),
-              obsoleteMainThread: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-MAIN-THREAD-V1'),
-              lazyCatalog: html.includes('STARS-BUILTIN-CATALOG-MAIN-THREAD-LAZY-V1'),
-              wipButton: Boolean(document.getElementById('workInProgressCalculatorLink')),
-            };
-          });
-          if (!markerState.workerRouting || markerState.obsoleteMainThread || !markerState.lazyCatalog || markerState.wipButton) {
-            throw new Error(`PREVIEW_MARKERS_BAD_${JSON.stringify(markerState)}`);
+          let markerState = null;
+          for (let attempt = 0; attempt < 30; attempt++) {
+            await page.goto(`${process.env.SITE}/?responsive-prod=${process.env.GITHUB_RUN_ID}-${attempt}`, { waitUntil:'domcontentloaded', timeout:120000 });
+            markerState = await page.evaluate(() => {
+              const html = document.documentElement.outerHTML;
+              return {
+                workerRouting: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-WORKER-V1'),
+                obsoleteMainThread: html.includes('LEGACY-THREE-STAR-CONSECUTIVE-MAIN-THREAD-V1'),
+                lazyCatalog: html.includes('STARS-BUILTIN-CATALOG-MAIN-THREAD-LAZY-V1'),
+                defaultFour: html.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1'),
+                wipButton: Boolean(document.getElementById('workInProgressCalculatorLink')),
+              };
+            });
+            if (markerState.workerRouting && !markerState.obsoleteMainThread && markerState.lazyCatalog && markerState.defaultFour && !markerState.wipButton) break;
+            await page.waitForTimeout(10000);
+          }
+          if (!markerState?.workerRouting || markerState.obsoleteMainThread || !markerState.lazyCatalog || !markerState.defaultFour || markerState.wipButton) {
+            throw new Error(`PRODUCTION_NOT_DEPLOYED_${JSON.stringify(markerState)}`);
           }
 
           await page.waitForFunction(() => window.__workerCount >= 1, null, { timeout:120000 });
@@ -98,6 +104,7 @@ jobs:
             };
           });
 
+          if (!activeDuringProbe) throw new Error(`WORKER_NOT_ACTIVE_DURING_CLICK_${JSON.stringify(result)}`);
           if (result.workerCount < 1) throw new Error(`WORKER_NOT_USED_${JSON.stringify(result)}`);
           if (!result.lazyMain || result.mainCatalogCount !== 0 || result.pageCatalogScript) throw new Error(`MAIN_THREAD_CATALOG_NOT_LAZY_${JSON.stringify(result)}`);
           if (result.wipButton) throw new Error(`WIP_BUTTON_STILL_PRESENT_${JSON.stringify(result)}`);
@@ -115,7 +122,7 @@ jobs:
             localStorage.removeItem('starVisibilityUserSettingsV1');
           });
           const defaultsPage = await defaultsContext.newPage();
-          await defaultsPage.goto(`${process.env.SITE}/?defaults=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
+          await defaultsPage.goto(`${process.env.SITE}/?defaults-prod=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
           const defaults = await defaultsPage.evaluate(() => Object.fromEntries([
             'excludeKnownVenus','excludeKnownJupiter','excludeKnownSirius','excludeKnownMars','excludeKnownCanopus','excludeKnownAlphaCentauri','excludeKnownArcturus'
           ].map(id => [id, document.getElementById(id)?.checked ?? null])));
@@ -125,12 +132,12 @@ jobs:
 
           const devContext = await browser.newContext();
           const devPage = await devContext.newPage();
-          await devPage.goto(`${process.env.SITE}/work-in-progress/?devback=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
+          await devPage.goto(`${process.env.SITE}/work-in-progress/?devback-prod=${process.env.GITHUB_RUN_ID}`, { waitUntil:'domcontentloaded', timeout:120000 });
           const devBack = await devPage.evaluate(() => Boolean(document.getElementById('stableCalculatorLink')));
           if (!devBack) throw new Error('DEVELOPMENT_BACK_LINK_MISSING');
           await devContext.close();
 
-          console.log('RESPONSIVE_PREVIEW_PASS', JSON.stringify({ activeDuringProbe, clickLatencyMs, result, catalogRequests:[...new Set(catalogRequests)], defaults, devBack }));
+          console.log('RESPONSIVE_PRODUCTION_PASS', JSON.stringify({ markerState, activeDuringProbe, clickLatencyMs, result, catalogRequests:[...new Set(catalogRequests)], defaults, devBack }));
           await browser.close();
           NODE
           node validate.mjs

@@ -1,0 +1,100 @@
+name: aerosol-family-v2-r7-preauth-audit-5
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-preauth-audit-5]
+    paths: [.github/workflows/aerosol-family-v2-r7-preauth-audit-5.yml]
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      EXPECTED_MAIN: 82e753efa1f241cb0d33456996eaa2cdec4e2ea4
+      SOURCE_BASE: 34edfef1bb9a236f15e6ed456c3e8ef8871a4fc9
+      FAILED_AUTH_HEAD: 33de98972cd472e8d44b5835af8ceea9a851387b
+      PRIOR_FAILED_AUTH_HEAD: b9acc4779deed4e4f961c3447e451262ec42a824
+      RESULT_BRANCH: status/aerosol-family-v2-r7-preauth-audit-5-result
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.EXPECTED_MAIN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact-head fail-closed preauthorization audit
+        id: gate
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse origin/authorization/aerosol-family-challenge-v2-r7-ordinal-31)" = "$FAILED_AUTH_HEAD"
+          test "$(git rev-parse origin/history/aerosol-family-challenge-v2-r7-ordinal-31-auth-review-failed-2)" = "$FAILED_AUTH_HEAD"
+          test "$(git rev-parse origin/history/aerosol-family-challenge-v2-r7-ordinal-31-auth-review-failed-1)" = "$PRIOR_FAILED_AUTH_HEAD"
+          test ! -e experiments/aerosol-family-challenge-v2-r7/authorization.json
+          test "$(python -c 'import json; print(json.load(open("evidence/aerosol-family-challenge-v2-r7/seed-freshness-proof.json"))["sourceBaseMainSha"])')" = "$SOURCE_BASE"
+          git ls-files -z > tracked-files.nul
+          mkdir preauth-audit
+          python experiments/aerosol-family-challenge-v2-r7/tracked_tree_seed_scan.py --repo-root . --file-list tracked-files.nul --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --allow-self-ledger-json experiments/aerosol-family-challenge-v2-r7/seed-self-ledger-paths.json --output preauth-audit/tracked.json
+          python experiments/aerosol-family-challenge-v2-r7/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name main --expected-repo-head "$EXPECTED_MAIN" --output preauth-audit/global.json
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7 python experiments/aerosol-family-challenge-v2-r7/merge_seed_proof.py --design experiments/aerosol-family-challenge-v2-r7/design.review.json --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --tracked preauth-audit/tracked.json --repository-global preauth-audit/global.json --repo-head "$EXPECTED_MAIN" --source-base-main-sha "$SOURCE_BASE" --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --output preauth-audit/seed-proof.json
+          printf '{"scientificOrdinal":31}\n' > /tmp/a.json
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7/execution-candidate python experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_surface.py --repository "$GITHUB_REPOSITORY" --authorization /tmp/a.json --current-run-id "$GITHUB_RUN_ID" --output preauth-audit/freshness.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('preauth-audit/seed-proof.json').read_text())
+          f=json.loads(Path('preauth-audit/freshness.json').read_text())
+          assert s['status']=='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK'
+          assert s['auditMode']=='authorization-recheck'
+          assert s['repositoryHead']=='82e753efa1f241cb0d33456996eaa2cdec4e2ea4'
+          assert s['sourceBaseMainSha']=='34edfef1bb9a236f15e6ed456c3e8ef8871a4fc9'
+          assert s['candidateSeedCanonicalSha256']=='bf5254ff59450ae935705966c51d367a003e97afbcff98a7622b1c310c3ace3b'
+          assert s['candidateSeedCount']==72 and s['externalCollisionCount']==0
+          assert s['repositoryGlobalDoubleEnumerationStable'] is True and s['repositoryGlobalEnumerationPassCount']==2
+          assert s['exactHeadTrackedTreeByteScanPassed'] is True
+          assert f['latestPriorConsumedScientificOrdinal']==30 and f['nextAvailableScientificOrdinal']==31
+          assert f['candidatePriorScientificRunCount']==0 and f['candidateExecutionKeyPriorUseCount']==0
+          assert f['positiveCandidateClaimsExcludingCurrent']==0
+          assert f['authorizationBranchExists'] is True
+          assert f['authorizationBranchHeadSha']=='33de98972cd472e8d44b5835af8ceea9a851387b'
+          assert f['authorizationBranchReusableAfterFailedReview'] is True
+          assert f['dispatchBranchExists'] is False
+          assert f['activeAuthorizationPathOnMainExists'] is False and f['matchingAuthorizationMarkers']==0
+          assert f['priorCaseArtifactNames']==[] and f['candidateCodePathsOnMainInspected'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        id: upload
+        if: steps.gate.outcome == 'success'
+        with:
+          name: aerosol-family-v2-r7-preauth-audit-5
+          path: preauth-audit/
+          if-no-files-found: error
+      - name: Publish terminal readback after audit is finished
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          out={
+            'runId':int(os.environ['GITHUB_RUN_ID']),
+            'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'headSha':os.environ['GITHUB_SHA'],
+            'expectedMain':os.environ['EXPECTED_MAIN'],
+            'gateOutcome':os.environ.get('GATE_OUTCOME'),
+            'uploadOutcome':os.environ.get('UPLOAD_OUTCOME'),
+            'status':'PREAUTH_AUDIT_PASS' if os.environ.get('GATE_OUTCOME')=='success' and os.environ.get('UPLOAD_OUTCOME')=='success' else 'PREAUTH_AUDIT_FAIL',
+          }
+          open('/tmp/readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/preauth-audit-5-readback.json" -f message='Record AFC2 R7 preauthorization audit-5 readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

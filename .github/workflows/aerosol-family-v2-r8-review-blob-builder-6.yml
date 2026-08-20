@@ -1,0 +1,80 @@
+name: aerosol-family-v2-r8-review-blob-builder-6
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-review-blob-builder-6
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-review-blob-builder-6.yml
+permissions:
+  actions: read
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_BASE: 3b5f1fa0a9af76bd9f8fa97b6cac0091d71e5b51
+      ARTIFACT_ID: '9416673278'
+      EXPECTED_ARTIFACT_DIGEST: b725f3d57aeda005af0be30f7edb6bb27097877e2fd448b906de15e5882bcbcd
+      RESULT_BRANCH: status/aerosol-family-v2-r8-review-blob-builder-6-result
+    steps:
+      - name: Verify base and create unattached blobs from immutable artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          live="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+          test "$live" = "$EXPECTED_BASE"
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" -o /tmp/r8.zip
+          test "$(sha256sum /tmp/r8.zip | awk '{print $1}')" = "$EXPECTED_ARTIFACT_DIGEST"
+          python - <<'PY'
+          import base64, hashlib, json, os, subprocess, zipfile
+          from pathlib import Path
+          zpath=Path('/tmp/r8.zip')
+          outdir=Path('/tmp/r8-artifact'); outdir.mkdir()
+          with zipfile.ZipFile(zpath) as z:
+              z.extractall(outdir)
+          manifest=json.loads((outdir/'r8-review-bundle-manifest.json').read_text())
+          if manifest.get('expectedBase') != os.environ['EXPECTED_BASE'] or manifest.get('fileCount') != 19:
+              raise SystemExit('manifest base/count mismatch')
+          if manifest.get('candidateSeedCanonicalSha256') != 'e90d18b4ecb3a4dd54f372dac4e585708e7478981c6c18ffaa351428625f3302':
+              raise SystemExit('candidate seed hash mismatch')
+          if manifest.get('scientificExecutionAuthorized') is not False or manifest.get('solverExecutionAuthorized') is not False or manifest.get('resultsOpened') is not False:
+              raise SystemExit('review boundary unexpectedly open')
+          rows=manifest['files']
+          expected={r['path'] for r in rows}
+          actual={p.relative_to(outdir/'r8-bundle').as_posix() for p in (outdir/'r8-bundle').rglob('*') if p.is_file()}
+          if actual != expected or len(actual) != 19:
+              raise SystemExit(f'artifact path mismatch: {actual ^ expected}')
+          blobs=[]
+          repo=os.environ['GITHUB_REPOSITORY']
+          for row in sorted(rows,key=lambda r:r['path']):
+              p=outdir/'r8-bundle'/row['path']; data=p.read_bytes()
+              if hashlib.sha256(data).hexdigest()!=row['sha256'] or len(data)!=row['size']:
+                  raise SystemExit(f'byte mismatch: {row["path"]}')
+              git_sha=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              payload=Path('/tmp/blob-payload.json')
+              payload.write_text(json.dumps({'content':base64.b64encode(data).decode(),'encoding':'base64'}))
+              raw=subprocess.check_output(['gh','api','--method','POST',f'repos/{repo}/git/blobs','--input',str(payload)])
+              remote=json.loads(raw)['sha']
+              if remote != git_sha:
+                  raise SystemExit(f'blob sha mismatch for {row["path"]}: {remote} != {git_sha}')
+              blobs.append({'path':row['path'],'mode':'100644','type':'blob','sha':remote,'sha256':row['sha256'],'size':row['size']})
+          readback={
+              'status':'R8_REVIEW_19_GIT_BLOBS_VERIFIED_READY_FOR_SINGLE_TREE_COMMIT',
+              'runId':int(os.environ['GITHUB_RUN_ID']),
+              'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'headSha':os.environ['GITHUB_SHA'],
+              'expectedBase':os.environ['EXPECTED_BASE'],
+              'artifactId':int(os.environ['ARTIFACT_ID']),
+              'artifactDigest':'sha256:'+os.environ['EXPECTED_ARTIFACT_DIGEST'],
+              'fileCount':19,
+              'candidateSeedCanonicalSha256':manifest['candidateSeedCanonicalSha256'],
+              'seedNamespace':manifest['seedNamespace'],
+              'blobs':blobs,
+          }
+          Path('/tmp/readback.json').write_text(json.dumps(readback,indent=2,sort_keys=True)+'\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/r8-review-blob-builder-6-readback.json" -f message='Record verified AFC2 R8 review Git blob map' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

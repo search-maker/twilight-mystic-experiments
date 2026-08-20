@@ -1,46 +1,132 @@
-# REVIEW-ONLY observer. Reports R8 review-freeze terminal identity to Issue #60.
-name: aerosol-family-v2-r8-review-freeze-observer
+name: aerosol-family-v2-r8-transport-builder-2
 on:
-  workflow_run:
-    workflows: [aerosol-family-v2-r8-seed-proof-review]
-    types: [completed]
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-transport-builder-2
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-review-freeze-observer.yml
 permissions:
-  actions: read
   contents: read
   issues: write
 jobs:
-  report:
-    if: github.event.workflow_run.event == 'workflow_dispatch'
+  build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      EXPECTED_BASE: 7c68830c52ec912d89041aa19efe9f53e5b53e80
     steps:
-      - name: Report immutable R8 review result
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Reconstruct, patch and test exact R8 transport candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/aerosol-family-v2-r8-transport-builder-2
+          git fetch origin main status/aerosol-family-v2-r8-transport-builder
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          git checkout --detach "$EXPECTED_BASE"
+          git show origin/status/aerosol-family-v2-r8-transport-builder:.github/workflows/aerosol-family-v2-r8-transport-builder.yml > /tmp/old-builder.yml
+          python3 - <<'PY'
+          import base64,gzip,re
+          from pathlib import Path
+          text=Path('/tmp/old-builder.yml').read_text()
+          m=re.search(r'^\s*BUILDER_PAYLOAD:\s*(\S+)\s*$',text,re.M)
+          if not m: raise SystemExit('old builder payload missing')
+          src=gzip.decompress(base64.b64decode(m.group(1))).decode()
+          old='''# Add publisher path bindings to authorization-review workflow guard path dictionary.\nar=wf/'aerosol-family-v2-r8-authorization-review.yml'; t=ar.read_text()\nold="            'freshness':base/'execution-candidate/freshness.py',\\n"\nif t.count(old)<1: raise SystemExit('auth review paths anchor missing')\nt=t.replace(old,old+"            'dispatchPublisherWorkflow':root/'.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml',\\n",1)\nar.write_text(t)\n'''
+          new='''# Add publisher path binding to authorization-review workflow actual Path dictionary.\nar=wf/'aerosol-family-v2-r8-authorization-review.yml'; t=ar.read_text()\nold="            'authorizationReviewWorkflow':Path('.github/workflows/aerosol-family-v2-r8-authorization-review.yml'),\\n"\nif t.count(old)!=1: raise SystemExit('auth review authorizationReviewWorkflow anchor missing/drifted')\nt=t.replace(old,old+"            'dispatchPublisherWorkflow':Path('.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml'),\\n",1)\nar.write_text(t)\n'''
+          if src.count(old)!=1: raise SystemExit('exact old generator anchor block not found once')
+          fixed=src.replace(old,new)
+          Path('/tmp/r8-transport-generator-fixed.py').write_text(fixed)
+          compile(fixed,'r8-transport-generator-fixed.py','exec')
+          exec(compile(fixed,'r8-transport-generator-fixed.py','exec'),{'__name__':'__main__'})
+          PY
+          python -m compileall -q experiment experiments integration modeling tests
+          python -m unittest tests.test_aerosol_family_r8_transport_activation -v
+          python -m unittest discover -s tests -v
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          for p in [Path('.github/workflows/aerosol-family-v2-r8-authorization-review.yml'),Path('.github/workflows/aerosol-family-v2-r8-execution.yml'),Path('.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml')]:
+              yaml.safe_load(p.read_text())
+              print('YAML_OK',p)
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          paths=[
+          '.github/workflows/aerosol-family-v2-r8-authorization-review.yml',
+          '.github/workflows/aerosol-family-v2-r8-execution.yml',
+          '.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/README.md',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/aggregate_results.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization-review-workflow.yml.template',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization.template.json',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization_guard.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/authorization_surface.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/dispatch_guard.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/executor.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/freshness.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/guard.py',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/transport-contract.v3.json',
+          'experiments/aerosol-family-challenge-v2-r8/execution-candidate/workflow.yml.template',
+          'tests/test_aerosol_family_r8_transport_activation.py']
+          root=Path('.'); out=Path('/tmp/r8-transport-bundle'); out.mkdir()
+          rows=[]
+          for s in paths:
+              p=root/s
+              if not p.is_file(): raise SystemExit(f'missing expected output: {s}')
+              q=out/s; q.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,q)
+              b=p.read_bytes(); rows.append({'path':s,'sha256':hashlib.sha256(b).hexdigest(),'size':len(b)})
+          changed=[]
+          import subprocess
+          changed=subprocess.check_output(['git','status','--short','--untracked-files=all'],text=True).splitlines()
+          observed=sorted(line[3:] for line in changed if len(line)>=4)
+          if observed != sorted(paths): raise SystemExit(f'generated scope drift: {observed}')
+          manifest={'schemaVersion':1,'stageId':'aerosol-family-challenge-v2-r8-transport-bundle','status':'R8_TRANSPORT_BUNDLE_TESTED_NOT_PUBLISHED','expectedBase':'7c68830c52ec912d89041aa19efe9f53e5b53e80','fileCount':len(rows),'files':rows,'scientificExecutionAuthorized':False,'solverExecutionPerformed':False}
+          (out/'r8-transport-bundle-manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          (out/'r8-transport-bundle.sha256').write_text('\n'.join(f"{r['sha256']}  {r['path']}" for r in rows)+'\n')
+          print('BUNDLE_READY files=',len(rows))
+          PY
+      - name: Upload tested transport bundle
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: aerosol-family-v2-r8-transport-bundle-2
+          path: /tmp/r8-transport-bundle/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish success readback
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; run_id=int(os.environ['RUN_ID']); artifact_name='aerosol-family-v2-r8-freeze-proof'
-          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r8-review-observer'}
-          def req(path,method='GET',payload=None):
-              data=None if payload is None else json.dumps(payload).encode(); r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=h)
-              with urllib.request.urlopen(r,timeout=90) as x:
-                  raw=x.read(); return None if not raw else json.loads(raw)
-          def pages(path,key=None):
-              out=[]; page=1
-              while True:
-                  sep='&' if '?' in path else '?'; data=req(f'{path}{sep}per_page=100&page={page}'); batch=data.get(key,[]) if key else data
-                  out.extend(batch)
-                  if len(batch)<100:return out
-                  page+=1
-          run=req(f'/repos/{repo}/actions/runs/{run_id}')
-          arts=pages(f'/repos/{repo}/actions/runs/{run_id}/artifacts','artifacts'); proof=[a for a in arts if str(a.get('name') or '')==artifact_name]
-          marker=f'AFC2-R8-REVIEW-FREEZE-READBACK run={run_id}'
-          comments=pages(f'/repos/{repo}/issues/60/comments')
-          if any(marker in str(c.get('body') or '') for c in comments): raise SystemExit(0)
-          a=proof[0] if len(proof)==1 else {}
-          body='\n'.join([marker,f"attempt={int(run.get('run_attempt') or 0)}",f"status={run.get('status')}",f"conclusion={run.get('conclusion')}",f"head_branch={run.get('head_branch')}",f"head_sha={run.get('head_sha')}",f"artifact_count={len(proof)}",f"artifact_id={a.get('id')}",f"artifact_digest={a.get('digest')}",'scientific_execution_authorized=false','solver_execution_performed=false'])
-          req(f'/repos/{repo}/issues/60/comments','POST',{'body':body}); print(body)
+          import json,os,urllib.request
+          body='\n'.join(['AFC2-R8-TRANSPORT-BUILDER-2-PASS',f"run={os.environ['GITHUB_RUN_ID']}",f"attempt={os.environ['GITHUB_RUN_ATTEMPT']}",f"head={os.environ['GITHUB_SHA']}",'base=7c68830c52ec912d89041aa19efe9f53e5b53e80','file_count=16',f"artifact_id={os.environ.get('ARTIFACT_ID','')}",f"artifact_digest={os.environ.get('ARTIFACT_DIGEST','')}",'authorization=false','scientific_runtime=false','solver_execution=false'])
+          req=urllib.request.Request('https://api.github.com/repos/'+os.environ['GITHUB_REPOSITORY']+'/issues/60/comments',data=json.dumps({'body':body}).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req) as r:
+              if r.status!=201: raise SystemExit(r.status)
+          print(body)
+          PY
+      - name: Publish failure readback
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json,os,urllib.request
+          body='\n'.join(['AFC2-R8-TRANSPORT-BUILDER-2-FAIL',f"run={os.environ['GITHUB_RUN_ID']}",f"attempt={os.environ['GITHUB_RUN_ATTEMPT']}",f"head={os.environ['GITHUB_SHA']}",'base=7c68830c52ec912d89041aa19efe9f53e5b53e80','authorization=false','scientific_runtime=false','solver_execution=false','no_rerun=true'])
+          req=urllib.request.Request('https://api.github.com/repos/'+os.environ['GITHUB_REPOSITORY']+'/issues/60/comments',data=json.dumps({'body':body}).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req) as r: print(body)
           PY

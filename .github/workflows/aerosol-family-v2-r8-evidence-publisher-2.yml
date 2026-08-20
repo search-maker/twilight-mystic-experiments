@@ -1,0 +1,101 @@
+name: aerosol-family-v2-r8-evidence-publisher-2
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-evidence-publisher-2
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-evidence-publisher-2.yml
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      EXPECTED_BASE: 5ec542aee3feb259db9389e23a6435339e1c20ff
+      TARGET_BRANCH: evidence/aerosol-family-challenge-v2-r8-review-freeze
+      RESULT_BRANCH: status/aerosol-family-v2-r8-evidence-publisher-2-result
+      ARTIFACT_ID: '9417478211'
+      PROOF_RUN_ID: '32397895771'
+      EXPECTED_ARTIFACT_DIGEST: sha256:e9226851311eac4a44e85748f8ef6dc231f9f665a5a0224547f7b69892a3e9cc
+    steps:
+      - name: Verify proof and publish exact evidence bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, io, json, os, urllib.error, urllib.parse, urllib.request, zipfile
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; base=os.environ['EXPECTED_BASE']
+          target=os.environ['TARGET_BRANCH']; result=os.environ['RESULT_BRANCH']; artifact_id=int(os.environ['ARTIFACT_ID'])
+          proof_run=int(os.environ['PROOF_RUN_ID']); expected_digest=os.environ['EXPECTED_ARTIFACT_DIGEST']
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r8-evidence-publisher-2'}
+          def req(path,method='GET',payload=None):
+              data=None if payload is None else json.dumps(payload).encode(); hh=dict(h)
+              if payload is not None: hh['Content-Type']='application/json'
+              r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=hh)
+              with urllib.request.urlopen(r,timeout=120) as x:
+                  b=x.read(); return None if not b else json.loads(b)
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          def download_zip():
+              url=f'https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip'
+              r=urllib.request.Request(url,headers=h); opener=urllib.request.build_opener(NoRedirect)
+              try:
+                  with opener.open(r,timeout=120) as x: return x.read()
+              except urllib.error.HTTPError as exc:
+                  if exc.code not in (301,302,303,307,308): raise
+                  loc=exc.headers.get('Location')
+                  if not loc: raise RuntimeError('artifact redirect missing Location')
+                  clean=urllib.request.Request(loc,headers={'User-Agent':'afc2-r8-evidence-publisher-2'})
+                  with urllib.request.urlopen(clean,timeout=120) as x: return x.read()
+          def branch_sha(name):
+              enc=urllib.parse.quote(name,safe='')
+              return str((req(f'/repos/{repo}/branches/{enc}').get('commit') or {}).get('sha') or '')
+          if branch_sha('main')!=base or branch_sha(target)!=base: raise SystemExit('refuse: base or target moved')
+          meta=req(f'/repos/{repo}/actions/artifacts/{artifact_id}'); wr=meta.get('workflow_run') or {}
+          if str(meta.get('digest') or '')!=expected_digest: raise SystemExit('artifact digest mismatch')
+          if int(wr.get('id') or 0)!=proof_run or str(wr.get('head_sha') or '')!=base or str(wr.get('head_branch') or '')!='main': raise SystemExit('artifact workflow identity mismatch')
+          zbytes=download_zip(); zip_sha=hashlib.sha256(zbytes).hexdigest()
+          if 'sha256:'+zip_sha!=expected_digest: raise SystemExit('downloaded ZIP SHA mismatch')
+          expected=['freeze-record.json','manifest.frozen.json','proof-bundle.sha256','repository-global-seed-scan.json','seed-freshness-proof.json','tracked-seed-scan.json']
+          with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+              names=sorted(n for n in z.namelist() if not n.endswith('/'))
+              if names!=sorted(expected): raise SystemExit(f'unexpected members {names}')
+              files={n:z.read(n) for n in expected}
+          hashes={n:hashlib.sha256(b).hexdigest() for n,b in files.items()}
+          seen=[]
+          for line in files['proof-bundle.sha256'].decode().splitlines():
+              digest,name=line.split(None,1); name=name.strip().lstrip('*')
+              if name not in files or hashes[name]!=digest: raise SystemExit(f'proof hash mismatch {name}')
+              seen.append(name)
+          if sorted(seen)!=sorted(n for n in expected if n!='proof-bundle.sha256'): raise SystemExit('proof member set mismatch')
+          proof=json.loads(files['seed-freshness-proof.json']); glob=json.loads(files['repository-global-seed-scan.json'])
+          freeze=json.loads(files['freeze-record.json']); manifest=json.loads(files['manifest.frozen.json'])
+          if proof.get('status')!='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK': raise SystemExit('proof status')
+          if proof.get('candidateSeedCount')!=72 or proof.get('repositoryGlobalCollisionCount')!=0: raise SystemExit('proof counts')
+          if not proof.get('repositoryGlobalDoubleEnumerationStable') or proof.get('repositoryGlobalEnumerationPassCount')!=2: raise SystemExit('proof stability')
+          if glob.get('repositoryHeadExpected')!=base or not glob.get('auditedBranchHeadMatchesRepositoryHead'): raise SystemExit('global head')
+          if freeze.get('seedAuditExactHead')!=base or freeze.get('status')!='FROZEN_REVIEW_PACKAGE_NOT_AUTHORIZATION': raise SystemExit('freeze binding')
+          for d in (freeze,manifest):
+              if d.get('scientificExecutionAuthorized') is not False or d.get('solverExecutionAuthorized') is not False or d.get('resultsOpened') is not False: raise SystemExit('review-only boundary')
+          if branch_sha('main')!=base or branch_sha(target)!=base: raise SystemExit('refuse: state moved during verification')
+          base_commit=req(f'/repos/{repo}/git/commits/{base}'); base_tree=str((base_commit.get('tree') or {}).get('sha') or '')
+          entries=[]; rows=[]
+          for name in expected:
+              b=files[name]; blob=req(f'/repos/{repo}/git/blobs','POST',{'content':base64.b64encode(b).decode(),'encoding':'base64'}); sha=str(blob.get('sha') or '')
+              path='evidence/aerosol-family-challenge-v2-r8/'+name
+              entries.append({'path':path,'mode':'100644','type':'blob','sha':sha}); rows.append({'path':path,'gitBlobSha':sha,'sha256':hashes[name],'size':len(b)})
+          tree=req(f'/repos/{repo}/git/trees','POST',{'base_tree':base_tree,'tree':entries}); tree_sha=str(tree.get('sha') or '')
+          commit=req(f'/repos/{repo}/git/commits','POST',{'message':'Preserve AFC2 R8 review-freeze evidence\n\nByte-for-byte preservation of successful attempt-1 R8 review-freeze proof bundle. Scientific execution remains unauthorized; authorization-time recheck is still required.','tree':tree_sha,'parents':[base]}); commit_sha=str(commit.get('sha') or '')
+          if branch_sha('main')!=base or branch_sha(target)!=base: raise SystemExit('refuse: state moved before ref update')
+          ref='heads/'+target
+          req(f'/repos/{repo}/git/refs/{urllib.parse.quote(ref,safe="/")}','PATCH',{'sha':commit_sha,'force':False})
+          if branch_sha(target)!=commit_sha: raise SystemExit('target ref verification failed')
+          out={'status':'R8_REVIEW_FREEZE_EVIDENCE_PUBLISHED','expectedBase':base,'evidenceCommit':commit_sha,'treeSha':tree_sha,'proofRunId':proof_run,'artifactId':artifact_id,'githubArtifactDigest':expected_digest,'downloadedZipSha256':zip_sha,'fileCount':6,'files':rows,'scientificExecutionAuthorized':False,'authorizationTimeRecheckStillRequired':True}
+          content=base64.b64encode((json.dumps(out,indent=2,sort_keys=True)+'\n').encode()).decode()
+          req(f'/repos/{repo}/contents/r8-evidence-publisher-2-readback.json','PUT',{'message':'Record AFC2 R8 evidence publisher-2 readback','content':content,'branch':result})
+          print(json.dumps(out,sort_keys=True))
+          PY

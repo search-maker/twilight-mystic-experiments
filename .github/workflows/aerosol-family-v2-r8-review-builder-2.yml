@@ -1,0 +1,95 @@
+name: aerosol-family-v2-r8-review-builder-2
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-review-builder-2
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-review-builder-2.yml
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_BRANCH: review/aerosol-family-challenge-v2-r8
+      SOURCE_BUILDER_BRANCH: status/aerosol-family-v2-r8-review-builder-1
+      EXPECTED_BASE: 3b5f1fa0a9af76bd9f8fa97b6cac0091d71e5b51
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Recover frozen generation script and reset to exact review base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$SOURCE_BUILDER_BRANCH" "$TARGET_BRANCH"
+          git show "origin/$SOURCE_BUILDER_BRANCH:.github/workflows/aerosol-family-v2-r8-review-builder-1.yml" > /tmp/builder1.yml
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+          lines=Path('/tmp/builder1.yml').read_text().splitlines()
+          starts=[i for i,x in enumerate(lines) if x.strip()=="python - <<'PY'"]
+          if len(starts)!=1: raise SystemExit(f'expected one generation heredoc, got {len(starts)}')
+          start=starts[0]+1
+          end=next((i for i in range(start,len(lines)) if lines[i].strip()=='PY'),None)
+          if end is None: raise SystemExit('generation heredoc terminator missing')
+          script=textwrap.dedent('\n'.join(lines[start:end]))+'\n'
+          Path('/tmp/generate_r8.py').write_text(script)
+          compile(script,'/tmp/generate_r8.py','exec')
+          PY
+          git checkout -B r8-review-work "origin/$TARGET_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          test ! -e experiments/aerosol-family-challenge-v2-r8
+      - name: Generate and test review-only package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/generate_r8.py
+          python -m compileall -q experiments/aerosol-family-challenge-v2-r8 tests/test_aerosol_family_challenge_v2_r8.py
+          python -m unittest tests.test_aerosol_family_challenge_v2_r8 -v
+          python -m unittest tests.test_aerosol_family_challenge_v2_r7 -v
+      - name: Enforce exact 19-path scope and publish one commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            .github/workflows/aerosol-family-v2-r8-review-freeze-bootstrap.yml
+            .github/workflows/aerosol-family-v2-r8-review-freeze-observer.yml
+            .github/workflows/aerosol-family-v2-r8-seed-proof-review.yml
+            experiments/aerosol-family-challenge-v2-r8/adapter.py
+            experiments/aerosol-family-challenge-v2-r8/analysis-contract.v3.json
+            experiments/aerosol-family-challenge-v2-r8/analysis.py
+            experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json
+            experiments/aerosol-family-challenge-v2-r8/core.py
+            experiments/aerosol-family-challenge-v2-r8/derived_channels.py
+            experiments/aerosol-family-challenge-v2-r8/design.review.json
+            experiments/aerosol-family-challenge-v2-r8/freeze.py
+            experiments/aerosol-family-challenge-v2-r8/merge_seed_proof.py
+            experiments/aerosol-family-challenge-v2-r8/repository_global_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/seed-collision-review.v3.json
+            experiments/aerosol-family-challenge-v2-r8/seed-freshness-proof.template.json
+            experiments/aerosol-family-challenge-v2-r8/seed-self-ledger-paths.json
+            experiments/aerosol-family-challenge-v2-r8/tracked_tree_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat
+            tests/test_aerosol_family_challenge_v2_r8.py
+          )
+          git status --short --untracked-files=all
+          mapfile -t changed < <(git status --short --untracked-files=all | sed 's/^...//' | sort)
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected.txt
+          printf '%s\n' "${changed[@]}" > /tmp/changed.txt
+          test "${#changed[@]}" = 19
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${expected[@]}"
+          mapfile -t staged < <(git diff --cached --name-only | sort)
+          test "${#staged[@]}" = 19
+          printf '%s\n' "${staged[@]}" > /tmp/staged.txt
+          diff -u /tmp/expected.txt /tmp/staged.txt
+          test -z "$(git status --porcelain --untracked-files=all | grep '^??' || true)"
+          git commit -m 'Review AFC2 R8 fresh-seed continuation after ordinal 31'
+          git push origin HEAD:"$TARGET_BRANCH"

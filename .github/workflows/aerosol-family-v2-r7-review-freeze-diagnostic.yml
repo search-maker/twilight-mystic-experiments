@@ -1,0 +1,57 @@
+name: aerosol-family-v2-r7-review-freeze-diagnostic
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r7-review-freeze-diagnostic-1
+    paths:
+      - .github/workflows/aerosol-family-v2-r7-review-freeze-diagnostic.yml
+permissions:
+  actions: read
+  contents: read
+  issues: write
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read R7 review-freeze control-plane state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r7-freeze-diagnostic'}
+          def req(path,method='GET',payload=None):
+              data=None if payload is None else json.dumps(payload).encode()
+              r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=headers)
+              with urllib.request.urlopen(r,timeout=90) as x:
+                  raw=x.read(); return None if not raw else json.loads(raw)
+          def pages(path,key):
+              out=[]; page=1
+              while True:
+                  sep='&' if '?' in path else '?'
+                  data=req(f'{path}{sep}per_page=100&page={page}')
+                  rows=data.get(key,[])
+                  if not isinstance(rows,list): raise RuntimeError(f'missing {key}')
+                  out.extend(rows)
+                  if len(rows)<100:return out
+                  page+=1
+          def workflow_runs(filename):
+              ref=urllib.parse.quote(filename,safe='')
+              return pages(f'/repos/{repo}/actions/workflows/{ref}/runs','workflow_runs')
+          def compact(rows):
+              rows=sorted(rows,key=lambda r:int(r.get('id') or 0),reverse=True)
+              return [{k:r.get(k) for k in ('id','event','status','conclusion','run_attempt','head_branch','head_sha','created_at','updated_at')} for r in rows[:5]]
+          bootstrap=workflow_runs('aerosol-family-v2-r7-review-freeze-bootstrap.yml')
+          proof=workflow_runs('aerosol-family-v2-r7-seed-proof-review.yml')
+          observer=workflow_runs('aerosol-family-v2-r7-review-freeze-observer.yml')
+          artifacts=pages(f'/repos/{repo}/actions/artifacts','artifacts')
+          proof_artifacts=[{k:a.get(k) for k in ('id','name','size_in_bytes','expired','created_at','updated_at','digest')} for a in artifacts if str(a.get('name') or '')=='aerosol-family-v2-r7-freeze-proof']
+          live=str((req(f'/repos/{repo}/branches/main').get('commit') or {}).get('sha') or '')
+          body='AFC2-R7-FREEZE-DIAG-1\n```json\n'+json.dumps({'liveMain':live,'bootstrapRuns':compact(bootstrap),'proofRuns':compact(proof),'observerRuns':compact(observer),'proofArtifacts':proof_artifacts},sort_keys=True,indent=2)+'\n```'
+          req(f'/repos/{repo}/issues/60/comments','POST',{'body':body})
+          print(body)
+          PY

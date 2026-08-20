@@ -15,23 +15,45 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Read exact ordinal 30 execution run without mutation
+      - name: Diagnose exact ordinal 30 execution run without mutation
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-execution.yml/runs?branch=dispatch%2Faerosol-family-challenge-v2-ordinal-30&event=push&per_page=20" > runs.json
+          RUN_ID=32310090959
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" > jobs-pages.json
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" > artifacts-pages.json
           python - <<'PY' > comment.txt
           import json
-          target='9d584f89a3d1e693664e827b0e5fd010fe17bb11'
-          branch='dispatch/aerosol-family-challenge-v2-ordinal-30'
-          rows=json.load(open('runs.json')).get('workflow_runs',[])
-          rows=[r for r in rows if r.get('head_sha')==target and r.get('head_branch')==branch and r.get('event')=='push']
-          if len(rows)!=1:
-              print(f'AFC2-RUN-READBACK ordinal=30 count={len(rows)} head={target}')
-          else:
-              r=rows[0]
-              print(f"AFC2-RUN-READBACK ordinal=30 id={r.get('id')} status={r.get('status')} conclusion={r.get('conclusion')} attempt={r.get('run_attempt')} branch={r.get('head_branch')} head={r.get('head_sha')}")
+          def load_concat(path, key):
+              text=open(path).read().strip()
+              dec=json.JSONDecoder(); pos=0; rows=[]
+              while pos < len(text):
+                  obj,end=dec.raw_decode(text,pos); pos=end
+                  while pos < len(text) and text[pos].isspace(): pos+=1
+                  rows.extend(obj.get(key, []))
+              return rows
+          jobs=load_concat('jobs-pages.json','jobs')
+          arts=load_concat('artifacts-pages.json','artifacts')
+          failures=[j for j in jobs if j.get('conclusion')=='failure']
+          cancelled=[j for j in jobs if j.get('conclusion')=='cancelled']
+          skipped=[j for j in jobs if j.get('conclusion')=='skipped']
+          cases=[j for j in jobs if str(j.get('name','')).startswith('cases-')]
+          case_success=[j for j in cases if j.get('conclusion')=='success']
+          case_failure=[j for j in cases if j.get('conclusion')=='failure']
+          case_cancelled=[j for j in cases if j.get('conclusion')=='cancelled']
+          case_skipped=[j for j in cases if j.get('conclusion')=='skipped']
+          analysis_jobs=[j for j in jobs if j.get('name')=='analysis']
+          case_arts=[a for a in arts if str(a.get('name','')).startswith('aerosol-family-v2-case-')]
+          analysis_arts=[a for a in arts if 'analysis' in str(a.get('name','')).lower()]
+          guard_arts=[a for a in arts if not str(a.get('name','')).startswith('aerosol-family-v2-case-') and a not in analysis_arts]
+          print('AFC2-RUN-DIAG ordinal=30 run=32310090959')
+          print(f'jobs_total={len(jobs)} cases_total={len(cases)} cases_success={len(case_success)} cases_failure={len(case_failure)} cases_cancelled={len(case_cancelled)} cases_skipped={len(case_skipped)}')
+          print(f'failed_jobs={[(j.get("id"),j.get("name")) for j in failures]}')
+          print(f'cancelled_jobs={[(j.get("id"),j.get("name")) for j in cancelled]}')
+          print(f'skipped_jobs={[(j.get("id"),j.get("name")) for j in skipped]}')
+          print(f'analysis_jobs={[(j.get("id"),j.get("status"),j.get("conclusion")) for j in analysis_jobs]}')
+          print(f'artifacts_total={len(arts)} case_artifacts={len(case_arts)} analysis_artifacts={[(a.get("id"),a.get("name"),a.get("digest"),a.get("expired")) for a in analysis_arts]} other_artifacts={[(a.get("id"),a.get("name"),a.get("digest"),a.get("expired")) for a in guard_arts]}')
           PY
           gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$(cat comment.txt)"

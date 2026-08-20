@@ -6,30 +6,25 @@ on:
     paths:
       - .github/workflows/aerosol-family-v2-r7-review-freeze-diagnostic.yml
 permissions:
-  actions: read
   contents: write
   issues: write
 jobs:
-  preserve-evidence:
+  build-r7-transport:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
-      EXPECTED_MAIN: 8327931dfa0e8784fff5b99c1eaabb31710d9d16
-      PROOF_RUN_ID: "32332748627"
-      ARTIFACT_ID: "9393646843"
-      ARTIFACT_NAME: aerosol-family-v2-r7-freeze-proof
-      ARTIFACT_ZIP_SHA256: 48329baf0301e4bee2638fc82d9329955dd473c99bef6463a30b4cd335954dd5
-      PROOF_BUNDLE_SHA256: fac2e200d9cc65715b542c3d745343a263577bf68d4e4fbfbbbeb85ae5d7652b
-      TARGET_BRANCH: evidence/aerosol-family-challenge-v2-r7-review-freeze
-      TARGET_DIR: evidence/aerosol-family-challenge-v2-r7
+      EXPECTED_MAIN: 7309e32e08be01dffb60e3a0bc77cb6e4588c0ec
+      TARGET_BRANCH: prep/aerosol-family-challenge-v2-r7-transport-v1
+      R6_DIR: experiments/aerosol-family-challenge-v2/execution-candidate
+      R7_DIR: experiments/aerosol-family-challenge-v2-r7/execution-candidate
     steps:
-      - name: Checkout exact reviewed main
+      - name: Checkout exact evidence-preserved main
         uses: actions/checkout@v5
         with:
           ref: ${{ env.EXPECTED_MAIN }}
           fetch-depth: 1
           persist-credentials: true
-      - name: Fail closed on drift or duplicate target
+      - name: Refuse drift or duplicate target
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,104 +33,177 @@ jobs:
           live="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
           test "$live" = "$EXPECTED_MAIN" || { echo "refuse: main moved expected=$EXPECTED_MAIN live=$live"; exit 2; }
           if git ls-remote --exit-code --heads origin "refs/heads/${TARGET_BRANCH}" >/dev/null 2>&1; then
-            echo "refuse: target evidence branch already exists: ${TARGET_BRANCH}"
+            echo "refuse: target transport branch already exists: ${TARGET_BRANCH}"
             exit 3
           fi
-          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PROOF_RUN_ID}")"
-          test "$(jq -r '.status' <<<"$run_json")" = completed
-          test "$(jq -r '.conclusion' <<<"$run_json")" = success
-          test "$(jq -r '.run_attempt' <<<"$run_json")" = 1
-          test "$(jq -r '.head_branch' <<<"$run_json")" = main
-          test "$(jq -r '.head_sha' <<<"$run_json")" = "$EXPECTED_MAIN"
-          art_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}")"
-          test "$(jq -r '.name' <<<"$art_json")" = "$ARTIFACT_NAME"
-          test "$(jq -r '.expired' <<<"$art_json")" = false
-          test "$(jq -r '.digest' <<<"$art_json")" = "sha256:${ARTIFACT_ZIP_SHA256}"
-          test "$(jq -r '.workflow_run.id' <<<"$art_json")" = "$PROOF_RUN_ID"
-          test "$(jq -r '.workflow_run.head_sha' <<<"$art_json")" = "$EXPECTED_MAIN"
-      - name: Download and verify exact proof artifact bytes
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/afc2-r7-proof /tmp/afc2-r7-proof.zip
-          curl --fail --silent --show-error -L \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            -o /tmp/afc2-r7-proof.zip
-          echo "${ARTIFACT_ZIP_SHA256}  /tmp/afc2-r7-proof.zip" | sha256sum -c -
-          mkdir /tmp/afc2-r7-proof
-          unzip -q /tmp/afc2-r7-proof.zip -d /tmp/afc2-r7-proof
-          expected=$'freeze-record.json\nmanifest.frozen.json\nproof-bundle.sha256\nrepository-global-seed-scan.json\nseed-freshness-proof.json\ntracked-seed-scan.json'
-          observed="$(find /tmp/afc2-r7-proof -maxdepth 1 -type f -printf '%f\n' | sort)"
-          test "$observed" = "$expected" || { printf 'unexpected artifact file set:\n%s\n' "$observed"; exit 4; }
-          cd /tmp/afc2-r7-proof
-          echo "${PROOF_BUNDLE_SHA256}  proof-bundle.sha256" | sha256sum -c -
-          sha256sum -c proof-bundle.sha256
+          test -f evidence/aerosol-family-challenge-v2-r7/freeze-record.json
+          test -f evidence/aerosol-family-challenge-v2-r7/manifest.frozen.json
           python3 - <<'PY'
           import json
           from pathlib import Path
-          root=Path('/tmp/afc2-r7-proof')
-          proof=json.loads((root/'seed-freshness-proof.json').read_text())
-          freeze=json.loads((root/'freeze-record.json').read_text())
-          manifest=json.loads((root/'manifest.frozen.json').read_text())
-          assert proof['status']=='PASSED_EXACT_HEAD_TRACKED_TREE_AND_REPOSITORY_GLOBAL_COLLISION_SURFACES_NEGATIVE_CHECK'
-          assert proof['auditMode']=='review-freeze'
-          assert proof['repositoryHead']=='8327931dfa0e8784fff5b99c1eaabb31710d9d16'
-          assert proof['repositoryGlobalCollisionCount']==0
-          assert proof['externalCollisionCount']==0
-          assert proof['repositoryGlobalDoubleEnumerationStable'] is True
-          assert proof['repositoryGlobalEnumerationPassCount']==2
-          assert proof['authorizationPermitted'] is False
-          assert proof['authorizationTimeRecheckStillRequired'] is True
+          freeze=json.loads(Path('evidence/aerosol-family-challenge-v2-r7/freeze-record.json').read_text())
+          manifest=json.loads(Path('evidence/aerosol-family-challenge-v2-r7/manifest.frozen.json').read_text())
           assert freeze['status']=='FROZEN_REVIEW_PACKAGE_NOT_AUTHORIZATION'
-          assert freeze['resultsOpened'] is False
           assert freeze['scientificExecutionAuthorized'] is False
           assert freeze['solverExecutionAuthorized'] is False
           assert freeze['authorizationTimeSeedRecheckStillRequired'] is True
-          assert len(manifest['cases'])==576
+          assert manifest['stageId']=='aerosol-family-challenge-v2-r7'
+          assert manifest['caseCount']==576
+          assert manifest['comparisonGroupCount']==72
+          assert manifest['configuredPhotonHistoriesTotal']==11520000000
           assert manifest['resultsOpened'] is False
           assert manifest['scientificExecutionAuthorized'] is False
           assert manifest['solverExecutionAuthorized'] is False
           PY
-      - name: Create exact evidence-only commit
+      - name: Derive R7 transport mechanically from reviewed R6 transport
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$TARGET_DIR"
-          cp /tmp/afc2-r7-proof/freeze-record.json "$TARGET_DIR/freeze-record.json"
-          cp /tmp/afc2-r7-proof/manifest.frozen.json "$TARGET_DIR/manifest.frozen.json"
-          cp /tmp/afc2-r7-proof/proof-bundle.sha256 "$TARGET_DIR/proof-bundle.sha256"
-          cp /tmp/afc2-r7-proof/repository-global-seed-scan.json "$TARGET_DIR/repository-global-seed-scan.json"
-          cp /tmp/afc2-r7-proof/seed-freshness-proof.json "$TARGET_DIR/seed-freshness-proof.json"
-          cp /tmp/afc2-r7-proof/tracked-seed-scan.json "$TARGET_DIR/tracked-seed-scan.json"
+          mkdir -p "$R7_DIR"
+          files=(
+            README.md
+            authorization-review-workflow.yml.template
+            authorization.template.json
+            authorization_guard.py
+            dispatch_guard.py
+            executor.py
+            freshness.py
+            guard.py
+            transport-contract.v3.json
+            workflow.yml.template
+            aggregate_results.py
+            authorization_surface.py
+          )
+          for name in "${files[@]}"; do
+            test -f "$R6_DIR/$name"
+            cp "$R6_DIR/$name" "$R7_DIR/$name"
+          done
+          cp .github/workflows/aerosol-family-v2-authorization-review.yml .github/workflows/aerosol-family-v2-r7-authorization-review.yml
+          cp .github/workflows/aerosol-family-v2-execution.yml .github/workflows/aerosol-family-v2-r7-execution.yml
+          cp tests/test_aerosol_family_transport_activation.py tests/test_aerosol_family_r7_transport_activation.py
+          python3 - <<'PY'
+          from pathlib import Path
+          targets=[
+            *Path('experiments/aerosol-family-challenge-v2-r7/execution-candidate').glob('*'),
+            Path('.github/workflows/aerosol-family-v2-r7-authorization-review.yml'),
+            Path('.github/workflows/aerosol-family-v2-r7-execution.yml'),
+            Path('tests/test_aerosol_family_r7_transport_activation.py'),
+          ]
+          def transform(text:str)->str:
+              proof='__AFC2_R7_PROOF_ARTIFACT__'
+              text=text.replace('aerosol-family-v2-r6-freeze-proof',proof)
+              text=text.replace('aerosol-family-challenge-v2','aerosol-family-challenge-v2-r7')
+              text=text.replace('aerosol-family-v2','aerosol-family-v2-r7')
+              text=text.replace(proof,'aerosol-family-v2-r7-freeze-proof')
+              text=text.replace('AEROSOL_FAMILY_V2','AEROSOL_FAMILY_V2_R7')
+              text=text.replace('candidate-seed-ledger.v1.json','candidate-seed-ledger.v2.json')
+              text=text.replace('R6_REVIEW_ONLY_TRANSPORT_CANDIDATE_NOT_AUTHORIZED','R7_REVIEW_ONLY_TRANSPORT_CANDIDATE_NOT_AUTHORIZED')
+              text=text.replace('Aerosol-family v2 authorization review','Aerosol-family v2 R7 authorization review')
+              text=text.replace('Aerosol-family v2 scientific execution','Aerosol-family v2 R7 scientific execution')
+              text=text.replace('Aerosol-family v2 ${{ github.ref_name }}','Aerosol-family v2 R7 ${{ github.ref_name }}')
+              return text
+          for path in targets:
+              if path.is_file():
+                  path.write_text(transform(path.read_text()),encoding='utf-8',newline='\n')
+          PY
+      - name: Add identity-only equivalence regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >> tests/test_aerosol_family_r7_transport_activation.py <<'PY'
+
+          class R7TransportIdentityOnlyEquivalence(unittest.TestCase):
+              def test_r7_transport_is_mechanical_identity_path_adaptation_of_r6(self):
+                  root = Path(__file__).resolve().parents[1]
+                  r6 = root / 'experiments' / 'aerosol-family-challenge-v2' / 'execution-candidate'
+                  r7 = root / 'experiments' / 'aerosol-family-challenge-v2-r7' / 'execution-candidate'
+                  names = [
+                      'README.md', 'authorization-review-workflow.yml.template', 'authorization.template.json',
+                      'authorization_guard.py', 'dispatch_guard.py', 'executor.py', 'freshness.py', 'guard.py',
+                      'transport-contract.v3.json', 'workflow.yml.template', 'aggregate_results.py', 'authorization_surface.py',
+                  ]
+                  def normalize(text: str) -> str:
+                      proof='__AFC2_R6_PROOF_ARTIFACT__'
+                      text=text.replace('aerosol-family-v2-r7-freeze-proof',proof)
+                      text=text.replace('aerosol-family-challenge-v2-r7','aerosol-family-challenge-v2')
+                      text=text.replace('aerosol-family-v2-r7','aerosol-family-v2')
+                      text=text.replace(proof,'aerosol-family-v2-r6-freeze-proof')
+                      text=text.replace('AEROSOL_FAMILY_V2_R7','AEROSOL_FAMILY_V2')
+                      text=text.replace('candidate-seed-ledger.v2.json','candidate-seed-ledger.v1.json')
+                      text=text.replace('R7_REVIEW_ONLY_TRANSPORT_CANDIDATE_NOT_AUTHORIZED','R6_REVIEW_ONLY_TRANSPORT_CANDIDATE_NOT_AUTHORIZED')
+                      text=text.replace('Aerosol-family v2 R7 authorization review','Aerosol-family v2 authorization review')
+                      text=text.replace('Aerosol-family v2 R7 scientific execution','Aerosol-family v2 scientific execution')
+                      text=text.replace('Aerosol-family v2 R7 ${{ github.ref_name }}','Aerosol-family v2 ${{ github.ref_name }}')
+                      return text
+                  for name in names:
+                      self.assertEqual((r6/name).read_text(), normalize((r7/name).read_text()), name)
+
+              def test_r7_transport_keeps_science_and_holdout_boundaries_closed(self):
+                  root = Path(__file__).resolve().parents[1]
+                  contract=json.loads((root/'experiments/aerosol-family-challenge-v2-r7/execution-candidate/transport-contract.v3.json').read_text())
+                  self.assertEqual(contract['stageId'],'aerosol-family-challenge-v2-r7-execution-transport')
+                  self.assertEqual(contract['status'],'R7_REVIEW_ONLY_TRANSPORT_CANDIDATE_NOT_AUTHORIZED')
+                  self.assertEqual(contract['caseUniverse']['caseCount'],576)
+                  self.assertEqual(contract['caseUniverse']['comparisonGroupCount'],72)
+                  self.assertEqual(contract['caseUniverse']['configuredPhotonHistories'],11520000000)
+                  self.assertFalse(contract['scientificExecutionAuthorized'])
+                  self.assertFalse(contract['solverExecutionAuthorized'])
+                  self.assertFalse(contract['githubRerunAllowed'])
+                  self.assertFalse(contract['retryAllowed'])
+                  self.assertFalse(contract['resumeAllowed'])
+                  self.assertFalse(contract['authorizationBoundary']['protectedHoldoutOpeningAuthorized'])
+                  self.assertEqual(contract['reviewSeedProofLifecycle']['proofBundleArtifactName'],'aerosol-family-v2-r7-freeze-proof')
+          PY
+      - name: Static refusal checks and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e experiments/aerosol-family-challenge-v2-r7/authorization.json
+          grep -q 'candidate-seed-ledger.v2.json' .github/workflows/aerosol-family-v2-r7-authorization-review.yml
+          grep -q 'candidate-seed-ledger.v2.json' .github/workflows/aerosol-family-v2-r7-execution.yml
+          grep -q 'dispatch/aerosol-family-challenge-v2-r7-ordinal-' .github/workflows/aerosol-family-v2-r7-execution.yml
+          grep -q 'aerosol-family-v2-r7-case-' experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_surface.py
+          grep -q 'AEROSOL_FAMILY_V2_R7_DISPATCH_CONSUMED' experiments/aerosol-family-challenge-v2-r7/execution-candidate/freshness.py
+          ! grep -R 'candidate-seed-ledger.v1.json' "$R7_DIR" .github/workflows/aerosol-family-v2-r7-authorization-review.yml .github/workflows/aerosol-family-v2-r7-execution.yml
+          python3 -m py_compile "$R7_DIR"/*.py
+          python3 -m unittest discover -s tests -p 'test_aerosol_family_challenge_v2_r7.py'
+          python3 -m unittest discover -s tests -p 'test_aerosol_family_r7_transport_activation.py'
+      - name: Create one transport-only commit and publish branch
+        shell: bash
+        run: |
+          set -euo pipefail
           git switch -c "$TARGET_BRANCH"
           git add -- \
-            "$TARGET_DIR/freeze-record.json" \
-            "$TARGET_DIR/manifest.frozen.json" \
-            "$TARGET_DIR/proof-bundle.sha256" \
-            "$TARGET_DIR/repository-global-seed-scan.json" \
-            "$TARGET_DIR/seed-freshness-proof.json" \
-            "$TARGET_DIR/tracked-seed-scan.json"
-          expected=$'evidence/aerosol-family-challenge-v2-r7/freeze-record.json\nevidence/aerosol-family-challenge-v2-r7/manifest.frozen.json\nevidence/aerosol-family-challenge-v2-r7/proof-bundle.sha256\nevidence/aerosol-family-challenge-v2-r7/repository-global-seed-scan.json\nevidence/aerosol-family-challenge-v2-r7/seed-freshness-proof.json\nevidence/aerosol-family-challenge-v2-r7/tracked-seed-scan.json'
-          observed="$(git diff --cached --name-only | sort)"
-          test "$observed" = "$expected" || { printf 'refuse unexpected staged scope:\n%s\n' "$observed"; exit 5; }
+            "$R7_DIR/README.md" \
+            "$R7_DIR/authorization-review-workflow.yml.template" \
+            "$R7_DIR/authorization.template.json" \
+            "$R7_DIR/authorization_guard.py" \
+            "$R7_DIR/dispatch_guard.py" \
+            "$R7_DIR/executor.py" \
+            "$R7_DIR/freshness.py" \
+            "$R7_DIR/guard.py" \
+            "$R7_DIR/transport-contract.v3.json" \
+            "$R7_DIR/workflow.yml.template" \
+            "$R7_DIR/aggregate_results.py" \
+            "$R7_DIR/authorization_surface.py" \
+            .github/workflows/aerosol-family-v2-r7-authorization-review.yml \
+            .github/workflows/aerosol-family-v2-r7-execution.yml \
+            tests/test_aerosol_family_r7_transport_activation.py
+          test "$(git diff --cached --name-only | wc -l)" -eq 15
+          git diff --cached --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Preserve AFC2 R7 review-freeze evidence"
+          git commit -m "Activate fail-closed AFC2 R7 transport"
           test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
-          git rev-parse HEAD > /tmp/evidence-commit.txt
-      - name: Record evidence preservation linkage
+          git rev-parse HEAD > /tmp/r7-transport-head.txt
+      - name: Record transport preparation
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          commit="$(cat /tmp/evidence-commit.txt)"
-          body="AFC2-R7-EVIDENCE-PRESERVED branch=${TARGET_BRANCH} commit=${commit} parent=${EXPECTED_MAIN} proof_run=${PROOF_RUN_ID} artifact=${ARTIFACT_ID} artifact_digest=sha256:${ARTIFACT_ZIP_SHA256} proof_bundle_sha256=${PROOF_BUNDLE_SHA256} status=EVIDENCE_ONLY_NOT_AUTHORIZATION"
+          head="$(cat /tmp/r7-transport-head.txt)"
+          body="AFC2-R7-TRANSPORT-PREPARED branch=${TARGET_BRANCH} commit=${head} parent=${EXPECTED_MAIN} files=15 status=CONTROL_PLANE_ONLY_NOT_AUTHORIZATION_NOT_DISPATCHED"
           gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$body" >/dev/null
           echo "$body"

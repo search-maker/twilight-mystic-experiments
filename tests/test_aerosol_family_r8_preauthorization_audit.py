@@ -80,6 +80,72 @@ class R8PreauthorizationAudit(unittest.TestCase):
         with self.assertRaises(self.ordinal.GlobalOrdinalRefusal):
             self.ordinal.derive_next_global_ordinal(payload,latest)
 
+
+    def test_retired_undispatched_allocation_advances_monotonically_without_reuse(self):
+        payload=self.clean_payload()
+        n=32
+        head='3'*40
+        parent='1'*40
+        pr_number=277
+        auth_branch=self.fresh.authorization_branch(n)
+        payload['branches'].append({'name':auth_branch,'commit':{'sha':head}})
+        allocation=self.fresh.authorization_marker(n,head,parent,pr_number)
+        retirement=self.ordinal.retired_authorization_marker(n)
+        payload['issue60Comments']=[{'id':10,'body':allocation},{'id':11,'body':retirement}]
+        payload['issueComments']=list(payload['issue60Comments'])
+        payload['pulls']=[{
+            'number':pr_number,'state':'closed','merged_at':None,
+            'head':{'ref':auth_branch,'sha':head},'base':{'ref':'main'},
+        }]
+        payload['runs']=[{
+            'id':32419436160,
+            'head_branch':'status/aerosol-family-v2-r8-dispatch-publisher-ordinal-32',
+            'head_sha':'4'*40,
+            'path':'.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml',
+            'event':'push','run_attempt':1,'status':'completed','conclusion':'failure',
+        }]
+        latest=self.surface._latest_consumed_ordinal(payload,'__none__',-1)
+        self.assertEqual(31,latest)
+        candidate,observations=self.ordinal.derive_next_global_ordinal(payload,latest)
+        self.assertEqual(33,candidate)
+        self.assertEqual(32,max(row['ordinal'] for row in observations))
+        surface=self.surface.build_surface(payload,candidate,candidate_code_paths_on_main_inspected=True)
+        self.assertEqual(32,surface['nextAvailableScientificOrdinal'])
+        surface['nextAvailableScientificOrdinal']=candidate
+        out=self.auth.preauthorize({
+            'freshness':surface,
+            'authorizationCreated':False,
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+        },candidate)
+        self.assertEqual(33,out['scientificOrdinal'])
+
+    def test_retirement_refuses_any_dispatch_or_nonfailed_publisher_history(self):
+        for mode in ('dispatch-branch','publisher-success'):
+            with self.subTest(mode=mode):
+                payload=self.clean_payload()
+                n=32; head='3'*40; parent='1'*40; pr_number=277
+                auth_branch=self.fresh.authorization_branch(n)
+                payload['branches'].append({'name':auth_branch,'commit':{'sha':head}})
+                allocation=self.fresh.authorization_marker(n,head,parent,pr_number)
+                retirement=self.ordinal.retired_authorization_marker(n)
+                payload['issue60Comments']=[{'id':10,'body':allocation},{'id':11,'body':retirement}]
+                payload['issueComments']=list(payload['issue60Comments'])
+                payload['pulls']=[{'number':pr_number,'state':'closed','merged_at':None,'head':{'ref':auth_branch,'sha':head}}]
+                payload['runs']=[{
+                    'id':32419436160,
+                    'head_branch':'status/aerosol-family-v2-r8-dispatch-publisher-ordinal-32',
+                    'path':'.github/workflows/aerosol-family-v2-r8-dispatch-publisher.yml',
+                    'event':'push','run_attempt':1,'status':'completed',
+                    'conclusion':'success' if mode == 'publisher-success' else 'failure',
+                }]
+                if mode == 'dispatch-branch':
+                    payload['branches'].append({'name':self.fresh.dispatch_branch(n),'commit':{'sha':head}})
+                latest=self.surface._latest_consumed_ordinal(payload,'__none__',-1)
+                with self.assertRaises(self.ordinal.GlobalOrdinalRefusal):
+                    self.ordinal.derive_next_global_ordinal(payload,latest)
+
+
     def test_consumed_candidate_marker_refuses_preauthorization(self):
         payload=self.clean_payload()
         payload['issue60Comments']=[{'id':1,'body':self.fresh.consumed_marker(32)}]
@@ -107,6 +173,7 @@ class R8PreauthorizationAudit(unittest.TestCase):
         self.assertIn('--expected-branch-name main',text)
         self.assertIn('from authorization_guard import preauthorize',text)
         self.assertIn('from preauthorization_ordinal import derive_next_global_ordinal',text)
+        self.assertIn("surface['nextAvailableScientificOrdinal']=candidate",text)
         self.assertIn('global-ordinal-surface.json',text)
         self.assertIn("'status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'",text)
         self.assertIn("'scientificOrdinalAllocated':False",text)

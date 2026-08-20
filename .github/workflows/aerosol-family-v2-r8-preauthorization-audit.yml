@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - .github/workflows/aerosol-family-v2-r8-preauthorization-audit.yml
+      - experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py
+      - tests/test_aerosol_family_r8_preauthorization_audit.py
 
 permissions:
   contents: read
   actions: read
   pull-requests: read
-  issues: read
+  issues: write
 
 concurrency:
   group: aerosol-family-v2-r8-preauthorization-${{ github.sha }}
@@ -199,6 +201,7 @@ jobs:
           },sort_keys=True))
           PY
       - name: Persist zero-runtime preauthorization evidence
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aerosol-family-v2-r8-preauthorization-proof
@@ -224,4 +227,60 @@ jobs:
           print('dispatch_created=false')
           print('scientific_runtime=false')
           print('solver_execution=false')
+          PY
+      - name: Publish terminal observable checkpoint to Issue 60
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re, urllib.request
+          from pathlib import Path
+          r=json.loads(Path('preauthorization-evidence/preauthorization.json').read_text())
+          if r.get('status') != 'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED':
+              raise SystemExit('refuse terminal checkpoint for non-pass preauthorization status')
+          if r.get('scientificOrdinalAllocated') is not False or r.get('authorizationCreated') is not False or r.get('dispatchCreated') is not False:
+              raise SystemExit('refuse terminal checkpoint: preauthorization mutated scientific identity')
+          if r.get('scientificRuntimeSetupPerformed') is not False or r.get('scientificExecutionPerformed') is not False or r.get('solverExecutionPerformed') is not False:
+              raise SystemExit('refuse terminal checkpoint: preauthorization performed scientific runtime')
+          artifact_id=os.environ.get('ARTIFACT_ID','').strip()
+          artifact_digest=os.environ.get('ARTIFACT_DIGEST','').strip()
+          if not artifact_id.isdigit() or re.fullmatch(r'[0-9a-f]{64}', artifact_digest) is None:
+              raise SystemExit('upload-artifact identity outputs missing or malformed')
+          body='\n'.join([
+              'AFC2-R8-PREAUTHORIZATION-RUN',
+              f'exact_main={r["exactMainSha"]}',
+              f'run={os.environ["GITHUB_RUN_ID"]}',
+              f'attempt={r["runAttempt"]}',
+              f'status={r["status"]}',
+              f'latest_consumed={r["latestPriorConsumedScientificOrdinal"]}',
+              f'next_if_separately_allocated={r["nextAvailableScientificOrdinal"]}',
+              f'artifact_id={artifact_id}',
+              f'artifact_digest=sha256:{artifact_digest}',
+              f'report_sha256={r["reportSha256"]}',
+              'authorization_created=false',
+              'scientific_identity_allocated=false',
+              'dispatch_created=false',
+              'scientific_runtime=false',
+              'solver_execution=false',
+          ])
+          req=urllib.request.Request(
+              f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/60/comments',
+              data=json.dumps({'body':body}).encode(),
+              headers={
+                  'Authorization':f'Bearer {os.environ["GITHUB_TOKEN"]}',
+                  'Accept':'application/vnd.github+json',
+                  'X-GitHub-Api-Version':'2022-11-28',
+                  'Content-Type':'application/json',
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(req,timeout=90) as response:
+              row=json.load(response)
+          if not int(row.get('id') or 0):
+              raise SystemExit('Issue 60 terminal checkpoint did not return a comment id')
+          print(f'issue60_comment_id={row["id"]}')
           PY

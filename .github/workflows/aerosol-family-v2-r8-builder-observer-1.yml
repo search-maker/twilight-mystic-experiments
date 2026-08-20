@@ -1,0 +1,43 @@
+name: aerosol-family-v2-r8-builder-observer-1
+on:
+  push:
+    branches: [status/aerosol-family-v2-r8-builder-observer-1]
+    paths: [.github/workflows/aerosol-family-v2-r8-builder-observer-1.yml]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RESULT_BRANCH: status/aerosol-family-v2-r8-builder-observer-1-result
+    steps:
+      - name: Capture builder states and failed logs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess
+          repo=os.environ['GITHUB_REPOSITORY']
+          workflows=['aerosol-family-v2-r8-review-builder-1.yml','aerosol-family-v2-r8-review-builder-2.yml']
+          out={'builders':[]}
+          for wf in workflows:
+              raw=subprocess.check_output(['gh','api',f'repos/{repo}/actions/workflows/{wf}/runs?per_page=20'])
+              rows=json.loads(raw).get('workflow_runs',[])
+              rows=[r for r in rows if r.get('event')=='push']
+              if not rows:
+                  out['builders'].append({'workflow':wf,'runs':[]}); continue
+              picked=[]
+              for r in rows[:3]:
+                  rid=r['id']
+                  jobs=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/runs/{rid}/jobs?per_page=100'])).get('jobs',[])
+                  item={'id':rid,'headSha':r.get('head_sha'),'headBranch':r.get('head_branch'),'runAttempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion'),'createdAt':r.get('created_at'),'updatedAt':r.get('updated_at'),'jobs':[{'id':j.get('id'),'name':j.get('name'),'status':j.get('status'),'conclusion':j.get('conclusion'),'steps':[{'number':s.get('number'),'name':s.get('name'),'status':s.get('status'),'conclusion':s.get('conclusion')} for s in j.get('steps',[])]} for j in jobs]}
+                  picked.append(item)
+              out['builders'].append({'workflow':wf,'runs':picked})
+          open('/tmp/readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/r8-builder-observer-1-readback.json" -f message='Record AFC2 R8 builder observer readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

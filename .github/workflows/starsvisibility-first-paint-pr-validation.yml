@@ -1,4 +1,4 @@
-name: StarsVisibility known-object default validation
+name: StarsVisibility known-object production validation
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -20,9 +20,9 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install playwright-core@1.61.1 --no-save
           echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
-      - name: Validate clean defaults and persisted override
+      - name: Validate production clean defaults and persisted override
         env:
-          SITE: https://dc8e8574.starsvisibility.pages.dev
+          SITE: https://starsvisibility.pages.dev
         run: |
           set -euo pipefail
           cat > validate.mjs <<'NODE'
@@ -41,12 +41,18 @@ jobs:
           const read = page => page.evaluate(ids => Object.fromEntries(ids.map(id => [id, document.getElementById(id)?.checked ?? null])), ids);
 
           const fresh = await browser.newContext();
+          await fresh.addInitScript(() => localStorage.removeItem('starVisibilityThreeStarSelectionV1'));
           const freshPage = await fresh.newPage();
           const freshErrors = [];
           freshPage.on('pageerror', error => freshErrors.push(error.message));
-          await freshPage.goto(`${process.env.SITE}/?known-default=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
-          const marker = await freshPage.evaluate(() => document.documentElement.outerHTML.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1'));
-          if (!marker) throw new Error('DEFAULT_FOUR_MARKER_MISSING');
+          let marker = false;
+          for (let i = 0; i < 30; i++) {
+            await freshPage.goto(`${process.env.SITE}/?known-prod=${process.env.GITHUB_RUN_ID}-${i}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+            marker = await freshPage.evaluate(() => document.documentElement.outerHTML.includes('STARS-KNOWN-EXCLUSION-DEFAULT-FOUR-V1'));
+            if (marker) break;
+            await freshPage.waitForTimeout(10000);
+          }
+          if (!marker) throw new Error('DEFAULT_FOUR_PRODUCTION_NOT_DEPLOYED');
           const clean = await read(freshPage);
           const cleanExpected = {
             excludeKnownVenus: true,
@@ -73,7 +79,7 @@ jobs:
           const savedPage = await saved.newPage();
           const savedErrors = [];
           savedPage.on('pageerror', error => savedErrors.push(error.message));
-          await savedPage.goto(`${process.env.SITE}/?known-saved=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+          await savedPage.goto(`${process.env.SITE}/?known-prod-saved=${process.env.GITHUB_RUN_ID}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
           const restored = await read(savedPage);
           const restoredExpected = {
             excludeKnownVenus: false,
@@ -90,7 +96,7 @@ jobs:
           if (savedErrors.length) throw new Error(`SAVED_PAGE_ERRORS_${JSON.stringify(savedErrors)}`);
           await saved.close();
 
-          console.log('KNOWN_OBJECT_DEFAULT_PASS', JSON.stringify({ clean, restored, basis }));
+          console.log('KNOWN_OBJECT_PRODUCTION_PASS', JSON.stringify({ clean, restored, basis }));
           await browser.close();
           NODE
           node validate.mjs

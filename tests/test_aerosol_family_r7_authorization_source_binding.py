@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTH_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-authorization-review.yml"
+EXEC_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-execution.yml"
 R7_DESIGN = ROOT / "experiments/aerosol-family-challenge-v2-r7/design.review.json"
 
 
@@ -34,6 +35,16 @@ class R7AuthorizationSourceBindingRegression(unittest.TestCase):
             'json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]',
             text,
         )
+
+    def test_execution_preflight_uses_repo_root_relative_base_design_path(self):
+        text = EXEC_WORKFLOW.read_text()
+        self.assertIn('Path(d["baseDesignPath"])', text)
+        self.assertIn('["sourceBindings"]["publicRepoMainSha"]', text)
+        self.assertNotIn(
+            'json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]',
+            text,
+        )
+
 
 
 if __name__ == "__main__":

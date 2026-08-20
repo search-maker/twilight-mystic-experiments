@@ -1,0 +1,57 @@
+name: aerosol-family-v2-r7-preauth-audit
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-preauth-audit-1]
+    paths: [.github/workflows/aerosol-family-v2-r7-preauth-audit.yml]
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      EXPECTED_MAIN: efd999e802262d4d9c137b5767a944bee1883998
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.EXPECTED_MAIN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact-head fail-closed audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test ! -e experiments/aerosol-family-challenge-v2-r7/authorization.json
+          git ls-files -z > tracked-files.nul
+          mkdir preauth-audit
+          python experiments/aerosol-family-challenge-v2-r7/tracked_tree_seed_scan.py --repo-root . --file-list tracked-files.nul --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --allow-self-ledger-json experiments/aerosol-family-challenge-v2-r7/seed-self-ledger-paths.json --output preauth-audit/tracked.json
+          python experiments/aerosol-family-challenge-v2-r7/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name main --expected-repo-head "$EXPECTED_MAIN" --output preauth-audit/global.json
+          SOURCE_BASE="$(python -c 'import json; print(json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]["publicRepoMainSha"])')"
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7 python experiments/aerosol-family-challenge-v2-r7/merge_seed_proof.py --design experiments/aerosol-family-challenge-v2-r7/design.review.json --candidate-seed-ledger experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json --tracked preauth-audit/tracked.json --repository-global preauth-audit/global.json --repo-head "$EXPECTED_MAIN" --source-base-main-sha "$SOURCE_BASE" --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --output preauth-audit/seed-proof.json
+          printf '{"scientificOrdinal":31}\n' > /tmp/a.json
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r7/execution-candidate python experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_surface.py --repository "$GITHUB_REPOSITORY" --authorization /tmp/a.json --current-run-id "$GITHUB_RUN_ID" --output preauth-audit/freshness.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('preauth-audit/seed-proof.json').read_text())
+          f=json.loads(Path('preauth-audit/freshness.json').read_text())
+          assert s['status'].startswith('PASSED_') and s['externalCollisionCount']==0
+          assert s['repositoryGlobalDoubleEnumerationStable'] is True and s['repositoryGlobalEnumerationPassCount']==2
+          assert f['latestPriorConsumedScientificOrdinal']==30 and f['nextAvailableScientificOrdinal']==31
+          assert f['candidatePriorScientificRunCount']==0 and f['candidateExecutionKeyPriorUseCount']==0
+          assert f['positiveCandidateClaimsExcludingCurrent']==0
+          assert f['authorizationBranchExists'] is False and f['dispatchBranchExists'] is False
+          assert f['activeAuthorizationPathOnMainExists'] is False and f['matchingAuthorizationMarkers']==0
+          assert f['priorCaseArtifactNames']==[] and f['candidateCodePathsOnMainInspected'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aerosol-family-v2-r7-preauth-audit
+          path: preauth-audit/
+          if-no-files-found: error

@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Read R8 bootstrap and proof status only
+      - name: Read R8 control-plane run status only
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,30 +33,28 @@ jobs:
               rows=sorted(rows,key=lambda r:int(r.get('id') or 0),reverse=True)
               if not rows: return None
               r=rows[0]
-              return {k:r.get(k) for k in ('id','status','conclusion','event','head_sha','run_attempt','created_at','updated_at')}
+              return {k:r.get(k) for k in ('id','status','conclusion','event','head_sha','head_branch','run_attempt','created_at','updated_at')}
+          def one(label,row):
+              if row is None: return f'{label}=NONE'
+              return (f"{label}=id:{row['id']},status:{row['status']},conclusion:{row['conclusion']},"
+                      f"event:{row['event']},attempt:{row['run_attempt']},head:{row['head_sha']},branch:{row['head_branch']},"
+                      f"created:{row['created_at']},updated:{row['updated_at']}")
           main=str((get(f'/repos/{repo}/branches/main').get('commit') or {}).get('sha') or '')
           boot=latest('aerosol-family-v2-r8-review-freeze-bootstrap.yml')
           proof=latest('aerosol-family-v2-r8-seed-proof-review.yml')
+          publisher=latest('aerosol-family-v2-r8-evidence-publisher.yml')
           proof_artifacts=[]
           if proof:
               rows=get(f"/repos/{repo}/actions/runs/{proof['id']}/artifacts?per_page=100").get('artifacts',[])
               proof_artifacts=[{'id':a.get('id'),'name':a.get('name'),'expired':a.get('expired')} for a in rows]
-          def one(label,row):
-              if row is None: return f'{label}=NONE'
-              return (f"{label}=id:{row['id']},status:{row['status']},conclusion:{row['conclusion']},"
-                      f"event:{row['event']},attempt:{row['run_attempt']},head:{row['head_sha']},"
-                      f"created:{row['created_at']},updated:{row['updated_at']}")
           body='\n'.join([
-              'AFC2-R8-FREEZE-STATUS-OBSERVER',
+              'AFC2-R8-FREEZE-STATUS-OBSERVER-V2',
               f'main={main}',
               one('bootstrap',boot),
               one('seed_proof',proof),
+              one('evidence_publisher',publisher),
               'seed_proof_artifacts='+json.dumps(proof_artifacts,separators=(',',':')),
-              'observer_only=true',
-              'scientific_runtime=false',
-              'solver_execution=false',
-              'no_rerun=true',
-          ])
+              'observer_only=true','scientific_runtime=false','solver_execution=false','no_rerun=true'])
           payload=json.dumps({'body':body}).encode()
           req=urllib.request.Request('https://api.github.com'+f'/repos/{repo}/issues/60/comments',data=payload,method='POST',headers=h|{'Content-Type':'application/json'})
           with urllib.request.urlopen(req,timeout=90) as x: x.read()

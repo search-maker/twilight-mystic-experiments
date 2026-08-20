@@ -1,0 +1,96 @@
+name: aerosol-family-v2-r7-execution-source-binding-fix-builder-1
+on:
+  push:
+    branches: [status/aerosol-family-v2-r7-execution-source-binding-fix-builder-1]
+    paths: [.github/workflows/aerosol-family-v2-r7-execution-source-binding-fix-builder-1.yml]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_MAIN: 82e753efa1f241cb0d33456996eaa2cdec4e2ea4
+      TARGET_BRANCH: fix/aerosol-family-v2-r7-execution-base-design-path-resolution
+      RESULT_BRANCH: status/aerosol-family-v2-r7-execution-source-binding-fix-builder-1-result
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.EXPECTED_MAIN }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply exact control-plane source-binding fix and regression
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          python3 - <<'PY'
+          from pathlib import Path
+          wf=Path('.github/workflows/aerosol-family-v2-r7-execution.yml')
+          text=wf.read_text()
+          old='SOURCE_BASE="$(python -c \'import json; print(json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]["publicRepoMainSha"])\')"'
+          new='SOURCE_BASE="$(python -c \'import json; from pathlib import Path; d=json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json")); print(json.load(open(Path(d["baseDesignPath"])))["sourceBindings"]["publicRepoMainSha"])\')"'
+          if text.count(old)!=1: raise SystemExit(f'expected one execution SOURCE_BASE bug, got {text.count(old)}')
+          wf.write_text(text.replace(old,new))
+
+          test=Path('tests/test_aerosol_family_r7_authorization_source_binding.py')
+          t=test.read_text()
+          anchor='AUTH_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-authorization-review.yml"\n'
+          if 'EXEC_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-execution.yml"' not in t:
+              if anchor not in t: raise SystemExit('test anchor missing')
+              t=t.replace(anchor, anchor+'EXEC_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-execution.yml"\n',1)
+          method='''\n    def test_execution_preflight_uses_repo_root_relative_base_design_path(self):\n        text = EXEC_WORKFLOW.read_text()\n        self.assertIn('Path(d["baseDesignPath"])', text)\n        self.assertIn('["sourceBindings"]["publicRepoMainSha"]', text)\n        self.assertNotIn(\n            'json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]',\n            text,\n        )\n\n'''
+          if 'def test_execution_preflight_uses_repo_root_relative_base_design_path' not in t:
+              marker='\n\nif __name__ == "__main__":\n'
+              if marker not in t: raise SystemExit('test insertion marker missing')
+              t=t.replace(marker, method+marker,1)
+          test.write_text(t)
+          PY
+          python -m unittest tests/test_aerosol_family_r7_authorization_source_binding.py tests/test_aerosol_family_r7_transport_activation.py
+          git diff --check
+          mapfile -t CHANGED < <(git diff --name-only)
+          test "${#CHANGED[@]}" = 2
+          printf '%s\n' "${CHANGED[@]}" | sort > /tmp/changed.txt
+          printf '%s\n' '.github/workflows/aerosol-family-v2-r7-execution.yml' 'tests/test_aerosol_family_r7_authorization_source_binding.py' | sort > /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- .github/workflows/aerosol-family-v2-r7-execution.yml tests/test_aerosol_family_r7_authorization_source_binding.py
+          git commit -m 'Fix AFC2 R7 execution source binding'
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          echo "candidate_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "candidate_tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+      - name: Attempt publish and always record exact tested commit
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA='${{ steps.build.outputs.candidate_head }}'
+          TREE_SHA='${{ steps.build.outputs.candidate_tree }}'
+          set +e
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}" > /tmp/push.out 2>&1
+          rc=$?
+          set -e
+          python3 - <<PY
+          import json
+          out={
+            'runId':int('${GITHUB_RUN_ID}'),
+            'runAttempt':int('${GITHUB_RUN_ATTEMPT}'),
+            'expectedMain':'${EXPECTED_MAIN}',
+            'targetBranch':'${TARGET_BRANCH}',
+            'candidateHead':'${HEAD_SHA}',
+            'candidateTree':'${TREE_SHA}',
+            'changedPaths':['.github/workflows/aerosol-family-v2-r7-execution.yml','tests/test_aerosol_family_r7_authorization_source_binding.py'],
+            'testsPassed':True,
+            'pushExitCode':${rc},
+            'pushOutput':open('/tmp/push.out').read(),
+            'status':'TESTED_COMMIT_READY',
+          }
+          open('/tmp/readback.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\\n')
+          PY
+          content="$(base64 -w0 /tmp/readback.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/execution-source-binding-fix-builder-1-readback.json" -f message='Record AFC2 R7 execution source-binding fix builder readback' -f content="$content" -f branch="$RESULT_BRANCH" >/dev/null

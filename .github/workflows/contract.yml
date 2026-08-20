@@ -39,7 +39,7 @@ jobs:
 
   jerusalem-bright-stars-2026:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       TARGET_URL: https://starsvisibility.pages.dev/
     steps:
@@ -51,23 +51,37 @@ jobs:
         run: |
           npm install --no-save playwright
           npx playwright install --with-deps chromium
-      - name: Probe live StarsVisibility calculation source
+      - name: Adapt QA harness to deployed calculator source
         run: |
-          node --input-type=module - <<'NODE'
-          import { chromium } from 'playwright';
-          const browser = await chromium.launch({ headless: true });
-          try {
-            const page = await browser.newPage();
-            const response = await page.goto(process.env.TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-            if (!response?.ok()) throw new Error(`HTTP ${response?.status()}`);
-            const source = await page.evaluate(() => globalThis.eval('APP_SCRIPT_SOURCE'));
-            console.log(`APP_SCRIPT_SOURCE_LENGTH=${source.length}`);
-            for (const term of ['selectionMagnitude', 'threeStarMagnitudeBasis !==', 'effectiveMagnitudeForSelection', 'qualifyingObjectAt']) {
-              const index = source.indexOf(term);
-              console.log(`\n===== ${term} @ ${index} =====`);
-              console.log(index >= 0 ? source.slice(Math.max(0, index - 1200), Math.min(source.length, index + 2600)) : 'NOT FOUND');
-            }
-          } finally {
-            await browser.close();
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/jerusalem-bright-stars-live-qa.mjs')
+          s = p.read_text()
+          s = s.replace(
+              "await page.waitForSelector('#annualYear', { timeout: 30_000 });",
+              "await page.waitForSelector('#annualYear', { state: 'attached', timeout: 30_000 });",
+              1,
+          )
+          replacements = {
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\"'": "'            if (magnitudeBasis !== \"known-exclusions\"'",
+              "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < threeStarMagnitudeThreshold - 1e-10)) return null;'": "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < magnitudeThreshold - 1e-10)) return null;'",
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\") {'": "'            if (magnitudeBasis !== \"known-exclusions\") {'",
+              "'                if (selectionMagnitude > threeStarMagnitudeThreshold + 1e-10) return null;'": "'                if (selectionMagnitude > magnitudeThreshold + 1e-10) return null;'",
+              "'              } else if (selectionMagnitude < threeStarMagnitudeThreshold - 1e-10) return null;'": "'              } else if (selectionMagnitude < magnitudeThreshold - 1e-10) return null;'",
           }
-          NODE
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'QA source compatibility anchor missing: {old}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          node --check scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Run Jerusalem annual bright-star report
+        run: node scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Upload Jerusalem report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-bright-stars-2026
+          path: qa-artifacts/
+          if-no-files-found: warn

@@ -119,6 +119,10 @@ class R8PreauthorizationAudit(unittest.TestCase):
         self.assertNotIn("'scientificExecutionAuthorized':True",text)
         self.assertNotIn("'solverExecutionAuthorized':True",text)
         self.assertNotIn('gh api',text)
+        self.assertIn('issues: read',text)
+        self.assertNotIn('issues: write',text)
+        self.assertNotIn("method='POST'",text)
+        self.assertIn('Print terminal non-allocation readback',text)
 
     def test_artifact_name_does_not_claim_a_candidate_identity(self):
         text=WORKFLOW.read_text()

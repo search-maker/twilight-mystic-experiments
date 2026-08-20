@@ -1,0 +1,56 @@
+# REVIEW-ONLY one-shot bootstrap. It can dispatch only the R7 seed-proof workflow.
+name: aerosol-family-v2-r7-review-freeze-bootstrap
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-family-v2-r7-review-freeze-bootstrap.yml
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: aerosol-family-v2-r7-review-freeze-bootstrap
+  cancel-in-progress: false
+jobs:
+  dispatch-on-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch exactly one R7 review-freeze on exact main head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; event_sha=os.environ['GITHUB_SHA']
+          workflow='aerosol-family-v2-r7-seed-proof-review.yml'; artifact='aerosol-family-v2-r7-freeze-proof'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'afc2-r7-review-bootstrap'}
+          def req(path,method='GET',payload=None):
+              data=None if payload is None else json.dumps(payload).encode()
+              r=urllib.request.Request('https://api.github.com'+path,data=data,method=method,headers=headers)
+              try:
+                  with urllib.request.urlopen(r,timeout=90) as x:
+                      raw=x.read(); return None if not raw else json.loads(raw)
+              except urllib.error.HTTPError as exc:
+                  raise RuntimeError(exc.read().decode(errors='replace')) from exc
+          def pages(path,key):
+              out=[]; page=1
+              while True:
+                  sep='&' if '?' in path else '?'; data=req(f'{path}{sep}per_page=100&page={page}'); batch=data.get(key,[])
+                  if not isinstance(batch,list): raise RuntimeError(f'missing {key}')
+                  out.extend(batch)
+                  if len(batch)<100:return out
+                  page+=1
+          live=str((req(f'/repos/{repo}/branches/main').get('commit') or {}).get('sha') or '')
+          if live!=event_sha: raise SystemExit(f'refuse: main moved event={event_sha} live={live}')
+          artifacts=pages(f'/repos/{repo}/actions/artifacts','artifacts')
+          if any(str(a.get('name') or '')==artifact for a in artifacts): raise SystemExit('refuse: R7 proof artifact already exists')
+          ref=urllib.parse.quote(workflow,safe=''); runs=pages(f'/repos/{repo}/actions/workflows/{ref}/runs','workflow_runs')
+          if any(str(r.get('status') or '')!='completed' for r in runs): raise SystemExit('refuse: R7 review workflow already active')
+          if any(str(r.get('conclusion') or '')=='success' for r in runs): raise SystemExit('refuse: successful R7 review freeze already exists')
+          req(f'/repos/{repo}/actions/workflows/{ref}/dispatches','POST',{'ref':'main'})
+          print(f'dispatched {workflow} on exact main head {event_sha}')
+          print('scientific execution authorized: false')
+          PY

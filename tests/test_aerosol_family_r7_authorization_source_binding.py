@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTH_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-authorization-review.yml"
+EXEC_WORKFLOW = ROOT / ".github/workflows/aerosol-family-v2-r7-execution.yml"
 R7_DESIGN = ROOT / "experiments/aerosol-family-challenge-v2-r7/design.review.json"
 
 
@@ -22,8 +23,8 @@ class R7AuthorizationSourceBindingRegression(unittest.TestCase):
         source_base = base_design["sourceBindings"]["publicRepoMainSha"]
         self.assertRegex(source_base, re.compile(r"^[0-9a-f]{40}$"))
 
-    def test_authorization_review_uses_repo_root_relative_base_design_path(self):
-        text = AUTH_WORKFLOW.read_text()
+    def _assert_workflow_uses_repo_root_relative_base_design_path(self, path: Path):
+        text = path.read_text()
         self.assertIn('Path(d["baseDesignPath"])', text)
         self.assertIn('["sourceBindings"]["publicRepoMainSha"]', text)
         self.assertNotIn(
@@ -34,6 +35,12 @@ class R7AuthorizationSourceBindingRegression(unittest.TestCase):
             'json.load(open("experiments/aerosol-family-challenge-v2-r7/design.review.json"))["sourceBindings"]',
             text,
         )
+
+    def test_authorization_review_uses_repo_root_relative_base_design_path(self):
+        self._assert_workflow_uses_repo_root_relative_base_design_path(AUTH_WORKFLOW)
+
+    def test_scientific_execution_uses_repo_root_relative_base_design_path(self):
+        self._assert_workflow_uses_repo_root_relative_base_design_path(EXEC_WORKFLOW)
 
 
 if __name__ == "__main__":

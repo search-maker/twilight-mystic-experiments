@@ -1,0 +1,294 @@
+name: aerosol-family-v2-r8-review-builder-1
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-review-builder-1
+    paths:
+      - .github/workflows/aerosol-family-v2-r8-review-builder-1.yml
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_BRANCH: review/aerosol-family-challenge-v2-r8
+      EXPECTED_BASE: 3b5f1fa0a9af76bd9f8fa97b6cac0091d71e5b51
+      R8_NAMESPACE: aerosol-family-challenge-v2|group-seed|sha256-v3
+      CONTINUATION_REASON: ORDINAL31_DISPATCH_REF_CONSUMED_WITHOUT_ACTIONS_RUN_AND_EXECUTION_PREFLIGHT_SOURCE_BINDING_DEFECT
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Generate exact R8 review-only package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          test ! -e experiments/aerosol-family-challenge-v2-r8
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import re
+          import shutil
+          from itertools import product
+          from pathlib import Path
+
+          root=Path('.')
+          r6=root/'experiments/aerosol-family-challenge-v2'
+          r7=root/'experiments/aerosol-family-challenge-v2-r7'
+          r8=root/'experiments/aerosol-family-challenge-v2-r8'
+          r8.mkdir()
+          ns='aerosol-family-challenge-v2|group-seed|sha256-v3'
+          continuation='ORDINAL31_DISPATCH_REF_CONSUMED_WITHOUT_ACTIONS_RUN_AND_EXECUTION_PREFLIGHT_SOURCE_BINDING_DEFECT'
+          proof='aerosol-family-v2-r8-freeze-proof'
+          r7_seed_sha='bf5254ff59450ae935705966c51d367a003e97afbcff98a7622b1c310c3ace3b'
+          prior_binding={
+            'stageId':'aerosol-family-challenge-v2-r7',
+            'consumedScientificOrdinal':31,
+            'disposition':'DISPATCH_REF_CREATED_IDENTITY_CONSUMED_NO_ACTIONS_SCIENTIFIC_RUN',
+            'corePath':'experiments/aerosol-family-challenge-v2-r7/core.py',
+            'coreGitBlobSha':'77e3f1282b2e8161d8bd499aac478ab43605374e',
+            'designPath':'experiments/aerosol-family-challenge-v2-r7/design.review.json',
+            'designGitBlobSha':'6038e3a769e205e2e26b5d8fc950ceb8c594b9c5',
+            'candidateSeedLedgerPath':'experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json',
+            'candidateSeedLedgerGitBlobSha':'22354b2c602acbece93bd875e2e0df759a23672c',
+            'candidateSeedCanonicalSha256':r7_seed_sha,
+            'seedDerivationNamespace':'aerosol-family-challenge-v2|group-seed|sha256-v2',
+          }
+
+          def dump(v): return json.dumps(v,indent=2,sort_keys=True,allow_nan=False)+'\n'
+          def raw_sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+          def blob_sha(path):
+              d=path.read_bytes(); return hashlib.sha1(b'blob '+str(len(d)).encode()+b'\0'+d).hexdigest()
+          def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+
+          expected_prior={
+            r7/'core.py':'77e3f1282b2e8161d8bd499aac478ab43605374e',
+            r7/'design.review.json':'6038e3a769e205e2e26b5d8fc950ceb8c594b9c5',
+            r7/'candidate-seed-ledger.v2.json':'22354b2c602acbece93bd875e2e0df759a23672c',
+          }
+          for p,h in expected_prior.items():
+              if blob_sha(p)!=h: raise SystemExit(f'prior R7 blob drift: {p}')
+          prior_ledger=json.loads((r7/'candidate-seed-ledger.v2.json').read_text())
+          if prior_ledger.get('candidateSeedCanonicalSha256')!=r7_seed_sha: raise SystemExit('prior R7 seed canonical hash drift')
+
+          science_files=('adapter.py','analysis-contract.v3.json','analysis.py','derived_channels.py','wavelength-grid-1nm.dat')
+          for name in science_files:
+              shutil.copyfile(r7/name,r8/name)
+
+          adapt_files=('freeze.py','merge_seed_proof.py','repository_global_seed_scan.py','tracked_tree_seed_scan.py')
+          for name in adapt_files:
+              text=(r7/name).read_text()
+              text=text.replace('aerosol-family-challenge-v2-r7','aerosol-family-challenge-v2-r8')
+              text=text.replace('aerosol-family-v2-r7','aerosol-family-v2-r8')
+              text=text.replace('AFC2 R7','AFC2 R8').replace('R7','R8').replace('r7','r8')
+              (r8/name).write_text(text)
+
+          # Build R8 core mechanically from R7, then add explicit R7-consumption provenance.
+          core=(r7/'core.py').read_text().replace('aerosol-family-challenge-v2-r7','aerosol-family-challenge-v2-r8')
+          core=core.replace('aerosol-family-v2-r7','aerosol-family-v2-r8').replace('AFC2 R7','AFC2 R8').replace('R7','R8').replace('r7','r8')
+          core=core.replace('aerosol-family-challenge-v2|group-seed|sha256-v2','aerosol-family-challenge-v2|group-seed|sha256-v3')
+          core=core.replace('ORDINAL30_PARTIAL_CONTROL_PLANE_ARTIFACT_PAGINATION_FAILURE',continuation)
+          anchor='BASE_ANALYSIS_CONTRACT_GIT_BLOB_SHA1 = "d2411cd7636d3d34a0b9132a48fbcea4ccf35d76"\n'
+          insert='''BASE_ANALYSIS_CONTRACT_GIT_BLOB_SHA1 = "d2411cd7636d3d34a0b9132a48fbcea4ccf35d76"\nPRIOR_R7_PACKAGE = Path(__file__).resolve().parent.parent / "aerosol-family-challenge-v2-r7"\nPRIOR_R7_CORE_PATH = PRIOR_R7_PACKAGE / "core.py"\nPRIOR_R7_DESIGN_PATH = PRIOR_R7_PACKAGE / "design.review.json"\nPRIOR_R7_SEED_LEDGER_PATH = PRIOR_R7_PACKAGE / "candidate-seed-ledger.v2.json"\nPRIOR_R7_CORE_GIT_BLOB_SHA1 = "77e3f1282b2e8161d8bd499aac478ab43605374e"\nPRIOR_R7_DESIGN_GIT_BLOB_SHA1 = "6038e3a769e205e2e26b5d8fc950ceb8c594b9c5"\nPRIOR_R7_SEED_LEDGER_GIT_BLOB_SHA1 = "22354b2c602acbece93bd875e2e0df759a23672c"\nPRIOR_R7_SEED_CANONICAL_SHA256 = "bf5254ff59450ae935705966c51d367a003e97afbcff98a7622b1c310c3ace3b"\nPRIOR_CONTINUATION_BINDING = {\n    "stageId": "aerosol-family-challenge-v2-r7",\n    "consumedScientificOrdinal": 31,\n    "disposition": "DISPATCH_REF_CREATED_IDENTITY_CONSUMED_NO_ACTIONS_SCIENTIFIC_RUN",\n    "corePath": "experiments/aerosol-family-challenge-v2-r7/core.py",\n    "coreGitBlobSha": PRIOR_R7_CORE_GIT_BLOB_SHA1,\n    "designPath": "experiments/aerosol-family-challenge-v2-r7/design.review.json",\n    "designGitBlobSha": PRIOR_R7_DESIGN_GIT_BLOB_SHA1,\n    "candidateSeedLedgerPath": "experiments/aerosol-family-challenge-v2-r7/candidate-seed-ledger.v2.json",\n    "candidateSeedLedgerGitBlobSha": PRIOR_R7_SEED_LEDGER_GIT_BLOB_SHA1,\n    "candidateSeedCanonicalSha256": PRIOR_R7_SEED_CANONICAL_SHA256,\n    "seedDerivationNamespace": "aerosol-family-challenge-v2|group-seed|sha256-v2",\n}\n'''
+          if core.count(anchor)!=1: raise SystemExit('core analysis-contract anchor drift')
+          core=core.replace(anchor,insert)
+          verify_anchor='''if _git_blob_sha1(BASE_DESIGN_PATH) != BASE_DESIGN_GIT_BLOB_SHA1:\n    raise RuntimeError("R8 refuses: bound R6 design bytes changed")\n\n'''
+          verify_insert=verify_anchor+'''for _prior_path, _expected_blob in (\n    (PRIOR_R7_CORE_PATH, PRIOR_R7_CORE_GIT_BLOB_SHA1),\n    (PRIOR_R7_DESIGN_PATH, PRIOR_R7_DESIGN_GIT_BLOB_SHA1),\n    (PRIOR_R7_SEED_LEDGER_PATH, PRIOR_R7_SEED_LEDGER_GIT_BLOB_SHA1),\n):\n    if _git_blob_sha1(_prior_path) != _expected_blob:\n        raise RuntimeError(f"R8 refuses: bound prior R7 bytes changed: {_prior_path.name}")\n\n'''
+          if core.count(verify_anchor)!=1: raise SystemExit('core base verification anchor drift')
+          core=core.replace(verify_anchor,verify_insert)
+          overlap_anchor='''    base_seeds = set(int(x) for x in _load_base_design()["groupSeeds"])\n    if base_seeds.intersection(value):\n        raise Refusal("R8 candidate seed overlaps R6 seed ledger")\n    return value\n'''
+          overlap_insert='''    base_seeds = set(int(x) for x in _load_base_design()["groupSeeds"])\n    if base_seeds.intersection(value):\n        raise Refusal("R8 candidate seed overlaps R6 seed ledger")\n    prior_ledger = json.loads(PRIOR_R7_SEED_LEDGER_PATH.read_text())\n    if prior_ledger.get("candidateSeedCanonicalSha256") != PRIOR_R7_SEED_CANONICAL_SHA256:\n        raise Refusal("R8 prior R7 seed canonical binding drift")\n    if prior_ledger.get("namespace") != "aerosol-family-challenge-v2|group-seed|sha256-v2":\n        raise Refusal("R8 prior R7 seed namespace drift")\n    prior_seeds = set(int(x) for x in prior_ledger.get("candidateSeeds", []))\n    if len(prior_seeds) != EXPECTED_GROUP_COUNT:\n        raise Refusal("R8 prior R7 seed ledger cardinality drift")\n    if prior_seeds.intersection(value):\n        raise Refusal("R8 candidate seed overlaps consumed R7 seed ledger")\n    return value\n'''
+          if core.count(overlap_anchor)!=1: raise SystemExit('core seed-overlap anchor drift')
+          core=core.replace(overlap_anchor,overlap_insert)
+          scope_anchor='''    if design.get("scientificScopeChange") != "NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY":\n        raise Refusal("R8 scientific scope change is not explicitly none")\n'''
+          scope_insert='''    if design.get("priorContinuationBinding") != PRIOR_CONTINUATION_BINDING:\n        raise Refusal("R8 prior R7 continuation binding drift")\n    if design.get("scientificScopeChange") != "NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY":\n        raise Refusal("R8 scientific scope change is not explicitly none")\n'''
+          if core.count(scope_anchor)!=1: raise SystemExit('core scope anchor drift')
+          core=core.replace(scope_anchor,scope_insert)
+          manifest_anchor='''        "continuationReason": design["continuationReason"],\n        "baseDesignGitBlobSha": BASE_DESIGN_GIT_BLOB_SHA1,\n'''
+          manifest_insert='''        "continuationReason": design["continuationReason"],\n        "priorContinuationBinding": copy.deepcopy(design["priorContinuationBinding"]),\n        "baseDesignGitBlobSha": BASE_DESIGN_GIT_BLOB_SHA1,\n'''
+          if core.count(manifest_anchor)!=1: raise SystemExit('core manifest anchor drift')
+          core=core.replace(manifest_anchor,manifest_insert)
+          manifest_validation='''    if manifest.get("scientificScopeChange") != "NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY":\n        raise Refusal("R8 manifest scientific scope drift")\n'''
+          manifest_validation_insert='''    if manifest.get("priorContinuationBinding") != PRIOR_CONTINUATION_BINDING:\n        raise Refusal("R8 manifest prior-continuation binding drift")\n    if manifest.get("scientificScopeChange") != "NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY":\n        raise Refusal("R8 manifest scientific scope drift")\n'''
+          if core.count(manifest_validation)!=1: raise SystemExit('core manifest validation anchor drift')
+          core=core.replace(manifest_validation,manifest_validation_insert)
+          (r8/'core.py').write_text(core)
+
+          # Deterministically derive fresh v3 group seeds in the unchanged 72-group ordering.
+          base=json.loads((r6/'design.review.json').read_text())
+          geos=base['geometryTemplates']
+          deps=[2.0,4.0,6.0,8.0]; aods=[0.10,0.30]; reps=[1,2,3]
+          seeds=[]; rows=[]; used=set()
+          for dep,geo,aod,rep in product(deps,geos,aods,reps):
+              cell=f"afc2-d{dep:02.0f}-{geo['geometryId']}-aod{int(round(aod*100)):02d}"
+              counter=0
+              while True:
+                  material=f"{ns}|analysisCellId={cell}|replicate={rep}|counter={counter}"
+                  digest=hashlib.sha256(material.encode()).digest()
+                  seed=(int.from_bytes(digest[:8],'big') % (2_147_483_647-1))+1
+                  if seed not in used: break
+                  counter += 1
+              used.add(seed); seeds.append(seed)
+              rows.append({'analysisCellId':cell,'replicate':rep,'collisionCounter':counter,'derivationMaterialSha256':hashlib.sha256(material.encode()).hexdigest(),'seed':seed})
+          if len(seeds)!=72 or len(set(seeds))!=72 or any(x['collisionCounter'] for x in rows): raise SystemExit('v3 seed derivation invariant failed')
+          r6_seeds=set(json.loads((r6/'candidate-seed-ledger.v1.json').read_text())['candidateSeeds'])
+          r7_seeds=set(prior_ledger['candidateSeeds'])
+          if r6_seeds & set(seeds) or r7_seeds & set(seeds): raise SystemExit('v3 seed overlap with prior ledgers')
+          canonical=canon(seeds)
+          if canonical!='e90d18b4ecb3a4dd54f372dac4e585708e7478981c6c18ffaa351428625f3302': raise SystemExit(f'unexpected v3 canonical seed hash {canonical}')
+          ledger={
+            'schemaVersion':2,
+            'stageId':'aerosol-family-challenge-v2-r8-candidate-seed-ledger',
+            'status':'DETERMINISTIC_CANDIDATE_SEEDS_NOT_FRESHNESS_PROVEN',
+            'authorizationPermitted':False,
+            'namespace':ns,
+            'algorithm':'SHA-256 UTF-8 material; first 64 digest bits as big-endian integer; seed=(value mod 2147483646)+1; increment collisionCounter only for an internal duplicate',
+            'seedDomain':[1,2147483646],
+            'rowCount':72,
+            'allCollisionCountersZero':True,
+            'candidateSeedCanonicalSha256':canonical,
+            'candidateSeeds':seeds,
+          }
+          (r8/'candidate-seed-ledger.v2.json').write_text(dump(ledger))
+          ledger_raw=raw_sha(r8/'candidate-seed-ledger.v2.json')
+
+          design=json.loads((r7/'design.review.json').read_text())
+          design['stageId']='aerosol-family-challenge-v2-r8'
+          design['status']='R8_REVIEW_ONLY_CONTINUATION_PREREGISTRATION_COMPLETE_EXCEPT_DEFAULT_BRANCH_SEED_FRESHNESS_PROOF'
+          design['continuationReason']=continuation
+          design['scientificScopeChange']='NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY'
+          design['priorContinuationBinding']=prior_binding
+          design['groupSeeds']=seeds
+          review=design['seedFreshnessReview']
+          review['status']='R8_DETERMINISTIC_CANDIDATE_SEEDS_REVIEW_PENDING_DEFAULT_BRANCH_STABLE_DOUBLE_ENUMERATION_PROOF'
+          review['candidateSeedCount']=72
+          review['candidateFirstSeed']=seeds[0]
+          review['candidateLastSeed']=seeds[-1]
+          review['candidateSeedCanonicalSha256']=canonical
+          review['proofBundleArtifactName']=proof
+          review['authorizationPermitted']=False
+          review['exactHeadTrackedTreeByteScanPassed']=False
+          review['repositoryGlobalCollisionSurfaceScanPassed']=False
+          deriv=review['candidateSeedDerivation']
+          deriv['namespace']=ns
+          deriv['ledgerPath']='candidate-seed-ledger.v2.json'
+          deriv['ledgerRawSha256']=ledger_raw
+          deriv['allCollisionCountersZero']=True
+          (r8/'design.review.json').write_text(dump(design))
+          design_raw=raw_sha(r8/'design.review.json')
+
+          for src_name,dst_name,is_template in (
+            ('seed-collision-review.v3.json','seed-collision-review.v3.json',False),
+            ('seed-freshness-proof.template.json','seed-freshness-proof.template.json',True),
+          ):
+              row=json.loads((r7/src_name).read_text())
+              row['stageId']='aerosol-family-challenge-v2-r8-seed-audit'
+              row['auditedDesignRawSha256']=design_raw
+              row['candidateSeedCount']=72
+              row['candidateFirstSeed']=seeds[0]
+              row['candidateLastSeed']=seeds[-1]
+              row['candidateSeedCanonicalSha256']=canonical
+              row['candidateSeedDerivationNamespace']=ns
+              row['candidateSeedLedgerRawSha256']=ledger_raw
+              row['reviewProofArtifactName']=proof
+              row['authorizationPermitted']=False
+              if 'deterministicDerivation' in row:
+                  row['deterministicDerivation']['namespace']=ns
+                  row['deterministicDerivation']['ledgerPath']='candidate-seed-ledger.v2.json'
+                  row['deterministicDerivation']['allCollisionCountersZero']=True
+              row['r6SeedOverlapCount']=0
+              row['r7SeedOverlapCount']=0
+              if is_template:
+                  row['status']='INCOMPLETE_REVIEW_TEMPLATE_NOT_PROOF'
+              else:
+                  row['status']='R8_DETERMINISTIC_CANDIDATE_LEDGER_REVIEW_STABLE_DOUBLE_ENUMERATION_PENDING_EXACT_DEFAULT_BRANCH_HEAD_PROOF'
+                  row['reviewNote']='R8 continuation review only: ordinal 31 dispatch ref consumed the R7 identity without an Actions scientific run; exact default-branch tracked-tree and stable double repository-global collision proof have not yet run.'
+              (r8/dst_name).write_text(dump(row))
+
+          self_ledger=json.loads((r7/'seed-self-ledger-paths.json').read_text())
+          def r8path(s): return s.replace('aerosol-family-challenge-v2-r7','aerosol-family-challenge-v2-r8')
+          self_ledger['stageId']='aerosol-family-challenge-v2-r8-seed-self-ledger'
+          self_ledger['futureEvidenceSelfLedgerPaths']=[r8path(x) for x in self_ledger['futureEvidenceSelfLedgerPaths']]
+          self_ledger['requiredTrackedSelfLedgerPaths']=[r8path(x) for x in self_ledger['requiredTrackedSelfLedgerPaths']]
+          (r8/'seed-self-ledger-paths.json').write_text(dump(self_ledger))
+
+          # Adapt only review/freeze workflows; no execution or authorization transport is introduced.
+          workflow_names=(
+            'aerosol-family-v2-r7-review-freeze-bootstrap.yml',
+            'aerosol-family-v2-r7-review-freeze-observer.yml',
+            'aerosol-family-v2-r7-seed-proof-review.yml',
+          )
+          for oldname in workflow_names:
+              newname=oldname.replace('r7','r8')
+              text=(root/'.github/workflows'/oldname).read_text()
+              text=text.replace('aerosol-family-challenge-v2-r7','aerosol-family-challenge-v2-r8')
+              text=text.replace('aerosol-family-v2-r7','aerosol-family-v2-r8')
+              text=text.replace('AFC2 R7','AFC2 R8').replace('R7','R8').replace('r7','r8')
+              (root/'.github/workflows'/newname).write_text(text)
+
+          test=(root/'tests/test_aerosol_family_challenge_v2_r8.py')
+          test.write_text('''import importlib.util\nimport json\nfrom pathlib import Path\nimport unittest\n\nROOT=Path(__file__).resolve().parents[1]\nR6=ROOT/'experiments/aerosol-family-challenge-v2'\nR7=ROOT/'experiments/aerosol-family-challenge-v2-r7'\nR8=ROOT/'experiments/aerosol-family-challenge-v2-r8'\n\ndef load(name,path):\n    spec=importlib.util.spec_from_file_location(name,path)\n    if spec is None or spec.loader is None: raise RuntimeError(path)\n    mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod\n\nclass AerosolFamilyR8Continuation(unittest.TestCase):\n    def test_seed_ledger_is_fresh_relative_to_r6_and_consumed_r7(self):\n        s6=json.loads((R6/'candidate-seed-ledger.v1.json').read_text())['candidateSeeds']\n        s7=json.loads((R7/'candidate-seed-ledger.v2.json').read_text())['candidateSeeds']\n        row=json.loads((R8/'candidate-seed-ledger.v2.json').read_text())\n        s8=row['candidateSeeds']\n        self.assertEqual('aerosol-family-challenge-v2|group-seed|sha256-v3',row['namespace'])\n        self.assertEqual('e90d18b4ecb3a4dd54f372dac4e585708e7478981c6c18ffaa351428625f3302',row['candidateSeedCanonicalSha256'])\n        self.assertEqual(72,len(s8)); self.assertEqual(72,len(set(s8)))\n        self.assertFalse(set(s6)&set(s8)); self.assertFalse(set(s7)&set(s8))\n\n    def test_manifest_cases_change_only_seed(self):\n        r7=load('afc2_r7_test_core_for_r8',R7/'core.py')\n        r8=load('afc2_r8_test_core',R8/'core.py')\n        d7=json.loads((R7/'design.review.json').read_text())\n        d8=json.loads((R8/'design.review.json').read_text())\n        m7=r7.build_manifest(d7); m8=r8.build_manifest(d8)\n        self.assertEqual(576,len(m7['cases'])); self.assertEqual(576,len(m8['cases']))\n        self.assertEqual(m7['configuredPhotonHistoriesTotal'],m8['configuredPhotonHistoriesTotal'])\n        for a,b in zip(m7['cases'],m8['cases'],strict=True):\n            aa=dict(a); bb=dict(b); aa.pop('seed'); bb.pop('seed')\n            self.assertEqual(aa,bb); self.assertNotEqual(a['seed'],b['seed'])\n        self.assertEqual('NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY',m8['scientificScopeChange'])\n\n    def test_science_files_are_exact_r7_bytes(self):\n        for name in ('analysis-contract.v3.json','analysis.py','derived_channels.py','adapter.py','wavelength-grid-1nm.dat'):\n            self.assertEqual((R7/name).read_bytes(),(R8/name).read_bytes(),name)\n\n    def test_prior_r7_consumption_binding_is_exact_and_review_is_fail_closed(self):\n        d=json.loads((R8/'design.review.json').read_text())\n        prior=d['priorContinuationBinding']\n        self.assertEqual(31,prior['consumedScientificOrdinal'])\n        self.assertEqual('DISPATCH_REF_CREATED_IDENTITY_CONSUMED_NO_ACTIONS_SCIENTIFIC_RUN',prior['disposition'])\n        self.assertEqual('bf5254ff59450ae935705966c51d367a003e97afbcff98a7622b1c310c3ace3b',prior['candidateSeedCanonicalSha256'])\n        self.assertFalse(d['scientificExecutionAuthorized']); self.assertFalse(d['solverExecutionAuthorized']); self.assertFalse(d['resultsOpened'])\n        review=d['seedFreshnessReview']; self.assertFalse(review['authorizationPermitted'])\n        self.assertFalse(review['exactHeadTrackedTreeByteScanPassed']); self.assertFalse(review['repositoryGlobalCollisionSurfaceScanPassed'])\n        self.assertEqual('aerosol-family-v2-r8-freeze-proof',review['proofBundleArtifactName'])\n\nif __name__=='__main__': unittest.main()\n''')
+          PY
+      - name: Verify focused contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q experiments/aerosol-family-challenge-v2-r8 tests/test_aerosol_family_challenge_v2_r8.py
+          python -m unittest tests.test_aerosol_family_challenge_v2_r8 -v
+          python -m unittest tests.test_aerosol_family_challenge_v2_r7 -v
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          r7=Path('experiments/aerosol-family-challenge-v2-r7')
+          r8=Path('experiments/aerosol-family-challenge-v2-r8')
+          for n in ('adapter.py','analysis-contract.v3.json','analysis.py','derived_channels.py','wavelength-grid-1nm.dat'):
+              if (r7/n).read_bytes() != (r8/n).read_bytes(): raise SystemExit(f'science byte drift: {n}')
+          d=json.loads((r8/'design.review.json').read_text())
+          if d['scientificScopeChange']!='NONE_SEEDS_AND_GOVERNANCE_IDENTITY_ONLY': raise SystemExit('scope drift')
+          if any(d[k] for k in ('scientificExecutionAuthorized','solverExecutionAuthorized','resultsOpened')): raise SystemExit('review boundary opened')
+          PY
+      - name: Prove exact 19-path review-only scope and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          mapfile -t changed < <(git status --short | sed 's/^...//' | sort)
+          expected=(
+            .github/workflows/aerosol-family-v2-r8-review-freeze-bootstrap.yml
+            .github/workflows/aerosol-family-v2-r8-review-freeze-observer.yml
+            .github/workflows/aerosol-family-v2-r8-seed-proof-review.yml
+            experiments/aerosol-family-challenge-v2-r8/adapter.py
+            experiments/aerosol-family-challenge-v2-r8/analysis-contract.v3.json
+            experiments/aerosol-family-challenge-v2-r8/analysis.py
+            experiments/aerosol-family-challenge-v2-r8/candidate-seed-ledger.v2.json
+            experiments/aerosol-family-challenge-v2-r8/core.py
+            experiments/aerosol-family-challenge-v2-r8/derived_channels.py
+            experiments/aerosol-family-challenge-v2-r8/design.review.json
+            experiments/aerosol-family-challenge-v2-r8/freeze.py
+            experiments/aerosol-family-challenge-v2-r8/merge_seed_proof.py
+            experiments/aerosol-family-challenge-v2-r8/repository_global_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/seed-collision-review.v3.json
+            experiments/aerosol-family-challenge-v2-r8/seed-freshness-proof.template.json
+            experiments/aerosol-family-challenge-v2-r8/seed-self-ledger-paths.json
+            experiments/aerosol-family-challenge-v2-r8/tracked_tree_seed_scan.py
+            experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat
+            tests/test_aerosol_family_challenge_v2_r8.py
+          )
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected.txt
+          printf '%s\n' "${changed[@]}" > /tmp/changed.txt
+          test "${#changed[@]}" = 19
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${expected[@]}"
+          test -z "$(git diff --name-only)"
+          test "$(git diff --cached --name-only | wc -l)" -eq 19
+          git commit -m 'Review AFC2 R8 fresh-seed continuation after ordinal 31'
+          git push origin HEAD:"$TARGET_BRANCH"

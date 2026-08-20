@@ -164,6 +164,20 @@ class R7TransportIdentityOnlyEquivalence(unittest.TestCase):
             text=text.replace('Aerosol-family v2 R7 authorization review','Aerosol-family v2 authorization review')
             text=text.replace('Aerosol-family v2 R7 scientific execution','Aerosol-family v2 scientific execution')
             text=text.replace('Aerosol-family v2 R7 status/aerosol-family-v2-r7-review-freeze-diagnostic-1','Aerosol-family v2 status/aerosol-family-v2-r7-review-freeze-diagnostic-1')
+            if name == 'authorization_surface.py':
+                text=text.replace(
+                    'AUTHORIZATION_REVIEW_WORKFLOW = ".github/workflows/aerosol-family-v2-authorization-review.yml"\n',
+                    '',
+                )
+                start=text.index('\ndef _failed_authorization_ref_reusable(')
+                end=text.index('\ndef build_surface(', start)
+                text=text[:start] + text[end:]
+                text=text.replace(
+                    '"authorizationBranchReusableAfterFailedReview": _failed_authorization_ref_reusable(\n'
+                    '            auth_branch, auth_head, pulls, runs\n'
+                    '        ),',
+                    '"authorizationBranchReusableAfterFailedReview": False,',
+                )
             if name == 'README.md':
                 text=text.replace('R7','R6')
             return text

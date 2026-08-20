@@ -21,6 +21,7 @@ from freshness import (
 ORDINAL_RE = re.compile(r"ordinal[-_]?([0-9]+)", re.I)
 CASE_ARTIFACT_PREFIX = "aerosol-family-v2-r7-case-"
 AUTHORIZATION_PATH = "experiments/aerosol-family-challenge-v2-r7/authorization.json"
+AUTHORIZATION_REVIEW_WORKFLOW = ".github/workflows/aerosol-family-v2-r7-authorization-review.yml"
 REQUIRED_MAIN_PATHS = (
     "experiments/aerosol-family-challenge-v2-r7/execution-candidate/authorization_guard.py",
     "experiments/aerosol-family-challenge-v2-r7/execution-candidate/dispatch_guard.py",
@@ -129,6 +130,50 @@ def _latest_consumed_ordinal(payload: dict[str, Any], candidate_dispatch: str) -
         if match:
             values.append(int(match.group(1)))
     return max(values) if values else None
+
+
+def _failed_authorization_ref_reusable(
+    auth_branch_name: str,
+    auth_head: str | None,
+    pulls: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> bool:
+    """Return true only for one closed/unmerged authorization PR with one failed attempt-1 review.
+
+    This permits the named authorization ref to advance to a fresh direct-child authorization
+    commit after its failed head has been preserved separately. It never makes the failed head,
+    review run, or scientific identity reusable.
+    """
+    if not auth_head:
+        return False
+
+    matching_prs: list[dict[str, Any]] = []
+    for pr in pulls:
+        head = pr.get("head") or {}
+        if head.get("ref") == auth_branch_name and head.get("sha") == auth_head:
+            matching_prs.append(pr)
+    closed_unmerged = [
+        pr for pr in matching_prs
+        if pr.get("state") == "closed" and pr.get("merged_at") is None
+    ]
+    if len(closed_unmerged) != 1 or any(pr.get("state") == "open" for pr in matching_prs):
+        return False
+
+    review_runs = [
+        run for run in runs
+        if (run.get("head_branch") or "") == auth_branch_name
+        and (run.get("head_sha") or "") == auth_head
+        and (run.get("path") or "") == AUTHORIZATION_REVIEW_WORKFLOW
+        and (run.get("event") or "") == "pull_request"
+    ]
+    if len(review_runs) != 1:
+        return False
+    review = review_runs[0]
+    return (
+        int(review.get("run_attempt") or 0) == 1
+        and review.get("status") == "completed"
+        and review.get("conclusion") == "failure"
+    )
 
 
 def build_surface(
@@ -248,7 +293,9 @@ def build_surface(
         "positiveCandidateClaimTexts": sorted(positive),
         "authorizationBranchExists": auth_row is not None,
         "authorizationBranchHeadSha": auth_head,
-        "authorizationBranchReusableAfterFailedReview": False,
+        "authorizationBranchReusableAfterFailedReview": _failed_authorization_ref_reusable(
+            auth_branch, auth_head, pulls, runs
+        ),
         "dispatchBranchExists": dispatch_row is not None,
         "dispatchBranchHeadSha": dispatch_head,
         "activeAuthorizationPathOnMainExists": active_authorization_path_on_main_exists,

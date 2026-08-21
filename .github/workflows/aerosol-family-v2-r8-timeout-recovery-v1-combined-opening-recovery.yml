@@ -32,6 +32,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12.4"
+      - name: Prove exact reviewed trigger-recovery transport bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('.')
+          freeze=json.loads((root/'evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery.freeze.json').read_text())
+          paths={
+            'reviewRawSha256':root/'experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery.review.json',
+            'openingWorkflowRawSha256':root/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml',
+            'publisherWorkflowRawSha256':root/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher.yml',
+            'testRawSha256':root/'tests/test_aerosol_family_r8_timeout_recovery_combined_trigger_recovery_v1.py',
+          }
+          if freeze.get('status')!='FROZEN_CONTROL_PLANE_TRIGGER_RECOVERY_NOT_DISPATCHED': raise SystemExit('trigger-recovery freeze status drift')
+          if freeze.get('scientificResultOpeningAuthorizedByFreezeAlone') is not False or freeze.get('scientificSolverExecutionAuthorized') is not False: raise SystemExit('trigger-recovery freeze opened a forbidden boundary')
+          for key,path in paths.items():
+              got=hashlib.sha256(path.read_bytes()).hexdigest()
+              if freeze.get(key)!=got: raise SystemExit(f'trigger-recovery byte binding drift: {key} expected={freeze.get(key)} observed={got}')
+          PY
       - name: Prove one-use publisher-controlled opening identity before any scientific download
         shell: bash
         env:
@@ -61,6 +82,7 @@ jobs:
           git fetch origin main "$REQUEST_BRANCH" "$DISPATCH_BRANCH"
           test "$(git rev-parse origin/$DISPATCH_BRANCH)" = "$GITHUB_SHA"
           REQUEST_HEAD="$(git rev-parse origin/$REQUEST_BRANCH)"
+          export REQUEST_HEAD
           mapfile -t REQUEST_PARENTS < <(git cat-file -p "$REQUEST_HEAD" | sed -n 's/^parent //p')
           test "${#REQUEST_PARENTS[@]}" = 1
           TRANSPORT_HEAD="${REQUEST_PARENTS[0]}"
@@ -108,7 +130,7 @@ jobs:
           current=[r for r in same if int(r.get('id') or 0)==int(os.environ['GITHUB_RUN_ID']) and int(r.get('run_attempt') or 0)==1]
           if len(same)!=1 or len(current)!=1: raise SystemExit(f'opening execution must be exactly one attempt-1 run; same={len(same)} current={len(current)}')
           publisher_pages=json.load(open('publisher-runs.json')); pubs=[r for p in publisher_pages for r in p.get('workflow_runs',[])]
-          matching=[r for r in pubs if r.get('head_branch')==os.environ['REQUEST_BRANCH']]
+          matching=[r for r in pubs if r.get('head_branch')==os.environ['REQUEST_BRANCH'] and r.get('head_sha')==os.environ['REQUEST_HEAD']]
           if len(matching)!=1: raise SystemExit(f'exactly one publisher run required, got {len(matching)}')
           pub=matching[0]
           if int(pub.get('run_attempt') or 0)!=1: raise SystemExit('publisher was rerun')

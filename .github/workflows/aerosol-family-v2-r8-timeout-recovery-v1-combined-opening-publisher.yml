@@ -1,0 +1,179 @@
+name: AFC2 R8 timeout recovery v1 combined opening publisher
+run-name: AFC2 R8 combined opening publisher source-run-32503223236
+
+on:
+  push:
+    branches:
+      - status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+    paths:
+      - .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-combined-opening-v1.json
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact one-file opening request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove request, source success, absence of original opening, and one-use identity
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: '32503223236'
+          SOURCE_HEAD: b37aab8fd2c2f0a6b58eef79a00811c9adea02a0
+          SOURCE_BRANCH: dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-35
+          REQUEST_BRANCH: status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+          DISPATCH_BRANCH: dispatch/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-run-32503223236
+          EXECUTION_WORKFLOW: aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$REQUEST_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          TRANSPORT_HEAD="${PARENTS[0]}"
+          export TRANSPORT_HEAD
+          git fetch origin main
+          test "$TRANSPORT_HEAD" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-combined-opening-v1.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.loads(Path('.github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-combined-opening-v1.json').read_text())
+          expected={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-combined-opening-request',
+            'status':'REQUEST_ONE_USE_FROZEN_COMBINED_RESULT_OPENING',
+            'sourceScienceRunId':32503223236,
+            'sourceScienceHead':'b37aab8fd2c2f0a6b58eef79a00811c9adea02a0',
+            'frozenAnalysisCommit':'19bd924ab86ed0744b3fd77ce5d6756039674d5f',
+            'transportHead':os.environ['TRANSPORT_HEAD'],
+          }
+          if r!=expected: raise SystemExit(f'opening request drift: {r}')
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > source-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" > source-artifact-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?per_page=100" > original-combined-runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/${EXECUTION_WORKFLOW}/runs?per_page=100" > opening-runs-before.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-comments.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY%%/*}:authorization/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-35&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json,os
+          source=json.load(open('source-run.json'))
+          if source.get('id')!=32503223236 or source.get('run_attempt')!=1 or source.get('status')!='completed' or source.get('conclusion')!='success' or source.get('event')!='workflow_dispatch': raise SystemExit('source science run is not exact successful attempt1')
+          if source.get('head_sha')!=os.environ['SOURCE_HEAD'] or source.get('head_branch')!=os.environ['SOURCE_BRANCH']: raise SystemExit('source science branch/head drift')
+          pages=json.load(open('source-artifact-pages.json')); arts=[a for p in pages for a in p.get('artifacts',[])]
+          aq=[a for a in arts if a.get('id')==9454797882 and a.get('name')=='afc2-r8-timeout-recovery-v1-acquisition-ordinal-35' and a.get('digest')=='sha256:93730886d7cf26f8c97cf6a40f84533cce4fefa7c2b9bc0f91af070b626d2a56' and not a.get('expired',False)]
+          if len(aq)!=1: raise SystemExit('exact acquisition artifact missing/drifted')
+          original=[r for p in json.load(open('original-combined-runs.json')) for r in p.get('workflow_runs',[])]
+          if original: raise SystemExit(f'original combined workflow unexpectedly has {len(original)} run(s)')
+          opening=[r for p in json.load(open('opening-runs-before.json')) for r in p.get('workflow_runs',[])]
+          if opening: raise SystemExit(f'combined opening recovery already has run history: {len(opening)}')
+          prs=[p for page in json.load(open('auth-pr-pages.json')) for p in page]
+          good=[p for p in prs if p.get('number')==291 and p.get('state')=='open' and p.get('draft') is True and p.get('merged_at') is None and (p.get('head') or {}).get('sha')==os.environ['SOURCE_HEAD']]
+          if len(good)!=1: raise SystemExit('historical ordinal35 authorization PR must remain Draft/open/unmerged')
+          comments=[c for page in json.load(open('issue60-comments.json')) for c in page]
+          marker='AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_ALLOCATED source_run=32503223236 transport_head='+os.environ['TRANSPORT_HEAD']
+          consumed='AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_CONSUMED source_run=32503223236 transport_head='+os.environ['TRANSPORT_HEAD']
+          if len([c for c in comments if str(c.get('body') or '').strip()==marker])!=1: raise SystemExit('exact opening allocation marker required once')
+          if [c for c in comments if str(c.get('body') or '').strip()==consumed]: raise SystemExit('opening identity already consumed')
+          PY
+          if git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'opening dispatch branch already exists' >&2; exit 1; fi
+          echo "transport_head=$TRANSPORT_HEAD" >> "$GITHUB_OUTPUT"
+          echo "dispatch_branch=$DISPATCH_BRANCH" >> "$GITHUB_OUTPUT"
+      - name: Actual authenticated push creates exact opening dispatch ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSPORT_HEAD: ${{ steps.identity.outputs.transport_head }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$TRANSPORT_HEAD"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "$TRANSPORT_HEAD:refs/heads/$DISPATCH_BRANCH" > opening-git-push.stdout 2> opening-git-push.stderr
+          git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" > opening-dispatch-ls-remote.txt
+          grep -q "^${TRANSPORT_HEAD}[[:space:]]" opening-dispatch-ls-remote.txt
+      - name: Consume opening recovery identity exactly once after successful push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSPORT_HEAD: ${{ steps.identity.outputs.transport_head }}
+        run: |
+          set -euo pipefail
+          MARKER="AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_CONSUMED source_run=32503223236 transport_head=${TRANSPORT_HEAD}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$MARKER" > opening-consumed-comment.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-after-consume.json
+          python - <<'PY'
+          import json,os
+          comments=[c for p in json.load(open('issue60-after-consume.json')) for c in p]
+          marker='AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_CONSUMED source_run=32503223236 transport_head='+os.environ['TRANSPORT_HEAD']
+          matches=[c for c in comments if str(c.get('body') or '').strip()==marker]
+          if len(matches)!=1: raise SystemExit(f'opening consumed marker must exist exactly once, got {len(matches)}')
+          PY
+      - name: Dispatch exact guarded combined opening recovery
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+          TRANSPORT_HEAD: ${{ steps.identity.outputs.transport_head }}
+          EXECUTION_WORKFLOW: aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/workflows/${EXECUTION_WORKFLOW}/dispatches" -f ref="$DISPATCH_BRANCH" -F "inputs[science_run_id]=32503223236"
+          FOUND=0
+          for i in $(seq 1 30); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/${EXECUTION_WORKFLOW}/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > opening-runs-after.json
+            if python - <<'PY'
+          import json,os,sys
+          runs=[r for p in json.load(open('opening-runs-after.json')) for r in p.get('workflow_runs',[])]
+          good=[r for r in runs if r.get('head_branch')==os.environ['DISPATCH_BRANCH'] and r.get('head_sha')==os.environ['TRANSPORT_HEAD'] and int(r.get('run_attempt') or 0)==1]
+          if len(good)==1:
+              json.dump(good[0],open('opening-run-selected.json','w'),indent=2,sort_keys=True); sys.exit(0)
+          sys.exit(1)
+          PY
+            then FOUND=1; break; fi
+            sleep 2
+          done
+          test "$FOUND" = 1
+          echo "opening_run_id=$(python -c 'import json;print(json.load(open("opening-run-selected.json"))["id"])')" >> "$GITHUB_OUTPUT"
+      - name: Persist immutable publisher evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+          path: |
+            .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-combined-opening-v1.json
+            source-run.json
+            source-artifact-pages.json
+            original-combined-runs.json
+            auth-pr-pages.json
+            opening-git-push.stdout
+            opening-git-push.stderr
+            opening-dispatch-ls-remote.txt
+            opening-consumed-comment.json
+            opening-run-selected.json
+          if-no-files-found: error
+          compression-level: 0

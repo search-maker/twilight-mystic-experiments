@@ -78,6 +78,23 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('source / "adapter.py"',executor); self.assertIn('source / "derived_channels.py"',executor)
         self.assertIn('int(manifest["solverTimeoutSeconds"])',executor)
 
+    def test_freeze_record_binds_exact_activation_file_bytes(self):
+        import hashlib
+        r=json.loads((EVIDENCE/'freeze-record.json').read_text())
+        paths={
+            'freezeImplementationRawSha256':PKG/'freeze.py',
+            'executorRawSha256':PKG/'execution-candidate/executor.py',
+            'seedAuditRawSha256':PKG/'execution-candidate/seed_audit.py',
+            'authorizationHelperRawSha256':PKG/'execution-candidate/authorization.py',
+            'preauthorizationWorkflowRawSha256':PRE,
+            'authorizationReviewWorkflowRawSha256':AUTH_REVIEW,
+            'executionWorkflowRawSha256':EXEC,
+        }
+        for key,path in paths.items():
+            self.assertEqual(r[key],hashlib.sha256(path.read_bytes()).hexdigest(),key)
+        self.assertFalse(r['activationTransportBindingsStillRequired'])
+        self.assertFalse(r['scientificExecutionAuthorized']); self.assertFalse(r['solverExecutionAuthorized']); self.assertFalse(r['dispatchAuthorized']); self.assertFalse(r['resultsOpened'])
+
     def test_seed_audit_has_strict_preregistration_self_exception_only(self):
         text=(PKG/'execution-candidate/seed_audit.py').read_text()
         self.assertIn('PREREGISTRATION_PR_NUMBER = 286',text)

@@ -13,6 +13,11 @@ PROTOCOL = STAGE_DIR / "protocol.review.json"
 REVIEW = STAGE_DIR / "SCIENTIFIC_REVIEW.md"
 ADAPTER = STAGE_DIR / "adapter.py"
 REVIEW_CORE = STAGE_DIR / "review_core.py"
+CANDIDATE_LEDGER = STAGE_DIR / "candidate-seed-ledger.v1.json"
+SEED_VALIDATOR = STAGE_DIR / "seed_ledger.py"
+TRACKED_SCANNER = STAGE_DIR / "tracked_tree_seed_scan.py"
+GLOBAL_SCANNER = STAGE_DIR / "repository_global_seed_scan.py"
+SEED_POLICY = STAGE_DIR / "seed-self-ledger-policy.v1.json"
 FREEZE = ROOT / "evidence" / STAGE / "review-freeze.json"
 
 
@@ -36,6 +41,7 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
     def setUpClass(cls):
         cls.adapter = load_module("aops_v1_adapter", ADAPTER)
         cls.review_core = load_module("aops_v1_review_core", REVIEW_CORE)
+        cls.seed_validator = load_module("aops_v1_seed_validator", SEED_VALIDATOR)
 
     def setUp(self):
         self.p = json.loads(PROTOCOL.read_text())
@@ -48,7 +54,10 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertFalse(self.p["resultOpeningAuthorized"])
         self.assertTrue(self.p["parentEvidence"]["r8IsImmutablePriorEvidence"])
         self.assertFalse(self.p["parentEvidence"]["reuseR8ScientificIdentityOrSeeds"])
-        self.assertFalse(self.f["candidateSeedsAllocated"])
+        self.assertTrue(self.f["candidateSeedLedgerMaterialized"])
+        self.assertFalse(self.f["candidateSeedsAppliedToCaseSkeletons"])
+        self.assertFalse(self.f["candidateSeedFreshnessProofPassed"])
+        self.assertFalse(self.f["candidateSeedAuthorizationRecheckPassed"])
         self.assertFalse(self.f["scientificOrdinalAllocated"])
         self.assertFalse(self.f["authorizationCreated"])
         self.assertFalse(self.f["dispatchCreated"])
@@ -99,6 +108,37 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
             grouped.setdefault(c["groupId"], []).append(c)
         self.assertEqual(72, len(grouped))
         self.assertTrue(all(len(v) == 5 and {x["stateId"] for x in v} == {s["stateId"] for s in self.p["aerosolStates"]} for v in grouped.values()))
+
+    def test_candidate_seed_ledger_is_deterministic_unique_and_not_applied(self):
+        ledger = self.seed_validator.validate_ledger()
+        rows = self.seed_validator.derive_rows()
+        seeds = [row["seed"] for row in rows]
+        self.assertEqual(72, len(seeds))
+        self.assertEqual(72, len(set(seeds)))
+        self.assertEqual(1007548767, seeds[0])
+        self.assertEqual(879496189, seeds[-1])
+        self.assertTrue(all(row["collisionCounter"] == 0 for row in rows))
+        self.assertEqual("09d011f216187ad48d23e1744a0bb8b9f7c6aa65f0e1ceba1495f8440aa59366", ledger["candidateSeedCanonicalSha256"])
+        self.assertEqual("0fad36398515581a9cc723a2fc2c10a1b88f26882501a57a46c7868cc832da9a", ledger["candidateRowsCanonicalSha256"])
+        self.assertFalse(ledger["appliedToCaseSkeletons"])
+        self.assertFalse(ledger["scientificOrdinalAllocated"])
+        self.assertFalse(ledger["authorizationPermitted"])
+        self.assertFalse(ledger["solverExecutionAuthorized"])
+        self.assertTrue(all(g["seed"] is None for g in self.review_core.group_skeletons()))
+
+    def test_seed_scanners_are_bound_and_self_ledger_policy_is_narrow(self):
+        self.assertEqual("1c110d75b516cb7b9d50dc2674080f4a67e55d2a", git_blob_sha1(ROOT / "experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py"))
+        self.assertEqual("4c6d704fa24228284780bcb1dd7c52537b4c5b0d", git_blob_sha1(ROOT / "experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py"))
+        self.assertIn("EXPECTED_BLOB = \"1c110d75b516cb7b9d50dc2674080f4a67e55d2a\"", TRACKED_SCANNER.read_text())
+        self.assertIn("EXPECTED_BLOB = \"4c6d704fa24228284780bcb1dd7c52537b4c5b0d\"", GLOBAL_SCANNER.read_text())
+        self.assertIn('aops-v1-seed-freshness-review-proof', GLOBAL_SCANNER.read_text())
+        policy = json.loads(SEED_POLICY.read_text())
+        self.assertEqual(2, policy["schemaVersion"])
+        self.assertEqual(["experiments/aerosol-optical-property-sensitivity-v1/candidate-seed-ledger.v1.json"], policy["requiredTrackedSelfLedgerPaths"])
+        self.assertEqual(["evidence/aerosol-optical-property-sensitivity-v1/seed-freshness-proof.json"], policy["futureEvidenceSelfLedgerPaths"])
+        self.assertFalse(policy["candidateSeedsMayAppearElsewhereInTrackedTree"])
+        self.assertFalse(policy["authorizationPermitted"])
+        self.assertFalse(policy["solverExecutionAuthorized"])
 
     def test_adapter_exact_aerosol_directive_order_and_fail_closed_seed_gate(self):
         native = self.adapter.aerosol_block("native-rural-ss", 0.10)
@@ -172,6 +212,14 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(REVIEW), self.f["scientificReviewGitBlobSha1"])
         self.assertEqual(git_blob_sha1(ADAPTER), self.f["adapterGitBlobSha1"])
         self.assertEqual(git_blob_sha1(REVIEW_CORE), self.f["reviewCoreGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(CANDIDATE_LEDGER), self.f["candidateSeedLedgerGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(SEED_VALIDATOR), self.f["candidateSeedValidatorGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(TRACKED_SCANNER), self.f["trackedTreeSeedScannerGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(GLOBAL_SCANNER), self.f["repositoryGlobalSeedScannerGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(SEED_POLICY), self.f["seedSelfLedgerPolicyGitBlobSha1"])
+        self.assertEqual("09d011f216187ad48d23e1744a0bb8b9f7c6aa65f0e1ceba1495f8440aa59366", self.f["candidateSeedCanonicalSha256"])
+        self.assertFalse(self.f["candidateSeedFreshnessProofPassed"])
+        self.assertFalse(self.f["candidateSeedAuthorizationRecheckPassed"])
         self.assertFalse(self.f["scientificExecutionAuthorized"])
         self.assertFalse(self.f["solverExecutionAuthorized"])
         self.assertFalse(self.f["resultOpeningAuthorized"])

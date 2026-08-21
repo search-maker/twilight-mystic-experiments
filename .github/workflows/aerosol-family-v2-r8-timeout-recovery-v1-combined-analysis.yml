@@ -1,0 +1,177 @@
+name: AFC2 R8 timeout recovery v1 combined analysis
+run-name: AFC2 R8 timeout recovery v1 combined analysis recovery-run-${{ github.event.workflow_run.id }}
+
+on:
+  workflow_run:
+    workflows: ["AFC2 R8 timeout recovery v1 scientific execution"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-combined-analysis-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  combined-analysis:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact analysis main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove automatic opening trigger and frozen combined-analysis bytes
+        shell: bash
+        env:
+          RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
+          RECOVERY_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RECOVERY_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.workflow_run.conclusion }}' = success
+          test '${{ github.event.workflow_run.run_attempt }}' = 1
+          [[ "$RECOVERY_HEAD_BRANCH" =~ ^dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-([1-9][0-9]*)$ ]]
+          test "${BASH_REMATCH[1]}" -gt 34
+          git fetch origin main "$RECOVERY_HEAD_BRANCH"
+          mapfile -t RECOVERY_PARENTS < <(git cat-file -p "$RECOVERY_HEAD_SHA" | sed -n 's/^parent //p')
+          test "${#RECOVERY_PARENTS[@]}" = 1
+          RECOVERY_AUTH_PARENT="${RECOVERY_PARENTS[0]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test "$GITHUB_SHA" = "$RECOVERY_AUTH_PARENT"
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('.')
+          freeze=json.loads((root/'evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-analysis.freeze.json').read_text())
+          paths={
+            'contractRawSha256':root/'experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-analysis.review.json',
+            'implementationRawSha256':root/'experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined_aggregate.py',
+            'workflowRawSha256':root/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml',
+          }
+          for key,path in paths.items():
+            got=hashlib.sha256(path.read_bytes()).hexdigest()
+            if freeze.get(key)!=got: raise SystemExit(f'combined-analysis freeze binding drift: {key} expected={freeze.get(key)} observed={got}')
+          contract=json.loads(paths['contractRawSha256'].read_text())
+          if contract.get('status')!='REVIEW_ONLY_FROZEN_COMBINED_ANALYSIS_NOT_EXECUTED': raise SystemExit('combined analysis contract status drift')
+          if contract.get('scientificResultOpeningAuthorizedAtFreeze') is not False: raise SystemExit('combined analysis contract was open at freeze')
+          transition=contract.get('scientificResultOpeningTransition') or {}
+          if transition.get('automaticAfterCondition') is not True or transition.get('trigger')!='workflow_run_completed': raise SystemExit('combined opening transition drift')
+          if transition.get('requiredRecoveryRunAttempt')!=1 or transition.get('requiredRecoveryConclusion')!='success': raise SystemExit('combined opening recovery gate drift')
+          if transition.get('requiredAcquisitionStatus')!='COMPLETE_EXACT_8_FRESH_REPLACEMENT_CASE_ARTIFACT_UNIVERSE': raise SystemExit('combined opening acquisition gate drift')
+          PY
+      - name: Refuse duplicate combined-analysis identity before opening results
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?event=workflow_run&per_page=100" > combined-analysis-runs.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('combined-analysis-runs.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          title=f'AFC2 R8 timeout recovery v1 combined analysis recovery-run-{os.environ["RECOVERY_RUN_ID"]}'
+          same=[r for r in runs if r.get('display_title')==title]
+          current=[r for r in same if int(r.get('id') or 0)==int(os.environ['GITHUB_RUN_ID'])]
+          if len(same)!=1 or len(current)!=1 or int(current[0].get('run_attempt') or 0)!=1:
+              raise SystemExit(f'combined-analysis identity must be one-use attempt1; same={len(same)} current={len(current)}')
+          PY
+      - name: Fetch and prove exact source and fresh recovery run identities
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN_ID" =~ ^[0-9]+$ ]]
+          mkdir -p combined-inputs/recovery-acquisition
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/32447101887" > combined-inputs/source-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}" > combined-inputs/recovery-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/32447101887/artifacts?per_page=100" > combined-inputs/source-artifact-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}/artifacts?per_page=100" > combined-inputs/recovery-artifact-pages.json
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          source=json.load(open('combined-inputs/source-run.json')); recovery=json.load(open('combined-inputs/recovery-run.json'))
+          if source.get('id')!=32447101887 or source.get('run_attempt')!=1 or source.get('head_sha')!='cca5194a5b81ea28ca9cc8417b5887936afa1fd6': raise SystemExit('source R8 run identity drift')
+          if recovery.get('id')!=int(os.environ['RECOVERY_RUN_ID']) or recovery.get('run_attempt')!=1 or recovery.get('status')!='completed' or recovery.get('conclusion')!='success': raise SystemExit('fresh recovery must be completed success attempt1')
+          m=re.fullmatch(r'dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-([1-9][0-9]*)',str(recovery.get('head_branch') or ''))
+          if not m or int(m.group(1))<=34: raise SystemExit('fresh recovery branch/ordinal drift')
+          pages=json.load(open('combined-inputs/recovery-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          aq=[a for a in rows if str(a.get('name') or '').startswith('afc2-r8-timeout-recovery-v1-acquisition-ordinal-') and not a.get('expired',False)]
+          if len(aq)!=1: raise SystemExit(f'expected exact one recovery acquisition artifact, got {len(aq)}')
+          Path('combined-inputs/recovery-acquisition-artifact.json').write_text(json.dumps(aq[0],indent=2,sort_keys=True)+'\n')
+          PY
+          AID="$(python -c 'import json;print(json.load(open("combined-inputs/recovery-acquisition-artifact.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > combined-inputs/recovery-acquisition.zip
+          unzip -q combined-inputs/recovery-acquisition.zip -d combined-inputs/recovery-acquisition
+          test -f combined-inputs/recovery-acquisition/acquisition.json
+          python - <<'PY'
+          import json,os
+          a=json.load(open('combined-inputs/recovery-acquisition/acquisition.json'))
+          if a.get('status')!='COMPLETE_EXACT_8_FRESH_REPLACEMENT_CASE_ARTIFACT_UNIVERSE': raise SystemExit('fresh recovery acquisition status drift')
+          if a.get('runId')!=int(os.environ['RECOVERY_RUN_ID']) or a.get('workflowRunAttempt')!=1: raise SystemExit('fresh recovery acquisition identity drift')
+          if a.get('caseArtifactCount')!=8 or a.get('retainedSourceCaseCountForFutureCombinedAnalysis')!=568 or a.get('effectiveCombinedCaseCount')!=576: raise SystemExit('fresh recovery acquisition cardinality drift')
+          if a.get('scientificChannelsInterpreted') is not False: raise SystemExit('fresh recovery acquisition unexpectedly interpreted channels')
+          PY
+      - name: Download exact source and fresh recovery case artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p combined-inputs/source-downloads combined-inputs/recovery-downloads
+          gh run download 32447101887 --repo "$GITHUB_REPOSITORY" --pattern 'aerosol-family-v2-r8-case-*' --dir combined-inputs/source-downloads
+          gh run download "$RECOVERY_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'afc2-r8-timeout-recovery-v1-case-*' --dir combined-inputs/recovery-downloads
+      - name: Run frozen 568 plus 8 combined analysis using unchanged R8 aggregator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined_aggregate.py \
+            --repository-root . \
+            --source-run combined-inputs/source-run.json \
+            --recovery-run combined-inputs/recovery-run.json \
+            --recovery-acquisition combined-inputs/recovery-acquisition/acquisition.json \
+            --source-metadata combined-inputs/source-artifact-pages.json \
+            --recovery-metadata combined-inputs/recovery-artifact-pages.json \
+            --source-downloads combined-inputs/source-downloads \
+            --recovery-downloads combined-inputs/recovery-downloads \
+            --output-dir combined-output
+          python - <<'PY'
+          import json
+          i=json.load(open('combined-output/combined-index.json'))
+          if i.get('status')!='COMPLETED_FROZEN_COMBINED_ANALYSIS' or i.get('effectiveCaseCount')!=576 or i.get('comparisonGroupCount')!=72 or i.get('analysisCellCount')!=24: raise SystemExit('combined analysis terminal gate failed')
+          if i.get('sourceAffectedGroupArtifactsReused') is not False or i.get('scientificSolverExecuted') is not False: raise SystemExit('combined analysis provenance boundary drift')
+          print(json.dumps({k:i[k] for k in ('status','sourceRunId','recoveryRunId','effectiveCaseCount','comparisonGroupCount','analysisCellCount')},sort_keys=True))
+          PY
+      - name: Persist immutable combined analysis artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-combined-analysis
+          path: |
+            combined-output/combined-index.json
+            combined-output/effective-manifest.json
+            combined-output/effective-freeze.json
+            combined-output/effective-artifact-metadata.json
+            combined-output/acquisition.json
+            combined-output/analysis.json
+            combined-output/spectral-analysis.json
+            combined-inputs/source-run.json
+            combined-inputs/recovery-run.json
+            combined-inputs/recovery-acquisition/acquisition.json
+          if-no-files-found: error
+          compression-level: 0

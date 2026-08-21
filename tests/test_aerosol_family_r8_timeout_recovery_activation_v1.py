@@ -54,7 +54,9 @@ class ActivationTests(unittest.TestCase):
         self.assertFalse(row['githubRerunAllowed']); self.assertFalse(row['retryAllowed']); self.assertFalse(row['resumeAllowed'])
         self.assertFalse(row['sourceOrdinal34Reusable']); self.assertFalse(row['sourceOrdinal34AffectedGroupArtifactsReusable'])
         self.assertTrue(row['dispatchPublisherRequired']); self.assertTrue(row['dispatchPublisherActualGitPushRequired']); self.assertTrue(row['dispatchPublisherExplicitWorkflowDispatchRequired'])
+        self.assertTrue(row['combinedAnalysisRequiredAfterRecoverySuccess']); self.assertTrue(row['combinedAnalysisConditionalOpeningRuleBound']); self.assertTrue(row['combinedAnalysisAutomaticWorkflowRunRequired'])
         self.assertIn('executionWorkflowRawSha256',row); self.assertIn('seedAuditRawSha256',row); self.assertIn('dispatchPublisherWorkflowRawSha256',row)
+        self.assertIn('combinedAnalysisContractRawSha256',row); self.assertIn('combinedAggregateRawSha256',row); self.assertIn('combinedAnalysisFreezeRawSha256',row); self.assertIn('combinedAnalysisWorkflowRawSha256',row); self.assertIn('combinedAnalysisTestRawSha256',row)
         self.assertEqual('04e93e1054ba2957383749ca4f4735b231993733',row['sourceR8CoreGitBlobSha1'])
         self.assertEqual('108af0a95274ee88fccf9d51d32f88ef0186bfaf',row['sourceR8AdapterGitBlobSha1'])
         self.assertEqual('ccfd04d4c21188966351f4257e92893d7ce340c7',row['sourceR8DerivedChannelsGitBlobSha1'])
@@ -104,6 +106,11 @@ class ActivationTests(unittest.TestCase):
             'authorizationReviewWorkflowRawSha256':AUTH_REVIEW,
             'executionWorkflowRawSha256':EXEC,
             'dispatchPublisherWorkflowRawSha256':PUBLISHER,
+            'combinedAnalysisContractRawSha256':PKG/'combined-analysis.review.json',
+            'combinedAggregateRawSha256':PKG/'combined_aggregate.py',
+            'combinedAnalysisFreezeRawSha256':EVIDENCE/'combined-analysis.freeze.json',
+            'combinedAnalysisWorkflowRawSha256':ROOT/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml',
+            'combinedAnalysisTestRawSha256':ROOT/'tests/test_aerosol_family_r8_timeout_recovery_combined_analysis_v1.py',
         }
         for key,path in paths.items():
             self.assertEqual(r[key],hashlib.sha256(path.read_bytes()).hexdigest(),key)

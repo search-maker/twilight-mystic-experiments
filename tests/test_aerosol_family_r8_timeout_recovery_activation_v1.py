@@ -116,6 +116,10 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('PREREGISTRATION_PR_HEAD = "002b671089c5a7f27f7d65781ce78e4cb9981150"',text)
         self.assertIn('PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION',text)
         self.assertIn('tracked_collisions',text); self.assertIn('metadata_collisions',text)
+        self.assertIn('verify_dispatch_publisher',text)
+        self.assertIn('dispatchPublisherVerified',text)
+        self.assertIn('aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml',text)
+        self.assertIn('timed out waiting for exact successful publisher before scientific preflight',text)
 
 
 if __name__=='__main__': unittest.main()

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = "aerosol-optical-property-sensitivity-v1"
-PROTOCOL = ROOT / "experiments" / STAGE / "protocol.review.json"
-REVIEW = ROOT / "experiments" / STAGE / "SCIENTIFIC_REVIEW.md"
+STAGE_DIR = ROOT / "experiments" / STAGE
+PROTOCOL = STAGE_DIR / "protocol.review.json"
+REVIEW = STAGE_DIR / "SCIENTIFIC_REVIEW.md"
+ADAPTER = STAGE_DIR / "adapter.py"
+REVIEW_CORE = STAGE_DIR / "review_core.py"
 FREEZE = ROOT / "evidence" / STAGE / "review-freeze.json"
 
 
@@ -17,7 +22,21 @@ def git_blob_sha1(path: Path) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot import {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.adapter = load_module("aops_v1_adapter", ADAPTER)
+        cls.review_core = load_module("aops_v1_review_core", REVIEW_CORE)
+
     def setUp(self):
         self.p = json.loads(PROTOCOL.read_text())
         self.f = json.loads(FREEZE.read_text())
@@ -33,8 +52,12 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertFalse(self.f["scientificOrdinalAllocated"])
         self.assertFalse(self.f["authorizationCreated"])
         self.assertFalse(self.f["dispatchCreated"])
+        self.assertFalse(self.f["reviewCasesRenderable"])
         self.assertFalse(self.f["afc2R8Modified"])
-        self.assertFalse((ROOT / "experiments" / STAGE / "authorization.json").exists())
+        self.assertFalse((STAGE_DIR / "authorization.json").exists())
+        workflows = ROOT / ".github" / "workflows"
+        self.assertFalse(any(STAGE in p.name for p in workflows.glob("*.yml")))
+        self.assertFalse(any(STAGE in p.name for p in workflows.glob("*.yaml")))
 
     def test_exact_design_cardinality_and_states(self):
         d = self.p["fixedNumericalAndPhysicalDesign"]
@@ -55,6 +78,63 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertEqual(360, cases)
         self.assertEqual(360, self.p["caseCardinality"]["expectedCases"])
         self.assertEqual(72, self.p["caseCardinality"]["commonRandomNumberGroups"])
+
+    def test_review_core_builds_exact_non_renderable_unseeded_universe(self):
+        cells = self.review_core.analysis_cells()
+        groups = self.review_core.group_skeletons()
+        cases = self.review_core.case_skeletons()
+        manifest = self.review_core.review_manifest()
+        self.assertEqual(24, len(cells))
+        self.assertEqual(72, len(groups))
+        self.assertEqual(360, len(cases))
+        self.assertEqual(360, len({c["caseId"] for c in cases}))
+        self.assertTrue(all(g["seed"] is None and g["seedStatus"] == "UNALLOCATED_REVIEW_ONLY" for g in groups))
+        self.assertTrue(all(c["seed"] is None and c["renderable"] is False and c["executionAuthorized"] is False for c in cases))
+        self.assertEqual("REVIEW_ONLY_CASE_SKELETONS_NON_RENDERABLE_NO_SEEDS", manifest["status"])
+        self.assertFalse(manifest["candidateSeedsAllocated"])
+        self.assertFalse(manifest["scientificExecutionAuthorized"])
+        self.assertFalse(manifest["resultOpeningAuthorized"])
+        grouped = {}
+        for c in cases:
+            grouped.setdefault(c["groupId"], []).append(c)
+        self.assertEqual(72, len(grouped))
+        self.assertTrue(all(len(v) == 5 and {x["stateId"] for x in v} == {s["stateId"] for s in self.p["aerosolStates"]} for v in grouped.values()))
+
+    def test_adapter_exact_aerosol_directive_order_and_fail_closed_seed_gate(self):
+        native = self.adapter.aerosol_block("native-rural-ss", 0.10)
+        self.assertEqual([
+            "aerosol_default",
+            "aerosol_haze 1",
+            "aerosol_vulcan 1",
+            "aerosol_season 1",
+            "aerosol_set_tau_at_wvl 550 0.100000",
+        ], native)
+        factorial = self.adapter.aerosol_block("ssa085-g080", 0.30)
+        self.assertEqual(native[:4] + [
+            "aerosol_set_tau_at_wvl 550 0.300000",
+            "aerosol_modify ssa set 0.85",
+            "aerosol_modify gg set 0.80",
+        ], factorial)
+        skeleton = dict(self.review_core.case_skeletons()[0])
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(self.adapter.Refusal):
+                self.adapter.render_case_input(skeleton, Path(td) / "data", ROOT, Path(td) / "out")
+            executable_mock = dict(skeleton, seed=123456789, renderable=True, executionAuthorized=True)
+            text = self.adapter.render_case_input(executable_mock, Path(td) / "data", ROOT, Path(td) / "out")
+        self.adapter.assert_exact_aerosol_surface(text, executable_mock["stateId"], executable_mock["aod550"])
+        self.assertEqual(1, text.count("mc_randomseed 123456789"))
+        self.assertEqual(1, text.count("aerosol_set_tau_at_wvl 550 0.100000"))
+        self.assertNotIn("aerosol_modify ", text)
+
+    def test_factorial_render_contains_exact_one_ssa_and_g_override(self):
+        row = next(c for c in self.review_core.case_skeletons() if c["stateId"] == "ssa098-g080")
+        row = dict(row, seed=987654321, renderable=True, executionAuthorized=True)
+        with tempfile.TemporaryDirectory() as td:
+            text = self.adapter.render_case_input(row, Path(td) / "data", ROOT, Path(td) / "out")
+        self.assertEqual(1, text.count("aerosol_modify ssa set 0.98"))
+        self.assertEqual(1, text.count("aerosol_modify gg set 0.80"))
+        self.assertEqual(1, text.count("aerosol_set_tau_at_wvl 550 0.100000"))
+        self.assertNotIn("mc_spectral_is ", text)
 
     def test_crn_and_analysis_rules_are_frozen(self):
         crn = self.p["commonRandomNumbers"]
@@ -90,6 +170,8 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertEqual("2a9feb864fe7bf328074854d22f0e3c6a5cb7616", self.f["baseMainSha"])
         self.assertEqual(git_blob_sha1(PROTOCOL), self.f["protocolGitBlobSha1"])
         self.assertEqual(git_blob_sha1(REVIEW), self.f["scientificReviewGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(ADAPTER), self.f["adapterGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(REVIEW_CORE), self.f["reviewCoreGitBlobSha1"])
         self.assertFalse(self.f["scientificExecutionAuthorized"])
         self.assertFalse(self.f["solverExecutionAuthorized"])
         self.assertFalse(self.f["resultOpeningAuthorized"])

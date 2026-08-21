@@ -1,0 +1,86 @@
+name: R8 recovery combined neutral observer current
+
+on:
+  push:
+    branches:
+      - status/r8-recovery-combined-observer-current
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read exact combined-analysis surface only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN_ID: "32503223236"
+        run: |
+          set -euo pipefail
+          mkdir -p observer-combined
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?event=workflow_run&per_page=100" > observer-combined/combined-run-pages.json
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main" > observer-combined/main.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/291" > observer-combined/pr291.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/285" > observer-combined/pr285.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path('observer-combined')
+          pages=json.loads((root/'combined-run-pages.json').read_text())
+          runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          title=f'AFC2 R8 timeout recovery v1 combined analysis recovery-run-{os.environ["RECOVERY_RUN_ID"]}'
+          exact=[r for r in runs if r.get('display_title')==title and r.get('event')=='workflow_run']
+          if len(exact)>1:
+              raise SystemExit(f'refuse: expected at most one exact combined run, got {len(exact)}')
+          summary={
+              'schemaVersion':1,
+              'observerPurpose':'neutral read-only AFC2 R8 combined-analysis status; no combined artifact downloaded or scientific values interpreted',
+              'recoveryRunId':int(os.environ['RECOVERY_RUN_ID']),
+              'expectedDisplayTitle':title,
+              'exactCombinedRunCount':len(exact),
+              'main':json.loads((root/'main.json').read_text()),
+              'pr291':json.loads((root/'pr291.json').read_text()),
+              'pr285':json.loads((root/'pr285.json').read_text()),
+          }
+          if exact:
+              run=exact[0]
+              run_id=int(run['id'])
+              subprocess.run(['gh','api','--paginate','--slurp',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}/jobs?filter=all&per_page=100'],check=True,stdout=(root/'job-pages.json').open('w'))
+              subprocess.run(['gh','api','--paginate','--slurp',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}/artifacts?per_page=100'],check=True,stdout=(root/'artifact-pages.json').open('w'))
+              job_pages=json.loads((root/'job-pages.json').read_text())
+              jobs=[j for page in job_pages for j in page.get('jobs',[])]
+              artifact_pages=json.loads((root/'artifact-pages.json').read_text())
+              artifacts=[a for page in artifact_pages for a in page.get('artifacts',[])]
+              summary['run']={k:run.get(k) for k in ('id','name','display_title','status','conclusion','run_attempt','event','head_branch','head_sha','created_at','run_started_at','updated_at')}
+              summary['jobs']={
+                  'total':len(jobs),
+                  'rows':[{k:j.get(k) for k in ('id','name','status','conclusion','started_at','completed_at')} for j in jobs],
+              }
+              summary['artifacts']={
+                  'total':len(artifacts),
+                  'rows':[{k:a.get(k) for k in ('id','name','size_in_bytes','digest','expired','created_at')} for a in artifacts],
+              }
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Publish neutral combined observer snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp observer-combined/summary.json /tmp/r8-recovery-combined-observer-summary.json
+          git fetch origin main
+          git switch -C status/r8-recovery-combined-observer-current-result origin/main
+          mkdir -p observer-combined
+          cp /tmp/r8-recovery-combined-observer-summary.json observer-combined/summary.json
+          git add observer-combined/summary.json
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git commit -m "Record neutral R8 combined-analysis observer snapshot"
+          git push origin HEAD:refs/heads/status/r8-recovery-combined-observer-current-result

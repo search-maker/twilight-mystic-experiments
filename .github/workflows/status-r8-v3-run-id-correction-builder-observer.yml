@@ -1,0 +1,60 @@
+name: AFC2 R8 v3 run-id correction builder observer
+
+on:
+  push:
+    branches:
+      - status/r8-v3-run-id-correction-builder-observer
+    paths:
+      - .github/workflows/status-r8-v3-run-id-correction-builder-observer.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read builder run metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=status/r8-v3-run-id-correction-builder&event=push&per_page=100" > runs.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          runs=[r for p in json.load(open('runs.json')) for r in p.get('workflow_runs',[])]
+          rows=[r for r in runs if r.get('head_branch')=='status/r8-v3-run-id-correction-builder' and r.get('head_sha')=='90e2baf27cde663775f286c557c1508cc8ef29b1']
+          out={'schemaVersion':1,'stageId':'afc2-r8-v3-run-id-correction-builder-observer','matchingRunCount':len(rows),'scientificChannelsOpened':False}
+          if rows:
+              r=sorted(rows,key=lambda x:x.get('created_at') or '')[-1]
+              out.update({'runId':r.get('id'),'runAttempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion'),'workflowPath':r.get('path')})
+          Path('result.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Publish observer result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-v3-run-id-correction-builder-observer-result
+          BASE_SHA: be46eb693da71249ae47f6c186289914bf684ebc
+        run: |
+          set -euo pipefail
+          cp result.json /tmp/result.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/result.json observer-result/builder.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add observer-result/builder.json
+          git commit -m 'Record AFC2 R8 v3 correction builder status'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

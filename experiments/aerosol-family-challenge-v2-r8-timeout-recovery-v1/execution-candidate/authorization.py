@@ -20,6 +20,11 @@ PREAUTH_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery
 AUTH_REVIEW_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml"
 EXECUTION_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml"
 DISPATCH_PUBLISHER_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml"
+COMBINED_ANALYSIS_CONTRACT_PATH = f"experiments/{STAGE}/combined-analysis.review.json"
+COMBINED_AGGREGATE_PATH = f"experiments/{STAGE}/combined_aggregate.py"
+COMBINED_ANALYSIS_FREEZE_PATH = f"evidence/{STAGE}/combined-analysis.freeze.json"
+COMBINED_ANALYSIS_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml"
+COMBINED_ANALYSIS_TEST_PATH = "tests/test_aerosol_family_r8_timeout_recovery_combined_analysis_v1.py"
 RUNTIME_LOCK_RAW_SHA256 = "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5"
 
 SOURCE_R8_BYTE_BINDINGS = {
@@ -55,6 +60,11 @@ def bindings(root: Path) -> dict[str, str]:
         "authorizationReviewWorkflowRawSha256": AUTH_REVIEW_WORKFLOW_PATH,
         "executionWorkflowRawSha256": EXECUTION_WORKFLOW_PATH,
         "dispatchPublisherWorkflowRawSha256": DISPATCH_PUBLISHER_WORKFLOW_PATH,
+        "combinedAnalysisContractRawSha256": COMBINED_ANALYSIS_CONTRACT_PATH,
+        "combinedAggregateRawSha256": COMBINED_AGGREGATE_PATH,
+        "combinedAnalysisFreezeRawSha256": COMBINED_ANALYSIS_FREEZE_PATH,
+        "combinedAnalysisWorkflowRawSha256": COMBINED_ANALYSIS_WORKFLOW_PATH,
+        "combinedAnalysisTestRawSha256": COMBINED_ANALYSIS_TEST_PATH,
     }
     out = {key: sha(root / path) for key, path in paths.items()}
     for key, (rel, expected) in SOURCE_R8_BYTE_BINDINGS.items():
@@ -97,6 +107,9 @@ def make(root: Path, ordinal: int, parent: str) -> dict[str, Any]:
         "dispatchPublisherRequired": True,
         "dispatchPublisherActualGitPushRequired": True,
         "dispatchPublisherExplicitWorkflowDispatchRequired": True,
+        "combinedAnalysisRequiredAfterRecoverySuccess": True,
+        "combinedAnalysisConditionalOpeningRuleBound": True,
+        "combinedAnalysisAutomaticWorkflowRunRequired": True,
     }
     row.update(bindings(root))
     return row

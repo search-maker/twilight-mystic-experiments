@@ -1,0 +1,256 @@
+name: AFC2 R8 timeout recovery v1 dispatch publisher
+run-name: AFC2 R8 timeout recovery v1 dispatch publisher ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - "status/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-*"
+    paths:
+      - .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-v1.json
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-dispatch-publisher-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove zero scientific runtime and bind request identity
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^status/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          test "$BRANCH_ORDINAL" -gt 34
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml').read_text()
+          forbidden=('setup-'+'micromamba','rubin-'+'libradtran','command -v '+'uvspec','--allow-'+'execution')
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'publisher exposed scientific runtime: {found}')
+          PY
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          REQUEST_PARENT="${PARENTS[0]}"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-v1.json
+          python - <<'PY' > request.env
+          import json
+          from pathlib import Path
+          r=json.loads(Path('.github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-v1.json').read_text())
+          if r.get('schemaVersion')!=1 or r.get('stageId')!='aerosol-family-challenge-v2-r8-timeout-recovery-v1-dispatch-request': raise SystemExit('request identity drift')
+          if r.get('status')!='REQUEST_ACTUAL_GIT_PUSH_AND_WORKFLOW_DISPATCH': raise SystemExit('request status drift')
+          n=r.get('scientificOrdinal'); h=r.get('authorizationHead'); p=r.get('authorizationParent')
+          if not isinstance(n,int) or n<=34: raise SystemExit('request ordinal invalid')
+          if not isinstance(h,str) or len(h)!=40: raise SystemExit('request authorization head invalid')
+          if not isinstance(p,str) or len(p)!=40: raise SystemExit('request authorization parent invalid')
+          print(f'ORDINAL={n}')
+          print(f'AUTH_HEAD={h}')
+          print(f'AUTH_PARENT_REQUEST={p}')
+          PY
+          source request.env
+          test "$ORDINAL" = "$BRANCH_ORDINAL"
+          AUTH_BRANCH="authorization/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-$ORDINAL"
+          DISPATCH_BRANCH="dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-$ORDINAL"
+          git fetch origin main "$AUTH_BRANCH"
+          LIVE_MAIN="$(git rev-parse origin/main)"
+          test "$REQUEST_PARENT" = "$LIVE_MAIN"
+          test "$AUTH_PARENT_REQUEST" = "$LIVE_MAIN"
+          AUTH_REMOTE="$(git rev-parse "origin/$AUTH_BRANCH")"
+          test "$AUTH_REMOTE" = "$AUTH_HEAD"
+          mapfile -t AUTH_PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#AUTH_PARENTS[@]}" = 1
+          AUTH_PARENT="${AUTH_PARENTS[0]}"
+          test "$AUTH_PARENT" = "$LIVE_MAIN"
+          mapfile -t AUTH_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_HEAD")
+          test "${#AUTH_CHANGED[@]}" = 1
+          test "${AUTH_CHANGED[0]}" = experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+          if git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" >/dev/null 2>&1; then
+            echo 'dispatch branch already exists; identity already consumed or ambiguous' >&2
+            exit 1
+          fi
+          export ORDINAL AUTH_HEAD AUTH_PARENT AUTH_BRANCH DISPATCH_BRANCH
+          git checkout --detach "$AUTH_HEAD"
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/authorization.py \
+            --repository-root . --ordinal "$ORDINAL" --parent "$AUTH_PARENT" \
+            --validate experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          good=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['AUTH_HEAD']]
+          if len(good)!=1: raise SystemExit(f'expected one authorization PR, got {len(good)}')
+          p=good[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main': raise SystemExit('authorization PR base drift')
+          if (p.get('head') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY']: raise SystemExit('authorization PR repo drift')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-review-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_HEAD']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exactly one successful attempt-1 authorization review required; same={len(same)} good={len(good)}')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RUN_ID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts?per_page=100" > auth-review-artifact-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-review-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'afc2-r8-timeout-recovery-v1-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one authorization-review artifact, got {len(good)}')
+          Path('auth-review-artifact-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          AID="$(python -c 'import json;print(json.load(open("auth-review-artifact-selected.json"))["id"])')"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          matches=list(Path('auth-review-artifact').rglob('authorization-review.json'))
+          if len(matches)!=1: raise SystemExit('authorization-review.json missing/duplicate')
+          r=json.loads(matches[0].read_text()); pr=json.load(open('auth-pr-selected.json'))
+          if r.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME': raise SystemExit('authorization review status drift')
+          if r.get('headSha')!=os.environ['AUTH_HEAD'] or r.get('prNumber')!=pr.get('number'): raise SystemExit('authorization review identity drift')
+          if r.get('runAttempt')!=1 or r.get('conclusion')!='success': raise SystemExit('authorization review attempt/conclusion drift')
+          if any(r.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('authorization review was not zero runtime')
+          if r.get('seedAuditStatus')!='PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION': raise SystemExit('authorization seed audit status drift')
+          PY
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > publisher-run-pages.json
+          python - <<'PY'
+          import json, os
+          comments=[c for page in json.load(open('issue60-pages.json')) for c in page]
+          pr=json.load(open('auth-pr-selected.json')); n=int(os.environ['ORDINAL'])
+          alloc=f'ORDINAL{n}_AFC2_R8_TIMEOUT_RECOVERY_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit={os.environ["AUTH_HEAD"]} parent={os.environ["AUTH_PARENT"]} pr={pr["number"]}'
+          consumed=f'ORDINAL{n}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED'
+          if len([c for c in comments if str(c.get('body') or '').strip()==alloc])!=1: raise SystemExit('exact allocation marker required once before publisher')
+          if [c for c in comments if str(c.get('body') or '').strip()==consumed]: raise SystemExit('consumed marker already exists before publisher')
+          pages=json.load(open('publisher-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('head_branch')==os.environ['GITHUB_REF_NAME']]
+          current=[r for r in same if int(r.get('id') or 0)==int(os.environ['GITHUB_RUN_ID']) and int(r.get('run_attempt') or 0)==1]
+          if len(same)!=1 or len(current)!=1: raise SystemExit(f'publisher identity must have exactly one attempt-1 run; same={len(same)} current={len(current)}')
+          PY
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "auth_head=$AUTH_HEAD" >> "$GITHUB_OUTPUT"
+          echo "auth_parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "dispatch_branch=$DISPATCH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')" >> "$GITHUB_OUTPUT"
+          echo "review_run_id=$REVIEW_RUN_ID" >> "$GITHUB_OUTPUT"
+      - name: Actual authenticated git push creates dispatch ref
+        id: push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$AUTH_PARENT"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "$AUTH_HEAD:refs/heads/$DISPATCH_BRANCH" >git-push.stdout 2>git-push.stderr
+          git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" > dispatch-ls-remote.txt
+          grep -q "^${AUTH_HEAD}[[:space:]]" dispatch-ls-remote.txt
+          echo "git_push_stdout_sha256=$(sha256sum git-push.stdout | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "git_push_stderr_sha256=$(sha256sum git-push.stderr | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Consume fresh ordinal exactly once after successful push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          MARKER="ORDINAL${ORDINAL}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-before-consume.json
+          python - <<'PY'
+          import json, os
+          comments=[c for page in json.load(open('issue60-before-consume.json')) for c in page]
+          marker=f'ORDINAL{os.environ["ORDINAL"]}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED'
+          if any(str(c.get('body') or '').strip()==marker for c in comments): raise SystemExit('consumed marker already exists')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$MARKER" > consumed-comment.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-after-consume.json
+          python - <<'PY'
+          import json, os
+          comments=[c for page in json.load(open('issue60-after-consume.json')) for c in page]
+          marker=f'ORDINAL{os.environ["ORDINAL"]}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED'
+          matches=[c for c in comments if str(c.get('body') or '').strip()==marker]
+          if len(matches)!=1: raise SystemExit(f'consumed marker must exist exactly once, got {len(matches)}')
+          PY
+      - name: Explicitly dispatch exact scientific workflow
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml/dispatches" -f ref="$DISPATCH_BRANCH"
+          FOUND=0
+          for i in $(seq 1 20); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > science-run-pages.json
+            if python - <<'PY'
+          import json, os, sys
+          pages=json.load(open('science-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          good=[r for r in runs if r.get('head_branch')==os.environ['DISPATCH_BRANCH'] and r.get('head_sha')==os.environ['AUTH_HEAD'] and int(r.get('run_attempt') or 0)==1]
+          if len(good)==1:
+              json.dump(good[0],open('science-run-selected.json','w'),indent=2,sort_keys=True); print(); sys.exit(0)
+          sys.exit(1)
+          PY
+            then FOUND=1; break; fi
+            sleep 2
+          done
+          test "$FOUND" = 1
+          echo "science_run_id=$(python -c 'import json;print(json.load(open("science-run-selected.json"))["id"])')" >> "$GITHUB_OUTPUT"
+      - name: Persist publisher evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            .github/dispatch-requests/aerosol-family-v2-r8-timeout-recovery-v1.json
+            auth-pr-selected.json
+            auth-review-selected.json
+            auth-review-artifact-selected.json
+            git-push.stdout
+            git-push.stderr
+            dispatch-ls-remote.txt
+            consumed-comment.json
+            science-run-selected.json
+          if-no-files-found: error
+          compression-level: 0

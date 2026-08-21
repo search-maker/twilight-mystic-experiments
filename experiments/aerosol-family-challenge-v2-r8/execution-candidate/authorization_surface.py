@@ -18,6 +18,11 @@ from freshness import (
     positive_candidate_claims,
     consumed_marker,
 )
+from preauthorization_ordinal import (
+    GlobalOrdinalRefusal,
+    failed_authorization_history,
+    validate_current_candidate_global_ordinal,
+)
 
 ORDINAL_RE = re.compile(r"ordinal[-_]?([0-9]+)", re.I)
 CASE_ARTIFACT_PREFIX = "aerosol-family-v2-r8-case-"
@@ -134,48 +139,13 @@ def _latest_consumed_ordinal(payload: dict[str, Any], candidate_dispatch: str, c
     return max(values) if values else None
 
 
-def _failed_authorization_ref_reusable(
-    auth_branch_name: str,
-    auth_head: str | None,
-    pulls: list[dict[str, Any]],
-    runs: list[dict[str, Any]],
-) -> bool:
-    """Return true only for one closed/unmerged authorization PR with one failed attempt-1 review.
-
-    This permits the named authorization ref to advance to a fresh direct-child authorization
-    commit after its failed head has been preserved separately. It never makes the failed head,
-    review run, or scientific identity reusable.
-    """
-    if not auth_head:
-        return False
-
-    matching_prs: list[dict[str, Any]] = []
-    for pr in pulls:
-        head = pr.get("head") or {}
-        if head.get("ref") == auth_branch_name and head.get("sha") == auth_head:
-            matching_prs.append(pr)
-    closed_unmerged = [
-        pr for pr in matching_prs
-        if pr.get("state") == "closed" and pr.get("merged_at") is None
-    ]
-    if len(closed_unmerged) != 1 or any(pr.get("state") == "open" for pr in matching_prs):
-        return False
-
-    review_runs = [
-        run for run in runs
-        if (run.get("head_branch") or "") == auth_branch_name
-        and (run.get("head_sha") or "") == auth_head
-        and (run.get("path") or "") == AUTHORIZATION_REVIEW_WORKFLOW
-        and (run.get("event") or "") == "pull_request"
-    ]
-    if len(review_runs) != 1:
-        return False
-    review = review_runs[0]
-    return (
-        int(review.get("run_attempt") or 0) == 1
-        and review.get("status") == "completed"
-        and review.get("conclusion") == "failure"
-    )
+def _related_pr_number(row: dict[str, Any]) -> int | None:
+    for key in ('issue_url','pull_request_url'):
+        value=str(row.get(key) or '')
+        match=re.search(r'/(?:issues|pulls)/([1-9][0-9]*)$',value)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def build_surface(
@@ -208,11 +178,20 @@ def build_surface(
     dispatch_row = branch_by_name.get(dispatch)
     auth_head = str(((auth_row or {}).get("commit") or {}).get("sha") or "") or None
     dispatch_head = str(((dispatch_row or {}).get("commit") or {}).get("sha") or "") or None
+    try:
+        failed_history=failed_authorization_history(payload,ordinal)
+    except GlobalOrdinalRefusal as exc:
+        raise SurfaceRefusal(str(exc)) from exc
+    failed_heads=set(failed_history['heads'])
+    failed_pr_numbers=set(failed_history['prNumbers'])
+    failed_review_run_ids=set(failed_history['reviewRunIds'])
 
     candidate_runs: list[int] = []
     for run in runs:
         run_id = int(run.get("id") or 0)
         if current_run_id is not None and run_id == int(current_run_id):
+            continue
+        if run_id in failed_review_run_ids:
             continue
         text = json.dumps(run, sort_keys=True, ensure_ascii=False)
         if str(run.get("head_branch") or "") == dispatch or key in text:
@@ -232,9 +211,19 @@ def build_surface(
     )
     for surface, rows in surfaces:
         for row in rows:
-            if surface == "run" and current_run_id is not None and int(row.get("id") or 0) == int(current_run_id):
-                continue
-            if surface == "pull" and current_pr is not None and int(row.get("number") or 0) == int(current_pr):
+            if surface == "run":
+                run_id=int(row.get("id") or 0)
+                if current_run_id is not None and run_id == int(current_run_id):
+                    continue
+                if run_id in failed_review_run_ids:
+                    continue
+            if surface == "pull":
+                pr_number=int(row.get("number") or 0)
+                if current_pr is not None and pr_number == int(current_pr):
+                    continue
+                if pr_number in failed_pr_numbers:
+                    continue
+            if surface in ("issue-comment","pull-review-comment") and _related_pr_number(row) in failed_pr_numbers:
                 continue
             if key in json.dumps(row, sort_keys=True, ensure_ascii=False):
                 identity = str(row.get("id") or row.get("number") or row.get("name") or row.get("url") or "")
@@ -242,7 +231,10 @@ def build_surface(
 
     positive: set[str] = set()
     for row in pulls:
-        if current_pr is not None and int(row.get("number") or 0) == int(current_pr):
+        pr_number=int(row.get("number") or 0)
+        if current_pr is not None and pr_number == int(current_pr):
+            continue
+        if pr_number in failed_pr_numbers:
             continue
         positive.update(positive_candidate_claims(_row_text(row), ordinal))
 
@@ -256,9 +248,13 @@ def build_surface(
     for row in issue_comments:
         if str(row.get("id") or "") in issue60_comment_ids:
             continue
+        if _related_pr_number(row) in failed_pr_numbers:
+            continue
         positive.update(positive_candidate_claims(_row_text(row), ordinal))
     for rows in (review_comments, commit_comments):
         for row in rows:
+            if _related_pr_number(row) in failed_pr_numbers:
+                continue
             positive.update(positive_candidate_claims(_row_text(row), ordinal))
     for row in issue60_comments:
         body = str(row.get("body") or "")
@@ -274,6 +270,17 @@ def build_surface(
                 marker_bodies.append(body)
 
     latest = _latest_consumed_ordinal(payload, dispatch, ordinal)
+    next_available=None if latest is None else latest+1
+    global_candidate_validated=False
+    if auth_row is not None and latest is not None:
+        try:
+            validate_current_candidate_global_ordinal(
+                payload,latest,ordinal,current_run_id=current_run_id,current_pr=current_pr
+            )
+        except GlobalOrdinalRefusal as exc:
+            raise SurfaceRefusal(str(exc)) from exc
+        next_available=ordinal
+        global_candidate_validated=True
     current_consumed = consumed_marker(ordinal)
     current_consumed_bodies = [str(row.get('body') or '').strip() for row in issue60_comments if str(row.get('body') or '').strip().lower() == current_consumed.lower()]
     case_artifact_names = sorted(
@@ -288,7 +295,8 @@ def build_surface(
 
     return {
         "latestPriorConsumedScientificOrdinal": latest,
-        "nextAvailableScientificOrdinal": None if latest is None else latest + 1,
+        "nextAvailableScientificOrdinal": next_available,
+        "globalCandidateOrdinalValidatedAcrossRetiredGaps": global_candidate_validated,
         "candidatePriorScientificRunCount": len(candidate_runs),
         "candidatePriorScientificRunIds": sorted(candidate_runs),
         "candidateExecutionKeyPriorUseCount": len(key_use_rows),
@@ -297,9 +305,10 @@ def build_surface(
         "positiveCandidateClaimTexts": sorted(positive),
         "authorizationBranchExists": auth_row is not None,
         "authorizationBranchHeadSha": auth_head,
-        "authorizationBranchReusableAfterFailedReview": _failed_authorization_ref_reusable(
-            auth_branch, auth_head, pulls, runs
-        ),
+        "authorizationBranchReusableAfterFailedReview": bool(auth_head and auth_head.lower() in failed_heads),
+        "failedAuthorizationHistoryHeads": sorted(failed_heads),
+        "failedAuthorizationHistoryPrNumbers": sorted(failed_pr_numbers),
+        "failedAuthorizationHistoryReviewRunIds": sorted(failed_review_run_ids),
         "dispatchBranchExists": dispatch_row is not None,
         "dispatchBranchHeadSha": dispatch_head,
         "activeAuthorizationPathOnMainExists": active_authorization_path_on_main_exists,

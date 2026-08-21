@@ -1,0 +1,135 @@
+name: AFC2 R8 corrected v3 pre-opening neutral preflight
+
+on:
+  push:
+    branches:
+      - status/r8-combined-opening-v3-corrected-preflight-32503223236
+    paths:
+      - .github/workflows/status-r8-combined-opening-v3-corrected-preflight-32503223236.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove corrected v3 surface is clean without opening channels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: 2a9feb864fe7bf328074854d22f0e3c6a5cb7616
+          SOURCE_RUN_ID: '32503223236'
+          SOURCE_HEAD: b37aab8fd2c2f0a6b58eef79a00811c9adea02a0
+          V1_RUN_ID: '32508493509'
+          V1_JOB_ID: '96853960455'
+          V2_RUN_ID: '32509967325'
+          V2_JOB_ID: '96858517974'
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          mkdir -p preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > preflight/source-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" > preflight/source-artifacts.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${V1_RUN_ID}" > preflight/v1-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${V1_JOB_ID}" > preflight/v1-job.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${V2_RUN_ID}" > preflight/v2-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${V2_JOB_ID}" > preflight/v2-job.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?per_page=100" > preflight/original-opening.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml/runs?per_page=100" > preflight/v1-opening.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery-v2.yml/runs?per_page=100" > preflight/v2-opening.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery-v3.yml/runs?per_page=100" > preflight/v3-opening.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > preflight/comments.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY%%/*}:authorization/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-35&per_page=100" > preflight/pr291.json
+          python - <<'PY'
+          import hashlib,json,os,re,subprocess
+          from pathlib import Path
+          root=Path('.')
+          freeze=json.loads((root/'evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.freeze.json').read_text())
+          bound={
+            'reviewRawSha256':root/'experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.review.json',
+            'publisherWorkflowRawSha256':root/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v3.yml',
+            'openingWorkflowRawSha256':root/'.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery-v3.yml',
+            'testRawSha256':root/'tests/test_aerosol_family_r8_timeout_recovery_combined_trigger_recovery_v3.py',
+          }
+          bindings_ok=all(freeze.get(k)==hashlib.sha256(p.read_bytes()).hexdigest() for k,p in bound.items())
+          source=json.load(open('preflight/source-run.json'))
+          arts=[a for p in json.load(open('preflight/source-artifacts.json')) for a in p.get('artifacts',[])]
+          aq=[a for a in arts if a.get('id')==9454797882 and a.get('name')=='afc2-r8-timeout-recovery-v1-acquisition-ordinal-35' and a.get('digest')=='sha256:93730886d7cf26f8c97cf6a40f84533cce4fefa7c2b9bc0f91af070b626d2a56' and not a.get('expired',False)]
+          v1=json.load(open('preflight/v1-run.json')); j1=json.load(open('preflight/v1-job.json'))
+          v2=json.load(open('preflight/v2-run.json')); j2=json.load(open('preflight/v2-job.json'))
+          m2=re.search(r'/actions/runs/(\d+)$',str(j2.get('run_url') or ''))
+          s1={str(s.get('name')):s.get('conclusion') for s in j1.get('steps',[])}
+          s2={str(s.get('name')):s.get('conclusion') for s in j2.get('steps',[])}
+          def runs(path): return [r for p in json.load(open(path)) for r in p.get('workflow_runs',[])]
+          comments=[c for p in json.load(open('preflight/comments.json')) for c in p]
+          by_id={int(c.get('id') or 0):str(c.get('body') or '') for c in comments}
+          prs=[p for page in json.load(open('preflight/pr291.json')) for p in page]
+          good_pr=[p for p in prs if p.get('number')==291 and p.get('state')=='open' and p.get('draft') is True and p.get('merged_at') is None and (p.get('head') or {}).get('sha')==os.environ['SOURCE_HEAD']]
+          main=os.environ['EXPECTED_MAIN']
+          v3_alloc=f'AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_V3_ALLOCATED source_run=32503223236 transport_head={main}'
+          v3_consumed=f'AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_V3_CONSUMED source_run=32503223236 transport_head={main}'
+          request_branch='status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v3-run-32503223236'
+          dispatch_branch='dispatch/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-v3-run-32503223236'
+          req_exists=subprocess.run(['git','ls-remote','--exit-code','--heads','origin',request_branch],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+          dsp_exists=subprocess.run(['git','ls-remote','--exit-code','--heads','origin',dispatch_branch],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+          out={
+            'schemaVersion':1,
+            'stageId':'afc2-r8-corrected-v3-pre-opening-preflight',
+            'mainSha':main,
+            'freezeStatus':freeze.get('status'),
+            'freezeFailedV2PublisherRunId':freeze.get('failedV2PublisherRunId'),
+            'freezeBindingsExact':bindings_ok,
+            'sourceScienceExactSuccessAttempt1':source.get('id')==32503223236 and source.get('run_attempt')==1 and source.get('status')=='completed' and source.get('conclusion')=='success' and source.get('head_sha')==os.environ['SOURCE_HEAD'],
+            'acquisitionArtifactExact':len(aq)==1,
+            'v1TerminalExact':v1.get('id')==32508493509 and v1.get('run_attempt')==1 and v1.get('conclusion')=='failure' and s1.get('Actual authenticated push creates exact opening dispatch ref')=='success' and s1.get('Consume opening recovery identity exactly once after successful push')=='success' and s1.get('Dispatch exact guarded combined opening recovery')=='failure',
+            'v2TerminalExact':v2.get('id')==32509967325 and v2.get('run_attempt')==1 and v2.get('conclusion')=='failure' and m2 is not None and int(m2.group(1))==32509967325 and s2.get('Prove exact reviewed v2 transport bytes')=='success' and s2.get('Prove v1 terminal failure and fresh v2 one-use surface')=='failure' and s2.get('Actual authenticated push creates fresh v2 opening dispatch ref')=='skipped',
+            'v1CheckpointExact':'CONTROL_PLANE_WORKFLOW_DISPATCH_INPUT_TYPE_COERCION_HTTP_422_AFTER_OPENING_IDENTITY_CONSUMED_NO_OPENING_RUN' in by_id.get(5373207353,''),
+            'v2CheckpointExact':'CONTROL_PLANE_AUDIT_RAW_LOG_RENDER_REFUSAL_BEFORE_V2_PUSH_CONSUME_DISPATCH_NO_RESULTS_OPENED' in by_id.get(5373348599,''),
+            'originalCombinedRunCount':len(runs('preflight/original-opening.json')),
+            'v1OpeningRunCount':len(runs('preflight/v1-opening.json')),
+            'v2OpeningRunCount':len(runs('preflight/v2-opening.json')),
+            'v3OpeningRunCount':len(runs('preflight/v3-opening.json')),
+            'pr291DraftOpenUnmerged':len(good_pr)==1,
+            'v3AllocationMarkerCount':sum(str(c.get('body') or '').strip()==v3_alloc for c in comments),
+            'v3ConsumedMarkerCount':sum(str(c.get('body') or '').strip()==v3_consumed for c in comments),
+            'v3RequestBranchExists':req_exists,
+            'v3DispatchBranchExists':dsp_exists,
+            'scientificArtifactsDownloaded':False,
+            'scientificChannelsOpened':False,
+          }
+          ok=(out['freezeStatus']=='FROZEN_FRESH_V3_CONTROL_PLANE_IDENTITY_NOT_DISPATCHED' and out['freezeFailedV2PublisherRunId']==32509967325 and out['freezeBindingsExact'] and out['sourceScienceExactSuccessAttempt1'] and out['acquisitionArtifactExact'] and out['v1TerminalExact'] and out['v2TerminalExact'] and out['v1CheckpointExact'] and out['v2CheckpointExact'] and out['originalCombinedRunCount']==0 and out['v1OpeningRunCount']==0 and out['v2OpeningRunCount']==0 and out['v3OpeningRunCount']==0 and out['pr291DraftOpenUnmerged'] and out['v3AllocationMarkerCount']==0 and out['v3ConsumedMarkerCount']==0 and not out['v3RequestBranchExists'] and not out['v3DispatchBranchExists'])
+          out['status']='PASS_CLEAN_CORRECTED_V3_OPENING_SURFACE' if ok else 'REFUSE_CORRECTED_V3_OPENING_SURFACE_NOT_CLEAN'
+          Path('preflight/result.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          if not ok: raise SystemExit(out['status'])
+          PY
+      - name: Publish immutable preflight result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-combined-opening-v3-corrected-preflight-32503223236-result
+          BASE_SHA: 2a9feb864fe7bf328074854d22f0e3c6a5cb7616
+        run: |
+          set -euo pipefail
+          cp preflight/result.json /tmp/result.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'result branch already exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/result.json observer-result/preflight.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add observer-result/preflight.json
+          git commit -m 'Record corrected AFC2 R8 v3 pre-opening preflight'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

@@ -1,0 +1,53 @@
+name: R8 publisher observer current
+
+on:
+  push:
+    branches:
+      - "status/r8-publisher-observer-current"
+    paths:
+      - ".github/workflows/r8-publisher-observer-current.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read exact publisher run and preserve result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          TARGET_BRANCH='status/aerosol-family-v2-r8-dispatch-publisher-ordinal-34'
+          TARGET_HEAD='256fda091d58772e99b3e5ea40e0e8dec1f89312'
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-dispatch-publisher.yml/runs?branch=${TARGET_BRANCH}&event=push&per_page=100" > publisher-pages.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.loads(Path('publisher-pages.json').read_text())
+          runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          target=[r for r in runs if r.get('head_sha')=='256fda091d58772e99b3e5ea40e0e8dec1f89312']
+          if len(target) != 1:
+              raise SystemExit(f'expected exactly one exact-head publisher run, got {len(target)}')
+          r=target[0]
+          out={k:r.get(k) for k in ('id','name','path','event','status','conclusion','run_attempt','head_branch','head_sha','created_at','updated_at','actor')}
+          Path('observer-result').mkdir()
+          Path('observer-result/publisher-run.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b status/r8-publisher-observer-current-result
+          git add -- observer-result/publisher-run.json
+          git commit -m 'Preserve exact R8 publisher run observation'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/status/r8-publisher-observer-current-result

@@ -1,0 +1,83 @@
+name: AOPS v1 neutral exact-head review audit fe5baefb
+
+on:
+  push:
+    branches:
+      - status/aops-v1-review-audit-fe5baefb
+    paths:
+      - .github/workflows/status-aops-v1-review-audit-fe5baefb.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove neutral wrapper and audit exact PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/aops-v1-review-audit-fe5baefb
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = fe5baefba7e1d727a467c0eb76b2f40bf1826923
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/status-aops-v1-review-audit-fe5baefb.yml
+          git checkout --detach fe5baefba7e1d727a467c0eb76b2f40bf1826923
+          python -m unittest -v tests.test_aerosol_optical_property_sensitivity_v1_review | tee /tmp/audit-tests.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          stage='aerosol-optical-property-sensitivity-v1'
+          p=json.loads(Path(f'experiments/{stage}/protocol.review.json').read_text())
+          f=json.loads(Path(f'evidence/{stage}/review-freeze.json').read_text())
+          assert p['status']=='REVIEW_ONLY_PREREGISTRATION_EXECUTION_DISABLED_RESULTS_NOT_OPENED'
+          assert p['caseCardinality']=={'analysisCells':24,'replicatesPerCell':3,'statesPerGroup':5,'commonRandomNumberGroups':72,'expectedCases':360}
+          assert p['commonRandomNumbers']['candidateSeedsAllocatedInThisReview'] is False
+          assert f['candidateSeedsAllocated'] is False and f['scientificOrdinalAllocated'] is False
+          assert f['authorizationCreated'] is False and f['dispatchCreated'] is False
+          assert f['scientificExecutionAuthorized'] is False and f['solverExecutionAuthorized'] is False and f['resultOpeningAuthorized'] is False
+          assert not Path(f'experiments/{stage}/authorization.json').exists()
+          stage_workflows=[x.name for x in Path('.github/workflows').glob('*') if stage in x.name]
+          assert stage_workflows==[], stage_workflows
+          result={
+            'schemaVersion':1,
+            'stageId':'aerosol-optical-property-sensitivity-v1-neutral-review-audit',
+            'auditedHead':'fe5baefba7e1d727a467c0eb76b2f40bf1826923',
+            'status':'PASS_REVIEW_ONLY_EXACT_HEAD_NON_EXECUTABLE',
+            'analysisCells':24,
+            'crnGroups':72,
+            'futureCases':360,
+            'statesPerGroup':5,
+            'candidateSeedsAllocated':False,
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'solverExecutionAuthorized':False,
+            'resultOpeningAuthorized':False,
+            'scientificResultsOpened':False,
+          }
+          Path('/tmp/aops-v1-review-audit.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - name: Upload immutable neutral review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: aops-v1-neutral-review-audit-fe5baefb
+          path: |
+            /tmp/aops-v1-review-audit.json
+            /tmp/audit-tests.txt
+          if-no-files-found: error
+          compression-level: 0

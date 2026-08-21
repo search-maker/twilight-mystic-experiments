@@ -1,0 +1,105 @@
+name: AFC2 R8 Level B post-result propagation PR runner
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/status-r8-level-b-threshold-propagation-20260821.yml'
+      - '.github/workflows/status-r8-level-b-threshold-propagation-pr-20260821.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  propagate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact verified inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: 2a9feb864fe7bf328074854d22f0e3c6a5cb7616
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/32526740156" > final-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9462565128" > final-artifact.json
+          python - <<'PY'
+          import json
+          r=json.load(open('final-run.json')); a=json.load(open('final-artifact.json'))
+          assert r['id']==32526740156 and r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='success'
+          assert r['head_sha']=='2a9feb864fe7bf328074854d22f0e3c6a5cb7616'
+          assert a['id']==9462565128 and a['digest']=='sha256:7dbf5ab1ea10ed2f8f9fb62265c2373921a7cd0ea15717aecfe114a5415afab3' and not a['expired']
+          PY
+          gh api "repos/search-maker/starsvisibility/contents/scientific-tools/visibility-v3/human-threshold.mjs?ref=a422afe5fc4197ab15323bafb15512001e061454" > human-threshold-meta.json
+          test "$(python -c 'import json;print(json.load(open("human-threshold-meta.json"))["sha"])')" = 'bb4cd0ff02159ecffe276022cec9d292c7a434a3'
+          python - <<'PY'
+          import base64,json
+          m=json.load(open('human-threshold-meta.json'))
+          open('/tmp/human-threshold.mjs','wb').write(base64.b64decode(m['content']))
+          PY
+          grep -q 'export function limitingVMagnitude' /tmp/human-threshold.mjs
+
+      - name: Download exact effective universe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p final-analysis source-downloads recovery-downloads
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9462565128/zip" > final-analysis.zip
+          test "$(sha256sum final-analysis.zip | awk '{print $1}')" = '7dbf5ab1ea10ed2f8f9fb62265c2373921a7cd0ea15717aecfe114a5415afab3'
+          unzip -q final-analysis.zip -d final-analysis
+          gh run download 32447101887 --repo "$GITHUB_REPOSITORY" --pattern 'aerosol-family-v2-r8-case-*' --dir source-downloads
+          gh run download 32503223236 --repo "$GITHUB_REPOSITORY" --pattern 'afc2-r8-timeout-recovery-v1-case-*' --dir recovery-downloads
+
+      - name: Extract reviewed propagation code and execute
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('.github/workflows/status-r8-level-b-threshold-propagation-20260821.yml').read_text().splitlines()
+          start=None; end=None
+          for i,line in enumerate(src):
+              if "cat > /tmp/propagate.mjs <<'JS'" in line:
+                  start=i+1; continue
+              if start is not None and line.strip()=='JS':
+                  end=i; break
+          if start is None or end is None: raise SystemExit('embedded propagation code markers not found')
+          lines=src[start:end]
+          out=[]
+          for line in lines:
+              out.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/propagate.mjs').write_text('\n'.join(out)+'\n')
+          PY
+          node /tmp/propagate.mjs > propagation.stdout
+          test -s level-b-propagation.json
+          test -s level-b-propagation-summary.csv
+          node - <<'JS'
+          const d=JSON.parse(require('fs').readFileSync('level-b-propagation.json','utf8'));
+          if(d.effectiveCaseCount!==576 || d.pairedCellStateCount!==168 || d.scientificSolverExecuted!==false || d.postResultRuleChange!==false) throw new Error('propagation gate failed');
+          if(d.urbanSpringSummerByDepthAod.length!==8) throw new Error('urban summary count failed');
+          JS
+
+      - name: Upload immutable Level B propagation result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: afc2-r8-level-b-threshold-propagation-20260821
+          path: |
+            level-b-propagation.json
+            level-b-propagation-summary.csv
+            propagation.stdout
+            final-run.json
+            final-artifact.json
+            human-threshold-meta.json
+          if-no-files-found: error
+          compression-level: 0

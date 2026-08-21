@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ CANDIDATE_SEED = 371960104
 STAGE_ID = "aerosol-family-challenge-v2-r8-timeout-recovery-v1"
 PREREGISTRATION_PR_NUMBER = 286
 PREREGISTRATION_PR_HEAD = "002b671089c5a7f27f7d65781ce78e4cb9981150"
+DISPATCH_BRANCH_RE = re.compile(r"^dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-([1-9][0-9]*)$")
+PUBLISHER_WORKFLOW = "aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml"
 TOKEN_RE = re.compile(r"(?<![0-9_])[0-9_]{7,20}(?![0-9_])")
 MUTABLE_KEYS = frozenset({
     "created_at", "updated_at", "started_at", "completed_at", "run_started_at",
@@ -71,6 +74,65 @@ def collect(repository: str, token: str) -> dict[str, list[dict[str, Any]]]:
         "pullReviewComments": pages(base + "/pulls/comments", token),
         "commitComments": pages(base + "/comments", token),
         "issue60Comments": pages(base + "/issues/60/comments", token),
+    }
+
+
+def verify_dispatch_publisher(repository: str, token: str, expected_branch: str, expected_head: str, current_run_id: int | None) -> dict[str, Any] | None:
+    match = DISPATCH_BRANCH_RE.fullmatch(expected_branch)
+    if match is None:
+        return None
+    if current_run_id is None:
+        raise RuntimeError("dispatch-head audit requires current science run id")
+    ordinal = int(match.group(1))
+    if ordinal <= 34:
+        raise RuntimeError("dispatch-head audit refuses consumed/nonfresh ordinal")
+    request_branch = f"status/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-{ordinal}"
+    base = f"https://api.github.com/repos/{repository}"
+    publisher: dict[str, Any] | None = None
+    request_head = ""
+    for _ in range(150):
+        branches = pages(base + "/branches", token)
+        request_rows = [row for row in branches if str(row.get("name") or "") == request_branch]
+        if len(request_rows) > 1:
+            raise RuntimeError("duplicate publisher request branch identity")
+        if len(request_rows) == 1:
+            request_head = str(((request_rows[0].get("commit") or {}).get("sha") or ""))
+            runs = pages(base + f"/actions/workflows/{PUBLISHER_WORKFLOW}/runs?branch={request_branch}&event=push", token, "workflow_runs")
+            same = [row for row in runs if row.get("head_branch") == request_branch and row.get("head_sha") == request_head]
+            if len(same) > 1:
+                raise RuntimeError("publisher request identity has multiple workflow runs")
+            if len(same) == 1:
+                row = same[0]
+                attempt = int(row.get("run_attempt") or 0)
+                if attempt != 1:
+                    raise RuntimeError("publisher request identity was rerun")
+                if row.get("status") == "completed":
+                    if row.get("conclusion") != "success":
+                        raise RuntimeError(f"publisher run terminal non-success: {row.get('conclusion')}")
+                    publisher = row
+                    break
+        time.sleep(2)
+    if publisher is None:
+        raise RuntimeError("timed out waiting for exact successful publisher before scientific preflight")
+    publisher_run_id = int(publisher.get("id") or 0)
+    artifacts = pages(base + f"/actions/runs/{publisher_run_id}/artifacts", token, "artifacts")
+    expected_name = f"afc2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-{ordinal}"
+    good = [row for row in artifacts if row.get("name") == expected_name and not row.get("expired", False)]
+    if len(good) != 1:
+        raise RuntimeError(f"exact successful publisher artifact required once, got {len(good)}")
+    if int(((good[0].get("workflow_run") or {}).get("id") or 0)) != publisher_run_id:
+        raise RuntimeError("publisher artifact run binding drift")
+    return {
+        "dispatchPublisherVerified": True,
+        "dispatchPublisherRequestBranch": request_branch,
+        "dispatchPublisherRequestHead": request_head,
+        "dispatchPublisherRunId": publisher_run_id,
+        "dispatchPublisherRunAttempt": 1,
+        "dispatchPublisherArtifactId": int(good[0].get("id") or 0),
+        "dispatchPublisherArtifactName": expected_name,
+        "dispatchPublisherArtifactDigest": good[0].get("digest"),
+        "scienceRunIdObservedByAudit": current_run_id,
+        "scienceAuthorizationHead": expected_head,
     }
 
 
@@ -193,6 +255,7 @@ def ordinal_observations(context: dict[str, list[dict[str, Any]]], *, ignore_bra
 
 
 def audit(repository: str, token: str, repo_root: Path, expected_branch: str, expected_head: str, current_run_id: int | None = None, *, ignore_branch_for_ordinal: str | None = None, ignore_pr_for_ordinal: int | None = None) -> dict[str, Any]:
+    publisher = verify_dispatch_publisher(repository, token, expected_branch, expected_head, current_run_id)
     first = collect(repository, token)
     second = collect(repository, token)
     first_sha = context_sha(first, current_run_id)
@@ -208,7 +271,7 @@ def audit(repository: str, token: str, repo_root: Path, expected_branch: str, ex
         raise RuntimeError(f"candidate seed collision: metadata={meta} tracked={tracked}")
     observations = ordinal_observations(second, ignore_branch=ignore_branch_for_ordinal, ignore_pr=ignore_pr_for_ordinal, current_run_id=current_run_id)
     max_ordinal = max((int(row["ordinal"]) for row in observations), default=0)
-    return {
+    result: dict[str, Any] = {
         "schemaVersion": 1,
         "stageId": STAGE_ID + "-seed-and-global-identity-audit",
         "status": "PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION",
@@ -225,7 +288,11 @@ def audit(repository: str, token: str, repo_root: Path, expected_branch: str, ex
         "globalOrdinalMaxObservedExcludingCurrentCandidate": max_ordinal,
         "nextGlobalOrdinal": max_ordinal + 1,
         "ordinalObservations": observations,
+        "dispatchPublisherVerified": publisher is not None,
     }
+    if publisher is not None:
+        result["dispatchPublisherEvidence"] = publisher
+    return result
 
 
 def main() -> int:
@@ -245,7 +312,7 @@ def main() -> int:
     result = audit(args.repository, token, args.repository_root, args.expected_branch, args.expected_head, args.current_run_id, ignore_branch_for_ordinal=args.ignore_branch_for_ordinal, ignore_pr_for_ordinal=args.ignore_pr_for_ordinal)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"status": result["status"], "nextGlobalOrdinal": result["nextGlobalOrdinal"], "auditedHead": result["auditedHead"]}, sort_keys=True))
+    print(json.dumps({"status": result["status"], "nextGlobalOrdinal": result["nextGlobalOrdinal"], "auditedHead": result["auditedHead"], "dispatchPublisherVerified": result["dispatchPublisherVerified"]}, sort_keys=True))
     return 0
 
 

@@ -1,0 +1,110 @@
+name: AFC2 R8 cancellation observer v2
+
+on:
+  push:
+    branches:
+      - status/r8-cancel-observer-v2
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout neutral result branch
+        uses: actions/checkout@v4
+        with:
+          ref: status/r8-cancel-observer-v2-result
+          fetch-depth: 1
+
+      - name: Collect complete target-run inventory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN: '32447101887'
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          out="observer-result-v2"
+          tmp="$(mktemp -d)"
+          mkdir -p "$out"
+
+          gh api "repos/$repo/actions/runs/$TARGET_RUN" > "$tmp/run.json"
+          gh api --paginate --slurp -X GET "repos/$repo/actions/runs/$TARGET_RUN/jobs?per_page=100" > "$tmp/jobs-pages.json"
+          gh api --paginate --slurp -X GET "repos/$repo/actions/runs/$TARGET_RUN/artifacts?per_page=100" > "$tmp/artifacts-pages.json"
+
+          jq '[.[] | .jobs[]]' "$tmp/jobs-pages.json" > "$tmp/jobs.json"
+          jq '[.[] | .artifacts[]]' "$tmp/artifacts-pages.json" > "$tmp/artifacts.json"
+
+          jq '[.[] | select(.conclusion == "cancelled") | {id,name,status,conclusion,started_at,completed_at,runner_name,html_url}]' "$tmp/jobs.json" > "$out/cancelled-jobs.json"
+          jq '[.[] | select(.conclusion == "failure") | {id,name,status,conclusion,started_at,completed_at,runner_name,html_url}]' "$tmp/jobs.json" > "$out/failed-jobs.json"
+
+          jq -n \
+            --slurpfile run "$tmp/run.json" \
+            --slurpfile jobs "$tmp/jobs.json" \
+            --slurpfile arts "$tmp/artifacts.json" '
+            def count_by(field):
+              group_by(. [field] // "null") | map({key: (.[0][field] // "null"), value: length}) | from_entries;
+            ($run[0]) as $r |
+            ($jobs[0]) as $j |
+            ($arts[0]) as $a |
+            ($j | map(select(.conclusion == "cancelled"))) as $c |
+            ($j | map(select(.conclusion == "failure"))) as $f |
+            ($j | map(select(.conclusion == "success"))) as $s |
+            {
+              schemaVersion: 2,
+              observerPurpose: "read-only terminal diagnosis for AFC2 R8 ordinal 34; no rerun/retry/resume",
+              run: {
+                id: $r.id,
+                status: $r.status,
+                conclusion: $r.conclusion,
+                run_attempt: $r.run_attempt,
+                event: $r.event,
+                head_branch: $r.head_branch,
+                head_sha: $r.head_sha,
+                created_at: $r.created_at,
+                run_started_at: $r.run_started_at,
+                updated_at: $r.updated_at,
+                actor: ($r.actor.login // null),
+                triggering_actor: ($r.triggering_actor.login // null),
+                cancel_url: $r.cancel_url
+              },
+              jobs: {
+                total: ($j|length),
+                byConclusion: ($j | count_by("conclusion")),
+                successCount: ($s|length),
+                failureCount: ($f|length),
+                cancelledCount: ($c|length),
+                cancelledNeverStartedCount: ($c | map(select(.started_at == null)) | length),
+                cancelledStartedCount: ($c | map(select(.started_at != null)) | length),
+                earliestCancelledCompletedAt: ($c | map(.completed_at) | map(select(. != null)) | min // null),
+                latestCancelledCompletedAt: ($c | map(.completed_at) | map(select(. != null)) | max // null),
+                latestSuccessCompletedAt: ($s | map(.completed_at) | map(select(. != null)) | max // null),
+                failureIds: ($f | map(.id)),
+                cancelledStartedSample: ($c | map(select(.started_at != null)) | sort_by(.completed_at) | .[0:12] | map({id,name,started_at,completed_at})),
+                cancelledNeverStartedSample: ($c | map(select(.started_at == null)) | .[0:12] | map({id,name,started_at,completed_at}))
+              },
+              artifacts: {
+                total: ($a|length),
+                caseCount: ($a | map(select(.name | startswith("aerosol-family-v2-r8-case-"))) | length),
+                analysisCount: ($a | map(select(.name == "aerosol-family-v2-r8-analysis")) | length),
+                preflightCount: ($a | map(select(.name | contains("preflight"))) | length),
+                latestCreatedAt: ($a | map(.created_at) | max // null)
+              }
+            }' > "$out/summary.json"
+
+          cp "$tmp/jobs.json" "$out/all-jobs.json"
+          cp "$tmp/artifacts.json" "$out/all-artifacts.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$out"
+          if git diff --cached --quiet; then
+            echo "No observer-result changes"
+          else
+            git commit -m "Record terminal R8 cancellation inventory"
+            git push origin HEAD:refs/heads/status/r8-cancel-observer-v2-result
+          fi

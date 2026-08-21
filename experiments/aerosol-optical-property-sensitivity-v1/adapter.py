@@ -88,6 +88,8 @@ def assert_exact_aerosol_surface(rendered: str, state_id: str, aod550: float) ->
 def _validate_case(case: dict[str, Any]) -> None:
     protocol = load_protocol()
     design = protocol["fixedNumericalAndPhysicalDesign"]
+    if case.get("renderable") is not True or case.get("executionAuthorized") is not True:
+        raise Refusal("case is review-only/non-renderable until a separately reviewed authorization binds it")
     if case.get("sunDepressionDeg") not in design["sunDepressionDeg"]:
         raise Refusal("sun depression outside preregistration")
     if case.get("aod550") not in design["aod550"]:

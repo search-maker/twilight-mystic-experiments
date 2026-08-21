@@ -115,8 +115,8 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         seeds = [row["seed"] for row in rows]
         self.assertEqual(72, len(seeds))
         self.assertEqual(72, len(set(seeds)))
-        self.assertEqual(1007548767, seeds[0])
-        self.assertEqual(879496189, seeds[-1])
+        self.assertEqual(ledger["candidateFirstSeed"], seeds[0])
+        self.assertEqual(ledger["candidateLastSeed"], seeds[-1])
         self.assertTrue(all(row["collisionCounter"] == 0 for row in rows))
         self.assertEqual("09d011f216187ad48d23e1744a0bb8b9f7c6aa65f0e1ceba1495f8440aa59366", ledger["candidateSeedCanonicalSha256"])
         self.assertEqual("0fad36398515581a9cc723a2fc2c10a1b88f26882501a57a46c7868cc832da9a", ledger["candidateRowsCanonicalSha256"])

@@ -34,7 +34,8 @@ def load(name: str, path: Path):
 def evaluate(
     repository_root: Path,
     authorization: dict[str, Any],
-    seed_proof: dict[str, Any],
+    authorization_seed_proof: dict[str, Any],
+    live_seed_proof: dict[str, Any],
     context: dict[str, Any],
     paths: dict[str, Path],
 ) -> dict[str, Any]:
@@ -49,7 +50,7 @@ def evaluate(
     require(isinstance(head, str) and SHA40.fullmatch(head) is not None, "context head SHA invalid")
     require(isinstance(parent, str) and SHA40.fullmatch(parent) is not None, "context parent SHA invalid")
     try:
-        transport_guard.validate_enabled_document(repository_root, authorization, parent, paths, seed_proof)
+        transport_guard.validate_enabled_document(repository_root, authorization, parent, paths, authorization_seed_proof)
     except Exception as exc:
         raise GuardRefusal(str(exc)) from exc
     require(context.get("githubActions") is True, "GitHub Actions context required")
@@ -96,17 +97,17 @@ def evaluate(
     require(sum(1 for row in comments if str(row).strip().lower() == consumed.lower()) == 1, "exactly one dispatch consumed marker required")
 
     try:
-        frozen_auth_guard.validate_seed_authorization_proof(seed_proof)
+        frozen_auth_guard.validate_seed_authorization_proof(live_seed_proof)
     except Exception as exc:
         raise GuardRefusal(str(exc)) from exc
-    require(seed_proof.get("auditedMainHead") == head, "science seed recheck must be bound to exact authorization head")
-    require(seed_proof.get("candidateSeedCanonicalSha256") == EXPECTED_SEED_CANONICAL, "candidate seed canonical hash drift")
-    require(seed_proof.get("candidateRowsCanonicalSha256") == EXPECTED_ROWS_CANONICAL, "candidate row canonical hash drift")
-    require(seed_proof.get("exactHeadTrackedTreeByteScanPassed") is True, "tracked-tree seed scan not passed")
-    require(seed_proof.get("repositoryGlobalCollisionSurfaceScanPassed") is True, "repository-global seed scan not passed")
-    require(seed_proof.get("repositoryGlobalDoubleEnumerationStable") is True, "repository-global seed scan unstable")
-    require(seed_proof.get("repositoryGlobalCollisionCount") == 0, "seed collision detected")
-    require(seed_proof.get("solverExecutionAuthorized") is False, "seed audit itself may not authorize solver")
+    require(live_seed_proof.get("auditedMainHead") == head, "live science seed recheck must be bound to exact authorization head")
+    require(live_seed_proof.get("candidateSeedCanonicalSha256") == EXPECTED_SEED_CANONICAL, "candidate seed canonical hash drift")
+    require(live_seed_proof.get("candidateRowsCanonicalSha256") == EXPECTED_ROWS_CANONICAL, "candidate row canonical hash drift")
+    require(live_seed_proof.get("exactHeadTrackedTreeByteScanPassed") is True, "tracked-tree seed scan not passed")
+    require(live_seed_proof.get("repositoryGlobalCollisionSurfaceScanPassed") is True, "repository-global seed scan not passed")
+    require(live_seed_proof.get("repositoryGlobalDoubleEnumerationStable") is True, "repository-global seed scan unstable")
+    require(live_seed_proof.get("repositoryGlobalCollisionCount") == 0, "seed collision detected")
+    require(live_seed_proof.get("solverExecutionAuthorized") is False, "seed audit itself may not authorize solver")
 
     require(design.get("caseCount") == 360 and design.get("groupCount") == 72 and design.get("analysisCellCount") == 24, "frozen design cardinality drift")
     require(design.get("scientificExecutionAuthorized") is False and design.get("solverExecutionAuthorized") is False, "review design crossed execution boundary")

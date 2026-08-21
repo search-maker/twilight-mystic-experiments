@@ -1,0 +1,126 @@
+(names) != 1:
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head is preserved by multiple history refs')
+
+        prs = []
+        for pr in payload.get('pulls', []):
+            phead = pr.get('head') or {}
+            if phead.get('ref') == auth_branch and str(phead.get('sha') or '').lower() == head:
+                prs.append(pr)
+        if len(prs) != 1 or prs[0].get('state') != 'closed' or prs[0].get('merged_at') is not None:
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head lacks exactly one closed/unmerged authorization PR')
+        pr_number = int(prs[0].get('number') or 0)
+        if pr_number <= 0:
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed authorization PR number invalid')
+
+        review_runs = [
+            row for row in payload.get('runs', [])
+            if str(row.get('head_branch') or '') == auth_branch
+            and str(row.get('head_sha') or '').lower() == head
+            and str(row.get('path') or '') == AUTH_REVIEW_WORKFLOW
+            and str(row.get('event') or '') == 'pull_request'
+        ]
+        if len(review_runs) != 1:
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head lacks exactly one authorization-review run')
+        review = review_runs[0]
+        if (
+            int(review.get('run_attempt') or 0) != 1
+            or review.get('status') != 'completed'
+            or review.get('conclusion') != 'failure'
+        ):
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} preserved authorization review is not terminal attempt-1 failure')
+        run_id = int(review.get('id') or 0)
+        if run_id <= 0:
+            raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed authorization-review run id invalid')
+
+        for row in payload.get('issue60Comments', []):
+            match = R8_ALLOCATION_MARKER.fullmatch(str(row.get('body') or '').strip())
+            if (
+                match
+                and int(match.group(1)) == ordinal
+                and match.group(2).lower() == head
+                and int(match.group(4)) == pr_number
+            ):
+                raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head already has an allocation marker')
+
+        dispatch_branch = f'dispatch/aerosol-family-challenge-v2-r8-ordinal-{ordinal}'
+        for row in payload.get('branches', []):
+            if (
+                str(row.get('name') or '') == dispatch_branch
+                and str(((row.get('commit') or {}).get('sha') or '')).lower() == head
+            ):
+                raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head already has a dispatch branch')
+        for row in payload.get('runs', []):
+            if (
+                str(row.get('path') or '') == EXECUTION_WORKFLOW
+                and str(row.get('head_sha') or '').lower() == head
+            ):
+                raise GlobalOrdinalRefusal(f'ordinal {ordinal} failed head already has a scientific execution run')
+
+        pr_numbers.add(pr_number)
+        run_ids.add(run_id)
+
+    return {
+        'heads': sorted(by_head),
+        'prNumbers': sorted(pr_numbers),
+        'reviewRunIds': sorted(run_ids),
+    }
+
+
+def validate_current_candidate_global_ordinal(
+    payload: dict[str, Any],
+    latest_consumed: int,
+    candidate: int,
+    *,
+    current_run_id: int | None = None,
+    current_pr: int | None = None,
+) -> list[dict[str, Any]]:
+    """Prove candidate is the current monotonic ordinal across retired gaps.
+
+    Earlier unconsumed ordinals must each have the exact retired-undispatched proof. The candidate
+    itself may have current authorization/review/dispatch control surfaces; those do not advance the
+    global ordinal. No scientific identity surface above the candidate is permitted.
+    """
+    if not isinstance(latest_consumed, int) or latest_consumed <= 0:
+        raise GlobalOrdinalRefusal('latest consumed global scientific ordinal is invalid')
+    if not isinstance(candidate, int) or candidate <= latest_consumed:
+        raise GlobalOrdinalRefusal('candidate global scientific ordinal is invalid')
+
+    failed_authorization_history(payload, candidate)
+    observations = authoritative_global_ordinal_observations(payload, current_run_id=current_run_id)
+    if not observations:
+        raise GlobalOrdinalRefusal('no authoritative global scientific ordinal observations')
+    observed_max = max(int(row['ordinal']) for row in observations)
+    if observed_max > candidate:
+        raise GlobalOrdinalRefusal(
+            f'global identity surface is ahead of candidate: candidate={candidate} observed={observed_max}'
+        )
+    if not any(int(row['ordinal']) == candidate for row in observations):
+        raise GlobalOrdinalRefusal(f'candidate ordinal {candidate} has no authoritative identity surface')
+
+    for ordinal in range(latest_consumed + 1, candidate):
+        _retired_undispatched_proof(payload, ordinal)
+    return observations
+
+
+def derive_next_global_ordinal(
+    payload: dict[str, Any],
+    latest_consumed: int,
+    *,
+    current_run_id: int | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    if not isinstance(latest_consumed, int) or latest_consumed <= 0:
+        raise GlobalOrdinalRefusal("latest consumed global scientific ordinal is invalid")
+    observations = authoritative_global_ordinal_observations(payload, current_run_id=current_run_id)
+    if not observations:
+        raise GlobalOrdinalRefusal("no authoritative global scientific ordinal observations")
+    retired_ordinals = sorted({
+        int(match.group(1))
+        for row in payload.get("issue60Comments", [])
+        if (match := R8_RETIRED_MARKER.fullmatch(str(row.get("body") or "").strip()))
+    })
+    for ordinal in retired_ordinals:
+        _retired_undispatched_proof(payload, ordinal)
+    observed_max = max(int(row["ordinal"]) for row in observations)
+    if observed_max < latest_consumed:
+        raise GlobalOrdinalRefusal(
+            f"global identity surface is behind latest consumed ordinal

@@ -19,6 +19,7 @@ AUTH_HELPER_PATH = f"experiments/{STAGE}/execution-candidate/authorization.py"
 PREAUTH_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-preauthorization.yml"
 AUTH_REVIEW_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml"
 EXECUTION_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml"
+DISPATCH_PUBLISHER_WORKFLOW_PATH = ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml"
 RUNTIME_LOCK_RAW_SHA256 = "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5"
 
 SOURCE_R8_BYTE_BINDINGS = {
@@ -53,6 +54,7 @@ def bindings(root: Path) -> dict[str, str]:
         "preauthorizationWorkflowRawSha256": PREAUTH_WORKFLOW_PATH,
         "authorizationReviewWorkflowRawSha256": AUTH_REVIEW_WORKFLOW_PATH,
         "executionWorkflowRawSha256": EXECUTION_WORKFLOW_PATH,
+        "dispatchPublisherWorkflowRawSha256": DISPATCH_PUBLISHER_WORKFLOW_PATH,
     }
     out = {key: sha(root / path) for key, path in paths.items()}
     for key, (rel, expected) in SOURCE_R8_BYTE_BINDINGS.items():
@@ -92,6 +94,9 @@ def make(root: Path, ordinal: int, parent: str) -> dict[str, Any]:
         "sourceOrdinal34Reusable": False,
         "sourceOrdinal34AffectedGroupArtifactsReusable": False,
         "resultsOpenedBeforeRecoveryFreeze": False,
+        "dispatchPublisherRequired": True,
+        "dispatchPublisherActualGitPushRequired": True,
+        "dispatchPublisherExplicitWorkflowDispatchRequired": True,
     }
     row.update(bindings(root))
     return row

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,15 @@ def _guard_require(condition: bool, message: str) -> None:
 
 def raw_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _bound_source_base_main_sha(core) -> str:
+    """Return the public-main source binding from the byte-bound base design."""
+    base_design = json.loads(core.BASE_DESIGN_PATH.read_text())
+    source_bindings = base_design.get('sourceBindings') or {}
+    value = source_bindings.get('publicRepoMainSha')
+    _guard_require(isinstance(value, str) and SHA40.fullmatch(value) is not None, 'bound base design public-main SHA invalid')
+    return value
 
 
 def validate_pairing_manifest(core, manifest: dict[str, Any]) -> list[int]:
@@ -115,7 +125,7 @@ def evaluate(
     _guard_require(live_seed_audit.get('repositoryHead') == head, 'authorization-time seed audit is not exact-head')
     _guard_require(live_seed_audit.get('auditedBranchName') == authorization.get('authorizationBranch'), 'authorization-time seed audit branch identity drift')
     _guard_require(live_seed_audit.get('auditedBranchHeadShaObserved') == head and live_seed_audit.get('auditedBranchHeadMatchesRepositoryHead') is True, 'authorization-time seed audit did not observe exact authorization branch head')
-    _guard_require(live_seed_audit.get('sourceBaseMainSha') == core.PUBLIC_REPO_MAIN_SHA, 'authorization-time seed audit source base drift')
+    _guard_require(live_seed_audit.get('sourceBaseMainSha') == _bound_source_base_main_sha(core), 'authorization-time seed audit source base drift')
     _guard_require(live_seed_audit.get('exactHeadTrackedTreeByteScanPassed') is True, 'tracked-tree seed scan not passed')
     _guard_require(live_seed_audit.get('repositoryGlobalCollisionSurfaceScanPassed') is True, 'repository-global seed collision surface scan not passed')
     _guard_require(live_seed_audit.get('repositoryGlobalDoubleEnumerationStable') is True and live_seed_audit.get('repositoryGlobalEnumerationPassCount') == 2, 'repository-global seed audit was not a stable double enumeration')

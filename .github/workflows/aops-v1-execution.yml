@@ -105,17 +105,29 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${REVIEW_AID}/zip" > auth-review.zip
           unzip -q auth-review.zip -d auth-review-artifact
           PUBLISH_BRANCH="status/aops-v1-dispatch-publisher-ordinal-$ORDINAL"
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-dispatch-publisher.yml/runs?branch=${PUBLISH_BRANCH}&event=push&per_page=100" > publisher-run-pages.json
-          python - <<'PY'
-          import json
+          export PUBLISH_BRANCH
+          for i in $(seq 1 30); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-dispatch-publisher.yml/runs?branch=${PUBLISH_BRANCH}&event=push&per_page=100" > publisher-run-pages.json
+            python - <<'PY' > publisher-state.env
+          import json,os
           from pathlib import Path
           pages=json.load(open('publisher-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
-          good=[r for r in runs if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
-          if len(runs)!=1 or len(good)!=1: raise SystemExit(f'publisher history invalid: runs={len(runs)} good={len(good)}')
-          Path('publisher-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          same=[r for r in runs if (r.get('head_branch') or '')==os.environ['PUBLISH_BRANCH']]
+          if len(same)!=1: raise SystemExit(f'expected exactly one publisher run, got {len(same)}')
+          r=same[0]
+          if int(r.get('run_attempt') or 0)!=1: raise SystemExit('publisher rerun forbidden')
+          Path('publisher-selected.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n')
+          print('PUBLISHER_STATUS='+str(r.get('status') or ''))
+          print('PUBLISHER_CONCLUSION='+str(r.get('conclusion') or ''))
+          print('PUBLISHER_RUN_ID='+str(r.get('id') or 0))
           PY
-          PUB_RID="$(python -c 'import json;print(json.load(open("publisher-selected.json"))["id"])')"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PUB_RID}/artifacts?per_page=100" > publisher-artifacts.json
+            source publisher-state.env
+            if [ "$PUBLISHER_STATUS" = completed ]; then break; fi
+            sleep 2
+          done
+          test "$PUBLISHER_STATUS" = completed
+          test "$PUBLISHER_CONCLUSION" = success
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PUBLISHER_RUN_ID}/artifacts?per_page=100" > publisher-artifacts.json
           PUB_AID="$(python - <<'PY'
           import json,os
           rows=json.load(open('publisher-artifacts.json')).get('artifacts',[]); expected=f'aops-v1-dispatch-publisher-ordinal-{os.environ["ORDINAL"]}'

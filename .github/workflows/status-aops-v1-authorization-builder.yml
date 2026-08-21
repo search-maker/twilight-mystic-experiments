@@ -1,0 +1,89 @@
+name: Neutral AOPS v1 authorization builder
+
+on:
+  push:
+    branches: [status/aops-v1-authorization-builder]
+    paths: [.github/workflows/status-aops-v1-authorization-builder.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Download exact successful preauthorization proof and build authorization bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_MAIN: 7297a579112b6089acc5b5d45292e8169039c022
+          PREAUTH_RUN: "32538177359"
+          PREAUTH_ARTIFACT: "9466212702"
+          CANDIDATE: "36"
+          RESULT_BRANCH: status/aops-v1-authorization-builder-result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$TARGET_MAIN"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREAUTH_RUN}" > preauth-run.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('preauth-run.json'))
+          if r.get('head_sha')!=os.environ['TARGET_MAIN'] or int(r.get('run_attempt') or 0)!=1 or r.get('status')!='completed' or r.get('conclusion')!='success':
+              raise SystemExit('preauthorization run identity/status drift')
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT}" > preauth-artifact.json
+          python - <<'PY'
+          import json,os
+          a=json.load(open('preauth-artifact.json'))
+          if a.get('name')!='aops-v1-preauthorization-proof' or a.get('expired') is True: raise SystemExit('preauthorization artifact identity drift')
+          wr=a.get('workflow_run') or {}
+          if int(wr.get('id') or 0)!=int(os.environ['PREAUTH_RUN']) or wr.get('head_sha')!=os.environ['TARGET_MAIN']: raise SystemExit('artifact/run binding drift')
+          PY
+          mkdir preauth
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT}/zip" > preauth.zip
+          test "$(sha256sum preauth.zip | cut -d' ' -f1)" = ca87c4a21c565a3fbb57959bb0cd7e055b19fe4ea3d98fe44b7fc23885a2f7de
+          unzip -q preauth.zip -d preauth
+          python - <<'PY'
+          import json,os
+          p=json.load(open('preauth/preauthorization.json')); s=json.load(open('preauth/seed-authorization-proof.json'))
+          if p.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED' or p.get('exactMainSha')!=os.environ['TARGET_MAIN'] or p.get('nextAvailableScientificOrdinal')!=int(os.environ['CANDIDATE']): raise SystemExit('preauthorization report drift')
+          if p.get('scientificOrdinalAllocated') is not False or p.get('authorizationCreated') is not False or p.get('dispatchCreated') is not False: raise SystemExit('preauthorization crossed identity boundary')
+          if s.get('status')!='PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED' or s.get('auditedMainHead')!=os.environ['TARGET_MAIN']: raise SystemExit('seed proof drift')
+          PY
+          python experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/build_authorization.py \
+            --repository-root . \
+            --seed-proof preauth/seed-authorization-proof.json \
+            --main-sha "$TARGET_MAIN" \
+            --ordinal "$CANDIDATE" \
+            --output generated-authorization.json
+          PYTHONPATH=experiments/aerosol-optical-property-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import authorization_transport_guard
+          root=Path('.'); stage=root/'experiments/aerosol-optical-property-sensitivity-v1'; execd=stage/'execution-candidate'
+          auth=json.load(open('generated-authorization.json')); proof=json.load(open('preauth/seed-authorization-proof.json'))
+          paths={'freeze':root/'evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json','executionContract':stage/'execution-contract.review.json','adapter':stage/'adapter.py','executor':execd/'executor.py','aggregator':execd/'aggregate_results.py','analysis':stage/'analysis.py','analysisContract':stage/'analysis-contract.v1.json','levelBAnalysis':stage/'level_b_analysis.mjs','authorizationGuard':execd/'authorization_guard.py','freshness':execd/'freshness.py','seedAuthorizationProof':Path('preauth/seed-authorization-proof.json')}
+          contract=authorization_transport_guard.validate_enabled_document(root,auth,os.environ['TARGET_MAIN'],paths,proof)
+          if auth.get('scientificOrdinal')!=int(os.environ['CANDIDATE']) or auth.get('enabled') is not True or auth.get('dispatchAuthorized') is not False or auth.get('resultOpeningAuthorized') is not False: raise SystemExit('generated authorization boundary drift')
+          summary={'schemaVersion':1,'stageId':'aops-v1-neutral-authorization-builder','status':'PASS_EXACT_AUTHORIZATION_BYTES_NOT_PUBLISHED_AS_IDENTITY','targetMain':os.environ['TARGET_MAIN'],'scientificOrdinal':auth['scientificOrdinal'],'authorizationBranch':auth['authorizationBranch'],'dispatchBranch':auth['dispatchBranch'],'executionKey':auth['executionKey'],'transportContractStatus':contract['status']}
+          Path('builder-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          mv generated-authorization.json observer-result/authorization.json
+          mv builder-summary.json observer-result/builder-summary.json
+          git add observer-result/authorization.json observer-result/builder-summary.json
+          git commit -m "Publish neutral AOPS authorization bytes"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

@@ -78,6 +78,7 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('source / "adapter.py"',executor); self.assertIn('source / "derived_channels.py"',executor)
         self.assertIn('int(manifest["solverTimeoutSeconds"])',executor)
 
+
     def test_freeze_record_binds_exact_activation_file_bytes(self):
         import hashlib
         r=json.loads((EVIDENCE/'freeze-record.json').read_text())

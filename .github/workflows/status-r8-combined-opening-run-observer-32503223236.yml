@@ -1,0 +1,100 @@
+name: AFC2 R8 combined opening run observer 32503223236
+
+on:
+  push:
+    branches:
+      - status/r8-combined-opening-run-observer-32503223236
+    paths:
+      - .github/workflows/status-r8-combined-opening-run-observer-32503223236.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-combined-opening-run-observer-32503223236
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read publisher and opening run metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_BRANCH: status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+          REQUEST_HEAD: 1d8b5c047341d3e81a69463433e26cd94d6836e7
+          DISPATCH_BRANCH: dispatch/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-run-32503223236
+          TRANSPORT_HEAD: 0ca71ea91a94707f23c1d5da31526bf4e68b1423
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p observer
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher.yml/runs?branch=${REQUEST_BRANCH}&event=push&per_page=100" > observer/publisher-runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > observer/opening-runs.json
+          python - <<'PY'
+          import json,os,subprocess
+          from collections import Counter
+          from pathlib import Path
+          def flat(path):
+              pages=json.load(open(path)); return [r for p in pages for r in p.get('workflow_runs',[])]
+          pubs=[r for r in flat('observer/publisher-runs.json') if r.get('head_branch')==os.environ['REQUEST_BRANCH'] and r.get('head_sha')==os.environ['REQUEST_HEAD']]
+          opens=[r for r in flat('observer/opening-runs.json') if r.get('head_branch')==os.environ['DISPATCH_BRANCH'] and r.get('head_sha')==os.environ['TRANSPORT_HEAD']]
+          if len(pubs)!=1: raise SystemExit(f'exact publisher run count {len(pubs)}')
+          if len(opens)>1: raise SystemExit(f'duplicate opening run count {len(opens)}')
+          pub=pubs[0]
+          if int(pub.get('run_attempt') or 0)!=1: raise SystemExit('publisher rerun detected')
+          result={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-combined-opening-run-observer',
+            'publisher':{k:pub.get(k) for k in ('id','status','conclusion','run_attempt','head_branch','head_sha','event','created_at','updated_at')},
+            'openingRunFound':len(opens)==1,
+            'scientificChannelsOpenedByObserver':False,
+          }
+          if opens:
+              op=opens[0]
+              if int(op.get('run_attempt') or 0)!=1: raise SystemExit('opening run rerun detected')
+              oid=int(op['id'])
+              jobs_pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{oid}/jobs?per_page=100'],text=True))
+              jobs=[j for p in jobs_pages for j in p.get('jobs',[])]
+              artifacts_pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{oid}/artifacts?per_page=100'],text=True))
+              arts=[a for p in artifacts_pages for a in p.get('artifacts',[]) if not a.get('expired',False)]
+              result['opening']={
+                **{k:op.get(k) for k in ('id','status','conclusion','run_attempt','head_branch','head_sha','event','created_at','updated_at')},
+                'jobCount':len(jobs),
+                'jobStatusCounts':dict(sorted(Counter(str(j.get('status')) for j in jobs).items())),
+                'jobConclusionCounts':dict(sorted(Counter(str(j.get('conclusion')) for j in jobs if j.get('conclusion') is not None).items())),
+                'artifactNames':sorted(str(a.get('name') or '') for a in arts),
+              }
+          Path('observer/result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - name: Publish immutable observer result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-combined-opening-run-observer-32503223236-result
+          BASE_SHA: 0ca71ea91a94707f23c1d5da31526bf4e68b1423
+        run: |
+          set -euo pipefail
+          cp observer/result.json /tmp/opening-observer.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'observer result branch exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/opening-observer.json observer-result/opening-run.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/opening-run.json
+          git commit -m 'Record AFC2 R8 combined opening run status'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

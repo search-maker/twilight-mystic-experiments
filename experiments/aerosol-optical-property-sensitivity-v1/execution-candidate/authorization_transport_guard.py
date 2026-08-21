@@ -37,10 +37,12 @@ def validate_transport_contract(repository_root: Path, authorization: dict[str, 
         raise TransportAuthorizationRefusal("transport contract stage drift")
     if contract.get("status") != "FROZEN_TRANSPORT_REVIEW_NOT_AUTHORIZATION":
         raise TransportAuthorizationRefusal("transport contract status drift")
+    if contract.get("reviewPackageBaseSha") != "ccb6ade025f0c6291f0851c3c9b869bd0114cf2a":
+        raise TransportAuthorizationRefusal("transport review-package base provenance drift")
+    if contract.get("authorizationMustBindThenLiveTransportMain") is not True:
+        raise TransportAuthorizationRefusal("transport contract lost live-main authorization rule")
     if authorization.get("transportContractRawSha256") != raw_sha(contract_path):
         raise TransportAuthorizationRefusal("authorization transport-contract raw hash drift")
-    if contract.get("reviewPackageMainSha") != authorization.get("reviewPackageMainSha"):
-        raise TransportAuthorizationRefusal("transport/review-package main binding drift")
     if any(contract.get(key) is not False for key in (
         "scientificOrdinalAllocated", "authorizationCreated", "dispatchCreated",
         "scientificExecutionAuthorized", "solverExecutionAuthorized", "resultOpeningAuthorized",
@@ -68,6 +70,8 @@ def validate_enabled_document(
     contract = validate_transport_contract(repository_root, authorization)
     frozen_guard = load("aops_frozen_authorization_guard_for_transport", paths["authorizationGuard"])
     frozen_guard.validate_enabled_document(authorization, live_main, paths, seed_proof)
+    if authorization.get("reviewPackageMainSha") != live_main:
+        raise TransportAuthorizationRefusal("authorization must bind then-live transport main")
     if authorization.get("transportContractRawSha256") != raw_sha(repository_root / "experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json"):
         raise TransportAuthorizationRefusal("transport contract binding drift")
     return contract

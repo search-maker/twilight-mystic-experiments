@@ -12,6 +12,7 @@ EVIDENCE = ROOT / "evidence" / STAGE
 PRE = ROOT / ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-preauthorization.yml"
 AUTH_REVIEW = ROOT / ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml"
 EXEC = ROOT / ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml"
+PUBLISHER = ROOT / ".github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml"
 
 
 def load(name: str, path: Path):
@@ -52,7 +53,8 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(f'{STAGE}:numerical:35',row['executionKey'])
         self.assertFalse(row['githubRerunAllowed']); self.assertFalse(row['retryAllowed']); self.assertFalse(row['resumeAllowed'])
         self.assertFalse(row['sourceOrdinal34Reusable']); self.assertFalse(row['sourceOrdinal34AffectedGroupArtifactsReusable'])
-        self.assertIn('executionWorkflowRawSha256',row); self.assertIn('seedAuditRawSha256',row)
+        self.assertTrue(row['dispatchPublisherRequired']); self.assertTrue(row['dispatchPublisherActualGitPushRequired']); self.assertTrue(row['dispatchPublisherExplicitWorkflowDispatchRequired'])
+        self.assertIn('executionWorkflowRawSha256',row); self.assertIn('seedAuditRawSha256',row); self.assertIn('dispatchPublisherWorkflowRawSha256',row)
         self.assertEqual('04e93e1054ba2957383749ca4f4735b231993733',row['sourceR8CoreGitBlobSha1'])
         self.assertEqual('108af0a95274ee88fccf9d51d32f88ef0186bfaf',row['sourceR8AdapterGitBlobSha1'])
         self.assertEqual('ccfd04d4c21188966351f4257e92893d7ce340c7',row['sourceR8DerivedChannelsGitBlobSha1'])
@@ -71,13 +73,24 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('COMPLETE_EXACT_8_FRESH_REPLACEMENT_CASE_ARTIFACT_UNIVERSE',exe)
         self.assertNotIn('rerun_workflow',exe.lower()); self.assertNotIn('gh run rerun',exe.lower())
 
+    def test_dispatch_publisher_is_zero_runtime_one_use_and_explicit(self):
+        text=PUBLISHER.read_text()
+        self.assertNotIn('setup-micromamba@',text); self.assertNotIn('rubin-libradtran',text); self.assertNotIn('command -v uvspec',text); self.assertNotIn('--allow-execution',text)
+        self.assertIn('actions: write',text); self.assertIn('contents: write',text); self.assertIn('issues: write',text)
+        self.assertIn('test "$GITHUB_RUN_ATTEMPT" = 1',text)
+        self.assertIn('git push origin "$AUTH_HEAD:refs/heads/$DISPATCH_BRANCH"',text)
+        self.assertIn('ORDINAL${ORDINAL}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED',text)
+        self.assertIn('actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml/dispatches',text)
+        self.assertIn('event=workflow_dispatch',text)
+        self.assertIn('publisher identity must have exactly one attempt-1 run',text)
+        self.assertNotIn('gh run rerun',text.lower())
+
     def test_process_group_timeout_is_bound_and_source_science_adapter_is_reused(self):
         runner=(PKG/'execution-candidate/process_runner.py').read_text(); executor=(PKG/'execution-candidate/executor.py').read_text()
         self.assertIn('start_new_session=True',runner); self.assertIn('os.killpg(proc.pid, signal.SIGTERM)',runner); self.assertIn('os.killpg(proc.pid, signal.SIGKILL)',runner)
         self.assertIn('experiments/aerosol-family-challenge-v2-r8',executor)
         self.assertIn('source / "adapter.py"',executor); self.assertIn('source / "derived_channels.py"',executor)
         self.assertIn('int(manifest["solverTimeoutSeconds"])',executor)
-
 
     def test_freeze_record_binds_exact_activation_file_bytes(self):
         import hashlib
@@ -90,6 +103,7 @@ class ActivationTests(unittest.TestCase):
             'preauthorizationWorkflowRawSha256':PRE,
             'authorizationReviewWorkflowRawSha256':AUTH_REVIEW,
             'executionWorkflowRawSha256':EXEC,
+            'dispatchPublisherWorkflowRawSha256':PUBLISHER,
         }
         for key,path in paths.items():
             self.assertEqual(r[key],hashlib.sha256(path.read_bytes()).hexdigest(),key)
@@ -102,6 +116,10 @@ class ActivationTests(unittest.TestCase):
         self.assertIn('PREREGISTRATION_PR_HEAD = "002b671089c5a7f27f7d65781ce78e4cb9981150"',text)
         self.assertIn('PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION',text)
         self.assertIn('tracked_collisions',text); self.assertIn('metadata_collisions',text)
+        self.assertIn('verify_dispatch_publisher',text)
+        self.assertIn('dispatchPublisherVerified',text)
+        self.assertIn('aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml',text)
+        self.assertIn('timed out waiting for exact successful publisher before scientific preflight',text)
 
 
 if __name__=='__main__': unittest.main()

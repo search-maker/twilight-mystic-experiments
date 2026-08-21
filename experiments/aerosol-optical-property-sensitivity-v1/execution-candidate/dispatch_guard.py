@@ -28,6 +28,7 @@ def load(name: str, path: Path):
 
 
 def evaluate(
+    repository_root: Path,
     authorization: dict[str, Any],
     seed_proof: dict[str, Any],
     context: dict[str, Any],
@@ -35,7 +36,7 @@ def evaluate(
     *,
     post_dispatch: bool = False,
 ) -> dict[str, Any]:
-    auth_guard = load("aops_dispatch_auth_guard", paths["authorizationGuard"])
+    transport_guard = load("aops_dispatch_transport_auth_guard", paths["authorizationTransportGuard"])
     freshness = load("aops_dispatch_freshness", paths["freshness"])
     ordinal = authorization.get("scientificOrdinal")
     head = context.get("authorizationHead")
@@ -46,7 +47,7 @@ def evaluate(
     require(isinstance(parent, str) and SHA40.fullmatch(parent) is not None, "authorization parent invalid")
     require(context.get("liveMain") == parent, "live main moved after authorization review")
     try:
-        auth_guard.validate_enabled_document(authorization, parent, paths, seed_proof)
+        transport_guard.validate_enabled_document(repository_root, authorization, parent, paths, seed_proof)
     except Exception as exc:
         raise DispatchRefusal(str(exc)) from exc
     require(pr.get("state") == "open" and pr.get("draft") is True and pr.get("merged") is False, "authorization PR no longer Draft/open/unmerged")

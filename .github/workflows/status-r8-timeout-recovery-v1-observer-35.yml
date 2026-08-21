@@ -1,0 +1,173 @@
+name: AFC2 R8 timeout recovery v1 neutral observer 35
+
+on:
+  push:
+    branches:
+      - status/r8-timeout-recovery-v1-observer-35
+    paths:
+      - .github/workflows/status-r8-timeout-recovery-v1-observer-35.yml
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-neutral-observer-35
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact observer head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read publisher, science, and combined-analysis metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_HEAD: b37aab8fd2c2f0a6b58eef79a00811c9adea02a0
+          AUTH_PARENT: 19bd924ab86ed0744b3fd77ce5d6756039674d5f
+          PUBLISHER_BRANCH: status/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher-ordinal-35
+          DISPATCH_BRANCH: dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-35
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/r8-timeout-recovery-v1-observer-35
+          mkdir -p observer
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-dispatch-publisher.yml/runs?branch=${PUBLISHER_BRANCH}&event=push&per_page=100" > observer/publisher-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > observer/science-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?event=workflow_run&per_page=100" > observer/combined-pages.json
+          python - <<'PY'
+          import json, os, subprocess
+          from collections import Counter
+          from pathlib import Path
+
+          def flatten(path, key):
+              pages=json.loads(Path(path).read_text())
+              return [row for page in pages for row in page.get(key, [])]
+
+          def api_json(path):
+              out=subprocess.check_output(['gh','api',path], text=True)
+              return json.loads(out)
+
+          def api_pages(path, key):
+              out=subprocess.check_output(['gh','api','--paginate','--slurp',path], text=True)
+              pages=json.loads(out)
+              return [row for page in pages for row in page.get(key, [])]
+
+          pub_rows=[r for r in flatten('observer/publisher-pages.json','workflow_runs') if r.get('head_branch')==os.environ['PUBLISHER_BRANCH']]
+          if len(pub_rows)!=1:
+              raise SystemExit(f'expected exactly one publisher run for ordinal 35, got {len(pub_rows)}')
+          pub=pub_rows[0]
+          if int(pub.get('run_attempt') or 0)!=1:
+              raise SystemExit('publisher was rerun')
+
+          sci_rows=[r for r in flatten('observer/science-pages.json','workflow_runs') if r.get('head_branch')==os.environ['DISPATCH_BRANCH'] and r.get('head_sha')==os.environ['AUTH_HEAD']]
+          if len(sci_rows)>1:
+              raise SystemExit(f'duplicate science identity: {len(sci_rows)} runs')
+
+          summary={
+              'schemaVersion':1,
+              'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-neutral-observer-ordinal-35',
+              'observerRunAttempt':1,
+              'authorizationHead':os.environ['AUTH_HEAD'],
+              'authorizationParent':os.environ['AUTH_PARENT'],
+              'publisher':{
+                  'runId':int(pub['id']),
+                  'runAttempt':int(pub.get('run_attempt') or 0),
+                  'status':pub.get('status'),
+                  'conclusion':pub.get('conclusion'),
+                  'headBranch':pub.get('head_branch'),
+                  'headSha':pub.get('head_sha'),
+                  'event':pub.get('event'),
+                  'createdAt':pub.get('created_at'),
+                  'updatedAt':pub.get('updated_at'),
+              },
+              'scienceRunFound':len(sci_rows)==1,
+              'scientificChannelsOpenedByObserver':False,
+          }
+
+          if sci_rows:
+              sci=sci_rows[0]
+              sid=int(sci['id'])
+              if int(sci.get('run_attempt') or 0)!=1:
+                  raise SystemExit('science run was rerun')
+              jobs=api_pages(f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{sid}/jobs?per_page=100','jobs')
+              artifacts=api_pages(f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{sid}/artifacts?per_page=100','artifacts')
+              job_status=Counter(str(j.get('status')) for j in jobs)
+              job_conclusion=Counter(str(j.get('conclusion')) for j in jobs if j.get('conclusion') is not None)
+              artifact_names=sorted(str(a.get('name') or '') for a in artifacts if not a.get('expired',False))
+              case_artifacts=[n for n in artifact_names if n.startswith('afc2-r8-timeout-recovery-v1-case-')]
+              acquisition=[n for n in artifact_names if n.startswith('afc2-r8-timeout-recovery-v1-acquisition-ordinal-')]
+              summary['science']={
+                  'runId':sid,
+                  'runAttempt':int(sci.get('run_attempt') or 0),
+                  'status':sci.get('status'),
+                  'conclusion':sci.get('conclusion'),
+                  'headBranch':sci.get('head_branch'),
+                  'headSha':sci.get('head_sha'),
+                  'event':sci.get('event'),
+                  'createdAt':sci.get('created_at'),
+                  'updatedAt':sci.get('updated_at'),
+                  'jobCount':len(jobs),
+                  'jobStatusCounts':dict(sorted(job_status.items())),
+                  'jobConclusionCounts':dict(sorted(job_conclusion.items())),
+                  'artifactCount':len(artifact_names),
+                  'caseArtifactCount':len(case_artifacts),
+                  'caseArtifactNames':case_artifacts,
+                  'acquisitionArtifacts':acquisition,
+              }
+              title=f'AFC2 R8 timeout recovery v1 combined analysis recovery-run-{sid}'
+              combined=[r for r in flatten('observer/combined-pages.json','workflow_runs') if r.get('display_title')==title]
+              if len(combined)>1:
+                  raise SystemExit(f'duplicate combined-analysis identity: {len(combined)}')
+              summary['combinedAnalysisRunFound']=len(combined)==1
+              if combined:
+                  c=combined[0]
+                  if int(c.get('run_attempt') or 0)!=1:
+                      raise SystemExit('combined analysis was rerun')
+                  carts=api_pages(f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{int(c["id"])}/artifacts?per_page=100','artifacts')
+                  summary['combinedAnalysis']={
+                      'runId':int(c['id']),
+                      'runAttempt':int(c.get('run_attempt') or 0),
+                      'status':c.get('status'),
+                      'conclusion':c.get('conclusion'),
+                      'event':c.get('event'),
+                      'createdAt':c.get('created_at'),
+                      'updatedAt':c.get('updated_at'),
+                      'artifactNames':sorted(str(a.get('name') or '') for a in carts if not a.get('expired',False)),
+                  }
+          else:
+              summary['combinedAnalysisRunFound']=False
+
+          Path('observer/status.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,sort_keys=True))
+          PY
+      - name: Publish one immutable observer result branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-timeout-recovery-v1-observer-35-result
+          AUTH_PARENT: 19bd924ab86ed0744b3fd77ce5d6756039674d5f
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          cp observer/status.json /tmp/r8-recovery-35-status.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then
+            echo 'observer result branch already exists; refuse overwrite' >&2
+            exit 1
+          fi
+          git checkout --detach "$AUTH_PARENT"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/r8-recovery-35-status.json observer-result/status.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/status.json
+          git commit -m 'Record AFC2 R8 timeout recovery ordinal 35 status snapshot'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

@@ -39,7 +39,8 @@ class AopsTransportTests(unittest.TestCase):
     def test_transport_contract_stays_pre_authorization(self) -> None:
         c = self.contract
         self.assertEqual(c["status"], "FROZEN_TRANSPORT_REVIEW_NOT_AUTHORIZATION")
-        self.assertEqual(c["reviewPackageMainSha"], "ccb6ade025f0c6291f0851c3c9b869bd0114cf2a")
+        self.assertEqual(c["reviewPackageBaseSha"], "ccb6ade025f0c6291f0851c3c9b869bd0114cf2a")
+        self.assertTrue(c["authorizationMustBindThenLiveTransportMain"])
         for key in (
             "scientificOrdinalAllocated", "authorizationCreated", "dispatchCreated",
             "scientificExecutionAuthorized", "solverExecutionAuthorized", "resultOpeningAuthorized",
@@ -66,12 +67,10 @@ class AopsTransportTests(unittest.TestCase):
 
     def test_transport_authorization_wrapper_enforces_contract_bytes(self) -> None:
         mod = load("aops_transport_auth_test", EXEC / "authorization_transport_guard.py")
-        auth = {
-            "transportContractRawSha256": raw_sha256(CONTRACT),
-            "reviewPackageMainSha": self.contract["reviewPackageMainSha"],
-        }
+        auth = {"transportContractRawSha256": raw_sha256(CONTRACT)}
         out = mod.validate_transport_contract(ROOT, auth)
         self.assertEqual(out["stageId"], "aerosol-optical-property-sensitivity-v1-transport-contract")
+        self.assertEqual(out["reviewPackageBaseSha"], "ccb6ade025f0c6291f0851c3c9b869bd0114cf2a")
 
     def test_preauthorization_and_authorization_review_are_zero_runtime(self) -> None:
         pre = (WORKFLOWS / "aops-v1-preauthorization-audit.yml").read_text()
@@ -113,6 +112,15 @@ class AopsTransportTests(unittest.TestCase):
         self.assertLess(text.index("Run frozen exact-360 acquisition and scalar/spectral analysis"), text.index("Run frozen Level-B propagation only after exact-360 aggregate"))
         self.assertIn("max-parallel: 2", text)
         self.assertIn("solverTimeoutSeconds", (STAGE / "execution-contract.review.json").read_text())
+
+    def test_science_waits_for_same_attempt_publisher_terminal_success(self) -> None:
+        text = (WORKFLOWS / "aops-v1-execution.yml").read_text()
+        self.assertIn("for i in $(seq 1 30)", text)
+        self.assertIn("sleep 2", text)
+        self.assertIn("test \"$PUBLISHER_STATUS\" = completed", text)
+        self.assertIn("test \"$PUBLISHER_CONCLUSION\" = success", text)
+        self.assertIn("expected exactly one publisher run", text)
+        self.assertIn("publisher rerun forbidden", text)
 
     def test_science_guard_requires_separate_authorization_and_live_seed_proofs(self) -> None:
         guard = (EXEC / "guard.py").read_text()

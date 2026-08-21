@@ -1,0 +1,77 @@
+name: AFC2 R8 combined opening v2 publisher observer 32503223236
+
+on:
+  push:
+    branches:
+      - status/r8-combined-opening-v2-publisher-observer-32503223236
+    paths:
+      - .github/workflows/status-r8-combined-opening-v2-publisher-observer-32503223236.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-combined-opening-v2-publisher-observer-32503223236
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read v2 publisher metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_BRANCH: status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v2-run-32503223236
+          REQUEST_HEAD: b4ddc0fb20f219b5e6f9dddc50d0a5e5bfc2f37c
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p observer
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v2.yml/runs?branch=${REQUEST_BRANCH}&event=push&per_page=100" > observer/publisher-runs.json
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          pages=json.load(open('observer/publisher-runs.json')); runs=[r for p in pages for r in p.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_branch')==os.environ['REQUEST_BRANCH'] and r.get('head_sha')==os.environ['REQUEST_HEAD']]
+          if len(same)>1: raise SystemExit(f'duplicate v2 publisher runs: {len(same)}')
+          result={'schemaVersion':1,'stageId':'afc2-r8-combined-opening-v2-publisher-observer','publisherRunFound':len(same)==1,'scientificChannelsOpenedByObserver':False}
+          if same:
+              r=same[0]
+              if int(r.get('run_attempt') or 0)!=1: raise SystemExit('v2 publisher rerun detected')
+              jobs_pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{int(r["id"])}/jobs?per_page=100'],text=True))
+              jobs=[j for p in jobs_pages for j in p.get('jobs',[])]
+              result['publisher']={k:r.get(k) for k in ('id','status','conclusion','run_attempt','head_branch','head_sha','event','created_at','updated_at')}
+              result['jobs']=[{'id':j.get('id'),'name':j.get('name'),'status':j.get('status'),'conclusion':j.get('conclusion'),'steps':[{'name':s.get('name'),'status':s.get('status'),'conclusion':s.get('conclusion')} for s in j.get('steps',[])]} for j in jobs]
+          Path('observer/result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - name: Publish immutable observer result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-combined-opening-v2-publisher-observer-32503223236-result
+          BASE_SHA: e938a5383f41220bb26ca1e681a792dbbcbcf8d3
+        run: |
+          set -euo pipefail
+          cp observer/result.json /tmp/v2-publisher-observer.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'observer result branch exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/v2-publisher-observer.json observer-result/publisher-v2.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/publisher-v2.json
+          git commit -m 'Record AFC2 R8 combined opening v2 publisher status'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

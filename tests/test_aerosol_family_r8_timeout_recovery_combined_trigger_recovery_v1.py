@@ -47,6 +47,7 @@ class CombinedTriggerRecoveryV1Tests(unittest.TestCase):
         self.assertIn("path: frozen-analysis", text)
         self.assertIn("combined_aggregate.py", text)
         self.assertIn("--repository-root frozen-analysis", text)
+        self.assertIn("Prove exact reviewed trigger-recovery transport bytes", text)
         self.assertNotIn("uses: mamba-org/setup-micromamba", text)
         self.assertNotIn("command -v uvspec", text)
         self.assertNotIn("rerun_url", text)
@@ -62,6 +63,7 @@ class CombinedTriggerRecoveryV1Tests(unittest.TestCase):
         self.assertIn("AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_CONSUMED", text)
         self.assertIn("/dispatches", text)
         self.assertIn("inputs[science_run_id]=32503223236", text)
+        self.assertIn("Prove exact reviewed trigger-recovery transport bytes", text)
         self.assertNotIn("setup-micromamba@", text)
         self.assertNotIn("uvspec", text)
 

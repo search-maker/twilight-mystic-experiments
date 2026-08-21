@@ -1,0 +1,103 @@
+name: AFC2 R8 v2 publisher run-id neutral probe 96858517974
+
+on:
+  push:
+    branches:
+      - status/r8-v2-run-id-probe-96858517974
+    paths:
+      - .github/workflows/status-r8-v2-run-id-probe-96858517974.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Probe exact v2 job and recorded run endpoint without failing on HTTP errors
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECORDED_RUN_ID: '32510096551'
+          JOB_ID: '96858517974'
+          EXPECTED_MAIN: be46eb693da71249ae47f6c186289914bf684ebc
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          mkdir -p probe
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${JOB_ID}" > probe/job.json
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RECORDED_RUN_ID}" > probe/recorded-run.json 2> probe/recorded-run.stderr
+          RUN_RC=$?
+          set -e
+          export RUN_RC
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          job=json.load(open('probe/job.json'))
+          run_url=str(job.get('run_url') or '')
+          m=re.search(r'/actions/runs/(\d+)$',run_url)
+          derived=int(m.group(1)) if m else None
+          recorded=int(os.environ['RECORDED_RUN_ID'])
+          rc=int(os.environ['RUN_RC'])
+          run_doc=None
+          p=Path('probe/recorded-run.json')
+          if p.exists() and p.stat().st_size:
+              try: run_doc=json.load(open(p))
+              except Exception: run_doc=None
+          out={
+            'schemaVersion':1,
+            'stageId':'afc2-r8-v2-publisher-run-id-neutral-probe',
+            'jobId':int(os.environ['JOB_ID']),
+            'jobConclusion':job.get('conclusion'),
+            'jobStatus':job.get('status'),
+            'jobRunUrl':run_url,
+            'derivedRunIdFromJob':derived,
+            'recordedRunId':recorded,
+            'recordedRunApiExitCode':rc,
+            'recordedRunApiReadable':rc==0,
+            'recordedRunDocumentId':run_doc.get('id') if isinstance(run_doc,dict) else None,
+            'recordedRunStderr':Path('probe/recorded-run.stderr').read_text(errors='replace')[:2000],
+            'runIdMatchesJobRunUrl':derived==recorded,
+            'scientificArtifactsDownloaded':False,
+            'scientificChannelsOpened':False,
+          }
+          if derived is None:
+              out['status']='PROBE_JOB_RUN_URL_MISSING'
+          elif derived!=recorded:
+              out['status']='PROBE_RECORDED_RUN_ID_MISMATCH'
+          elif rc!=0:
+              out['status']='PROBE_RUN_ID_MATCHES_JOB_BUT_RUN_ENDPOINT_UNREADABLE'
+          else:
+              out['status']='PROBE_RUN_ID_MATCHES_AND_RUN_ENDPOINT_READABLE'
+          Path('probe/result.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Publish immutable neutral probe result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-v2-run-id-probe-96858517974-result
+          BASE_SHA: be46eb693da71249ae47f6c186289914bf684ebc
+        run: |
+          set -euo pipefail
+          cp probe/result.json /tmp/v2-run-id-probe.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'probe result branch already exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/v2-run-id-probe.json observer-result/v2-run-id-probe.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/v2-run-id-probe.json
+          git commit -m 'Record AFC2 R8 v2 publisher run-id probe'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

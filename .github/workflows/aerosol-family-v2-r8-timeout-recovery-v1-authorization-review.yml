@@ -1,0 +1,121 @@
+name: AFC2 R8 timeout recovery v1 authorization review
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-authorization-review-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorization-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove authorization review is zero scientific runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml').read_text()
+          forbidden=('setup-'+'micromamba','rubin-'+'libradtran','command -v '+'uvspec','--allow-'+'execution','workflow_'+'dispatch:','repository_'+'dispatch:')
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'authorization review exposed scientific runtime/dispatch: {found}')
+          PY
+      - name: Verify one-file Draft authorization identity
+        id: identity
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test '${{ github.event.action }}' = opened
+          test '${{ github.event.pull_request.draft }}' = true
+          test '${{ github.event.pull_request.state }}' = open
+          test '${{ github.event.pull_request.merged }}' = false
+          [[ "$GITHUB_HEAD_REF" =~ ^authorization/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-([1-9][0-9]*)$ ]]
+          ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          mapfile -t PARENTS < <(git cat-file -p "$PR_HEAD_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$PR_HEAD_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+          if git cat-file -e origin/main:experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json 2>/dev/null; then
+            echo 'active authorization path must be absent on main' >&2; exit 1
+          fi
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "parent=$PARENT" >> "$GITHUB_OUTPUT"
+      - name: Verify frozen manifest and exact authorization byte bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/freeze.py --repository-root . --verify
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/authorization.py \
+            --repository-root . --ordinal '${{ steps.identity.outputs.ordinal }}' \
+            --parent '${{ steps.identity.outputs.parent }}' \
+            --validate experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+      - name: Stable authorization-head seed and global ordinal audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p authorization-review-evidence
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/seed_audit.py \
+            --repository "$GITHUB_REPOSITORY" --repository-root . \
+            --expected-branch "$GITHUB_HEAD_REF" --expected-head "$PR_HEAD_SHA" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --ignore-branch-for-ordinal "$GITHUB_HEAD_REF" \
+            --ignore-pr-for-ordinal '${{ github.event.pull_request.number }}' \
+            --output authorization-review-evidence/seed-and-identity-audit.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads(Path('authorization-review-evidence/seed-and-identity-audit.json').read_text())
+          auth=json.loads(Path('experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json').read_text())
+          if a['status']!='PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION': raise SystemExit('authorization seed audit failed')
+          if a['nextGlobalOrdinal']!=auth['scientificOrdinal']: raise SystemExit(f'authorization ordinal is not fresh next global ordinal: audit={a["nextGlobalOrdinal"]} auth={auth["scientificOrdinal"]}')
+          report={
+            'schemaVersion':1,'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-authorization-review',
+            'status':'AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME','headSha':os.environ['PR_HEAD_SHA'],
+            'parentSha':auth['exactAuthorizationParentCommit'],'scientificOrdinal':auth['scientificOrdinal'],
+            'prNumber':int(os.environ['PR_NUMBER']),'runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':1,
+            'conclusion':'success','seedAuditStatus':a['status'],'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,'solverExecutionPerformed':False,
+          }
+          Path('authorization-review-evidence/authorization-review.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Persist zero-runtime authorization review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-authorization-review-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: authorization-review-evidence/
+          if-no-files-found: error
+          compression-level: 0

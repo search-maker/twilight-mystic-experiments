@@ -1,0 +1,172 @@
+name: AOPS v1 candidate-seed freshness review 695ed9a6
+
+on:
+  push:
+    branches:
+      - status/aops-v1-seed-freshness-review-695ed9a6
+    paths:
+      - .github/workflows/status-aops-v1-seed-freshness-review-695ed9a6.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: aops-v1-seed-freshness-review-695ed9a6
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12.4"
+      - name: Prove neutral wrapper and exact immutable review head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/aops-v1-seed-freshness-review-695ed9a6
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = 695ed9a666e3dec4fa1bcc22e62b1f79991e9918
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/status-aops-v1-seed-freshness-review-695ed9a6.yml
+          git fetch origin review/aerosol-optical-property-sensitivity-v1
+          test "$(git rev-parse origin/review/aerosol-optical-property-sensitivity-v1)" = 695ed9a666e3dec4fa1bcc22e62b1f79991e9918
+          git checkout --detach 695ed9a666e3dec4fa1bcc22e62b1f79991e9918
+      - name: Re-derive candidate seeds and run focused review tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-optical-property-sensitivity-v1/seed_ledger.py | tee seed-ledger-validation.txt
+          python -m unittest -v tests.test_aerosol_optical_property_sensitivity_v1_review 2>&1 | tee focused-tests.txt
+      - name: Scan exact tracked tree for candidate-seed collisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z > tracked-files.z
+          python experiments/aerosol-optical-property-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list tracked-files.z \
+            --candidate-seed-ledger experiments/aerosol-optical-property-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-optical-property-sensitivity-v1/seed-self-ledger-policy.v1.json \
+            --output tracked-tree-scan.json
+          python - <<'PY'
+          import json
+          x=json.load(open('tracked-tree-scan.json'))
+          if x.get('exactHeadTrackedTreeByteScanPassed') is not True: raise SystemExit('tracked-tree seed scan did not pass')
+          if x.get('trackedTreeExternalCollisionCount')!=0: raise SystemExit('external tracked-tree collision detected')
+          if x.get('requiredSelfLedgerPathsPresent') is not True: raise SystemExit('required self-ledger missing')
+          print(json.dumps(x,sort_keys=True))
+          PY
+      - name: Stable repository-global candidate-seed freshness audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-optical-property-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-optical-property-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --output repository-global-scan.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode review-freeze \
+            --expected-branch-name review/aerosol-optical-property-sensitivity-v1 \
+            --expected-repo-head 695ed9a666e3dec4fa1bcc22e62b1f79991e9918
+          python - <<'PY'
+          import json
+          x=json.load(open('repository-global-scan.json'))
+          required={
+            'repositoryGlobalCollisionSurfaceScanPassed':True,
+            'repositoryGlobalDoubleEnumerationStable':True,
+            'auditedBranchHeadMatchesRepositoryHead':True,
+            'reviewProofIdentityFresh':True,
+          }
+          for k,v in required.items():
+              if x.get(k)!=v: raise SystemExit(f'global freshness gate failed: {k}={x.get(k)!r}')
+          if x.get('repositoryGlobalCollisionCount')!=0 or x.get('candidateSeedCount')!=72: raise SystemExit('global collision/cardinality gate failed')
+          print(json.dumps(x,sort_keys=True))
+          PY
+      - name: Build combined candidate-seed review proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ledger=json.load(open('experiments/aerosol-optical-property-sensitivity-v1/candidate-seed-ledger.v1.json'))
+          tracked=json.load(open('tracked-tree-scan.json'))
+          global_scan=json.load(open('repository-global-scan.json'))
+          proof={
+            'schemaVersion':1,
+            'stageId':'aerosol-optical-property-sensitivity-v1-seed-freshness-review',
+            'status':'PASS_CANDIDATE_SEEDS_REVIEW_FRESHNESS_NOT_AUTHORIZED',
+            'auditedHead':'695ed9a666e3dec4fa1bcc22e62b1f79991e9918',
+            'candidateSeedCount':72,
+            'candidateSeedCanonicalSha256':ledger['candidateSeedCanonicalSha256'],
+            'candidateRowsCanonicalSha256':ledger['candidateRowsCanonicalSha256'],
+            'allCollisionCountersZero':ledger['allCollisionCountersZero'],
+            'trackedFileCount':tracked['trackedFileCount'],
+            'trackedTreeExternalCollisionCount':tracked['trackedTreeExternalCollisionCount'],
+            'exactHeadTrackedTreeByteScanPassed':tracked['exactHeadTrackedTreeByteScanPassed'],
+            'repositoryGlobalCollisionCount':global_scan['repositoryGlobalCollisionCount'],
+            'repositoryGlobalCollisionSurfaceScanPassed':global_scan['repositoryGlobalCollisionSurfaceScanPassed'],
+            'repositoryGlobalDoubleEnumerationStable':global_scan['repositoryGlobalDoubleEnumerationStable'],
+            'repositoryGlobalStableContextSha256':global_scan['repositoryGlobalStableContextSha256'],
+            'repositoryGlobalSnapshotFenceSha256':global_scan['repositoryGlobalSnapshotFenceSha256'],
+            'repositoryGlobalPostFenceArrivalCounts':global_scan['repositoryGlobalPostFenceArrivalCounts'],
+            'auditedBranchHeadMatchesRepositoryHead':global_scan['auditedBranchHeadMatchesRepositoryHead'],
+            'authorizationTimeRecheckStillRequired':True,
+            'candidateSeedsAppliedToCaseSkeletons':False,
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'solverExecutionAuthorized':False,
+            'resultOpeningAuthorized':False,
+          }
+          Path('seed-freshness-proof.json').write_text(json.dumps(proof,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(proof,sort_keys=True))
+          PY
+      - name: Upload immutable seed-freshness review proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: aops-v1-seed-freshness-review-proof
+          path: |
+            seed-freshness-proof.json
+            tracked-tree-scan.json
+            repository-global-scan.json
+            seed-ledger-validation.txt
+            focused-tests.txt
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish neutral result branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/aops-v1-seed-freshness-review-695ed9a6-result
+        run: |
+          set -euo pipefail
+          cp seed-freshness-proof.json /tmp/seed-freshness-proof.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'result branch already exists' >&2; exit 1; fi
+          git checkout --detach 695ed9a666e3dec4fa1bcc22e62b1f79991e9918
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/seed-freshness-proof.json observer-result/seed-freshness-proof.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/seed-freshness-proof.json
+          git commit -m 'Record AOPS v1 candidate seed freshness review proof'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"

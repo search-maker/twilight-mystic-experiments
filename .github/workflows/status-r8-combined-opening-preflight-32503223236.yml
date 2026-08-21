@@ -1,0 +1,100 @@
+name: AFC2 R8 combined opening neutral preflight 32503223236
+
+on:
+  push:
+    branches:
+      - status/r8-combined-opening-preflight-32503223236
+    paths:
+      - .github/workflows/status-r8-combined-opening-preflight-32503223236.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-combined-opening-neutral-preflight-32503223236
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact observer head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Inspect opening surface without scientific downloads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: 0ca71ea91a94707f23c1d5da31526bf4e68b1423
+          SOURCE_HEAD: b37aab8fd2c2f0a6b58eef79a00811c9adea02a0
+          REQUEST_BRANCH: status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-run-32503223236
+          DISPATCH_BRANCH: dispatch/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-run-32503223236
+          ALLOC_MARKER: AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_ALLOCATED source_run=32503223236 transport_head=0ca71ea91a94707f23c1d5da31526bf4e68b1423
+          CONSUMED_MARKER: AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_CONSUMED source_run=32503223236 transport_head=0ca71ea91a94707f23c1d5da31526bf4e68b1423
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          mkdir -p preflight
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-analysis.yml/runs?per_page=100" > preflight/original-combined-runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery.yml/runs?per_page=100" > preflight/opening-runs.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY%%/*}:authorization/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-35&per_page=100" > preflight/auth-pr-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > preflight/issue60-comments.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/branches?per_page=100" > preflight/branches.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          original=[r for p in json.load(open('preflight/original-combined-runs.json')) for r in p.get('workflow_runs',[])]
+          opening=[r for p in json.load(open('preflight/opening-runs.json')) for r in p.get('workflow_runs',[])]
+          prs=[p for page in json.load(open('preflight/auth-pr-pages.json')) for p in page]
+          comments=[c for page in json.load(open('preflight/issue60-comments.json')) for c in page]
+          branches=[b for page in json.load(open('preflight/branches.json')) for b in page]
+          good=[p for p in prs if p.get('number')==291 and p.get('state')=='open' and p.get('draft') is True and p.get('merged_at') is None and (p.get('head') or {}).get('sha')==os.environ['SOURCE_HEAD']]
+          names={str(b.get('name') or '') for b in branches}
+          alloc=[c for c in comments if str(c.get('body') or '').strip()==os.environ['ALLOC_MARKER']]
+          consumed=[c for c in comments if str(c.get('body') or '').strip()==os.environ['CONSUMED_MARKER']]
+          result={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-combined-opening-preflight',
+            'status':'PASS_CLEAN_ONE_USE_OPENING_SURFACE' if (len(original)==0 and len(opening)==0 and len(good)==1 and os.environ['REQUEST_BRANCH'] not in names and os.environ['DISPATCH_BRANCH'] not in names and len(alloc)==0 and len(consumed)==0) else 'REFUSE_OPENING_SURFACE_NOT_CLEAN',
+            'mainSha':os.environ['EXPECTED_MAIN'],
+            'originalCombinedRunCount':len(original),
+            'openingRecoveryRunCount':len(opening),
+            'historicalAuthorizationPr291DraftOpenUnmerged':len(good)==1,
+            'requestBranchExists':os.environ['REQUEST_BRANCH'] in names,
+            'dispatchBranchExists':os.environ['DISPATCH_BRANCH'] in names,
+            'allocationMarkerCount':len(alloc),
+            'consumedMarkerCount':len(consumed),
+            'scientificChannelsOpenedByPreflight':False,
+          }
+          Path('preflight/result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          if result['status']!='PASS_CLEAN_ONE_USE_OPENING_SURFACE': raise SystemExit(result['status'])
+          PY
+      - name: Publish immutable preflight result branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-combined-opening-preflight-32503223236-result
+          BASE_SHA: 0ca71ea91a94707f23c1d5da31526bf4e68b1423
+        run: |
+          set -euo pipefail
+          cp preflight/result.json /tmp/r8-combined-opening-preflight.json
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'preflight result branch already exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/r8-combined-opening-preflight.json observer-result/preflight.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- observer-result/preflight.json
+          git commit -m 'Record AFC2 R8 combined opening preflight'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

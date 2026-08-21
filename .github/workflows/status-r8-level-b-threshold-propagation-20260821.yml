@@ -1,0 +1,283 @@
+name: AFC2 R8 verified result to Level B threshold propagation
+
+on:
+  push:
+    branches:
+      - status/r8-level-b-threshold-propagation-20260821
+    paths:
+      - .github/workflows/status-r8-level-b-threshold-propagation-20260821.yml
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: afc2-r8-level-b-threshold-propagation-20260821
+  cancel-in-progress: false
+
+jobs:
+  propagate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact successful R8 result and exact starsvisibility Level B threshold source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: 2a9feb864fe7bf328074854d22f0e3c6a5cb7616
+          FINAL_OPENING_RUN: '32526740156'
+          FINAL_ARTIFACT_ID: '9462565128'
+          FINAL_ARTIFACT_DIGEST: 'sha256:7dbf5ab1ea10ed2f8f9fb62265c2373921a7cd0ea15717aecfe114a5415afab3'
+          STARS_MAIN: a422afe5fc4197ab15323bafb15512001e061454
+          HUMAN_THRESHOLD_GIT_BLOB: bb4cd0ff02159ecffe276022cec9d292c7a434a3
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${FINAL_OPENING_RUN}" > final-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${FINAL_ARTIFACT_ID}" > final-artifact.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('final-run.json')); a=json.load(open('final-artifact.json'))
+          if r.get('id')!=32526740156 or r.get('run_attempt')!=1 or r.get('status')!='completed' or r.get('conclusion')!='success': raise SystemExit('final opening run identity/status drift')
+          if r.get('head_sha')!='2a9feb864fe7bf328074854d22f0e3c6a5cb7616': raise SystemExit('final opening head drift')
+          if a.get('id')!=9462565128 or a.get('digest')!=os.environ['FINAL_ARTIFACT_DIGEST'] or a.get('expired',False): raise SystemExit('final analysis artifact drift')
+          PY
+          gh api "repos/search-maker/starsvisibility/contents/scientific-tools/visibility-v3/human-threshold.mjs?ref=${STARS_MAIN}" > human-threshold-meta.json
+          test "$(python -c 'import json;print(json.load(open("human-threshold-meta.json"))["sha"])')" = "$HUMAN_THRESHOLD_GIT_BLOB"
+          python - <<'PY'
+          import base64,json
+          m=json.load(open('human-threshold-meta.json'))
+          open('/tmp/human-threshold.mjs','wb').write(base64.b64decode(m['content']))
+          PY
+          grep -q 'export function limitingVMagnitude' /tmp/human-threshold.mjs
+          grep -q 'a1: 5.949e-8' /tmp/human-threshold.mjs
+          grep -q 'a5: -4.225e-4' /tmp/human-threshold.mjs
+
+      - name: Download exact verified effective manifest and all source/recovery case artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p final-analysis source-downloads recovery-downloads
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9462565128/zip" > final-analysis.zip
+          test "$(sha256sum final-analysis.zip | awk '{print $1}')" = '7dbf5ab1ea10ed2f8f9fb62265c2373921a7cd0ea15717aecfe114a5415afab3'
+          unzip -q final-analysis.zip -d final-analysis
+          test -f final-analysis/combined-output/effective-manifest.json
+          test -f final-analysis/combined-output/combined-index.json
+          python - <<'PY'
+          import json
+          i=json.load(open('final-analysis/combined-output/combined-index.json'))
+          if i.get('status')!='COMPLETED_FROZEN_COMBINED_ANALYSIS' or i.get('effectiveCaseCount')!=576 or i.get('comparisonGroupCount')!=72 or i.get('analysisCellCount')!=24: raise SystemExit('verified combined index drift')
+          if i.get('sourceAffectedGroupArtifactsReused') is not False or i.get('scientificSolverExecuted') is not False: raise SystemExit('combined provenance drift')
+          PY
+          gh run download 32447101887 --repo "$GITHUB_REPOSITORY" --pattern 'aerosol-family-v2-r8-case-*' --dir source-downloads
+          gh run download 32503223236 --repo "$GITHUB_REPOSITORY" --pattern 'afc2-r8-timeout-recovery-v1-case-*' --dir recovery-downloads
+
+      - name: Compute exact Crumey Level B limiting-magnitude propagation on effective 576-case universe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/propagate.mjs <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const human=await import(pathToFileURL('/tmp/human-threshold.mjs').href);
+          const manifest=JSON.parse(fs.readFileSync('final-analysis/combined-output/effective-manifest.json','utf8'));
+          if(manifest.caseCount!==576 || manifest.retainedSourceCaseCount!==568 || manifest.freshReplacementCaseCount!==8) throw new Error('effective manifest cardinality drift');
+          const wanted=new Set(manifest.cases.map(c=>c.caseId));
+          const caseMeta=new Map(manifest.cases.map(c=>[c.caseId,c]));
+          const affected=manifest.affectedGroupId;
+          function walk(root){
+            const out=[];
+            for(const ent of fs.readdirSync(root,{withFileTypes:true})){
+              const p=path.join(root,ent.name);
+              if(ent.isDirectory()) out.push(...walk(p));
+              else if(ent.isFile() && ent.name==='case-result.json') out.push(p);
+            }
+            return out;
+          }
+          const selected=new Map();
+          for(const [kind,root] of [['source','source-downloads'],['recovery','recovery-downloads']]){
+            for(const p of walk(root)){
+              const r=JSON.parse(fs.readFileSync(p,'utf8'));
+              if(!wanted.has(r.caseId)) continue;
+              const meta=caseMeta.get(r.caseId);
+              const shouldUse=(meta.groupId===affected) ? kind==='recovery' : kind==='source';
+              if(!shouldUse) continue;
+              if(r.status!=='COMPLETED' || r.workflowRunAttempt!==1 || r.syntaxCheckCount!==1 || r.solverExecutionCount!==1 || r.retryPerformed || r.resumePerformed || r.githubRerun) throw new Error(`invalid effective case execution ${r.caseId}`);
+              if(selected.has(r.caseId)) throw new Error(`duplicate selected case ${r.caseId}`);
+              selected.set(r.caseId,{...r,__kind:kind,__meta:meta});
+            }
+          }
+          if(selected.size!==576) throw new Error(`effective raw case count ${selected.size} != 576`);
+          const F=2.4;
+          const rows=[];
+          for(const r of selected.values()){
+            const B=Number(r.channels?.photopicLuminanceCdM2);
+            if(!(B>0)) throw new Error(`nonpositive B ${r.caseId}`);
+            const mlim=human.limitingVMagnitude({backgroundLuminanceCdM2:B,fieldFactor:F,branch:'full'});
+            rows.push({
+              caseId:r.caseId,analysisCellId:r.analysisCellId,groupId:r.groupId,replicate:r.replicate,
+              aerosolFamily:r.aerosolFamily,aerosolSeason:r.aerosolSeason,
+              sunDepressionDeg:r.__meta.sunDepressionDeg,aod550:r.__meta.aod550,geometryId:r.__meta.geometryId,geometryTag:r.__meta.geometryTag,
+              photopicLuminanceCdM2:B,limitingVMagnitude:mlim,sourceKind:r.__kind,
+            });
+          }
+          const key=(x)=>`${x.analysisCellId}|${x.replicate}|${x.aerosolFamily}|${x.aerosolSeason}`;
+          const map=new Map(rows.map(x=>[key(x),x]));
+          function stats(xs){
+            const n=xs.length,mean=xs.reduce((a,b)=>a+b,0)/n;
+            const sd=n>1?Math.sqrt(xs.reduce((a,b)=>a+(b-mean)**2,0)/(n-1)):0;
+            return {n,mean,sampleStd:sd,standardError:sd/Math.sqrt(n),min:Math.min(...xs),max:Math.max(...xs)};
+          }
+          const paired=[];
+          const states=[...new Set(rows.map(r=>`${r.aerosolFamily}|${r.aerosolSeason}`))].sort();
+          const cells=[...new Set(rows.map(r=>r.analysisCellId))].sort();
+          for(const cell of cells){
+            const exemplar=rows.find(r=>r.analysisCellId===cell);
+            for(const state of states){
+              const [fam,season]=state.split('|');
+              if(fam==='rural' && season==='spring-summer') continue;
+              const reps=[];
+              for(const rep of [1,2,3]){
+                const base=map.get(`${cell}|${rep}|rural|spring-summer`);
+                const alt=map.get(`${cell}|${rep}|${fam}|${season}`);
+                if(!base||!alt) throw new Error(`missing pair ${cell} rep${rep} ${state}`);
+                const ratio=alt.photopicLuminanceCdM2/base.photopicLuminanceCdM2;
+                reps.push({
+                  replicate:rep,
+                  baselineB:base.photopicLuminanceCdM2,
+                  alternativeB:alt.photopicLuminanceCdM2,
+                  luminanceRatio:ratio,
+                  skySurfaceBrightnessDeltaMag:-2.5*Math.log10(ratio),
+                  baselineLimitingVMag:base.limitingVMagnitude,
+                  alternativeLimitingVMag:alt.limitingVMagnitude,
+                  limitingMagnitudeDelta:alt.limitingVMagnitude-base.limitingVMagnitude,
+                });
+              }
+              paired.push({
+                analysisCellId:cell,sunDepressionDeg:exemplar.sunDepressionDeg,aod550:exemplar.aod550,geometryId:exemplar.geometryId,geometryTag:exemplar.geometryTag,
+                aerosolFamily:fam,aerosolSeason:season,
+                luminanceRatio:stats(reps.map(x=>x.luminanceRatio)),
+                skySurfaceBrightnessDeltaMag:stats(reps.map(x=>x.skySurfaceBrightnessDeltaMag)),
+                limitingMagnitudeDelta:stats(reps.map(x=>x.limitingMagnitudeDelta)),
+                baselineLimitingVMag:stats(reps.map(x=>x.baselineLimitingVMag)),
+                alternativeLimitingVMag:stats(reps.map(x=>x.alternativeLimitingVMag)),
+                replicates:reps,
+              });
+            }
+          }
+          function groupStats(filter,groupFields){
+            const groups=new Map();
+            for(const r of paired.filter(filter)){
+              const k=groupFields.map(f=>r[f]).join('|');
+              if(!groups.has(k)) groups.set(k,[]);
+              groups.get(k).push(r);
+            }
+            return [...groups.values()].map(g=>{
+              const o={}; for(const f of groupFields)o[f]=g[0][f];
+              const repDeltas=g.flatMap(r=>r.replicates.map(x=>x.limitingMagnitudeDelta));
+              const repRatios=g.flatMap(r=>r.replicates.map(x=>x.luminanceRatio));
+              const skyDeltas=g.flatMap(r=>r.replicates.map(x=>x.skySurfaceBrightnessDeltaMag));
+              return {...o,cellCount:g.length,limitingMagnitudeDelta:stats(repDeltas),luminanceRatio:stats(repRatios),skySurfaceBrightnessDeltaMag:stats(skyDeltas)};
+            }).sort((a,b)=>a.sunDepressionDeg-b.sunDepressionDeg || a.aod550-b.aod550);
+          }
+          const urbanSSByDepthAod=groupStats(r=>r.aerosolFamily==='urban'&&r.aerosolSeason==='spring-summer',['sunDepressionDeg','aod550']);
+          const allStatesByDepthAod=groupStats(r=>true,['sunDepressionDeg','aod550','aerosolFamily','aerosolSeason']);
+          function meanMlim(cell,stateFam,stateSeason){
+            return stats(rows.filter(r=>r.analysisCellId===cell&&r.aerosolFamily===stateFam&&r.aerosolSeason===stateSeason).map(r=>r.limitingVMagnitude)).mean;
+          }
+          function invertPiecewise(points,target,preferAtOrBefore){
+            const sols=[];
+            for(let i=0;i<points.length-1;i++){
+              const [x1,y1]=points[i],[x2,y2]=points[i+1];
+              if((target-y1)*(target-y2)>0 || y1===y2) continue;
+              const t=(target-y1)/(y2-y1); if(t<0||t>1) continue;
+              sols.push(x1+t*(x2-x1));
+            }
+            if(!sols.length) return null;
+            const before=sols.filter(x=>x<=preferAtOrBefore+1e-9);
+            const pool=before.length?before:sols;
+            return pool.sort((a,b)=>Math.abs(a-preferAtOrBefore)-Math.abs(b-preferAtOrBefore))[0];
+          }
+          const equiv=[];
+          for(const aod of [0.1,0.3]) for(const geom of [...new Set(rows.map(r=>r.geometryId))].sort()){
+            const cs=rows.filter(r=>r.aod550===aod&&r.geometryId===geom).map(r=>r.analysisCellId);
+            const uniq=[...new Set(cs)];
+            const byD=new Map(uniq.map(c=>[rows.find(r=>r.analysisCellId===c).sunDepressionDeg,c]));
+            const urbanCurve=[...byD.entries()].sort((a,b)=>a[0]-b[0]).map(([d,c])=>[d,meanMlim(c,'urban','spring-summer')]);
+            for(const d0 of [4,6,8]){
+              const c=byD.get(d0); if(!c) continue;
+              const target=meanMlim(c,'rural','spring-summer');
+              const du=invertPiecewise(urbanCurve,target,d0);
+              equiv.push({aod550:aod,geometryId:geom,geometryTag:rows.find(r=>r.analysisCellId===c).geometryTag,baselineSunDepressionDeg:d0,urbanEquivalentSunDepressionDeg:du,earlierBySunDepressionDeg:du==null?null:d0-du,baselineLimitingVMag:target,urbanCurve});
+            }
+          }
+          const summary={
+            schemaVersion:1,
+            stageId:'afc2-r8-postresult-level-b-threshold-propagation',
+            sourceR8OpeningRun:32526740156,
+            sourceR8AnalysisArtifactId:9462565128,
+            effectiveCaseCount:576,
+            sourceCaseCount:568,
+            recoveryCaseCount:8,
+            starsvisibilityMainSha:'a422afe5fc4197ab15323bafb15512001e061454',
+            humanThresholdGitBlobSha1:'bb4cd0ff02159ecffe276022cec9d292c7a434a3',
+            humanModel:'Crumey 2014 eq.34 full branch via exact human-threshold.mjs',
+            fieldFactorUsed:F,
+            fieldFactorNote:'Delta limiting magnitude between sky states is independent of a common multiplicative field factor; F=2.4 is used only for absolute limiting-magnitude labels.',
+            scientificSolverExecuted:false,
+            postResultRuleChange:false,
+            pairedCellStateCount:paired.length,
+            urbanSpringSummerByDepthAod:urbanSSByDepthAod,
+            allStatesByDepthAod,
+            urbanEquivalentDepression:equiv,
+            pairedCells:paired,
+          };
+          fs.writeFileSync('level-b-propagation.json',JSON.stringify(summary,null,2)+'\n');
+          const csv=['sunDepressionDeg,aod550,aerosolFamily,aerosolSeason,cellCount,meanLuminanceRatio,meanSkyDeltaMag,meanLimitingMagDelta,minLimitingMagDelta,maxLimitingMagDelta'];
+          for(const r of allStatesByDepthAod) csv.push([r.sunDepressionDeg,r.aod550,r.aerosolFamily,r.aerosolSeason,r.cellCount,r.luminanceRatio.mean,r.skySurfaceBrightnessDeltaMag.mean,r.limitingMagnitudeDelta.mean,r.limitingMagnitudeDelta.min,r.limitingMagnitudeDelta.max].join(','));
+          fs.writeFileSync('level-b-propagation-summary.csv',csv.join('\n')+'\n');
+          console.log(JSON.stringify({urbanSpringSummerByDepthAod,urbanEquivalentDepression:equiv},null,2));
+          JS
+          node /tmp/propagate.mjs > propagation.stdout
+          test -s level-b-propagation.json
+          test -s level-b-propagation-summary.csv
+          node - <<'JS'
+          const d=JSON.parse(require('fs').readFileSync('level-b-propagation.json','utf8'));
+          if(d.effectiveCaseCount!==576 || d.pairedCellStateCount!==168 || d.scientificSolverExecuted!==false || d.postResultRuleChange!==false) throw new Error('propagation terminal gate failed');
+          if(d.urbanSpringSummerByDepthAod.length!==8) throw new Error('urban summary cardinality failed');
+          JS
+
+      - name: Publish immutable propagation result branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/r8-level-b-threshold-propagation-20260821-result
+          BASE_SHA: 2a9feb864fe7bf328074854d22f0e3c6a5cb7616
+        run: |
+          set -euo pipefail
+          cp level-b-propagation.json /tmp/level-b-propagation.json
+          cp level-b-propagation-summary.csv /tmp/level-b-propagation-summary.csv
+          cp propagation.stdout /tmp/propagation.stdout
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then echo 'result branch already exists' >&2; exit 1; fi
+          git checkout --detach "$BASE_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p observer-result
+          cp /tmp/level-b-propagation.json observer-result/level-b-propagation.json
+          cp /tmp/level-b-propagation-summary.csv observer-result/level-b-propagation-summary.csv
+          cp /tmp/propagation.stdout observer-result/propagation.stdout
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add observer-result/
+          git commit -m 'Record verified AFC2 R8 to Level B threshold propagation'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

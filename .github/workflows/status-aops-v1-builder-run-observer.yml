@@ -1,0 +1,41 @@
+name: Neutral AOPS builder run observer
+
+on:
+  push:
+    branches: [status/aops-v1-authorization-builder]
+    paths: [.github/workflows/status-aops-v1-builder-run-observer.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish neutral builder run state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_BRANCH: status/aops-v1-authorization-builder-run-result
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/status-aops-v1-authorization-builder.yml/runs?branch=status/aops-v1-authorization-builder&event=push&per_page=100" > runs.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.load(open('runs.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          out={'schemaVersion':1,'stageId':'aops-v1-neutral-builder-run-observer','matchingRunCount':len(runs),'runs':[{'id':r.get('id'),'headSha':r.get('head_sha'),'runAttempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion'),'createdAt':r.get('created_at'),'updatedAt':r.get('updated_at')} for r in runs]}
+          Path('builder-run-status.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          mv builder-run-status.json observer-result/builder-run-status.json
+          git add observer-result/builder-run-status.json
+          git commit -m "Publish neutral builder run status"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

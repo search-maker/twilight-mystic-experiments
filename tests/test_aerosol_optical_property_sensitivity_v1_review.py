@@ -19,6 +19,7 @@ TRACKED_SCANNER = STAGE_DIR / "tracked_tree_seed_scan.py"
 GLOBAL_SCANNER = STAGE_DIR / "repository_global_seed_scan.py"
 SEED_POLICY = STAGE_DIR / "seed-self-ledger-policy.v1.json"
 FREEZE = ROOT / "evidence" / STAGE / "review-freeze.json"
+SEED_PROOF = ROOT / "evidence" / STAGE / "seed-freshness-proof.json"
 
 
 def git_blob_sha1(path: Path) -> str:
@@ -56,7 +57,7 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertFalse(self.p["parentEvidence"]["reuseR8ScientificIdentityOrSeeds"])
         self.assertTrue(self.f["candidateSeedLedgerMaterialized"])
         self.assertFalse(self.f["candidateSeedsAppliedToCaseSkeletons"])
-        self.assertFalse(self.f["candidateSeedFreshnessProofPassed"])
+        self.assertTrue(self.f["candidateSeedFreshnessProofPassed"])
         self.assertFalse(self.f["candidateSeedAuthorizationRecheckPassed"])
         self.assertFalse(self.f["scientificOrdinalAllocated"])
         self.assertFalse(self.f["authorizationCreated"])
@@ -126,6 +127,25 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertFalse(ledger["solverExecutionAuthorized"])
         self.assertTrue(all(g["seed"] is None for g in self.review_core.group_skeletons()))
 
+    def test_seed_freshness_proof_is_exact_and_still_requires_authorization_recheck(self):
+        proof = json.loads(SEED_PROOF.read_text())
+        self.assertEqual("PASS_CANDIDATE_SEEDS_REVIEW_FRESHNESS_NOT_AUTHORIZED", proof["status"])
+        self.assertEqual("695ed9a666e3dec4fa1bcc22e62b1f79991e9918", proof["auditedHead"])
+        self.assertEqual(72, proof["candidateSeedCount"])
+        self.assertEqual(0, proof["trackedTreeExternalCollisionCount"])
+        self.assertTrue(proof["exactHeadTrackedTreeByteScanPassed"])
+        self.assertEqual(0, proof["repositoryGlobalCollisionCount"])
+        self.assertTrue(proof["repositoryGlobalCollisionSurfaceScanPassed"])
+        self.assertTrue(proof["repositoryGlobalDoubleEnumerationStable"])
+        self.assertTrue(proof["auditedBranchHeadMatchesRepositoryHead"])
+        self.assertTrue(proof["authorizationTimeRecheckStillRequired"])
+        self.assertFalse(proof["candidateSeedsAppliedToCaseSkeletons"])
+        self.assertFalse(proof["scientificOrdinalAllocated"])
+        self.assertFalse(proof["authorizationCreated"])
+        self.assertFalse(proof["dispatchCreated"])
+        self.assertFalse(proof["solverExecutionAuthorized"])
+        self.assertFalse(proof["resultOpeningAuthorized"])
+
     def test_seed_scanners_are_bound_and_self_ledger_policy_is_narrow(self):
         self.assertEqual("1c110d75b516cb7b9d50dc2674080f4a67e55d2a", git_blob_sha1(ROOT / "experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py"))
         self.assertEqual("4c6d704fa24228284780bcb1dd7c52537b4c5b0d", git_blob_sha1(ROOT / "experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py"))
@@ -159,6 +179,9 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(self.adapter.Refusal):
                 self.adapter.render_case_input(skeleton, Path(td) / "data", ROOT, Path(td) / "out")
+            seeded_but_unauthorized = dict(skeleton, seed=json.loads(CANDIDATE_LEDGER.read_text())["candidateSeeds"][0])
+            with self.assertRaises(self.adapter.Refusal):
+                self.adapter.render_case_input(seeded_but_unauthorized, Path(td) / "data", ROOT, Path(td) / "out")
             executable_mock = dict(skeleton, seed=123456789, renderable=True, executionAuthorized=True)
             text = self.adapter.render_case_input(executable_mock, Path(td) / "data", ROOT, Path(td) / "out")
         self.adapter.assert_exact_aerosol_surface(text, executable_mock["stateId"], executable_mock["aod550"])
@@ -217,8 +240,9 @@ class AerosolOpticalPropertySensitivityV1ReviewTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(TRACKED_SCANNER), self.f["trackedTreeSeedScannerGitBlobSha1"])
         self.assertEqual(git_blob_sha1(GLOBAL_SCANNER), self.f["repositoryGlobalSeedScannerGitBlobSha1"])
         self.assertEqual(git_blob_sha1(SEED_POLICY), self.f["seedSelfLedgerPolicyGitBlobSha1"])
+        self.assertEqual(git_blob_sha1(SEED_PROOF), self.f["seedFreshnessProofGitBlobSha1"])
         self.assertEqual("09d011f216187ad48d23e1744a0bb8b9f7c6aa65f0e1ceba1495f8440aa59366", self.f["candidateSeedCanonicalSha256"])
-        self.assertFalse(self.f["candidateSeedFreshnessProofPassed"])
+        self.assertTrue(self.f["candidateSeedFreshnessProofPassed"])
         self.assertFalse(self.f["candidateSeedAuthorizationRecheckPassed"])
         self.assertFalse(self.f["scientificExecutionAuthorized"])
         self.assertFalse(self.f["solverExecutionAuthorized"])

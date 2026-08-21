@@ -1,0 +1,55 @@
+name: Neutral AOPS v1 preauthorization observer 7297
+
+on:
+  push:
+    branches: [status/aops-v1-preauth-observer-7297a579]
+    paths: [.github/workflows/status-aops-v1-preauth-observer-7297.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read exact-main preauthorization state and publish neutral result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_MAIN: 7297a579112b6089acc5b5d45292e8169039c022
+          RESULT_BRANCH: status/aops-v1-preauth-observer-7297a579-result
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > runs.json
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          pages=json.load(open('runs.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['TARGET_MAIN']]
+          if len(same)>1: raise SystemExit(f'multiple exact-main preauthorization runs: {len(same)}')
+          out={'schemaVersion':1,'stageId':'aops-v1-neutral-preauthorization-observer','targetMain':os.environ['TARGET_MAIN'],'matchingRunCount':len(same)}
+          if same:
+              r=same[0]
+              out.update({'runId':r.get('id'),'runAttempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion'),'event':r.get('event'),'headBranch':r.get('head_branch'),'headSha':r.get('head_sha'),'createdAt':r.get('created_at'),'updatedAt':r.get('updated_at')})
+              rid=int(r.get('id') or 0)
+              if rid:
+                  jobs=json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{rid}/jobs?per_page=100']))
+                  out['jobs']=[{'id':j.get('id'),'name':j.get('name'),'status':j.get('status'),'conclusion':j.get('conclusion')} for j in jobs.get('jobs',[])]
+                  arts=json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{rid}/artifacts?per_page=100']))
+                  out['artifacts']=[{'id':a.get('id'),'name':a.get('name'),'digest':a.get('digest'),'expired':a.get('expired')} for a in arts.get('artifacts',[])]
+          Path('preauth-status.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          mv preauth-status.json observer-result/preauth-status.json
+          git add observer-result/preauth-status.json
+          git commit -m "Publish neutral AOPS preauthorization status"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

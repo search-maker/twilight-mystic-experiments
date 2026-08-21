@@ -363,6 +363,13 @@ def derive_next_global_ordinal(
     observations = authoritative_global_ordinal_observations(payload, current_run_id=current_run_id)
     if not observations:
         raise GlobalOrdinalRefusal("no authoritative global scientific ordinal observations")
+    retired_ordinals = sorted({
+        int(match.group(1))
+        for row in payload.get("issue60Comments", [])
+        if (match := R8_RETIRED_MARKER.fullmatch(str(row.get("body") or "").strip()))
+    })
+    for ordinal in retired_ordinals:
+        _retired_undispatched_proof(payload, ordinal)
     observed_max = max(int(row["ordinal"]) for row in observations)
     if observed_max < latest_consumed:
         raise GlobalOrdinalRefusal(

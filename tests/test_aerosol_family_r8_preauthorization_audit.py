@@ -183,6 +183,16 @@ class R8PreauthorizationAudit(unittest.TestCase):
                 'scientificExecutionPerformed':False,
             },32)
 
+    def test_consumed_dispatch_advances_to_next_global_ordinal_without_reuse(self):
+        payload=self.clean_payload()
+        payload['issue60Comments']=[{'id':1,'body':self.fresh.consumed_marker(33)}]
+        payload['issueComments']=list(payload['issue60Comments'])
+        latest=self.surface._latest_consumed_ordinal(payload,'__none__',-1)
+        self.assertEqual(33,latest)
+        candidate,observations=self.ordinal.derive_next_global_ordinal(payload,latest)
+        self.assertEqual(34,candidate)
+        self.assertEqual(33,max(row['ordinal'] for row in observations))
+
     def test_workflow_is_attempt1_exact_main_zero_runtime_and_no_transition(self):
         text=WORKFLOW.read_text()
         self.assertIn('test "$GITHUB_RUN_ATTEMPT" = 1',text)

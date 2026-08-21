@@ -1,0 +1,128 @@
+name: AFC2 R8 v3 run-id correction neutral builder
+
+on:
+  push:
+    branches:
+      - status/r8-v3-run-id-correction-builder
+    paths:
+      - .github/workflows/status-r8-v3-run-id-correction-builder.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: afc2-r8-v3-run-id-correction-neutral-builder
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove exact pre-allocation correction surface
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: be46eb693da71249ae47f6c186289914bf684ebc
+          WRONG_RUN_ID: '32510096551'
+          ACTUAL_RUN_ID: '32509967325'
+          V2_JOB_ID: '96858517974'
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${V2_JOB_ID}" > v2-job.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ACTUAL_RUN_ID}" > v2-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-comments.json
+          python - <<'PY'
+          import json,os,re,subprocess
+          job=json.load(open('v2-job.json')); run=json.load(open('v2-run.json'))
+          m=re.search(r'/actions/runs/(\d+)$',str(job.get('run_url') or ''))
+          derived=int(m.group(1)) if m else None
+          actual=int(os.environ['ACTUAL_RUN_ID']); wrong=int(os.environ['WRONG_RUN_ID'])
+          if derived!=actual: raise SystemExit(f'job run_url did not prove actual run id: {derived} != {actual}')
+          if run.get('id')!=actual or run.get('run_attempt')!=1 or run.get('status')!='completed' or run.get('conclusion')!='failure': raise SystemExit('actual v2 run identity/status drift')
+          if run.get('head_sha')!='b4ddc0fb20f219b5e6f9dddc50d0a5e5bfc2f37c' or run.get('head_branch')!='status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v2-run-32503223236': raise SystemExit('actual v2 run head drift')
+          comments=[c for p in json.load(open('issue60-comments.json')) for c in p]
+          v3prefix='AFC2_R8_TIMEOUT_RECOVERY_V1_COMBINED_OPENING_RECOVERY_V3_'
+          if [c for c in comments if str(c.get('body') or '').strip().startswith(v3prefix)]: raise SystemExit('v3 allocation/consumption marker already exists; correction must remain pre-allocation')
+          for branch in [
+            'status/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v3-run-32503223236',
+            'dispatch/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-v3-run-32503223236',
+          ]:
+              r=subprocess.run(['git','ls-remote','--exit-code','--heads','origin',branch],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+              if r.returncode==0: raise SystemExit(f'v3 branch already exists: {branch}')
+          if wrong==actual: raise SystemExit('probe correction unexpectedly no-op')
+          PY
+      - name: Create exact five-path v3 pre-allocation run-id correction
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN: be46eb693da71249ae47f6c186289914bf684ebc
+          WRONG_RUN_ID: '32510096551'
+          ACTUAL_RUN_ID: '32509967325'
+          REVIEW_BRANCH: review/aerosol-family-v2-r8-timeout-recovery-v1-combined-trigger-recovery-v3-run-id-correction
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$REVIEW_BRANCH" >/dev/null 2>&1; then echo 'review branch already exists' >&2; exit 1; fi
+          git checkout --detach "$EXPECTED_MAIN"
+          git switch -c "$REVIEW_BRANCH"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          wrong=os.environ['WRONG_RUN_ID']; actual=os.environ['ACTUAL_RUN_ID']
+          paths=[
+            Path('experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.review.json'),
+            Path('.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v3.yml'),
+            Path('.github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery-v3.yml'),
+            Path('tests/test_aerosol_family_r8_timeout_recovery_combined_trigger_recovery_v3.py'),
+            Path('evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.freeze.json'),
+          ]
+          counts={}
+          for p in paths:
+              text=p.read_text()
+              n=text.count(wrong)
+              if n<1: raise SystemExit(f'expected wrong run id in {p}, found {n}')
+              counts[str(p)]=n
+              p.write_text(text.replace(wrong,actual))
+          review=paths[0]; publisher=paths[1]; opening=paths[2]; test=paths[3]; freeze=paths[4]
+          f=json.loads(freeze.read_text())
+          f['failedV2PublisherRunId']=int(actual)
+          f['reviewRawSha256']=hashlib.sha256(review.read_bytes()).hexdigest()
+          f['publisherWorkflowRawSha256']=hashlib.sha256(publisher.read_bytes()).hexdigest()
+          f['openingWorkflowRawSha256']=hashlib.sha256(opening.read_bytes()).hexdigest()
+          f['testRawSha256']=hashlib.sha256(test.read_bytes()).hexdigest()
+          freeze.write_text(json.dumps(f,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'replacementCounts':counts,'freezeBindings':{k:f[k] for k in ('failedV2PublisherRunId','reviewRawSha256','publisherWorkflowRawSha256','openingWorkflowRawSha256','testRawSha256')}},sort_keys=True))
+          PY
+          python -m unittest -v tests.test_aerosol_family_r8_timeout_recovery_combined_trigger_recovery_v3
+          git diff --check
+          mapfile -t CHANGED < <(git diff --name-only "$EXPECTED_MAIN")
+          printf '%s\n' "${CHANGED[@]}" | sort > /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          .github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-publisher-v3.yml
+          .github/workflows/aerosol-family-v2-r8-timeout-recovery-v1-combined-opening-recovery-v3.yml
+          evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.freeze.json
+          experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/combined-trigger-recovery-v3.review.json
+          tests/test_aerosol_family_r8_timeout_recovery_combined_trigger_recovery_v3.py
+          EOF
+          sed -i 's/^          //' /tmp/expected.txt
+          sort -o /tmp/expected.txt /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- $(cat /tmp/expected.txt)
+          git commit -m 'Correct AFC2 R8 v3 historical publisher run identity'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${REVIEW_BRANCH}"

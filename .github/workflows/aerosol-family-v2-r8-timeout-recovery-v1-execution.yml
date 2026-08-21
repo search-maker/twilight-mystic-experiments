@@ -1,0 +1,407 @@
+name: AFC2 R8 timeout recovery v1 scientific execution
+run-name: AFC2 R8 timeout recovery v1 ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: afc2-r8-timeout-recovery-v1-scientific-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      ordinal: ${{ steps.identity.outputs.ordinal }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout exact dispatch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Refuse alternate trigger rerun wrong branch or non-one-file authorization
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^dispatch/aerosol-family-challenge-v2-r8-timeout-recovery-v1-ordinal-([1-9][0-9]*)$ ]]
+          ORDINAL="${BASH_REMATCH[1]}"
+          test "$ORDINAL" -gt 34
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/freeze.py --repository-root . --verify
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/authorization.py \
+            --repository-root . --ordinal "$ORDINAL" --parent "$PARENT" \
+            --validate experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          a=json.load(open('experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json'))
+          print('ordinal='+str(a['scientificOrdinal']))
+          print('auth_branch='+a['authorizationBranch'])
+          print('dispatch_branch='+a['dispatchBranch'])
+          print('parent='+a['exactAuthorizationParentCommit'])
+          PY
+          test "$(python -c 'import json;print(json.load(open("experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/authorization.json"))["dispatchBranch"])')" = "$GITHUB_REF_NAME"
+      - name: Resolve exact still-open Draft authorization PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          good=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(good)!=1: raise SystemExit(f'expected exactly one authorization PR at dispatch head, got {len(good)}')
+          p=good[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main': raise SystemExit('authorization PR base drift')
+          if (p.get('head') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY'] or (p.get('base') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY']: raise SystemExit('authorization PR must remain same repository')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Resolve exactly one successful attempt-1 zero-runtime authorization review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-review-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'authorization review identity must have exactly one successful attempt-1 run; same={len(same)} good={len(good)}')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RUN_ID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts?per_page=100" > auth-review-artifact-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('auth-review-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'afc2-r8-timeout-recovery-v1-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one auth review artifact, got {len(good)}')
+          Path('auth-review-artifact-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          AID="$(python -c 'import json;print(json.load(open("auth-review-artifact-selected.json"))["id"])')"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          matches=list(Path('auth-review-artifact').rglob('authorization-review.json'))
+          if len(matches)!=1: raise SystemExit('authorization-review.json missing/duplicate')
+          r=json.loads(matches[0].read_text()); p=json.load(open('auth-pr-selected.json'))
+          if r.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME': raise SystemExit('authorization review status drift')
+          if r.get('headSha')!=os.environ['GITHUB_SHA'] or r.get('prNumber')!=p.get('number'): raise SystemExit('authorization review identity drift')
+          if r.get('runAttempt')!=1 or r.get('conclusion')!='success': raise SystemExit('authorization review attempt/conclusion drift')
+          if any(r.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('authorization review was not zero runtime')
+          PY
+      - name: Recheck stable seed surface and exact global identity before runtime
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p execution-preflight
+          python experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/seed_audit.py \
+            --repository "$GITHUB_REPOSITORY" --repository-root . \
+            --expected-branch "$GITHUB_REF_NAME" --expected-head "$GITHUB_SHA" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --output execution-preflight/seed-and-identity-audit.json
+          python - <<'PY'
+          import json
+          a=json.load(open('execution-preflight/seed-and-identity-audit.json'))
+          if a.get('status')!='PASS_STABLE_DOUBLE_ENUMERATION_NO_EXTERNAL_SEED_COLLISION': raise SystemExit('dispatch-head seed audit failed')
+          PY
+      - name: Verify allocation consumption markers run uniqueness and historical R8 authorization
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-family-v2-r8-timeout-recovery-v1-execution.yml/runs?branch=${GITHUB_REF_NAME}&per_page=100" > execution-run-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" > repository-artifact-pages.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/285" > source-r8-auth-pr.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          comments=[x for page in json.load(open('issue60-pages.json')) for x in page]
+          pr=json.load(open('auth-pr-selected.json')); n=int(os.environ['ORDINAL'])
+          alloc=f'ORDINAL{n}_AFC2_R8_TIMEOUT_RECOVERY_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit={os.environ["GITHUB_SHA"]} parent={os.environ["PARENT"]} pr={pr["number"]}'
+          consumed=f'ORDINAL{n}_AFC2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED'
+          am=[c for c in comments if str(c.get('body') or '').strip()==alloc]
+          cm=[c for c in comments if str(c.get('body') or '').strip()==consumed]
+          if len(am)!=1 or len(cm)!=1: raise SystemExit(f'exact allocation/consumption markers required once; allocation={len(am)} consumed={len(cm)}')
+          if int(am[0]['id'])>=int(cm[0]['id']): raise SystemExit('dispatch consumed marker must follow allocation marker')
+          pages=json.load(open('execution-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA'] and r.get('head_branch')==os.environ['GITHUB_REF_NAME']]
+          current=[r for r in same if int(r.get('id') or 0)==int(os.environ['GITHUB_RUN_ID'])]
+          if len(same)!=1 or len(current)!=1 or int(current[0].get('run_attempt') or 0)!=1: raise SystemExit(f'exact science identity must have one attempt-1 run; same={len(same)} current={len(current)}')
+          pages=json.load(open('repository-artifact-pages.json')); artifacts=[a for page in pages for a in page.get('artifacts',[])]
+          prior=[a for a in artifacts if str(a.get('name') or '').startswith('afc2-r8-timeout-recovery-v1-case-') and int(((a.get('workflow_run') or {}).get('id') or 0))!=int(os.environ['GITHUB_RUN_ID'])]
+          if prior: raise SystemExit(f'prior recovery case artifact identities exist: {[a.get("name") for a in prior]}')
+          source=json.load(open('source-r8-auth-pr.json'))
+          if source.get('state')!='open' or source.get('draft') is not True or source.get('merged_at') is not None: raise SystemExit('historical R8 authorization PR #285 must remain Draft/open/unmerged')
+          if (source.get('head') or {}).get('sha')!='cca5194a5b81ea28ca9cc8417b5887936afa1fd6': raise SystemExit('historical R8 authorization head drift')
+          guard={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-execution-guard',
+            'status':'EXACT_ONE_USE_AFC2_R8_TIMEOUT_RECOVERY_DISPATCH_AUTHORIZED',
+            'scientificOrdinal':n,
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'dispatchBranch':os.environ['GITHUB_REF_NAME'],
+            'authorizationHead':os.environ['GITHUB_SHA'],
+            'authorizationParent':os.environ['PARENT'],
+            'authorizationPrNumber':pr['number'],
+            'sourceOrdinal34Reusable':False,
+            'sourceAffectedGroupArtifactsReusable':False,
+            'manifestRawSha256':__import__('hashlib').sha256(Path('evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/manifest.frozen.json').read_bytes()).hexdigest(),
+            'solverExecutionPermittedNow':True,
+            'githubRerunAllowed':False,
+            'retryAllowed':False,
+            'resumeAllowed':False,
+          }
+          Path('execution-preflight/execution-guard.json').write_text(json.dumps(guard,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Build exact eight-case matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          m=json.load(open('evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/manifest.frozen.json'))
+          ids=[r['caseId'] for r in m['cases']]
+          if len(ids)!=8 or len(set(ids))!=8: raise SystemExit('recovery matrix cardinality drift')
+          print('matrix='+json.dumps(ids,separators=(',',':')))
+          PY
+      - name: Persist pre-solver guard evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-preflight-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            execution-preflight/
+            auth-pr-selected.json
+            auth-review-selected.json
+            auth-review-artifact-selected.json
+          if-no-files-found: error
+          compression-level: 0
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        caseId: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: afc2-r8-timeout-recovery-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Fetch exact same-run preflight guard artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > current-run-artifact-pages.json
+          AID="$(python - <<'PY'
+          import json, os
+          pages=json.load(open('current-run-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'afc2-r8-timeout-recovery-v1-preflight-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one current-run preflight artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preflight.zip
+          unzip -q preflight.zip -d preflight
+          test -f preflight/execution-preflight/execution-guard.json
+      - name: Capture exact runtime identity before solver execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          if r.get('scientificSolverExecuted') is not False: raise SystemExit('runtime report is not pre-solver')
+          PY
+      - name: Execute exactly one fresh recovery case
+        shell: micromamba-shell {0}
+        env:
+          CASE_ID: ${{ matrix.caseId }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          from executor import execute_case
+          uvspec=shutil.which('uvspec')
+          if not uvspec: raise SystemExit('uvspec missing')
+          execute_case(
+            Path('.'),
+            Path('evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/manifest.frozen.json'),
+            Path('preflight/execution-preflight/execution-guard.json'),
+            Path('runtime-report.json'),
+            os.environ['CASE_ID'],
+            Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data',
+            Path('case-output'),
+            Path(uvspec),
+            allow_execution=True,
+          )
+          PY
+      - name: Persist immutable raw recovery case evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}/
+          if-no-files-found: warn
+          compression-level: 0
+
+  acquisition:
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Acquire and structurally validate exact eight fresh case artifacts without interpreting channels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          mkdir -p recovery-acquisition/downloaded
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > recovery-acquisition/current-run-artifact-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          pages=json.load(open('recovery-acquisition/current-run-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          case=[a for a in rows if str(a.get('name') or '').startswith('afc2-r8-timeout-recovery-v1-case-')]
+          pre=[a for a in rows if a.get('name')==f'afc2-r8-timeout-recovery-v1-preflight-ordinal-{os.environ["ORDINAL"]}']
+          if len(case)!=8 or len(pre)!=1: raise SystemExit(f'current run artifact universe incomplete: case={len(case)} preflight={len(pre)}')
+          if len({a['name'] for a in case})!=8: raise SystemExit('duplicate recovery case artifact names')
+          Path('recovery-acquisition/case-artifact-metadata.json').write_text(json.dumps(case,indent=2,sort_keys=True)+'\n')
+          PY
+          python - <<'PY' > recovery-acquisition/artifact-ids.txt
+          import json
+          for a in json.load(open('recovery-acquisition/case-artifact-metadata.json')): print(a['id'])
+          PY
+          while read -r AID; do
+            mkdir -p "recovery-acquisition/downloaded/$AID"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > "recovery-acquisition/$AID.zip"
+            unzip -q "recovery-acquisition/$AID.zip" -d "recovery-acquisition/downloaded/$AID"
+          done < recovery-acquisition/artifact-ids.txt
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          prefix='afc2-r8-timeout-recovery-v1-case-'
+          manifest=json.load(open('evidence/aerosol-family-challenge-v2-r8-timeout-recovery-v1/manifest.frozen.json'))
+          expected={r['caseId']:r for r in manifest['cases']}
+          meta=json.load(open('recovery-acquisition/case-artifact-metadata.json'))
+          checked=[]
+          for a in meta:
+            case_id=a['name'][len(prefix):]
+            if case_id not in expected: raise SystemExit(f'unexpected recovery artifact {a["name"]}')
+            root=Path('recovery-acquisition/downloaded')/str(a['id'])
+            matches=list(root.rglob('case-result.json'))
+            if len(matches)!=1: raise SystemExit(f'{case_id}: case-result missing/duplicate')
+            result=json.loads(matches[0].read_text()); exp=expected[case_id]
+            for key in ('caseId','groupId','analysisCellId','replicate','seed','photonHistories','aerosolFamily','aerosolSeason','sourceOrdinal34Seed'):
+              if result.get(key)!=exp.get(key): raise SystemExit(f'{case_id}: result/manifest drift {key}')
+            if result.get('status')!='COMPLETED' or result.get('workflowRunAttempt')!=1: raise SystemExit(f'{case_id}: execution status/attempt drift')
+            if result.get('syntaxCheckCount')!=1 or result.get('solverExecutionCount')!=1: raise SystemExit(f'{case_id}: execution count drift')
+            if any(result.get(k) is not False for k in ('retryPerformed','resumePerformed','githubRerun','syntaxTimedOut','solverTimedOut')): raise SystemExit(f'{case_id}: retry/timeout drift')
+            if result.get('processGroupIsolation') is not True: raise SystemExit(f'{case_id}: process-group isolation missing')
+            if result.get('recoveryScientificOrdinal')!=int(os.environ['ORDINAL']) or result.get('workflowRunId')!=int(os.environ['GITHUB_RUN_ID']): raise SystemExit(f'{case_id}: recovery execution identity drift')
+            stored=result.get('contentSha256'); check=dict(result); check.pop('contentSha256',None)
+            calc=hashlib.sha256(json.dumps(check,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+            if stored!=calc: raise SystemExit(f'{case_id}: content hash mismatch')
+            hashes=result.get('rawMemberSha256ByBasename') or {}
+            for name,want in hashes.items():
+              files=list(root.rglob(name))
+              if len(files)!=1: raise SystemExit(f'{case_id}: raw member {name} missing/duplicate')
+              got=hashlib.sha256(files[0].read_bytes()).hexdigest()
+              if got!=want: raise SystemExit(f'{case_id}: raw hash mismatch {name}')
+            checked.append({'caseId':case_id,'artifactId':a['id'],'artifactName':a['name'],'artifactDigest':a.get('digest'),'caseResultContentSha256':stored})
+          if set(x['caseId'] for x in checked)!=set(expected): raise SystemExit('recovery case universe mismatch')
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-family-challenge-v2-r8-timeout-recovery-v1-acquisition',
+            'status':'COMPLETE_EXACT_8_FRESH_REPLACEMENT_CASE_ARTIFACT_UNIVERSE',
+            'runId':int(os.environ['GITHUB_RUN_ID']),
+            'scientificOrdinal':int(os.environ['ORDINAL']),
+            'workflowRunAttempt':1,
+            'caseArtifactCount':8,
+            'retainedSourceCaseCountForFutureCombinedAnalysis':568,
+            'effectiveCombinedCaseCount':576,
+            'scientificChannelsInterpreted':False,
+            'cases':sorted(checked,key=lambda x:x['caseId']),
+          }
+          Path('recovery-acquisition/acquisition.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'caseArtifactCount':8,'effectiveCombinedCaseCount':576},sort_keys=True))
+          PY
+      - name: Persist recovery acquisition evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afc2-r8-timeout-recovery-v1-acquisition-ordinal-${{ needs.preflight.outputs.ordinal }}
+          path: |
+            recovery-acquisition/acquisition.json
+            recovery-acquisition/case-artifact-metadata.json
+          if-no-files-found: error
+          compression-level: 0

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -33,12 +32,14 @@ def load(name: str, path: Path):
 
 
 def evaluate(
+    repository_root: Path,
     authorization: dict[str, Any],
     seed_proof: dict[str, Any],
     context: dict[str, Any],
     paths: dict[str, Path],
 ) -> dict[str, Any]:
-    auth_guard = load("aops_science_auth_guard", paths["authorizationGuard"])
+    transport_guard = load("aops_science_transport_auth_guard", paths["authorizationTransportGuard"])
+    frozen_auth_guard = load("aops_science_frozen_auth_guard", paths["authorizationGuard"])
     freshness = load("aops_science_freshness", paths["freshness"])
     design_mod = load("aops_science_design", paths["executionDesign"])
     design = design_mod.build_review_execution_design()
@@ -48,7 +49,7 @@ def evaluate(
     require(isinstance(head, str) and SHA40.fullmatch(head) is not None, "context head SHA invalid")
     require(isinstance(parent, str) and SHA40.fullmatch(parent) is not None, "context parent SHA invalid")
     try:
-        auth_guard.validate_enabled_document(authorization, parent, paths, seed_proof)
+        transport_guard.validate_enabled_document(repository_root, authorization, parent, paths, seed_proof)
     except Exception as exc:
         raise GuardRefusal(str(exc)) from exc
     require(context.get("githubActions") is True, "GitHub Actions context required")
@@ -95,7 +96,7 @@ def evaluate(
     require(sum(1 for row in comments if str(row).strip().lower() == consumed.lower()) == 1, "exactly one dispatch consumed marker required")
 
     try:
-        auth_guard.validate_seed_authorization_proof(seed_proof)
+        frozen_auth_guard.validate_seed_authorization_proof(seed_proof)
     except Exception as exc:
         raise GuardRefusal(str(exc)) from exc
     require(seed_proof.get("auditedMainHead") == head, "science seed recheck must be bound to exact authorization head")

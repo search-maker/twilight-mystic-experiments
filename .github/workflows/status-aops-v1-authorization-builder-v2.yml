@@ -1,0 +1,87 @@
+name: Neutral AOPS v1 authorization builder v2
+
+on:
+  push:
+    branches: [status/aops-v1-authorization-builder-v2]
+    paths: [.github/workflows/status-aops-v1-authorization-builder-v2.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Diagnose transport bindings and build exact authorization bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_MAIN: 7297a579112b6089acc5b5d45292e8169039c022
+          PREAUTH_RUN: "32538177359"
+          PREAUTH_ARTIFACT: "9466212702"
+          CANDIDATE: "36"
+          RESULT_BRANCH: status/aops-v1-authorization-builder-v2-result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$TARGET_MAIN"
+          python - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          c=json.load(open('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json'))
+          rows=[]
+          for rel,expected in sorted(c['gitBlobBindings'].items()):
+              p=Path(rel); data=p.read_bytes(); raw=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              obj=subprocess.check_output(['git','rev-parse',f'HEAD:{rel}'],text=True).strip()
+              rows.append({'path':rel,'expected':expected,'workingTreeBlobSha1':raw,'gitObjectSha1':obj,'workingMatchesExpected':raw==expected,'gitObjectMatchesExpected':obj==expected,'workingMatchesGitObject':raw==obj})
+          Path('binding-diagnostics.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          bad=[r for r in rows if not r['workingMatchesExpected'] or not r['gitObjectMatchesExpected']]
+          print(json.dumps({'bindingCount':len(rows),'badCount':len(bad),'bad':bad},indent=2,sort_keys=True))
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREAUTH_RUN}" > preauth-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT}" > preauth-artifact.json
+          mkdir preauth
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT}/zip" > preauth.zip
+          test "$(sha256sum preauth.zip | cut -d' ' -f1)" = ca87c4a21c565a3fbb57959bb0cd7e055b19fe4ea3d98fe44b7fc23885a2f7de
+          unzip -q preauth.zip -d preauth
+          python experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/build_authorization.py \
+            --repository-root . --seed-proof preauth/seed-authorization-proof.json \
+            --main-sha "$TARGET_MAIN" --ordinal "$CANDIDATE" --output generated-authorization.json
+          set +e
+          PYTHONPATH=experiments/aerosol-optical-property-sensitivity-v1/execution-candidate python - <<'PY' > validator.stdout 2> validator.stderr
+          import json,os
+          from pathlib import Path
+          import authorization_transport_guard
+          root=Path('.'); stage=root/'experiments/aerosol-optical-property-sensitivity-v1'; execd=stage/'execution-candidate'
+          auth=json.load(open('generated-authorization.json')); proof=json.load(open('preauth/seed-authorization-proof.json'))
+          paths={'freeze':root/'evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json','executionContract':stage/'execution-contract.review.json','adapter':stage/'adapter.py','executor':execd/'executor.py','aggregator':execd/'aggregate_results.py','analysis':stage/'analysis.py','analysisContract':stage/'analysis-contract.v1.json','levelBAnalysis':stage/'level_b_analysis.mjs','authorizationGuard':execd/'authorization_guard.py','freshness':execd/'freshness.py','seedAuthorizationProof':Path('preauth/seed-authorization-proof.json')}
+          contract=authorization_transport_guard.validate_enabled_document(root,auth,os.environ['TARGET_MAIN'],paths,proof)
+          print(json.dumps({'status':'PASS','transportContractStatus':contract['status'],'scientificOrdinal':auth['scientificOrdinal'],'authorizationBranch':auth['authorizationBranch'],'dispatchBranch':auth['dispatchBranch'],'executionKey':auth['executionKey']},sort_keys=True))
+          PY
+          RC=$?
+          set -e
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          diag=json.load(open('binding-diagnostics.json'))
+          out={'schemaVersion':1,'stageId':'aops-v1-neutral-authorization-builder-v2','targetMain':os.environ['TARGET_MAIN'],'candidate':int(os.environ['CANDIDATE']),'bindingDiagnostics':diag,'validatorExitCode':int(os.environ.get('RC_VALUE','0')) if False else None}
+          Path('builder-v2-summary.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          echo "$RC" > validator-exit-code.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout --orphan result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          mv binding-diagnostics.json generated-authorization.json builder-v2-summary.json validator.stdout validator.stderr validator-exit-code.txt observer-result/
+          git add observer-result/
+          git commit -m "Publish neutral AOPS authorization builder v2 diagnostics"
+          git push origin "HEAD:refs/heads/${RESULT_BRANCH}"

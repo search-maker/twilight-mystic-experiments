@@ -115,13 +115,21 @@ class AerosolFullPhaseFunctionExecutionTransportV1Tests(unittest.TestCase):
         future.pop("canonicalDesignSha256", None)
         future["canonicalDesignSha256"] = transport.canonical_sha256(future)
         transport.validate_future_fresh_seeded_design(future)
-        tampered = copy.deepcopy(future)
+
+        tampered_seed = copy.deepcopy(future)
         # The design is ordered in five-state blocks per CRN group; index 5 is the next group.
-        tampered["cases"][0]["seed"] = tampered["cases"][5]["seed"]
-        tampered.pop("canonicalDesignSha256", None)
-        tampered["canonicalDesignSha256"] = transport.canonical_sha256(tampered)
+        tampered_seed["cases"][0]["seed"] = tampered_seed["cases"][5]["seed"]
+        tampered_seed.pop("canonicalDesignSha256", None)
+        tampered_seed["canonicalDesignSha256"] = transport.canonical_sha256(tampered_seed)
         with self.assertRaises(transport.TransportRefusal):
-            transport.validate_future_fresh_seeded_design(tampered)
+            transport.validate_future_fresh_seeded_design(tampered_seed)
+
+        tampered_physics = copy.deepcopy(future)
+        tampered_physics["cases"][0]["aod550"] = float(tampered_physics["cases"][0]["aod550"]) + 0.01
+        tampered_physics.pop("canonicalDesignSha256", None)
+        tampered_physics["canonicalDesignSha256"] = transport.canonical_sha256(tampered_physics)
+        with self.assertRaisesRegex(transport.TransportRefusal, "preregistered metadata drift"):
+            transport.validate_future_fresh_seeded_design(tampered_physics)
 
     def test_seed_map_must_cover_all_groups_and_be_unique(self) -> None:
         transport = load_module("afpf_transport_bad_seed_test", TRANSPORT_PATH)

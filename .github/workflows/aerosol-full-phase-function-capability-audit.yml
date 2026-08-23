@@ -1,0 +1,155 @@
+name: Aerosol full-phase-function runtime capability audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-full-phase-function-capability-audit.yml
+      - experiments/aerosol-full-phase-function-sensitivity-v1/CAPABILITY_REVIEW.md
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aerosol-phase-capability
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Audit exact locked runtime without invoking uvspec
+        shell: micromamba-shell {0}
+        env:
+          EXPECTED_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+        run: |
+          set -euo pipefail
+          mkdir -p capability-audit
+          test -x "$(command -v uvspec)"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output capability-audit/runtime-report.json
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root=Path('.')
+          prefix=Path(os.environ['CONDA_PREFIX'])
+          report=json.load(open('capability-audit/runtime-report.json'))
+          contract=json.load(open('experiments/aerosol-optical-property-sensitivity-v1/execution-contract.review.json'))
+          lock=json.load(open('experiments/mystic-batch-v1/runtime-lock.micromamba.json'))
+          expected_runtime=contract['runtimeIdentity']
+          if report.get('scientificSolverExecuted') is not False or report.get('syntaxCheckExecuted') is not False:
+              raise SystemExit('runtime probe crossed zero-solver boundary')
+          if report.get('uvspecHelpPreview') != 'skipped' or report.get('uvspecHelpSha256') != '0'*64:
+              raise SystemExit('uvspec must not be invoked by capability audit')
+          if report.get('uvspecSha256') != expected_runtime['uvspecSha256']:
+              raise SystemExit('uvspec byte identity drift')
+          if report.get('libRadtranDataTreeSha256') != expected_runtime['libRadtranDataTreeSha256']:
+              raise SystemExit('libRadtran data-tree identity drift')
+          if report.get('atmosphereSha256') != expected_runtime['atmosphereSha256']:
+              raise SystemExit('atmosphere identity drift')
+          if lock.get('exactPackageSpec') != os.environ['EXPECTED_PACKAGE']:
+              raise SystemExit('runtime lock package spec drift')
+
+          conda_meta=prefix/'conda-meta'
+          package_meta=sorted(conda_meta.glob('rubin-libradtran-2.0.6-*.json'))
+          if len(package_meta) != 1:
+              raise SystemExit(f'expected exactly one rubin-libradtran conda metadata file, got {len(package_meta)}')
+          package=json.loads(package_meta[0].read_text())
+          if package.get('build') != 'py312pl5321he9373c2_1':
+              raise SystemExit('installed package build drift')
+
+          species=['INSO','WASO','SOOT','SSAM','SSCM','MINM','MIAM','MICM','MITR','SUSO']
+          mixtures=['continental_clean','continental_average','continental_polluted','urban','maritime_clean','maritime_polluted','maritime_tropical','desert','antarctic','desert_spheroids']
+          relevant=[]
+          species_hits={name:[] for name in species}
+          mixture_hits={name:[] for name in mixtures}
+          opac_hits=[]
+          for p in sorted(x for x in prefix.rglob('*') if x.is_file()):
+              rel=p.relative_to(prefix).as_posix()
+              low=rel.lower()
+              base=p.name.upper()
+              hit=False
+              if 'opac' in low:
+                  opac_hits.append(rel); hit=True
+              for name in species:
+                  if base in {name+'.NC', name+'.CDF'} or ('/'+name.lower()+'.' in '/'+low):
+                      species_hits[name].append(rel); hit=True
+              if p.stat().st_size <= 2_000_000 and p.suffix.lower() in {'','.txt','.dat','.inp','.cfg','.py','.pl'}:
+                  try: text=p.read_text(errors='ignore').lower()
+                  except Exception: text=''
+                  for name in mixtures:
+                      if name in text:
+                          mixture_hits[name].append(rel); hit=True
+              if hit:
+                  relevant.append({
+                      'path':rel,
+                      'size':p.stat().st_size,
+                      'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+                  })
+
+          all_species_present=all(species_hits[name] for name in species)
+          any_opac_asset=bool(opac_hits or any(species_hits.values()))
+          audit={
+              'schemaVersion':1,
+              'stageId':'aerosol-full-phase-function-runtime-capability-v1',
+              'status':'PASS_OPAC_ASSETS_PRESENT' if all_species_present else ('PARTIAL_OPAC_ASSETS_PRESENT' if any_opac_asset else 'OPAC_ASSETS_NOT_PRESENT'),
+              'repository':os.environ.get('GITHUB_REPOSITORY'),
+              'exactMainSha':os.environ.get('GITHUB_SHA'),
+              'runId':int(os.environ.get('GITHUB_RUN_ID','0')),
+              'runAttempt':int(os.environ.get('GITHUB_RUN_ATTEMPT','0')),
+              'exactPackageSpec':lock['exactPackageSpec'],
+              'installedCondaBuild':package.get('build'),
+              'uvspecSha256':report['uvspecSha256'],
+              'libRadtranDataTreeSha256':report['libRadtranDataTreeSha256'],
+              'expectedDataTreeSha256':expected_runtime['libRadtranDataTreeSha256'],
+              'uvspecInvoked':False,
+              'syntaxCheckExecuted':False,
+              'scientificSolverExecuted':False,
+              'resultOpeningPerformed':False,
+              'documentedExpectedSpecies':species,
+              'documentedCandidateMixtures':mixtures,
+              'speciesHits':species_hits,
+              'mixtureNameTextHits':mixture_hits,
+              'opacPathHits':opac_hits,
+              'allExpectedSpeciesAssetsPresent':all_species_present,
+              'relevantFiles':relevant,
+              'boundary':'runtime/data capability inventory only; no uvspec invocation and no scientific result',
+          }
+          raw=(json.dumps(audit,indent=2,sort_keys=True)+'\n').encode()
+          Path('capability-audit/opac-capability.json').write_bytes(raw)
+          Path('capability-audit/opac-capability.sha256').write_text(hashlib.sha256(raw).hexdigest()+'  opac-capability.json\n')
+          print(json.dumps({k:audit[k] for k in ['status','exactMainSha','exactPackageSpec','allExpectedSpeciesAssetsPresent','uvspecInvoked','scientificSolverExecuted']},indent=2))
+          PY
+      - name: Persist zero-solver capability evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-full-phase-function-runtime-capability-v1
+          path: capability-audit/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record capability checkpoint in sole control ledger
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          STATUS="$(python -c 'import json;print(json.load(open("capability-audit/opac-capability.json"))["status"])')"
+          SHA="$(cut -d' ' -f1 capability-audit/opac-capability.sha256)"
+          BODY="AEROSOL_FULL_PHASE_FUNCTION_RUNTIME_CAPABILITY_V1 status=${STATUS} main=${GITHUB_SHA} run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} artifact_id=${ARTIFACT_ID} report_sha256=${SHA} uvspec_invoked=false syntax_check=false scientific_solver=false results_opened=false"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" >/dev/null

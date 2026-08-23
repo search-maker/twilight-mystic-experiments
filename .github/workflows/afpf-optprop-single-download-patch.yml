@@ -1,0 +1,133 @@
+name: AFPF optprop single-download patch
+
+on:
+  push:
+    branches:
+      - fix/afpf-optprop-single-download-v1
+    paths:
+      - .github/patch-requests/afpf-optprop-single-download-v1.request
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/afpf-optprop-single-download-v1
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply exact three-hunk transport-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path=Path('.github/workflows/afpf-v1-execution.yml')
+          text=path.read_text()
+
+          marker="""      - name: Persist pre-solver guard evidence\n"""
+          if text.count(marker) != 1:
+              raise SystemExit(f'preflight insertion marker count={text.count(marker)}')
+          acquire="""      - name: Acquire exact official optprop archive once for same-run case transport
+        shell: bash
+        env:
+          SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+        run: |
+          set -euo pipefail
+          curl --location --fail-with-body --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 2700 \\
+            --user-agent 'twilight-mystic-experiments afpf-v1-science-preflight/1.0' \\
+            --output execution-preflight/optprop_v2.1.tar.gz \"$SOURCE_URL\"
+          python - <<'PYARCHIVE'
+          import hashlib
+          from pathlib import Path
+          p=Path('execution-preflight/optprop_v2.1.tar.gz')
+          if p.stat().st_size != 743_391_266:
+              raise SystemExit(f'official optprop archive size drift: {p.stat().st_size}')
+          h=hashlib.sha256()
+          with p.open('rb') as f:
+              for block in iter(lambda:f.read(4*1024*1024),b''):
+                  h.update(block)
+          got=h.hexdigest()
+          want='11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e'
+          if got != want:
+              raise SystemExit(f'official optprop archive SHA-256 drift: {got}')
+          PYARCHIVE
+
+"""
+          text=text.replace(marker, acquire+marker, 1)
+
+          old_fetch="""          test -f preflight/execution-preflight/execution-guard.json
+          test -f preflight/execution-preflight/execution-design.json
+"""
+          new_fetch=old_fetch+"          test -f preflight/execution-preflight/optprop_v2.1.tar.gz\n"
+          if text.count(old_fetch) != 1:
+              raise SystemExit(f'case preflight marker count={text.count(old_fetch)}')
+          text=text.replace(old_fetch,new_fetch,1)
+
+          old_overlay="""      - name: Reconstruct exact frozen OPAC overlay and capture runtime identity
+        shell: micromamba-shell {0}
+        env:
+          SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+        run: |
+          set -euo pipefail
+          curl --location --fail-with-body --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 2700 \\
+            --user-agent 'twilight-mystic-experiments afpf-v1-science/1.0' \\
+            --output optprop_v2.1.tar.gz \"$SOURCE_URL\"
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from runtime_overlay import stage_frozen_overlay
+          base=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'
+          report=stage_frozen_overlay(base,Path('optprop_v2.1.tar.gz'),Path('libradtran-overlay'))
+          Path('overlay-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\\n')
+          if report.get('status')!='FROZEN_OPAC_RUNTIME_OVERLAY_STAGED': raise SystemExit('overlay staging status drift')
+          if report.get('augmentedDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('augmented data tree drift')
+          PY
+          rm optprop_v2.1.tar.gz
+"""
+          new_overlay="""      - name: Reconstruct exact frozen OPAC overlay and capture runtime identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from runtime_overlay import stage_frozen_overlay
+          base=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'
+          archive=Path('preflight/execution-preflight/optprop_v2.1.tar.gz')
+          report=stage_frozen_overlay(base,archive,Path('libradtran-overlay'))
+          Path('overlay-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\\n')
+          if report.get('status')!='FROZEN_OPAC_RUNTIME_OVERLAY_STAGED': raise SystemExit('overlay staging status drift')
+          if report.get('archiveSha256')!='11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e': raise SystemExit('case archive identity drift')
+          if report.get('augmentedDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('augmented data tree drift')
+          PY
+"""
+          if text.count(old_overlay) != 1:
+              raise SystemExit(f'case overlay exact block count={text.count(old_overlay)}')
+          text=text.replace(old_overlay,new_overlay,1)
+
+          if text.count('https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz') != 1:
+              raise SystemExit('official source URL must occur exactly once after patch')
+          if text.count("Path('preflight/execution-preflight/optprop_v2.1.tar.gz')") != 1:
+              raise SystemExit('same-run archive path binding missing/duplicated')
+          if 'afpf-v1-science/1.0' in text:
+              raise SystemExit('per-case official download path remains')
+          path.write_text(text)
+          PY
+
+          rm -f .github/patch-requests/afpf-optprop-single-download-v1.request
+          rm -f .github/workflows/afpf-optprop-single-download-patch.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git diff --cached --name-status
+          test "$(git diff --cached --name-only | wc -l)" = 1
+          test "$(git diff --cached --name-only)" = .github/workflows/afpf-v1-execution.yml
+          git commit -m 'Reuse one exact OPAC archive per AFPF science run'
+          git push origin HEAD:fix/afpf-optprop-single-download-v1

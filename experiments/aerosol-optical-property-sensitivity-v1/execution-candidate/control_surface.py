@@ -1,20 +1,48 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
-from freshness import (
-    authorization_branch,
-    consumed_marker,
-    dispatch_branch,
-    execution_key,
-    matching_marker,
-    positive_candidate_claims,
+
+def _git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
+def _load_bound_sibling(name: str, path: Path, expected_blob: str):
+    if _git_blob_sha1(path) != expected_blob:
+        raise RuntimeError(f"bound sibling byte drift: {path.name}")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load bound sibling: {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_HERE = Path(__file__).resolve().parent
+_freshness = _load_bound_sibling(
+    "aops_control_surface_freshness", _HERE / "freshness.py",
+    "3b4b087a211a5400164ea592ac1e947cff29631d",
 )
+_global_ordinal = _load_bound_sibling(
+    "aops_control_surface_global_ordinal", _HERE / "global_ordinal.py",
+    "b935b29e8be83efeed508c8177a5c596b663143b",
+)
+authorization_branch = _freshness.authorization_branch
+consumed_marker = _freshness.consumed_marker
+dispatch_branch = _freshness.dispatch_branch
+execution_key = _freshness.execution_key
+matching_marker = _freshness.matching_marker
+positive_candidate_claims = _freshness.positive_candidate_claims
+failed_authorization_history = _global_ordinal.failed_authorization_history
 
 
 AUTHORIZATION_PATH = "experiments/aerosol-optical-property-sensitivity-v1/authorization.json"
@@ -215,6 +243,12 @@ def build_surface(
     auth_head = str(((auth_row or {}).get("commit") or {}).get("sha") or "") or None
     dispatch_head = str(((dispatch_row or {}).get("commit") or {}).get("sha") or "") or None
 
+    failed = failed_authorization_history(payload, ordinal)
+    failed_heads = {str(x).lower() for x in failed.get("heads", [])}
+    failed_pr_numbers = {int(x) for x in failed.get("prNumbers", [])}
+    failed_review_run_ids = {int(x) for x in failed.get("reviewRunIds", [])}
+    reusable_failed_authorization = bool(auth_head and auth_head.lower() in failed_heads)
+
     exact_marker_info = None
     if marker_head and marker_parent and current_pr:
         exact_marker_info = (marker_head, marker_parent, current_pr)
@@ -223,7 +257,7 @@ def build_surface(
         ordinal,
         current_pr=current_pr,
         current_run_id=current_run_id,
-        allow_authorization_branch=allow_authorization_branch,
+        allow_authorization_branch=(allow_authorization_branch or reusable_failed_authorization),
         allow_dispatch_branch=allow_dispatch_branch,
         allow_exact_marker=exact_marker_info,
     )
@@ -250,6 +284,10 @@ def build_surface(
     )
     for surface, rows in surfaces:
         for row in rows:
+            if surface == "run" and int(row.get("id") or 0) in failed_review_run_ids:
+                continue
+            if surface == "pull" and int(row.get("number") or 0) in failed_pr_numbers:
+                continue
             if surface == "run" and current_run_id is not None and int(row.get("id") or 0) == current_run_id:
                 continue
             if surface == "pull" and current_pr is not None and int(row.get("number") or 0) == current_pr:
@@ -262,6 +300,8 @@ def build_surface(
 
     positive: set[str] = set()
     for row in pulls:
+        if int(row.get("number") or 0) in failed_pr_numbers:
+            continue
         if current_pr is not None and int(row.get("number") or 0) == current_pr:
             continue
         positive.update(positive_candidate_claims(_row_text(row), ordinal))
@@ -271,11 +311,15 @@ def build_surface(
     for row in payload.get("issueComments", []):
         if str(row.get("id") or "") in issue60_ids:
             continue
+        if _related_pr_number(row) in failed_pr_numbers:
+            continue
         if current_pr is not None and _related_pr_number(row) == current_pr:
             continue
         positive.update(positive_candidate_claims(_row_text(row), ordinal))
     for rows in (payload.get("pullReviewComments", []), payload.get("commitComments", [])):
         for row in rows:
+            if _related_pr_number(row) in failed_pr_numbers:
+                continue
             if current_pr is not None and _related_pr_number(row) == current_pr:
                 continue
             positive.update(positive_candidate_claims(_row_text(row), ordinal))
@@ -325,7 +369,7 @@ def build_surface(
         "positiveCandidateClaimTexts": sorted(positive) + conflicts,
         "authorizationBranchExists": auth_row is not None,
         "authorizationBranchHeadSha": auth_head,
-        "authorizationBranchReusableAfterFailedReview": False,
+        "authorizationBranchReusableAfterFailedReview": reusable_failed_authorization,
         "dispatchBranchExists": dispatch_row is not None,
         "dispatchBranchHeadSha": dispatch_head,
         "activeAuthorizationPathOnMainExists": active_authorization_path_on_main_exists,

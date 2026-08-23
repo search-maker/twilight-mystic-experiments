@@ -79,6 +79,37 @@ def load_contract(stage_dir: Path) -> dict[str, Any]:
     return contract
 
 
+def validate_bound_sources(repository_root: Path, contract: dict[str, Any]) -> Path:
+    bindings = contract["sourceBindings"]
+    rows = (
+        ("protocolPath", "protocolGitBlobSha1"),
+        ("analysisContractPath", "analysisContractGitBlobSha1"),
+        ("reviewCorePath", "reviewCoreGitBlobSha1"),
+        ("adapterPath", "adapterGitBlobSha1"),
+        ("analysisPath", "analysisGitBlobSha1"),
+        ("levelBAnalysisPath", "levelBAnalysisGitBlobSha1"),
+        ("executionTransportPath", "executionTransportGitBlobSha1"),
+        ("runtimeOverlayPath", "runtimeOverlayGitBlobSha1"),
+        ("executorPath", "executorGitBlobSha1"),
+        ("aggregatorPath", "aggregatorGitBlobSha1"),
+        ("processGroupRunnerPath", "processGroupRunnerGitBlobSha1"),
+        ("r8DerivedChannelsPath", "r8DerivedChannelsGitBlobSha1"),
+        ("wavelengthGridPath", "wavelengthGridGitBlobSha1"),
+    )
+    resolved: dict[str, Path] = {}
+    for path_key, blob_key in rows:
+        path = repository_root / bindings[path_key]
+        if git_blob_sha1(path) != bindings[blob_key]:
+            raise AggregateRefusal(f"bound source bytes changed: {path}")
+        resolved[path_key] = path
+    runtime_lock = repository_root / contract["runtimeIdentity"]["runtimeLockPath"]
+    if git_blob_sha1(runtime_lock) != contract["runtimeIdentity"]["runtimeLockGitBlobSha1"]:
+        raise AggregateRefusal("runtime lock Git blob drift")
+    if sha256_file(runtime_lock) != contract["runtimeIdentity"]["runtimeLockRawSha256"]:
+        raise AggregateRefusal("runtime lock raw SHA drift")
+    return resolved["r8DerivedChannelsPath"]
+
+
 def load_and_validate_design(stage_dir: Path, design_path: Path) -> dict[str, Any]:
     design = json.loads(design_path.read_text())
     transport = load_module("afpf_execution_transport_for_aggregate", stage_dir / "execution_transport.py")
@@ -87,6 +118,24 @@ def load_and_validate_design(stage_dir: Path, design_path: Path) -> dict[str, An
     except Exception as exc:
         raise AggregateRefusal(f"future seeded design invalid: {exc}") from exc
     return design
+
+
+def validate_runtime_report(runtime: dict[str, Any], contract: dict[str, Any], case_id: str) -> None:
+    if runtime.get("scientificSolverExecuted") is not False:
+        raise AggregateRefusal(f"{case_id}: runtime identity report is not pre-solver")
+    expected = contract["runtimeIdentity"]
+    mapping = {
+        "runtimeLockRawSha256": "runtimeLockRawSha256",
+        "uvspecSha256": "uvspecSha256",
+        "uvspecHelpSha256": "uvspecHelpSha256",
+        "libRadtranDataTreeSha256": "augmentedDataTreeSha256",
+        "atmosphereSha256": "atmosphereSha256",
+    }
+    for runtime_key, contract_key in mapping.items():
+        if runtime.get(runtime_key) != expected.get(contract_key):
+            raise AggregateRefusal(f"{case_id}: runtime identity drift: {runtime_key}")
+    if runtime.get("exactPackageSpec") not in (None, expected.get("exactPackageSpec")):
+        raise AggregateRefusal(f"{case_id}: runtime package spec drift")
 
 
 def aggregate(
@@ -104,12 +153,9 @@ def aggregate(
     stage_dir = repository_root / "experiments" / STAGE
     contract_path = stage_dir / "execution-contract.review.json"
     contract = load_contract(stage_dir)
+    derived_path = validate_bound_sources(repository_root, contract)
     design = load_and_validate_design(stage_dir, design_path)
     analysis = load_module("afpf_frozen_analysis_for_aggregate", stage_dir / "analysis.py")
-
-    derived_path = repository_root / contract["sourceBindings"]["r8DerivedChannelsPath"]
-    if git_blob_sha1(derived_path) != contract["sourceBindings"]["r8DerivedChannelsGitBlobSha1"]:
-        raise AggregateRefusal("bound R8 derived-channel bytes changed")
     derived = load_module("afpf_bound_r8_derived_for_aggregate", derived_path)
 
     if design.get("caseCount") != 360 or design.get("groupCount") != 72 or design.get("analysisCellCount") != 24:
@@ -119,7 +165,12 @@ def aggregate(
         raise AggregateRefusal("expected case ID uniqueness failure")
 
     metadata = json.loads(artifact_metadata_path.read_text())
-    rows = metadata.get("artifacts", metadata if isinstance(metadata, list) else [])
+    if isinstance(metadata, dict):
+        rows = metadata.get("artifacts", [])
+    elif isinstance(metadata, list):
+        rows = metadata
+    else:
+        raise AggregateRefusal("artifact metadata must be an object or list")
     if not isinstance(rows, list):
         raise AggregateRefusal("artifact metadata missing list")
     prefix = str(contract["caseArtifactPrefix"])
@@ -188,10 +239,23 @@ def aggregate(
         raw_hashes = result.get("rawMemberSha256ByBasename")
         if not isinstance(raw_hashes, dict) or set(raw_hashes) != set(raw_names):
             raise AggregateRefusal(f"{case_id}: raw member hash-map drift")
+        actual_raw_hashes: dict[str, str] = {}
         for basename in raw_names:
             path = find_one(root, basename)
-            if raw_hashes.get(basename) != sha256_file(path):
+            actual_raw_hashes[basename] = sha256_file(path)
+            if raw_hashes.get(basename) != actual_raw_hashes[basename]:
                 raise AggregateRefusal(f"{case_id}: raw member hash mismatch: {basename}")
+        if result.get("caseInpSha256") != actual_raw_hashes["case.inp"]:
+            raise AggregateRefusal(f"{case_id}: dedicated case input hash mismatch")
+        if result.get("runtimeReportRawSha256") != actual_raw_hashes["runtime-report.json"]:
+            raise AggregateRefusal(f"{case_id}: dedicated runtime-report hash mismatch")
+        if result.get("radianceOutputSha256") != actual_raw_hashes["mc.rad.spc"]:
+            raise AggregateRefusal(f"{case_id}: dedicated radiance hash mismatch")
+        if result.get("stdRadianceOutputSha256") != actual_raw_hashes["mc.rad.std.spc"]:
+            raise AggregateRefusal(f"{case_id}: dedicated std-radiance hash mismatch")
+
+        runtime_report = json.loads(find_one(root, "runtime-report.json").read_text())
+        validate_runtime_report(runtime_report, contract, case_id)
 
         rad_path = find_one(root, "mc.rad.spc")
         std_path = find_one(root, "mc.rad.std.spc")

@@ -1,0 +1,61 @@
+name: AOPS v1 preauthorization observer 7925e7ec
+on:
+  push:
+    branches: [status/aops-v1-preauth-observer-7925e7ec]
+    paths: [.github/workflows/aops-v1-preauth-observer-7925e7ec.yml]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Wait for exact-main preauthorization terminal state and publish checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=7925e7ec5496e8b532d8a46ead336d6ed0608ff7
+          found=''
+          for i in $(seq 1 80); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > /tmp/pages.json
+            python - <<'PY' > /tmp/match.json
+          import json
+          pages=json.load(open('/tmp/pages.json'))
+          rows=[r for page in pages for r in page.get('workflow_runs',[]) if r.get('head_sha')=='7925e7ec5496e8b532d8a46ead336d6ed0608ff7']
+          if len(rows)>1: raise SystemExit('multiple exact-head preauthorization runs')
+          if rows:
+              r=rows[0]
+              print(json.dumps({k:r.get(k) for k in ('id','name','path','head_branch','head_sha','run_attempt','status','conclusion','created_at','updated_at')},sort_keys=True))
+          PY
+            if test -s /tmp/match.json; then
+              status="$(python -c 'import json;print(json.load(open("/tmp/match.json"))["status"])')"
+              if test "$status" = completed; then found=1; break; fi
+            fi
+            sleep 10
+          done
+          test -n "$found"
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/match.json'))
+          assert r['path']=='.github/workflows/aops-v1-preauthorization-audit.yml'
+          assert r['head_branch']=='main'
+          assert r['head_sha']=='7925e7ec5496e8b532d8a46ead336d6ed0608ff7'
+          assert r['run_attempt']==1
+          open('/tmp/status.json','w').write(json.dumps(r,indent=2,sort_keys=True)+'\n')
+          PY
+          git checkout --orphan status/aops-v1-preauth-observer-7925e7ec-result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          cp /tmp/status.json observer-result/status.json
+          git add observer-result/status.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Record AOPS exact-main preauthorization status'
+          git push -f origin HEAD:refs/heads/status/aops-v1-preauth-observer-7925e7ec-result

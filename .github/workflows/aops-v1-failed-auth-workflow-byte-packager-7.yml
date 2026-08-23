@@ -1,0 +1,94 @@
+name: AOPS v1 failed auth exact workflow byte packager 7
+on:
+  push:
+    branches: [status/aops-v1-failed-auth-workflow-byte-packager-7]
+    paths: [.github/workflows/aops-v1-failed-auth-workflow-byte-packager-7.yml]
+permissions:
+  contents: write
+jobs:
+  package:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Reconstruct exact already-tested recovery workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tools/aops_v1_failed_auth_recovery_v4_hardening.py /tmp/hardening.py
+          git fetch origin status/aops-v1-failed-auth-recovery-builder-2
+          git show FETCH_HEAD:tools/aops_v1_failed_auth_recovery_builder_2.py > /tmp/recovery.py
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "7297a579112b6089acc5b5d45292e8169039c022"
+          git checkout -b package/aops-v1-workflow-bytes 7297a579112b6089acc5b5d45292e8169039c022
+          python /tmp/recovery.py
+          python /tmp/hardening.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected={
+            '.github/workflows/aops-v1-authorization-review.yml':('a3a36c5282817579a02dfef2b50fcd560fc3b9366f8152310818d2ca90166ffe','04666dabe431f53e73826141080c2c249242c4ac'),
+            '.github/workflows/aops-v1-dispatch-publisher.yml':('93cf60e10a1144d2b24daac543b77423205a9ad12d5ac63df8b054e5f8f1634a','191149f0c747eb8824b6e332ca8aee0fea9cb94d'),
+          }
+          for rel,(raw_expected,blob_expected) in expected.items():
+              b=Path(rel).read_bytes()
+              raw=hashlib.sha256(b).hexdigest()
+              blob=hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+              assert raw==raw_expected,(rel,raw)
+              assert blob==blob_expected,(rel,blob)
+          PY
+      - name: Package exact workflow bytes under non-hidden names
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/aops-workflow-bytes
+          mkdir -p /tmp/aops-workflow-bytes
+          cp .github/workflows/aops-v1-authorization-review.yml /tmp/aops-workflow-bytes/aops-v1-authorization-review.yml
+          cp .github/workflows/aops-v1-dispatch-publisher.yml /tmp/aops-workflow-bytes/aops-v1-dispatch-publisher.yml
+          cat > /tmp/aops-workflow-bytes/manifest.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "status": "PASS_EXACT_WORKFLOW_BYTES_MATCH_V6_TESTED_MANIFEST",
+            "sourceMainSha": "7297a579112b6089acc5b5d45292e8169039c022",
+            "authorizationReviewGitBlobSha1": "04666dabe431f53e73826141080c2c249242c4ac",
+            "authorizationReviewRawSha256": "a3a36c5282817579a02dfef2b50fcd560fc3b9366f8152310818d2ca90166ffe",
+            "dispatchPublisherGitBlobSha1": "191149f0c747eb8824b6e332ca8aee0fea9cb94d",
+            "dispatchPublisherRawSha256": "93cf60e10a1144d2b24daac543b77423205a9ad12d5ac63df8b054e5f8f1634a",
+            "fullRepositorySuiteProofRunId": 32613861840,
+            "fullRepositorySuitePassed": true,
+            "scientificExecutionPerformed": false,
+            "solverExecutionPerformed": false
+          }
+          EOF
+      - name: Upload exact workflow byte package
+        uses: actions/upload-artifact@v4
+        with:
+          name: aops-v1-failed-auth-recovery-workflow-bytes-v7
+          path: /tmp/aops-workflow-bytes
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish workflow-byte package checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/status.json <<EOF
+          {"schemaVersion":1,"status":"PASS_EXACT_WORKFLOW_BYTES_MATCH_V6_TESTED_MANIFEST","runId":${GITHUB_RUN_ID},"runAttempt":${GITHUB_RUN_ATTEMPT},"builderHead":"${GITHUB_SHA}","sourceMainSha":"7297a579112b6089acc5b5d45292e8169039c022","artifactName":"aops-v1-failed-auth-recovery-workflow-bytes-v7","fullRepositorySuiteProofRunId":32613861840,"scientificExecutionPerformed":false,"solverExecutionPerformed":false}
+          EOF
+          git checkout --orphan result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir observer-result
+          cp /tmp/status.json observer-result/status.json
+          git add -- observer-result/status.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Publish exact AOPS workflow byte package checkpoint'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/status/aops-v1-failed-auth-workflow-byte-packager-7-result

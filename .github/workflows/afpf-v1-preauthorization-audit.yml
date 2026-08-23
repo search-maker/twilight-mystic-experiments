@@ -1,0 +1,233 @@
+name: AFPF v1 fresh preauthorization audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/afpf-v1-preauthorization-audit.yml
+      - experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/freshness.py
+      - experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/preauthorization_surface.py
+      - experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_authorization_proof.py
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: afpf-v1-preauthorization-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  preauthorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exact attempt-1 main and zero-runtime surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test ! -e experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/afpf-v1-preauthorization-audit.yml').read_text()
+          forbidden=(
+              'setup-'+'micromamba','rubin-'+'libradtran','command -v '+'uvspec',
+              '--allow-'+'execution','git '+'push ','workflow_'+'dispatch:',
+              'repository_'+'dispatch:','schedule'+':'
+          )
+          found=[item for item in forbidden if item in text]
+          if found:
+              raise SystemExit(f'preauthorization exposed runtime/dispatch transition: {found}')
+          PY
+          git ls-files -z > tracked-files.nul
+          mkdir -p preauthorization-evidence
+
+      - name: Exact tracked-tree candidate-seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json \
+            --output preauthorization-evidence/tracked-seed-scan.json
+
+      - name: Stable repository-global authorization-time candidate-seed recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name main \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output preauthorization-evidence/repository-global-seed-scan.json
+
+      - name: Build exact-main seed authorization proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_authorization_proof.py \
+            --stage-dir experiments/aerosol-full-phase-function-sensitivity-v1 \
+            --tracked-tree-report preauthorization-evidence/tracked-seed-scan.json \
+            --repository-global-report preauthorization-evidence/repository-global-seed-scan.json \
+            --expected-main-head "$GITHUB_SHA" \
+            --output preauthorization-evidence/seed-authorization-proof.json
+
+      - name: Derive fresh global ordinal proposal and pass AFPF preauthorization guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          import preauthorization_surface
+
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          latest=preauthorization_surface.latest_consumed_or_dispatched_ordinal(payload)
+          if not isinstance(latest,int) or latest <= 0:
+              raise SystemExit('cannot derive positive latest prior global ordinal')
+          candidate,observations=preauthorization_surface.derive_next_global_ordinal(
+              payload,latest,current_run_id=int(os.environ['GITHUB_RUN_ID'])
+          )
+          surface=preauthorization_surface.build_surface(
+              payload,candidate,current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,
+          )
+          proof=json.loads(Path('preauthorization-evidence/seed-authorization-proof.json').read_text())
+          if proof.get('auditedMainHead') != os.environ['GITHUB_SHA']:
+              raise SystemExit('seed proof not bound to exact current main')
+          if proof.get('status') != 'PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED':
+              raise SystemExit('seed authorization recheck status drift')
+          identity=preauthorization_surface.identity_for(candidate)
+          report={
+              'schemaVersion':1,
+              'stageId':'aerosol-full-phase-function-sensitivity-v1-preauthorization',
+              'status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED',
+              'exactMainSha':os.environ['GITHUB_SHA'],
+              'runId':int(os.environ['GITHUB_RUN_ID']),
+              'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'latestPriorConsumedScientificOrdinal':surface['latestPriorConsumedScientificOrdinal'],
+              'nextAvailableScientificOrdinal':candidate,
+              'globalOrdinalObservationCount':len(observations),
+              'globalOrdinalMaxObserved':max(int(row['ordinal']) for row in observations),
+              'authorizationBranch':identity['authorizationBranch'],
+              'dispatchBranch':identity['dispatchBranch'],
+              'executionKey':identity['executionKey'],
+              'identityGuardStatus':'AFPF_PREAUTHORIZATION_FRESH_GLOBAL_IDENTITY_NOT_ALLOCATED',
+              'seedProofStatus':proof['status'],
+              'seedAuthorizationProofRawSha256':hashlib.sha256(Path('preauthorization-evidence/seed-authorization-proof.json').read_bytes()).hexdigest(),
+              'candidateSeedCount':proof['candidateSeedCount'],
+              'trackedTreeExternalCollisionCount':proof['trackedTreeExternalCollisionCount'],
+              'repositoryGlobalCollisionCount':proof['repositoryGlobalCollisionCount'],
+              'repositoryGlobalDoubleEnumerationStable':proof['repositoryGlobalDoubleEnumerationStable'],
+              'scientificOrdinalAllocated':False,
+              'authorizationCreated':False,
+              'dispatchCreated':False,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'githubRerunAllowed':False,
+              'retryAllowed':False,
+              'resumeAllowed':False,
+          }
+          report['reportSha256']=hashlib.sha256(
+              json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          ).hexdigest()
+          Path('preauthorization-evidence/global-ordinal-observations.json').write_text(json.dumps(observations,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/preauthorization.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist zero-runtime preauthorization evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish terminal observable checkpoint to Issue 60
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,re,urllib.request
+          from pathlib import Path
+          report=json.loads(Path('preauthorization-evidence/preauthorization.json').read_text())
+          if report.get('status') != 'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED':
+              raise SystemExit('preauthorization status not pass')
+          if any(report.get(key) is not False for key in (
+              'scientificOrdinalAllocated','authorizationCreated','dispatchCreated',
+              'scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed'
+          )):
+              raise SystemExit('preauthorization crossed identity/runtime boundary')
+          artifact_id=os.environ.get('ARTIFACT_ID','').strip()
+          digest=os.environ.get('ARTIFACT_DIGEST','').strip()
+          if not artifact_id.isdigit() or re.fullmatch(r'[0-9a-f]{64}',digest) is None:
+              raise SystemExit('artifact identity malformed')
+          body='\n'.join([
+              'AFPF-V1-PREAUTHORIZATION-RUN',
+              f'exact_main={report["exactMainSha"]}',
+              f'run={os.environ["GITHUB_RUN_ID"]}',
+              f'attempt={report["runAttempt"]}',
+              f'status={report["status"]}',
+              f'latest_consumed={report["latestPriorConsumedScientificOrdinal"]}',
+              f'next_if_separately_allocated={report["nextAvailableScientificOrdinal"]}',
+              f'artifact_id={artifact_id}',
+              f'artifact_digest=sha256:{digest}',
+              f'report_sha256={report["reportSha256"]}',
+              'authorization_created=false',
+              'scientific_identity_allocated=false',
+              'dispatch_created=false',
+              'scientific_runtime=false',
+              'solver_execution=false',
+          ])
+          req=urllib.request.Request(
+              f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/60/comments',
+              data=json.dumps({'body':body}).encode(),
+              headers={
+                  'Authorization':f'Bearer {os.environ["GITHUB_TOKEN"]}',
+                  'Accept':'application/vnd.github+json',
+                  'X-GitHub-Api-Version':'2022-11-28',
+                  'Content-Type':'application/json',
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(req,timeout=90) as response:
+              row=json.load(response)
+          if not int(row.get('id') or 0):
+              raise SystemExit('Issue 60 checkpoint failed')
+          print(f'issue60_comment_id={row["id"]}')
+          PY

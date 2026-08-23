@@ -158,3 +158,29 @@ def validate_preauthorization(ctx: dict[str, Any], ordinal: int) -> None:
     require(ctx.get("activeAuthorizationPathOnMainExists") is False, "active AFPF authorization path already exists on main")
     require(ctx.get("matchingAuthorizationMarkers") == 0, "authorization marker already exists before review")
     require(ctx.get("candidateSeedAuthorizationRecheckPassed") is True, "authorization-time candidate seed recheck has not passed")
+
+
+def validate_authorization_review(ctx: dict[str, Any], ordinal: int, head_sha: str) -> None:
+    validate_common(ctx, ordinal)
+    require(SHA40.fullmatch(head_sha or "") is not None, "authorization head SHA invalid")
+    require(ctx.get("currentConsumedMarkerCount") == 0, "candidate consumed marker exists during authorization review")
+    require(ctx.get("authorizationBranchExists") is True, "authorization branch missing during review")
+    require(ctx.get("authorizationBranchHeadSha") == head_sha, "authorization branch head differs from reviewed head")
+    require(ctx.get("activeAuthorizationPathOnMainExists") is False, "active AFPF authorization path already exists on main")
+    require(ctx.get("matchingAuthorizationMarkers") == 0, "authorization marker must not pre-exist review")
+    require(ctx.get("candidateSeedAuthorizationRecheckPassed") is True, "authorization-time candidate seed recheck has not passed")
+
+
+def validate_dispatch(ctx: dict[str, Any], ordinal: int, head_sha: str, *, post_dispatch: bool = False) -> None:
+    validate_common(ctx, ordinal, dispatch_must_be_absent=not post_dispatch)
+    require(SHA40.fullmatch(head_sha or "") is not None, "authorization head SHA invalid")
+    require(ctx.get("authorizationBranchExists") is True, "authorization branch missing before dispatch")
+    require(ctx.get("authorizationBranchHeadSha") == head_sha, "authorization branch head drift before dispatch")
+    require(ctx.get("matchingAuthorizationMarkers") == 1, "exactly one matching authorization marker required")
+    require(ctx.get("candidateSeedAuthorizationRecheckPassed") is True, "authorization-time candidate seed recheck has not passed")
+    if post_dispatch:
+        require(ctx.get("dispatchBranchExists") is True, "dispatch branch missing after dispatch transition")
+        require(ctx.get("dispatchBranchHeadSha") == head_sha, "dispatch branch head differs from reviewed authorization head")
+        require(ctx.get("currentConsumedMarkerCount") == 1, "exactly one dispatch-consumed marker required after git push")
+    else:
+        require(ctx.get("currentConsumedMarkerCount") == 0, "dispatch-consumed marker must not exist before git push")

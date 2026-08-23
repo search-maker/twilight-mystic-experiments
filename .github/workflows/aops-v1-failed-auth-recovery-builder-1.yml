@@ -1,0 +1,449 @@
+name: AOPS v1 failed authorization recovery builder 1
+
+on:
+  push:
+    branches:
+      - status/aops-v1-failed-auth-recovery-builder-1
+    paths:
+      - .github/workflows/aops-v1-failed-auth-recovery-builder-1.yml
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact transport main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7297a579112b6089acc5b5d45292e8169039c022
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove failed authorization identity is preserved and unconsumed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          MAIN=7297a579112b6089acc5b5d45292e8169039c022
+          FAILED=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          AUTH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          HIST=history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1
+          test "$(git rev-parse HEAD)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/$AUTH | cut -f1)" = "$FAILED"
+          test "$(git ls-remote origin refs/heads/$HIST | cut -f1)" = "$FAILED"
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/pr299.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/pr299.json'))
+          assert p['state']=='closed'
+          assert p.get('merged_at') is None
+          assert p['head']['ref']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert p['head']['sha']=='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          PY
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32612380809 > /tmp/run.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/run.json'))
+          assert r['head_sha']=='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          assert r['head_branch']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='failure'
+          assert r['path']=='.github/workflows/aops-v1-authorization-review.yml'
+          PY
+          test -z "$(git ls-remote --heads origin refs/heads/dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36)"
+
+      - name: Build narrow control-plane recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b fix/aops-v1-failed-auth-review-recovery-1 7297a579112b6089acc5b5d45292e8169039c022
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1. Both authorization-bearing transport paths must pass the frozen execution design.
+          for rel in (
+              '.github/workflows/aops-v1-authorization-review.yml',
+              '.github/workflows/aops-v1-dispatch-publisher.yml',
+          ):
+              p=Path(rel); text=p.read_text()
+              needle="'freshness':execd/'freshness.py',"
+              if needle not in text:
+                  raise SystemExit(f'missing expected freshness path in {rel}')
+              if "'executionDesign':stage/'execution_design.py'" in text:
+                  raise SystemExit(f'executionDesign unexpectedly already present in {rel}')
+              text=text.replace(needle, needle+"'executionDesign':stage/'execution_design.py',")
+              p.write_text(text)
+
+          # 2. AOPS-specific failed-review history. R8's bound helper is intentionally stage-specific.
+          Path('experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py').write_text(r'''from __future__ import annotations
+
+import hashlib
+import importlib.util
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+
+R8_DIR = Path(__file__).resolve().parents[2] / "aerosol-family-challenge-v2-r8" / "execution-candidate"
+R8_FRESHNESS_BLOB = "732f803b5261e7986582dd7e0d69a66f70432b1e"
+R8_PREAUTH_ORDINAL_BLOB = "7ca8efd17ae9e7ec2baa32fe935e5173ca6d173f"
+STAGE = "aerosol-optical-property-sensitivity-v1"
+AUTH_REVIEW_WORKFLOW = ".github/workflows/aops-v1-authorization-review.yml"
+EXECUTION_WORKFLOW = ".github/workflows/aops-v1-execution.yml"
+AOPS_ALLOCATION_MARKER = re.compile(
+    r"^ORDINAL([0-9]+)_AOPS_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED(?:\\s|$)", re.I
+)
+
+
+class GlobalOrdinalRefusal(RuntimeError):
+    pass
+
+
+def git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\\0" + data).hexdigest()
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise GlobalOrdinalRefusal(f"cannot import {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _bound_r8_modules():
+    freshness_path = R8_DIR / "freshness.py"
+    ordinal_path = R8_DIR / "preauthorization_ordinal.py"
+    if git_blob_sha1(freshness_path) != R8_FRESHNESS_BLOB:
+        raise GlobalOrdinalRefusal("bound R8 freshness bytes changed")
+    if git_blob_sha1(ordinal_path) != R8_PREAUTH_ORDINAL_BLOB:
+        raise GlobalOrdinalRefusal("bound R8 preauthorization ordinal bytes changed")
+    r8_freshness = load_module("aops_bound_r8_freshness", freshness_path)
+    previous = sys.modules.get("freshness")
+    sys.modules["freshness"] = r8_freshness
+    try:
+        r8_ordinal = load_module("aops_bound_r8_global_ordinal", ordinal_path)
+    finally:
+        if previous is None:
+            sys.modules.pop("freshness", None)
+        else:
+            sys.modules["freshness"] = previous
+    return r8_freshness, r8_ordinal
+
+
+def authoritative_global_ordinal_observations(
+    payload: dict[str, Any], *, current_run_id: int | None = None
+) -> list[dict[str, Any]]:
+    _, mod = _bound_r8_modules()
+    return mod.authoritative_global_ordinal_observations(payload, current_run_id=current_run_id)
+
+
+def _history_pattern(ordinal: int) -> re.Pattern[str]:
+    return re.compile(
+        rf"^history/{STAGE}-ordinal-{ordinal}-auth-review-failed-([1-9][0-9]*)$", re.I
+    )
+
+
+def failed_authorization_history(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
+    """Prove an AOPS authorization-review failure is historical, unallocated and undispatched."""
+    auth_branch = f"authorization/{STAGE}-ordinal-{ordinal}"
+    dispatch_branch = f"dispatch/{STAGE}-ordinal-{ordinal}"
+    pattern = _history_pattern(ordinal)
+    by_head: dict[str, list[str]] = {}
+    for row in payload.get("branches", []):
+        name = str(row.get("name") or "")
+        if not pattern.fullmatch(name):
+            continue
+        head = str(((row.get("commit") or {}).get("sha") or "")).lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed-history ref has invalid head")
+        by_head.setdefault(head, []).append(name)
+
+    pr_numbers: set[int] = set()
+    run_ids: set[int] = set()
+    for head, names in by_head.items():
+        if len(names) != 1:
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head has multiple history refs")
+        prs = [
+            p for p in payload.get("pulls", [])
+            if str(((p.get("head") or {}).get("ref") or "")) == auth_branch
+            and str(((p.get("head") or {}).get("sha") or "")).lower() == head
+        ]
+        if len(prs) != 1 or prs[0].get("state") != "closed" or prs[0].get("merged_at") is not None:
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head lacks one closed/unmerged authorization PR")
+        pr_number = int(prs[0].get("number") or 0)
+        if pr_number <= 0:
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed PR number invalid")
+        reviews = [
+            r for r in payload.get("runs", [])
+            if str(r.get("head_branch") or "") == auth_branch
+            and str(r.get("head_sha") or "").lower() == head
+            and str(r.get("path") or "") == AUTH_REVIEW_WORKFLOW
+            and str(r.get("event") or "") == "pull_request"
+        ]
+        if len(reviews) != 1:
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head lacks one authorization-review run")
+        review = reviews[0]
+        if int(review.get("run_attempt") or 0) != 1 or review.get("status") != "completed" or review.get("conclusion") != "failure":
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} preserved review is not terminal attempt-1 failure")
+        run_id = int(review.get("id") or 0)
+        if run_id <= 0:
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed review run id invalid")
+        for row in payload.get("issue60Comments", []):
+            body = str(row.get("body") or "").strip()
+            m = AOPS_ALLOCATION_MARKER.match(body)
+            if m and int(m.group(1)) == ordinal:
+                raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head already has allocation marker")
+            if body.lower() == f"ORDINAL{ordinal}_AOPS_V1_DISPATCH_CONSUMED".lower():
+                raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head already has consumed marker")
+        if any(str(b.get("name") or "") == dispatch_branch for b in payload.get("branches", [])):
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head already has dispatch branch")
+        if any(
+            str(r.get("path") or "") == EXECUTION_WORKFLOW and str(r.get("head_sha") or "").lower() == head
+            for r in payload.get("runs", [])
+        ):
+            raise GlobalOrdinalRefusal(f"ordinal {ordinal} failed head already has scientific execution run")
+        pr_numbers.add(pr_number)
+        run_ids.add(run_id)
+
+    return {"heads": sorted(by_head), "prNumbers": sorted(pr_numbers), "reviewRunIds": sorted(run_ids)}
+
+
+def derive_next_global_ordinal(
+    payload: dict[str, Any], latest_consumed: int, *, current_run_id: int | None = None
+):
+    _, mod = _bound_r8_modules()
+    observations = mod.authoritative_global_ordinal_observations(payload, current_run_id=current_run_id)
+    if not observations:
+        raise GlobalOrdinalRefusal("no authoritative global scientific ordinal observations")
+    observed_max = max(int(row["ordinal"]) for row in observations)
+    if observed_max == latest_consumed + 1:
+        failed = failed_authorization_history(payload, observed_max)
+        auth_branch = f"authorization/{STAGE}-ordinal-{observed_max}"
+        auth_rows = [r for r in payload.get("branches", []) if str(r.get("name") or "") == auth_branch]
+        if len(auth_rows) > 1:
+            raise GlobalOrdinalRefusal(f"ordinal {observed_max} has duplicate authorization branch observations")
+        current_head = None if not auth_rows else str(((auth_rows[0].get("commit") or {}).get("sha") or "")).lower()
+        if failed["heads"] and current_head in set(failed["heads"]):
+            return observed_max, observations
+    return mod.derive_next_global_ordinal(payload, latest_consumed, current_run_id=current_run_id)
+''')
+
+          # 3. Teach AOPS control surface to treat only strictly proven failed review rows as historical.
+          p=Path('experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py')
+          text=p.read_text()
+          anchor=')\n\n\nAUTHORIZATION_PATH = '
+          if anchor not in text or 'from global_ordinal import failed_authorization_history' in text:
+              raise SystemExit('control_surface import anchor drift')
+          text=text.replace(anchor, ')\nfrom global_ordinal import failed_authorization_history\n\n\nAUTHORIZATION_PATH = ', 1)
+          anchor='    dispatch_head = str(((dispatch_row or {}).get("commit") or {}).get("sha") or "") or None\n\n    exact_marker_info = None'
+          insert='''    dispatch_head = str(((dispatch_row or {}).get("commit") or {}).get("sha") or "") or None
+
+    failed = failed_authorization_history(payload, ordinal)
+    failed_heads = {str(x).lower() for x in failed.get("heads", [])}
+    failed_pr_numbers = {int(x) for x in failed.get("prNumbers", [])}
+    failed_review_run_ids = {int(x) for x in failed.get("reviewRunIds", [])}
+    reusable_failed_authorization = bool(auth_head and auth_head.lower() in failed_heads)
+
+    exact_marker_info = None'''
+          if anchor not in text:
+              raise SystemExit('control_surface failed-history insertion anchor drift')
+          text=text.replace(anchor, insert, 1)
+          old='        allow_authorization_branch=allow_authorization_branch,\n        allow_dispatch_branch=allow_dispatch_branch,'
+          new='        allow_authorization_branch=(allow_authorization_branch or reusable_failed_authorization),\n        allow_dispatch_branch=allow_dispatch_branch,'
+          if text.count(old) != 1:
+              raise SystemExit('control_surface conflict call anchor drift')
+          text=text.replace(old,new,1)
+          old='''            if surface == "run" and current_run_id is not None and int(row.get("id") or 0) == current_run_id:
+                continue
+            if surface == "pull" and current_pr is not None and int(row.get("number") or 0) == current_pr:
+                continue'''
+          new='''            if surface == "run" and int(row.get("id") or 0) in failed_review_run_ids:
+                continue
+            if surface == "pull" and int(row.get("number") or 0) in failed_pr_numbers:
+                continue
+            if surface == "run" and current_run_id is not None and int(row.get("id") or 0) == current_run_id:
+                continue
+            if surface == "pull" and current_pr is not None and int(row.get("number") or 0) == current_pr:
+                continue'''
+          if old not in text:
+              raise SystemExit('control_surface key-use anchor drift')
+          text=text.replace(old,new,1)
+          old='''    for row in pulls:
+        if current_pr is not None and int(row.get("number") or 0) == current_pr:
+            continue'''
+          new='''    for row in pulls:
+        if int(row.get("number") or 0) in failed_pr_numbers:
+            continue
+        if current_pr is not None and int(row.get("number") or 0) == current_pr:
+            continue'''
+          if old not in text:
+              raise SystemExit('control_surface pull prose anchor drift')
+          text=text.replace(old,new,1)
+          old='''    for row in payload.get("issueComments", []):
+        if str(row.get("id") or "") in issue60_ids:
+            continue
+        if current_pr is not None and _related_pr_number(row) == current_pr:
+            continue'''
+          new='''    for row in payload.get("issueComments", []):
+        if str(row.get("id") or "") in issue60_ids:
+            continue
+        if _related_pr_number(row) in failed_pr_numbers:
+            continue
+        if current_pr is not None and _related_pr_number(row) == current_pr:
+            continue'''
+          if old not in text:
+              raise SystemExit('control_surface issue-comment anchor drift')
+          text=text.replace(old,new,1)
+          old='''    for rows in (payload.get("pullReviewComments", []), payload.get("commitComments", [])):
+        for row in rows:
+            if current_pr is not None and _related_pr_number(row) == current_pr:
+                continue'''
+          new='''    for rows in (payload.get("pullReviewComments", []), payload.get("commitComments", [])):
+        for row in rows:
+            if _related_pr_number(row) in failed_pr_numbers:
+                continue
+            if current_pr is not None and _related_pr_number(row) == current_pr:
+                continue'''
+          if old not in text:
+              raise SystemExit('control_surface review-comment anchor drift')
+          text=text.replace(old,new,1)
+          old='        "authorizationBranchReusableAfterFailedReview": False,'
+          new='        "authorizationBranchReusableAfterFailedReview": reusable_failed_authorization,'
+          if text.count(old) != 1:
+              raise SystemExit('control_surface reusable field anchor drift')
+          text=text.replace(old,new,1)
+          p.write_text(text)
+          PY
+
+      - name: Add regression test and refresh transport bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tests/test_aops_v1_failed_authorization_recovery.py <<'PY'
+          from __future__ import annotations
+          import hashlib, json, sys, unittest
+          from pathlib import Path
+
+          ROOT=Path(__file__).resolve().parents[1]
+          EXECD=ROOT/'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate'
+          sys.path.insert(0,str(EXECD))
+          import control_surface, global_ordinal
+
+          H='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          AUTH='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          HIST='history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1'
+
+          def payload():
+              return {
+                  'branches':[{'name':AUTH,'commit':{'sha':H}},{'name':HIST,'commit':{'sha':H}}],
+                  'runs':[{'id':32612380809,'head_branch':AUTH,'head_sha':H,'path':'.github/workflows/aops-v1-authorization-review.yml','event':'pull_request','run_attempt':1,'status':'completed','conclusion':'failure'}],
+                  'artifacts':[],
+                  'pulls':[{'number':299,'state':'closed','merged_at':None,'head':{'ref':AUTH,'sha':H},'title':'failed review','body':''}],
+                  'issues':[], 'issueComments':[], 'pullReviewComments':[], 'commitComments':[],
+                  'issue60Comments':[{'id':1,'body':'ORDINAL35_AEROSOL_FAMILY_V2_R8_TIMEOUT_RECOVERY_V1_DISPATCH_CONSUMED'}],
+              }
+
+          class Recovery(unittest.TestCase):
+              def test_failed_review_reuses_unconsumed_ordinal(self):
+                  p=payload()
+                  n,obs=global_ordinal.derive_next_global_ordinal(p,35)
+                  self.assertEqual(n,36)
+                  self.assertEqual(max(int(x['ordinal']) for x in obs),36)
+                  h=global_ordinal.failed_authorization_history(p,36)
+                  self.assertEqual(h['heads'],[H])
+                  self.assertEqual(h['prNumbers'],[299])
+                  self.assertEqual(h['reviewRunIds'],[32612380809])
+
+              def test_control_surface_marks_exact_failed_head_reusable(self):
+                  s=control_surface.build_surface(payload(),36,active_authorization_path_on_main_exists=False,candidate_code_paths_on_main_inspected=True,candidate_seed_authorization_recheck_passed=True,allow_authorization_branch=False,allow_dispatch_branch=False)
+                  self.assertTrue(s['authorizationBranchExists'])
+                  self.assertTrue(s['authorizationBranchReusableAfterFailedReview'])
+                  self.assertEqual(s['positiveCandidateClaimsExcludingCurrent'],0)
+                  self.assertEqual(s['candidateExecutionKeyPriorUseCount'],0)
+                  self.assertEqual(s['currentConsumedMarkerCount'],0)
+
+              def test_both_transport_guards_supply_execution_design(self):
+                  for rel in ('.github/workflows/aops-v1-authorization-review.yml','.github/workflows/aops-v1-dispatch-publisher.yml'):
+                      text=(ROOT/rel).read_text()
+                      self.assertIn("'executionDesign':stage/'execution_design.py'",text)
+
+              def test_transport_bindings_match_changed_bytes(self):
+                  c=json.loads((ROOT/'experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json').read_text())
+                  for rel in (
+                      '.github/workflows/aops-v1-authorization-review.yml',
+                      '.github/workflows/aops-v1-dispatch-publisher.yml',
+                      'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py',
+                      'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py',
+                  ):
+                      data=(ROOT/rel).read_bytes()
+                      blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+                      self.assertEqual(c['gitBlobBindings'][rel],blob)
+          PY
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('.')
+          cp=root/'experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json'
+          c=json.loads(cp.read_text())
+          for rel in (
+              '.github/workflows/aops-v1-authorization-review.yml',
+              '.github/workflows/aops-v1-dispatch-publisher.yml',
+              'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py',
+              'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py',
+          ):
+              data=(root/rel).read_bytes()
+              c['gitBlobBindings'][rel]=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          cp.write_text(json.dumps(c,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Run recovery tests and full non-scientific suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_aops_v1_failed_authorization_recovery -v
+          python -m unittest discover -s tests -v
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json').read_text())
+          assert c['scientificOrdinalAllocated'] is False
+          assert c['authorizationCreated'] is False
+          assert c['dispatchCreated'] is False
+          assert c['scientificExecutionAuthorized'] is False
+          assert c['solverExecutionAuthorized'] is False
+          assert c['resultOpeningAuthorized'] is False
+          PY
+          git diff --check
+
+      - name: Commit and push recovery branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            .github/workflows/aops-v1-authorization-review.yml \
+            .github/workflows/aops-v1-dispatch-publisher.yml \
+            experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py \
+            experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py \
+            experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json \
+            tests/test_aops_v1_failed_authorization_recovery.py
+          test "$(git diff --cached --name-only | wc -l)" = 6
+          git commit -m "Recover AOPS v1 failed authorization review transport"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/fix/aops-v1-failed-auth-review-recovery-1

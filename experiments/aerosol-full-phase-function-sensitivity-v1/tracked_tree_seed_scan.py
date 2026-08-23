@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+from pathlib import Path
+
+BASE = Path(__file__).resolve().parent.parent / "aerosol-family-challenge-v2" / "tracked_tree_seed_scan.py"
+EXPECTED_BLOB = "1c110d75b516cb7b9d50dc2674080f4a67e55d2a"
+
+
+def git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
+if git_blob_sha1(BASE) != EXPECTED_BLOB:
+    raise RuntimeError("AFPF v1 refuses: bound tracked-tree scanner bytes changed")
+spec = importlib.util.spec_from_file_location("afpf_bound_tracked_tree_seed_scan", BASE)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load bound tracked-tree seed scanner")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+if __name__ == "__main__":
+    raise SystemExit(mod.main())

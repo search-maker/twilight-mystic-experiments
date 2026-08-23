@@ -1,0 +1,114 @@
+name: AOPS v1 one-time authorization builder ordinal 36
+
+on:
+  push:
+    branches:
+      - status/aops-v1-build-authorization-ordinal-36
+    paths:
+      - .github/workflows/aops-v1-build-authorization-ordinal-36.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact reviewed transport main
+        uses: actions/checkout@v4
+        with:
+          ref: 7297a579112b6089acc5b5d45292e8169039c022
+          fetch-depth: 0
+
+      - name: Verify live main and empty authorization identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA=7297a579112b6089acc5b5d45292e8169039c022
+          AUTH_BRANCH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          LIVE_MAIN="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$LIVE_MAIN" = "$MAIN_SHA"
+          if git ls-remote --heads origin "refs/heads/$AUTH_BRANCH" | grep -q .; then
+            echo "authorization branch already exists; refusing"
+            exit 2
+          fi
+
+      - name: Download and verify exact preauthorization proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9466212702/zip" \
+            -o /tmp/aops-preauth.zip
+          echo "ca87c4a21c565a3fbb57959bb0cd7e055b19fe4ea3d98fe44b7fc23885a2f7de  /tmp/aops-preauth.zip" | sha256sum -c -
+          mkdir -p /tmp/aops-preauth
+          unzip -q /tmp/aops-preauth.zip -d /tmp/aops-preauth
+          test -f /tmp/aops-preauth/seed-authorization-proof.json
+          python - <<'PY'
+          import json
+          p='/tmp/aops-preauth/seed-authorization-proof.json'
+          d=json.load(open(p))
+          assert d['status']=='PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED'
+          assert d['auditedMainHead']=='7297a579112b6089acc5b5d45292e8169039c022'
+          assert d['candidateSeedCount']==72
+          assert d['repositoryGlobalCollisionCount']==0
+          assert d['repositoryGlobalDoubleEnumerationStable'] is True
+          assert d['scientificOrdinalAllocated'] is False
+          assert d['authorizationCreated'] is False
+          assert d['dispatchCreated'] is False
+          assert d['solverExecutionAuthorized'] is False
+          PY
+
+      - name: Build ordinal 36 authorization with frozen builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/build_authorization.py \
+            --repository-root . \
+            --seed-proof /tmp/aops-preauth/seed-authorization-proof.json \
+            --main-sha 7297a579112b6089acc5b5d45292e8169039c022 \
+            --ordinal 36 \
+            --output /tmp/authorization.json
+          python - <<'PY'
+          import json
+          p='/tmp/authorization.json'
+          d=json.load(open(p))
+          assert d['status']=='AUTHORIZED_PENDING_SEPARATE_DISPATCH'
+          assert d['scientificOrdinal']==36
+          assert d['executionKey']=='aerosol-optical-property-sensitivity-v1:numerical:36'
+          assert d['authorizationBranch']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert d['dispatchBranch']=='dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert d['exactAuthorizationParentCommit']=='7297a579112b6089acc5b5d45292e8169039c022'
+          assert d['exactAuthorizationCommit'] is None
+          assert d['dispatchAuthorized'] is False
+          assert d['resultOpeningAuthorized'] is False
+          assert d['githubRerunAllowed'] is False
+          assert d['retryAllowed'] is False
+          assert d['resumeAllowed'] is False
+          PY
+
+      - name: Create exact one-file direct-child authorization branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA=7297a579112b6089acc5b5d45292e8169039c022
+          AUTH_BRANCH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          AUTH_PATH=experiments/aerosol-optical-property-sensitivity-v1/authorization.json
+          git checkout -b "$AUTH_BRANCH" "$MAIN_SHA"
+          cp /tmp/authorization.json "$AUTH_PATH"
+          git add -- "$AUTH_PATH"
+          test "$(git diff --cached --name-only)" = "$AUTH_PATH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Authorize AOPS v1 ordinal 36 pending separate dispatch"
+          test "$(git rev-parse HEAD^)" = "$MAIN_SHA"
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = "$AUTH_PATH"
+          git push origin "HEAD:refs/heads/$AUTH_BRANCH"
+          echo "authorization_head=$(git rev-parse HEAD)"

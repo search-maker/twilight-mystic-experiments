@@ -135,7 +135,12 @@ def bind_unproven_candidate_seed_map(seed_by_group: dict[str, int]) -> dict[str,
     return result
 
 
+def _without_seed_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key not in {"seed", "seedStatus"}}
+
+
 def validate_future_fresh_seeded_design(design: dict[str, Any]) -> None:
+    seedless = build_seedless_transport_design()
     if design.get("stageId") != "aerosol-full-phase-function-sensitivity-v1-execution-transport-design":
         raise TransportRefusal("future seeded design stage drift")
     if design.get("status") != "CANDIDATE_SEEDED_DESIGN_FRESHNESS_PROVEN_REVIEW_ONLY":
@@ -144,23 +149,52 @@ def validate_future_fresh_seeded_design(design: dict[str, Any]) -> None:
         raise TransportRefusal("future seeded design cardinality drift")
     if design.get("statesPerGroup") != 5:
         raise TransportRefusal("future seeded design state cardinality drift")
+    if design.get("configuredPhotonHistories") != seedless["configuredPhotonHistories"]:
+        raise TransportRefusal("future seeded design photon-budget drift")
+    if design.get("seedNamespace") != seedless["seedNamespace"]:
+        raise TransportRefusal("future seeded design seed-namespace drift")
     if design.get("candidateSeedsAllocated") is not True or design.get("candidateSeedFreshnessProven") is not True:
         raise TransportRefusal("future seeded design lacks freshness proof state")
     if design.get("authorizationTimeSeedRecheckRequired") is not True:
         raise TransportRefusal("authorization-time seed recheck requirement missing")
     if any(design.get(key) is not False for key in (
+        "scientificOrdinalAllocated", "authorizationCreated", "dispatchCreated",
         "scientificExecutionAuthorized", "solverExecutionAuthorized", "resultOpeningAuthorized",
     )):
-        raise TransportRefusal("future seeded review design crossed execution boundary")
+        raise TransportRefusal("future seeded review design crossed allocation/execution boundary")
     stored = design.get("canonicalDesignSha256")
     check = dict(design)
     check.pop("canonicalDesignSha256", None)
     if stored != canonical_sha256(check):
         raise TransportRefusal("future seeded design canonical hash mismatch")
+
     cases = design.get("cases")
     groups = design.get("groups")
     if not isinstance(cases, list) or len(cases) != 360 or not isinstance(groups, list) or len(groups) != 72:
         raise TransportRefusal("future seeded design rows missing")
+
+    expected_groups = {str(row["groupId"]): row for row in seedless["groups"]}
+    actual_groups = {str(row.get("groupId")): row for row in groups if isinstance(row, dict)}
+    if len(actual_groups) != 72 or set(actual_groups) != set(expected_groups):
+        raise TransportRefusal("future seeded design group identity universe drift")
+    observed_group_seeds: set[int] = set()
+    for group_id, expected in expected_groups.items():
+        actual = actual_groups[group_id]
+        if _without_seed_fields(actual) != _without_seed_fields(expected):
+            raise TransportRefusal(f"future seeded group preregistered metadata drift: {group_id}")
+        seed = actual.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int) or not 0 < seed < SEED_DOMAIN_MAX_EXCLUSIVE:
+            raise TransportRefusal(f"future seeded group contains invalid seed: {group_id}")
+        if actual.get("seedStatus") != "CANDIDATE_FRESHNESS_PROVEN_REVIEW_ONLY":
+            raise TransportRefusal(f"future seeded group freshness status drift: {group_id}")
+        observed_group_seeds.add(seed)
+    if len(observed_group_seeds) != 72:
+        raise TransportRefusal("future seeded group seeds must be unique")
+
+    expected_cases = {str(row["caseId"]): row for row in seedless["cases"]}
+    actual_cases = {str(row.get("caseId")): row for row in cases if isinstance(row, dict)}
+    if len(actual_cases) != 360 or set(actual_cases) != set(expected_cases):
+        raise TransportRefusal("future seeded design case identity universe drift")
     expected_state_ids = {
         "native-rural-ss",
         "opac-continental-average",
@@ -169,25 +203,27 @@ def validate_future_fresh_seeded_design(design: dict[str, Any]) -> None:
         "opac-desert-spheroids",
     }
     by_group: dict[str, list[dict[str, Any]]] = {}
-    for row in cases:
-        if row.get("renderable") is not False or row.get("executionAuthorized") is not False:
-            raise TransportRefusal("future seeded case must remain non-renderable before authorization")
-        seed = row.get("seed")
+    for case_id, expected in expected_cases.items():
+        actual = actual_cases[case_id]
+        if _without_seed_fields(actual) != _without_seed_fields(expected):
+            raise TransportRefusal(f"future seeded case preregistered metadata drift: {case_id}")
+        seed = actual.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int) or not 0 < seed < SEED_DOMAIN_MAX_EXCLUSIVE:
-            raise TransportRefusal("future seeded case contains invalid seed")
-        by_group.setdefault(str(row.get("groupId")), []).append(row)
+            raise TransportRefusal(f"future seeded case contains invalid seed: {case_id}")
+        if actual.get("seedStatus") != "CANDIDATE_FRESHNESS_PROVEN_REVIEW_ONLY":
+            raise TransportRefusal(f"future seeded case freshness status drift: {case_id}")
+        by_group.setdefault(str(actual.get("groupId")), []).append(actual)
     if len(by_group) != 72:
         raise TransportRefusal("future seeded design group universe drift")
-    observed_group_seeds: set[int] = set()
     for group_id, members in by_group.items():
         if len(members) != 5 or {str(row.get("stateId")) for row in members} != expected_state_ids:
             raise TransportRefusal(f"future seeded group state universe drift: {group_id}")
         seeds = {int(row["seed"]) for row in members}
         if len(seeds) != 1:
             raise TransportRefusal(f"future seeded CRN seed-sharing drift: {group_id}")
-        observed_group_seeds.update(seeds)
-    if len(observed_group_seeds) != 72:
-        raise TransportRefusal("future seeded group seeds must be unique")
+        group_seed = int(actual_groups[group_id]["seed"])
+        if seeds != {group_seed}:
+            raise TransportRefusal(f"future seeded group/case seed binding drift: {group_id}")
 
 
 if __name__ == "__main__":

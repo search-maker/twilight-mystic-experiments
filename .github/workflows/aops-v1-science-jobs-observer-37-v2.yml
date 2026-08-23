@@ -1,0 +1,79 @@
+name: Observe AOPS v1 ordinal 37 all job metadata only
+run-name: Observe AOPS v1 ordinal 37 all job metadata only
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - .github/workflows/aops-v1-science-jobs-observer-37-v2.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Read exact AOPS ordinal 37 run and paginated job metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: "32624595188"
+          TARGET_BRANCH: dispatch/aerosol-optical-property-sensitivity-v1-ordinal-37
+          TARGET_HEAD: a1895adebf39a5c2c12d80276a119e032fdf090b
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TARGET_RUN_ID}" > run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${TARGET_RUN_ID}/jobs?per_page=100" > job-pages.json
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          run=json.load(open('run.json'))
+          if str(run.get('id')) != os.environ['TARGET_RUN_ID']: raise SystemExit('run id drift')
+          if run.get('head_branch') != os.environ['TARGET_BRANCH']: raise SystemExit('branch drift')
+          if run.get('head_sha') != os.environ['TARGET_HEAD']: raise SystemExit('head drift')
+          if run.get('event') != 'workflow_dispatch': raise SystemExit('event drift')
+          if int(run.get('run_attempt') or 0) != 1: raise SystemExit('run attempt drift')
+          pages=json.load(open('job-pages.json'))
+          jobs=[j for page in pages for j in page.get('jobs',[])]
+          if not jobs: raise SystemExit('no jobs returned')
+          concl=Counter(str(j.get('conclusion')) for j in jobs)
+          status=Counter(str(j.get('status')) for j in jobs)
+          non_success=[]
+          for j in jobs:
+            if j.get('conclusion') != 'success':
+              non_success.append({
+                'id':j.get('id'),'name':j.get('name'),'status':j.get('status'),'conclusion':j.get('conclusion'),
+                'started_at':j.get('started_at'),'completed_at':j.get('completed_at'),
+                'steps':[{'number':s.get('number'),'name':s.get('name'),'status':s.get('status'),'conclusion':s.get('conclusion')} for s in (j.get('steps') or [])]
+              })
+          out={
+            'schemaVersion':1,
+            'stageId':'aops-v1-ordinal-37-all-jobs-observer',
+            'status':'CONTROL_JOB_METADATA_ONLY_NO_LOGS_NO_RESULT_OPENING',
+            'targetRun':{k:run.get(k) for k in ('id','name','display_title','event','status','conclusion','run_number','run_attempt','head_branch','head_sha','created_at','updated_at','run_started_at','html_url')},
+            'jobCount':len(jobs),
+            'jobStatusCounts':dict(sorted(status.items())),
+            'jobConclusionCounts':dict(sorted(concl.items())),
+            'nonSuccessJobs':non_success,
+            'jobLogsOpened':False,
+            'scientificArtifactsOpened':False,
+            'scientificResultsInterpreted':False,
+            'rerunRequested':False,
+            'retryRequested':False,
+            'resumeRequested':False,
+          }
+          Path('aops-v1-ordinal-37-all-jobs-metadata.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Persist job metadata only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aops-v1-ordinal-37-all-jobs-observer
+          path: aops-v1-ordinal-37-all-jobs-metadata.json
+          if-no-files-found: error
+          compression-level: 0

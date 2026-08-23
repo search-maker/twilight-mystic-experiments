@@ -116,7 +116,8 @@ class AerosolFullPhaseFunctionExecutionTransportV1Tests(unittest.TestCase):
         future["canonicalDesignSha256"] = transport.canonical_sha256(future)
         transport.validate_future_fresh_seeded_design(future)
         tampered = copy.deepcopy(future)
-        tampered["cases"][0]["seed"] = tampered["cases"][1]["seed"]
+        # The design is ordered in five-state blocks per CRN group; index 5 is the next group.
+        tampered["cases"][0]["seed"] = tampered["cases"][5]["seed"]
         tampered.pop("canonicalDesignSha256", None)
         tampered["canonicalDesignSha256"] = transport.canonical_sha256(tampered)
         with self.assertRaises(transport.TransportRefusal):

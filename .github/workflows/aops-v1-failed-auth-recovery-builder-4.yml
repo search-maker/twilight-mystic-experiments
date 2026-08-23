@@ -1,0 +1,154 @@
+name: AOPS v1 failed authorization recovery builder 4
+on:
+  push:
+    branches: [status/aops-v1-failed-auth-recovery-builder-4]
+    paths: [.github/workflows/aops-v1-failed-auth-recovery-builder-4.yml]
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Load prior patch script and prove failed identity remains unconsumed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin status/aops-v1-failed-auth-recovery-builder-2
+          git show FETCH_HEAD:tools/aops_v1_failed_auth_recovery_builder_2.py > /tmp/recovery.py
+          python -m py_compile /tmp/recovery.py
+          MAIN=7297a579112b6089acc5b5d45292e8169039c022
+          FAILED=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          AUTH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          HIST=history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/$AUTH | cut -f1)" = "$FAILED"
+          test "$(git ls-remote origin refs/heads/$HIST | cut -f1)" = "$FAILED"
+          test -z "$(git ls-remote --heads origin refs/heads/dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36)"
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/pr.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32612380809 > /tmp/run.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/pr.json')); r=json.load(open('/tmp/run.json'))
+          assert p['state']=='closed' and p.get('merged_at') is None
+          assert p['head']['ref']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert p['head']['sha']=='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          assert r['head_sha']==p['head']['sha'] and r['head_branch']==p['head']['ref']
+          assert r['path']=='.github/workflows/aops-v1-authorization-review.yml'
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='failure'
+          PY
+      - name: Apply recovery and harden sibling module bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -b fix/aops-v1-failed-auth-review-recovery-1 7297a579112b6089acc5b5d45292e8169039c022
+          python /tmp/recovery.py
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          # Correct the two generator-escaping defects found by builder v2/v3.
+          gp=Path('experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py')
+          gt=gp.read_text()
+          old=r'b"\\0"'; new=r'b"\0"'
+          if gt.count(old)!=1: raise SystemExit(f'blob separator escape count={gt.count(old)}')
+          gt=gt.replace(old,new,1)
+          old=r'(?:\\s|$)'; new=r'(?:\s|$)'
+          if gt.count(old)!=1: raise SystemExit(f'regex escape count={gt.count(old)}')
+          gt=gt.replace(old,new,1)
+          gp.write_text(gt)
+          gdata=gp.read_bytes()
+          gblob=hashlib.sha1(b'blob '+str(len(gdata)).encode()+b'\0'+gdata).hexdigest()
+
+          # Harden control_surface against global sys.modules name pollution.
+          cp=Path('experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py')
+          ct=cp.read_text()
+          old='''import json\nimport re\nimport urllib.error\nimport urllib.parse\nimport urllib.request\nfrom typing import Any\n\nfrom freshness import (\n    authorization_branch,\n    consumed_marker,\n    dispatch_branch,\n    execution_key,\n    matching_marker,\n    positive_candidate_claims,\n)\nfrom global_ordinal import failed_authorization_history\n'''
+          new=f'''import hashlib\nimport importlib.util\nimport json\nimport re\nimport urllib.error\nimport urllib.parse\nimport urllib.request\nfrom pathlib import Path\nfrom typing import Any\n\n\ndef _git_blob_sha1(path: Path) -> str:\n    data = path.read_bytes()\n    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\\0" + data).hexdigest()\n\n\ndef _load_bound_sibling(name: str, path: Path, expected_blob: str):\n    if _git_blob_sha1(path) != expected_blob:\n        raise RuntimeError(f"bound sibling byte drift: {{path.name}}")\n    spec = importlib.util.spec_from_file_location(name, path)\n    if spec is None or spec.loader is None:\n        raise RuntimeError(f"cannot load bound sibling: {{path}}")\n    mod = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(mod)\n    return mod\n\n\n_HERE = Path(__file__).resolve().parent\n_freshness = _load_bound_sibling(\n    "aops_control_surface_freshness", _HERE / "freshness.py",\n    "3b4b087a211a5400164ea592ac1e947cff29631d",\n)\n_global_ordinal = _load_bound_sibling(\n    "aops_control_surface_global_ordinal", _HERE / "global_ordinal.py",\n    "{gblob}",\n)\nauthorization_branch = _freshness.authorization_branch\nconsumed_marker = _freshness.consumed_marker\ndispatch_branch = _freshness.dispatch_branch\nexecution_key = _freshness.execution_key\nmatching_marker = _freshness.matching_marker\npositive_candidate_claims = _freshness.positive_candidate_claims\nfailed_authorization_history = _global_ordinal.failed_authorization_history\n'''
+          if ct.count(old)!=1:
+              raise SystemExit(f'control_surface import replacement count={ct.count(old)}')
+          cp.write_text(ct.replace(old,new,1))
+
+          # Refresh review-freeze binding for the changed global ordinal wrapper.
+          fp=Path('evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json')
+          freeze=json.loads(fp.read_text())
+          freeze['globalOrdinalWrapperGitBlobSha1']=gblob
+          fp.write_text(json.dumps(freeze,indent=2,sort_keys=True)+'\n')
+
+          # Refresh all transport bindings that changed.
+          tp=Path('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json')
+          contract=json.loads(tp.read_text())
+          for rel in (
+              '.github/workflows/aops-v1-authorization-review.yml',
+              '.github/workflows/aops-v1-dispatch-publisher.yml',
+              'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py',
+              'experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py',
+          ):
+              data=Path(rel).read_bytes()
+              contract['gitBlobBindings'][rel]=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          tp.write_text(json.dumps(contract,indent=2,sort_keys=True)+'\n')
+          PY
+          cat > tests/test_aops_v1_module_isolation_recovery.py <<'PY'
+          from __future__ import annotations
+          import subprocess, sys, textwrap, unittest
+          from pathlib import Path
+
+          ROOT=Path(__file__).resolve().parents[1]
+
+          class ModuleIsolation(unittest.TestCase):
+              def test_control_surface_ignores_poisoned_global_freshness_module(self):
+                  code=textwrap.dedent(r'''
+                      import importlib.util, sys, types
+                      from pathlib import Path
+                      fake=types.ModuleType('freshness')
+                      fake.authorization_branch=lambda ordinal: 'authorization/WRONG-stage-ordinal-'+str(ordinal)
+                      sys.modules['freshness']=fake
+                      p=Path('experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py').resolve()
+                      spec=importlib.util.spec_from_file_location('aops_control_surface_isolation_test',p)
+                      m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+                      assert m.authorization_branch(36)=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+                  ''')
+                  subprocess.run([sys.executable,'-c',code],cwd=ROOT,check=True)
+          PY
+          python -m unittest tests.test_aops_v1_failed_authorization_recovery tests.test_aops_v1_module_isolation_recovery tests.test_aerosol_optical_property_sensitivity_v1_global_ordinal_review -v
+          git diff --check
+      - name: Run full repository unit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+      - name: Verify review-only boundary and push recovery branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json').read_text())
+          for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized'):
+              assert c[k] is False, k
+          f=json.loads(Path('evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json').read_text())
+          for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized'):
+              assert f[k] is False, k
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- .github/workflows/aops-v1-authorization-review.yml .github/workflows/aops-v1-dispatch-publisher.yml experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json tests/test_aops_v1_failed_authorization_recovery.py tests/test_aops_v1_module_isolation_recovery.py
+          test "$(git diff --cached --name-only | wc -l)" = 8
+          git commit -m 'Recover AOPS v1 failed authorization review transport'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/fix/aops-v1-failed-auth-review-recovery-1

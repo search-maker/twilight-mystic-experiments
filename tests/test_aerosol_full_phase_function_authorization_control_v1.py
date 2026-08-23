@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -102,8 +104,10 @@ class AerosolFullPhaseFunctionAuthorizationControlV1Tests(unittest.TestCase):
 
     def test_builder_produces_pending_dispatch_document_bound_to_exact_parent(self) -> None:
         builder = load("afpf_build_auth_test", BUILDER_PATH)
+        guard = load("afpf_guard_hash_test", GUARD_PATH)
         main = "a" * 40
-        auth = builder.build(ROOT, main, 38, common_surface(38, auth_exists=False), seed_proof(main))
+        proof = seed_proof(main)
+        auth = builder.build(ROOT, main, 38, common_surface(38, auth_exists=False), proof)
         self.assertEqual(auth["scientificOrdinal"], 38)
         self.assertEqual(auth["exactAuthorizationParentCommit"], main)
         self.assertEqual(auth["status"], "AUTHORIZED_PENDING_SEPARATE_DISPATCH")
@@ -114,10 +118,13 @@ class AerosolFullPhaseFunctionAuthorizationControlV1Tests(unittest.TestCase):
         self.assertIs(auth["resultOpeningAuthorized"], False)
         self.assertIs(auth["automaticDispatch"], False)
         self.assertIs(auth["consumed"], False)
+        expected_raw = hashlib.sha256((json.dumps(proof, indent=2, sort_keys=True) + "\n").encode()).hexdigest()
+        self.assertEqual(auth["authorizationTimeSeedProofRawSha256"], expected_raw)
+        self.assertEqual(auth["authorizationTimeSeedProofRawSha256"], guard.seed_proof_raw_sha256(proof))
         self.assertEqual(auth["augmentedDataTreeSha256"], "5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80")
         self.assertEqual(len(auth["byteBindings"]), 23)
 
-    def test_authorization_document_rejects_dispatch_or_parent_drift(self) -> None:
+    def test_authorization_document_rejects_dispatch_parent_or_seedproof_hash_drift(self) -> None:
         builder = load("afpf_build_auth_drift_test", BUILDER_PATH)
         guard = load("afpf_guard_drift_test", GUARD_PATH)
         main = "a" * 40
@@ -127,6 +134,9 @@ class AerosolFullPhaseFunctionAuthorizationControlV1Tests(unittest.TestCase):
         with self.assertRaises(guard.AuthorizationRefusal):
             guard.validate_enabled_document(ROOT, bad, main, proof)
         bad = copy.deepcopy(auth); bad["exactAuthorizationParentCommit"] = "b" * 40
+        with self.assertRaises(guard.AuthorizationRefusal):
+            guard.validate_enabled_document(ROOT, bad, main, proof)
+        bad = copy.deepcopy(auth); bad["authorizationTimeSeedProofRawSha256"] = "0" * 64
         with self.assertRaises(guard.AuthorizationRefusal):
             guard.validate_enabled_document(ROOT, bad, main, proof)
 
@@ -154,10 +164,13 @@ class AerosolFullPhaseFunctionAuthorizationControlV1Tests(unittest.TestCase):
         with self.assertRaises(guard.AuthorizationRefusal):
             guard.review(auth, bad, ROOT, proof)
 
-    def test_workflow_is_opened_attempt1_zero_runtime_and_artifact_only(self) -> None:
+    def test_workflow_is_opened_attempt1_zero_runtime_artifact_only_and_exact_parent_bound(self) -> None:
         text = WORKFLOW.read_text()
         self.assertIn("types: [opened]", text)
         self.assertIn("test \"$GITHUB_RUN_ATTEMPT\" = 1", text)
+        self.assertIn("COMMIT_PARENT=\"${PARENTS[0]}\"", text)
+        self.assertIn("test \"$AUTH_PARENT\" = \"$COMMIT_PARENT\"", text)
+        self.assertNotIn("test \"$PARENT\" = \"$PARENT\"", text)
         self.assertIn("afpf-v1-preauthorization-audit.yml/runs", text)
         self.assertIn("afpf-v1-authorization-review-ordinal-", text)
         self.assertIn("authorization-review-evidence", text)
@@ -167,7 +180,6 @@ class AerosolFullPhaseFunctionAuthorizationControlV1Tests(unittest.TestCase):
     def test_surface_wrapper_still_binds_current_freshness_bytes(self) -> None:
         surface = load("afpf_surface_binding_test", SURFACE_PATH)
         data = FRESHNESS_PATH.read_bytes()
-        import hashlib
         blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
         self.assertEqual(blob, surface.LOCAL_FRESHNESS_BLOB)
 

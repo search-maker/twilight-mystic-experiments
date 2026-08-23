@@ -1,0 +1,201 @@
+name: AFPF v1 authorization review
+
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths:
+      - experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: afpf-v1-authorization-review-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorization-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exact one-file Draft authorization identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.action }}" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.draft }}" = true
+          test "${{ github.event.pull_request.state }}" = open
+          test "${{ github.event.pull_request.merged }}" = false
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.head.repo.full_name }}" = "$GITHUB_REPOSITORY"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          [[ "${{ github.event.pull_request.head.ref }}" =~ ^authorization/aerosol-full-phase-function-sensitivity-v1-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json
+          python - <<'PY' > auth.env
+          import json
+          a=json.load(open('experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json'))
+          n=a.get('scientificOrdinal')
+          if not isinstance(n,int) or n <= 0: raise SystemExit('authorization ordinal invalid')
+          print(f'ORDINAL={n}')
+          print(f'AUTH_BRANCH={a.get("authorizationBranch","")}')
+          print(f'PARENT={a.get("exactAuthorizationParentCommit","")}')
+          PY
+          source auth.env
+          test "$ORDINAL" = "$BRANCH_ORDINAL"
+          test "$AUTH_BRANCH" = "${{ github.event.pull_request.head.ref }}"
+          test "$PARENT" = "$PARENT"
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "parent=${PARENTS[0]}" >> "$GITHUB_OUTPUT"
+          git ls-files -z > tracked-files.nul
+          mkdir -p authorization-review-evidence preauth-artifact
+
+      - name: Resolve exact successful attempt-1 preauthorization for parent main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/afpf-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          RID="$(python -c 'import json;print(json.load(open("preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100" > preauth-artifacts.json
+          AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='afpf-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one AFPF preauthorization artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preauth.zip
+          unzip -q preauth.zip -d preauth-artifact
+          python - <<'PY'
+          import json,os
+          p=json.load(open('preauth-artifact/preauthorization.json'))
+          if p.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('preauthorization status drift')
+          if p.get('exactMainSha')!=os.environ['PARENT']: raise SystemExit('preauthorization parent binding drift')
+          if p.get('nextAvailableScientificOrdinal')!=int(os.environ['ORDINAL']): raise SystemExit('preauthorization ordinal drift')
+          if any(p.get(k) is not False for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('preauthorization crossed boundary')
+          PY
+
+      - name: Exact authorization-head tracked-tree seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . --file-list tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json \
+            --output authorization-review-evidence/tracked-seed-scan.json
+
+      - name: Stable authorization-head repository-global seed recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck \
+            --expected-branch-name "${{ github.event.pull_request.head.ref }}" \
+            --expected-repo-head "${{ github.event.pull_request.head.sha }}" \
+            --output authorization-review-evidence/repository-global-seed-scan.json
+
+      - name: Build live seed proof and run authorization guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_authorization_proof.py \
+            --stage-dir experiments/aerosol-full-phase-function-sensitivity-v1 \
+            --tracked-tree-report authorization-review-evidence/tracked-seed-scan.json \
+            --repository-global-report authorization-review-evidence/repository-global-seed-scan.json \
+            --expected-main-head "$HEAD_SHA" \
+            --output authorization-review-evidence/live-seed-authorization-proof.json
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import preauthorization_surface,authorization_guard
+          root=Path('.'); stage=root/'experiments/aerosol-full-phase-function-sensitivity-v1'
+          auth=json.load(open(stage/'authorization.json'))
+          preproof=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          liveproof=json.load(open('authorization-review-evidence/live-seed-authorization-proof.json'))
+          if liveproof.get('auditedMainHead')!=os.environ['HEAD_SHA']: raise SystemExit('live seed proof head drift')
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=preauthorization_surface.build_authorization_review_surface(
+              payload,int(os.environ['ORDINAL']),os.environ['HEAD_SHA'],current_pr=int(os.environ['PR_NUMBER']),
+              current_run_id=int(os.environ['GITHUB_RUN_ID']),candidate_seed_authorization_recheck_passed=True,
+          )
+          review=authorization_guard.review(auth,{
+              'liveMain':os.environ['PARENT'],'headSha':os.environ['HEAD_SHA'],'parentSha':os.environ['PARENT'],
+              'parentCount':1,'changedPaths':['experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json'],
+              'authorizationPath':'experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json',
+              'pr':{'number':int(os.environ['PR_NUMBER']),'state':'open','draft':True,'merged':False,'headBranch':os.environ['AUTH_BRANCH'],'baseBranch':'main','headRepo':os.environ['GITHUB_REPOSITORY'],'baseRepo':os.environ['GITHUB_REPOSITORY'],'headSha':os.environ['HEAD_SHA']},
+              'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'eventName':'pull_request','eventAction':'opened',
+              'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'freshness':surface,
+          },root,preproof)
+          normalized={
+              'schemaVersion':1,'stageId':'aerosol-full-phase-function-sensitivity-v1-authorization-review',
+              'status':'AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME','scientificOrdinal':int(os.environ['ORDINAL']),
+              'headSha':os.environ['HEAD_SHA'],'parentSha':os.environ['PARENT'],'prNumber':int(os.environ['PR_NUMBER']),
+              'runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'conclusion':'success',
+              'executionKey':auth['executionKey'],'frozenGuardStatus':review['status'],
+              'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,
+              'ordinalAllocatedReservedOrConsumedByReview':False,
+          }
+          Path('authorization-review-evidence/freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          Path('authorization-review-evidence/authorization-review.json').write_text(json.dumps(normalized,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist zero-runtime authorization review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-authorization-review-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            authorization-review-evidence/
+            preauth-selected.json
+            experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json
+          if-no-files-found: error
+          compression-level: 0

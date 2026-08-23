@@ -1,0 +1,405 @@
+name: OPAC exact-runtime overlay audit v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-optprop-runtime-overlay-v1.yml
+      - experiments/aerosol-full-phase-function-sensitivity-v1/OPTPROP_RUNTIME_OVERLAY_REVIEW.md
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      EXPECTED_ARCHIVE_SHA256: 11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e
+      EXPECTED_ARCHIVE_SIZE: '743391266'
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      SOURCE_V2_RUN_ID: '32655624673'
+      SOURCE_V2_ARTIFACT_ID: '9497367203'
+      SOURCE_V2_REPORT_SHA256: d0fd37adad50ab96096f75e26223ce1716b3c5fffc815c765d3af07202c8cef3
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enforce one-use zero-science audit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Prove exact source-v2 control-ledger checkpoint exists once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > source-ledger-comment-pages.json
+          python - <<'PY'
+          import json, os
+          pages=json.load(open('source-ledger-comment-pages.json'))
+          rows=[row for page in pages for row in page]
+          needle=(
+              'AEROSOL_OPTPROP_OFFICIAL_SOURCE_AUDIT_V2 '
+              'status=PASS_EXACT_ARCHIVE_AND_REQUIRED_OPAC_MEMBERS '
+              'main=6ec264c2dcaaf6dbc1ee6cbc676f03d1d455e4e4 '
+              f'run={os.environ["SOURCE_V2_RUN_ID"]} attempt=1 '
+              f'artifact_id={os.environ["SOURCE_V2_ARTIFACT_ID"]} '
+              f'archive_sha256={os.environ["EXPECTED_ARCHIVE_SHA256"]} '
+              f'archive_size={os.environ["EXPECTED_ARCHIVE_SIZE"]} '
+              'required_members=13 '
+              f'report_sha256={os.environ["SOURCE_V2_REPORT_SHA256"]} '
+              'uvspec_invoked=false syntax_check=false scientific_solver=false results_opened=false'
+          )
+          matches=[r for r in rows if (r.get('body') or '') == needle]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one exact source-v2 ledger checkpoint, got {len(matches)}')
+          print('source-v2 ledger checkpoint exact and unique')
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aerosol-optprop-overlay-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture exact base runtime identity without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p overlay-audit
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output overlay-audit/base-runtime-report.json
+          python - <<'PY'
+          import json, os
+          x=json.load(open('overlay-audit/base-runtime-report.json'))
+          if x.get('scientificSolverExecuted') is not False or x.get('syntaxCheckExecuted') is not False:
+              raise SystemExit('base runtime report crossed no-science boundary')
+          if x.get('libRadtranDataTreeSha256') != os.environ['EXPECTED_BASE_DATA_SHA256']:
+              raise SystemExit('base data tree drift')
+          if x.get('uvspecSha256') != os.environ['EXPECTED_UVSPEC_SHA256']:
+              raise SystemExit('uvspec byte drift')
+          PY
+
+      - name: Create read-only-runtime staging copy and prove byte identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran"
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran/data"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran/data" \
+            --atmosphere "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output overlay-audit/staged-base-runtime-report.json
+          python - <<'PY'
+          import json, os
+          base=json.load(open('overlay-audit/base-runtime-report.json'))
+          staged=json.load(open('overlay-audit/staged-base-runtime-report.json'))
+          if staged.get('scientificSolverExecuted') is not False or staged.get('syntaxCheckExecuted') is not False:
+              raise SystemExit('staged base probe crossed no-science boundary')
+          if staged['libRadtranDataTreeSha256'] != os.environ['EXPECTED_BASE_DATA_SHA256']:
+              raise SystemExit('staged base tree does not match frozen base')
+          if staged['libRadtranDataTreeSha256'] != base['libRadtranDataTreeSha256']:
+              raise SystemExit('staged copy differs from installed base tree')
+          if staged['libRadtranDataFileCount'] != base['libRadtranDataFileCount'] or staged['libRadtranDataByteCount'] != base['libRadtranDataByteCount']:
+              raise SystemExit('staged copy cardinality differs from installed base tree')
+          PY
+
+      - name: Reacquire exact official optprop archive bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl \
+            --location \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --connect-timeout 30 \
+            --max-time 2700 \
+            --user-agent 'twilight-mystic-experiments runtime-overlay-audit/1.0' \
+            --dump-header overlay-audit/http-headers.txt \
+            --write-out '%{url_effective}\n%{http_code}\n%{size_download}\n' \
+            --output overlay-audit/optprop_v2.1.tar.gz \
+            "$SOURCE_URL" > overlay-audit/curl-summary.txt
+          test -s overlay-audit/optprop_v2.1.tar.gz
+
+      - name: Safely stage exact archive and prove mixture dependency resolution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, re, tarfile
+          from pathlib import Path, PurePosixPath
+
+          work=Path('overlay-audit')
+          archive=work/'optprop_v2.1.tar.gz'
+          lr_root=Path(os.environ['GITHUB_WORKSPACE'])/'overlay-runtime/share/libRadtran'
+          data_root=lr_root/'data'
+
+          expected={
+              'INSO':('data/aerosol/OPAC/optprop/inso.mie.cdf','fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407'),
+              'WASO':('data/aerosol/OPAC/optprop/waso.mie.cdf','b6df493b77019bf5e22456e8fb8858c5a7d502bcc02fe6fc697ebd4844f2d4f5'),
+              'SOOT':('data/aerosol/OPAC/optprop/soot.mie.cdf','44a0d2060101ca52c90ae64f005118dfba256b1f89a3049e1f758c55d634aa02'),
+              'SSAM':('data/aerosol/OPAC/optprop/ssam.mie.cdf','89b64e2a9d5adfc25534e429d211125d1d4dfdec8ba0e21e1f3854352fa1fd34'),
+              'SSCM':('data/aerosol/OPAC/optprop/sscm.mie.cdf','d7d753d399e7224627b3d02ff33efd05fd3ca68d0b370b6fb52668f9573c5d7d'),
+              'MINM':('data/aerosol/OPAC/optprop/minm.mie.cdf','069bbc1e01d5d56b2803a63da3ffee153045aed6c9a204724540bf68857cc0d4'),
+              'MIAM':('data/aerosol/OPAC/optprop/miam.mie.cdf','9be0e73163cacec60253c003566d3111e69f1ea9f0875b4835b87fa4cd5d6981'),
+              'MICM':('data/aerosol/OPAC/optprop/micm.mie.cdf','f06fba3d6f6d416537f9e11f0847f199cadb58f5aeb83fb9061508c1cdaafd45'),
+              'MITR':('data/aerosol/OPAC/optprop/mitr.mie.cdf','8442b2ae9209d06db97154158f89e358983abffb76d3ceba89ccb1897d555580'),
+              'SUSO':('data/aerosol/OPAC/optprop/suso.mie.cdf','ce0e1bba4219c60af0af14d66a280b0d3d25188276eed0951d31594b947cd472'),
+              'MINM_SPHEROIDS':('data/aerosol/OPAC/optprop/minm_spheroids.tmatrix.cdf','b4d4bb532040ea2ead4801c5d54d3bcf94e0b875232c55e804274d671ae60416'),
+              'MIAM_SPHEROIDS':('data/aerosol/OPAC/optprop/miam_spheroids.tmatrix.cdf','fd9c89238b9e70e2278952e5ce0f0ce791a43efe5bce1789847e7a942008bc2f'),
+              'MICM_SPHEROIDS':('data/aerosol/OPAC/optprop/micm_spheroids.tmatrix.cdf','3580e8d27276e51c3fb0dec3bee14ae0ec6bf0fb13dcc9171f7c8be9c0ac74ad'),
+              'MITR_SPHEROIDS':('data/aerosol/OPAC/optprop/mitr_spheroids.tmatrix.cdf','101b689580b8c7200550e5705ac6832846420cae219eec070acd012b2d8576a7'),
+          }
+          documented=set(expected)-{'MITR_SPHEROIDS'}
+          mixture_names=[
+              'continental_clean','continental_average','continental_polluted','urban',
+              'maritime_clean','maritime_polluted','maritime_tropical','desert','antarctic','desert_spheroids',
+          ]
+
+          def sha256_file(path: Path) -> str:
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for block in iter(lambda:f.read(4*1024*1024),b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          if archive.stat().st_size != int(os.environ['EXPECTED_ARCHIVE_SIZE']):
+              raise SystemExit('official archive size drift')
+          if sha256_file(archive) != os.environ['EXPECTED_ARCHIVE_SHA256']:
+              raise SystemExit('official archive SHA-256 drift')
+
+          summary=(work/'curl-summary.txt').read_text().splitlines()
+          if len(summary)<3 or summary[-2] != '200' or int(float(summary[-1])) != archive.stat().st_size:
+              raise SystemExit('official archive HTTP/byte-count mismatch')
+
+          archive_member_hashes={}
+          added=[]
+          with tarfile.open(archive,'r:gz') as tf:
+              members=tf.getmembers()
+              if len(members) != 28:
+                  raise SystemExit(f'archive member-count drift: {len(members)}')
+              for m in members:
+                  p=PurePosixPath(m.name)
+                  if not m.isfile():
+                      raise SystemExit(f'non-regular archive member forbidden: {m.name}')
+                  if p.is_absolute() or '..' in p.parts or not p.parts or p.parts[0] != 'data':
+                      raise SystemExit(f'unsafe/out-of-root archive path: {m.name}')
+                  dest=lr_root.joinpath(*p.parts)
+                  if dest.exists():
+                      raise SystemExit(f'overlay collision forbidden: {m.name}')
+              for m in members:
+                  p=PurePosixPath(m.name)
+                  dest=lr_root.joinpath(*p.parts)
+                  dest.parent.mkdir(parents=True,exist_ok=True)
+                  src=tf.extractfile(m)
+                  if src is None:
+                      raise SystemExit(f'cannot stream archive member: {m.name}')
+                  h=hashlib.sha256(); total=0
+                  with dest.open('xb') as out:
+                      while True:
+                          block=src.read(1024*1024)
+                          if not block: break
+                          h.update(block); out.write(block); total += len(block)
+                  if total != m.size:
+                      raise SystemExit(f'extracted size mismatch: {m.name}')
+                  digest=h.hexdigest()
+                  if sha256_file(dest) != digest:
+                      raise SystemExit(f'post-write hash mismatch: {m.name}')
+                  archive_member_hashes[m.name]={'size':m.size,'sha256':digest}
+                  added.append(m.name)
+
+          for species,(rel,want) in expected.items():
+              row=archive_member_hashes.get(rel)
+              if row is None:
+                  raise SystemExit(f'missing expected OPAC member after overlay: {species}')
+              if row['sha256'] != want:
+                  raise SystemExit(f'OPAC member hash drift: {species}')
+
+          mixture_dir=data_root/'aerosol/OPAC/standard_aerosol_files'
+          mixture_hits={}
+          referenced=set()
+          token_patterns={s:re.compile(r'(?<![A-Za-z0-9_])'+re.escape(s)+r'(?![A-Za-z0-9_])',re.I) for s in expected}
+          for name in mixture_names:
+              p=mixture_dir/f'{name}.dat'
+              if not p.is_file():
+                  raise SystemExit(f'missing packaged standard mixture file: {p}')
+              text=p.read_text(errors='strict')
+              hits=sorted(s for s,pat in token_patterns.items() if pat.search(text))
+              if not hits:
+                  raise SystemExit(f'no recognized OPAC species tokens in mixture: {name}')
+              mixture_hits[name]=hits
+              referenced.update(hits)
+          if not ({'MINM_SPHEROIDS','MIAM_SPHEROIDS','MICM_SPHEROIDS'} & set(mixture_hits['desert_spheroids'])):
+              raise SystemExit('desert_spheroids mixture does not reference a documented nonspherical mineral species')
+          unresolved=sorted(s for s in referenced if s not in expected or not (lr_root/expected[s][0]).is_file())
+          if unresolved:
+              raise SystemExit(f'unresolved OPAC species dependencies: {unresolved}')
+
+          report={
+              'schemaVersion':1,
+              'stageId':'aerosol-optprop-exact-runtime-overlay-v1',
+              'status':'PASS_EXACT_RUNTIME_OVERLAY_AND_MIXTURE_DEPENDENCIES',
+              'repository':os.environ.get('GITHUB_REPOSITORY'),
+              'exactMainSha':os.environ.get('GITHUB_SHA'),
+              'runId':int(os.environ.get('GITHUB_RUN_ID','0')),
+              'runAttempt':int(os.environ.get('GITHUB_RUN_ATTEMPT','0')),
+              'sourceV2':{
+                  'runId':int(os.environ['SOURCE_V2_RUN_ID']),
+                  'artifactId':int(os.environ['SOURCE_V2_ARTIFACT_ID']),
+                  'reportSha256':os.environ['SOURCE_V2_REPORT_SHA256'],
+              },
+              'archiveSha256':os.environ['EXPECTED_ARCHIVE_SHA256'],
+              'archiveSizeBytes':int(os.environ['EXPECTED_ARCHIVE_SIZE']),
+              'baseDataTreeSha256':os.environ['EXPECTED_BASE_DATA_SHA256'],
+              'uvspecSha256':os.environ['EXPECTED_UVSPEC_SHA256'],
+              'addedMemberCount':len(added),
+              'addedPaths':sorted(added),
+              'archiveMemberHashes':archive_member_hashes,
+              'documentedRequiredSpecies':sorted(documented),
+              'extraAvailableSpecies':['MITR_SPHEROIDS'],
+              'mixtureFiles':mixture_names,
+              'mixtureSpeciesHits':mixture_hits,
+              'referencedSpecies':sorted(referenced),
+              'unresolvedSpecies':unresolved,
+              'overlayCollisionCount':0,
+              'archiveUploadedAsArtifact':False,
+              'baseRuntimeMutated':False,
+              'uvspecInvoked':False,
+              'syntaxCheckExecuted':False,
+              'scientificSolverExecuted':False,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificOrdinalAllocated':False,
+              'resultOpeningPerformed':False,
+          }
+          (work/'archive-members.txt').write_text('\n'.join(sorted(added))+'\n')
+          (work/'overlay-intermediate.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Capture staged augmented tree and prove installed runtime stayed unchanged
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran/data" \
+            --atmosphere "$GITHUB_WORKSPACE/overlay-runtime/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output overlay-audit/post-overlay-runtime-report.json
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output overlay-audit/base-runtime-after-report.json
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          work=Path('overlay-audit')
+          base=json.load(open(work/'base-runtime-report.json'))
+          staged_base=json.load(open(work/'staged-base-runtime-report.json'))
+          post=json.load(open(work/'post-overlay-runtime-report.json'))
+          base_after=json.load(open(work/'base-runtime-after-report.json'))
+          report=json.load(open(work/'overlay-intermediate.json'))
+          if any(x.get('scientificSolverExecuted') is not False or x.get('syntaxCheckExecuted') is not False for x in (base,staged_base,post,base_after)):
+              raise SystemExit('runtime probe crossed no-science boundary')
+          if base['uvspecSha256'] != post['uvspecSha256'] or post['uvspecSha256'] != base_after['uvspecSha256'] or post['uvspecSha256'] != os.environ['EXPECTED_UVSPEC_SHA256']:
+              raise SystemExit('uvspec identity drift')
+          if base_after['libRadtranDataTreeSha256'] != os.environ['EXPECTED_BASE_DATA_SHA256'] or base_after['libRadtranDataTreeSha256'] != base['libRadtranDataTreeSha256']:
+              raise SystemExit('installed base runtime data tree mutated')
+          if post['libRadtranDataTreeSha256'] == staged_base['libRadtranDataTreeSha256']:
+              raise SystemExit('staged overlay did not change data-tree identity')
+          if int(post['libRadtranDataFileCount']) - int(staged_base['libRadtranDataFileCount']) != report['addedMemberCount']:
+              raise SystemExit('post-overlay data file-count delta mismatch')
+          report['baseDataFileCount']=base['libRadtranDataFileCount']
+          report['baseDataByteCount']=base['libRadtranDataByteCount']
+          report['postOverlayDataTreeSha256']=post['libRadtranDataTreeSha256']
+          report['postOverlayDataFileCount']=post['libRadtranDataFileCount']
+          report['postOverlayDataByteCount']=post['libRadtranDataByteCount']
+          report['dataFileCountDelta']=int(post['libRadtranDataFileCount'])-int(staged_base['libRadtranDataFileCount'])
+          report['dataByteCountDelta']=int(post['libRadtranDataByteCount'])-int(staged_base['libRadtranDataByteCount'])
+          report['installedBaseDataTreeSha256AfterAudit']=base_after['libRadtranDataTreeSha256']
+          report['baseRuntimeMutated']=False
+          raw=(json.dumps(report,indent=2,sort_keys=True)+'\n').encode()
+          (work/'runtime-overlay-audit.json').write_bytes(raw)
+          (work/'runtime-overlay-audit.sha256').write_text(hashlib.sha256(raw).hexdigest()+'  runtime-overlay-audit.json\n')
+          print(json.dumps({
+              'status':report['status'],
+              'postOverlayDataTreeSha256':report['postOverlayDataTreeSha256'],
+              'installedBaseDataTreeSha256AfterAudit':report['installedBaseDataTreeSha256AfterAudit'],
+              'addedMemberCount':report['addedMemberCount'],
+              'referencedSpecies':report['referencedSpecies'],
+              'mixtureSpeciesHits':report['mixtureSpeciesHits'],
+              'baseRuntimeMutated':False,
+              'uvspecInvoked':False,
+              'scientificSolverExecuted':False,
+          },indent=2))
+          PY
+          rm overlay-audit/optprop_v2.1.tar.gz
+          test ! -e overlay-audit/optprop_v2.1.tar.gz
+
+      - name: Persist compact exact-runtime overlay evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-optprop-exact-runtime-overlay-v1
+          path: |
+            overlay-audit/http-headers.txt
+            overlay-audit/curl-summary.txt
+            overlay-audit/base-runtime-report.json
+            overlay-audit/staged-base-runtime-report.json
+            overlay-audit/post-overlay-runtime-report.json
+            overlay-audit/base-runtime-after-report.json
+            overlay-audit/archive-members.txt
+            overlay-audit/runtime-overlay-audit.json
+            overlay-audit/runtime-overlay-audit.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Record overlay checkpoint in sole control ledger
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import json,shlex
+          x=json.load(open('overlay-audit/runtime-overlay-audit.json'))
+          for k,v in {
+              'POST_SHA':x['postOverlayDataTreeSha256'],
+              'ADDED':x['addedMemberCount'],
+              'REFS':len(x['referencedSpecies']),
+          }.items(): print(f'{k}={shlex.quote(str(v))}')
+          PY
+          )"
+          REPORT_SHA="$(cut -d' ' -f1 overlay-audit/runtime-overlay-audit.sha256)"
+          BODY="AEROSOL_OPTPROP_EXACT_RUNTIME_OVERLAY_V1 status=PASS_EXACT_RUNTIME_OVERLAY_AND_MIXTURE_DEPENDENCIES main=${GITHUB_SHA} run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} artifact_id=${ARTIFACT_ID} source_v2_run=${SOURCE_V2_RUN_ID} source_v2_artifact=${SOURCE_V2_ARTIFACT_ID} archive_sha256=${EXPECTED_ARCHIVE_SHA256} base_data_sha256=${EXPECTED_BASE_DATA_SHA256} post_data_sha256=${POST_SHA} added_members=${ADDED} referenced_species=${REFS} report_sha256=${REPORT_SHA} base_runtime_mutated=false uvspec_invoked=false syntax_check=false scientific_solver=false results_opened=false"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" >/dev/null

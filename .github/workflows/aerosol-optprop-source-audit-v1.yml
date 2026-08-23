@@ -1,0 +1,219 @@
+name: Official OPAC optical-properties source audit v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-optprop-source-audit-v1.yml
+      - experiments/aerosol-full-phase-function-sensitivity-v1/OPTPROP_SOURCE_REVIEW.md
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download authoritative optprop archive without executing content
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source-audit
+          curl \
+            --location \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --connect-timeout 30 \
+            --max-time 2700 \
+            --user-agent 'twilight-mystic-experiments source-audit/1.0' \
+            --dump-header source-audit/http-headers.txt \
+            --write-out '%{url_effective}\n%{http_code}\n%{size_download}\n' \
+            --output source-audit/optprop_v2.1.tar.gz \
+            "$SOURCE_URL" > source-audit/curl-summary.txt
+          test -s source-audit/optprop_v2.1.tar.gz
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('source-audit/optprop_v2.1.tar.gz')
+          size=p.stat().st_size
+          if size <= 0 or size > 5_000_000_000:
+              raise SystemExit(f'archive size outside review guard: {size}')
+          with p.open('rb') as handle:
+              if handle.read(2) != b'\x1f\x8b':
+                  raise SystemExit('download is not gzip data')
+          PY
+      - name: Inventory and hash required OPAC NetCDF members
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path, PurePosixPath
+
+          root=Path('source-audit')
+          archive=root/'optprop_v2.1.tar.gz'
+          required=[
+              'INSO','WASO','SOOT','SSAM','SSCM','MINM','MIAM','MICM','MITR','SUSO',
+              'MINM_SPHEROIDS','MIAM_SPHEROIDS','MICM_SPHEROIDS',
+          ]
+          raw_summary=(root/'curl-summary.txt').read_text().splitlines()
+          if len(raw_summary) < 3:
+              raise SystemExit('curl summary incomplete')
+          effective_url=raw_summary[-3]
+          http_code=raw_summary[-2]
+          reported_size=raw_summary[-1]
+          if http_code != '200':
+              raise SystemExit(f'official source returned HTTP {http_code}')
+
+          archive_digest=hashlib.sha256()
+          with archive.open('rb') as handle:
+              while True:
+                  chunk=handle.read(4*1024*1024)
+                  if not chunk:
+                      break
+                  archive_digest.update(chunk)
+          archive_sha=archive_digest.hexdigest()
+          archive_size=archive.stat().st_size
+          if int(float(reported_size)) != archive_size:
+              raise SystemExit('curl/download byte-count mismatch')
+
+          matches={name:[] for name in required}
+          members=[]
+          with tarfile.open(archive,'r:gz') as tf:
+              for member in tf.getmembers():
+                  name=member.name
+                  members.append({
+                      'name':name,
+                      'size':member.size,
+                      'type':'file' if member.isfile() else 'other',
+                  })
+                  if not member.isfile():
+                      continue
+                  base=PurePosixPath(name).name
+                  lower=base.lower()
+                  if lower.endswith('.nc'):
+                      stem=base[:-3]
+                  elif lower.endswith('.cdf'):
+                      stem=base[:-4]
+                  else:
+                      continue
+                  key=stem.upper()
+                  if key not in matches:
+                      continue
+                  src=tf.extractfile(member)
+                  if src is None:
+                      raise SystemExit(f'cannot stream required archive member: {name}')
+                  digest=hashlib.sha256()
+                  total=0
+                  while True:
+                      chunk=src.read(1024*1024)
+                      if not chunk:
+                          break
+                      digest.update(chunk); total += len(chunk)
+                  if total != member.size:
+                      raise SystemExit(f'member byte count mismatch: {name}')
+                  matches[key].append({
+                      'path':name,
+                      'size':member.size,
+                      'sha256':digest.hexdigest(),
+                  })
+
+          missing=[name for name in required if not matches[name]]
+          duplicate=[name for name in required if len(matches[name]) > 1]
+          status='PASS_REQUIRED_OPAC_NETCDF_PRESENT' if not missing else 'MISSING_REQUIRED_OPAC_NETCDF'
+          header_bytes=(root/'http-headers.txt').read_bytes()
+          report={
+              'schemaVersion':1,
+              'stageId':'aerosol-optprop-official-source-audit-v1',
+              'status':status,
+              'repository':os.environ.get('GITHUB_REPOSITORY'),
+              'exactMainSha':os.environ.get('GITHUB_SHA'),
+              'runId':int(os.environ.get('GITHUB_RUN_ID','0')),
+              'runAttempt':int(os.environ.get('GITHUB_RUN_ATTEMPT','0')),
+              'sourcePage':'https://www.libradtran.org/doku.php?id=download',
+              'requestedArchiveUrl':os.environ['SOURCE_URL'],
+              'effectiveArchiveUrl':effective_url,
+              'httpCode':int(http_code),
+              'httpHeadersSha256':hashlib.sha256(header_bytes).hexdigest(),
+              'archiveFilename':'optprop_v2.1.tar.gz',
+              'archiveSizeBytes':archive_size,
+              'archiveSha256':archive_sha,
+              'archiveMemberCount':len(members),
+              'requiredSpecies':required,
+              'requiredSpeciesMembers':matches,
+              'missingRequiredSpecies':missing,
+              'duplicateRequiredSpecies':duplicate,
+              'archiveUploadedAsArtifact':False,
+              'uvspecInvoked':False,
+              'syntaxCheckExecuted':False,
+              'scientificSolverExecuted':False,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificOrdinalAllocated':False,
+              'resultOpeningPerformed':False,
+              'boundary':'official public asset acquisition/hash/member audit only; archive content is never executed',
+          }
+          (root/'archive-members.txt').write_text('\n'.join(x['name'] for x in members)+'\n')
+          raw=(json.dumps(report,indent=2,sort_keys=True)+'\n').encode()
+          (root/'optprop-source-audit.json').write_bytes(raw)
+          (root/'optprop-source-audit.sha256').write_text(hashlib.sha256(raw).hexdigest()+'  optprop-source-audit.json\n')
+          (root/'archive.sha256').write_text(archive_sha+'  optprop_v2.1.tar.gz\n')
+          print(json.dumps({
+              'status':status,
+              'archiveSizeBytes':archive_size,
+              'archiveSha256':archive_sha,
+              'archiveMemberCount':len(members),
+              'missingRequiredSpecies':missing,
+              'duplicateRequiredSpecies':duplicate,
+              'uvspecInvoked':False,
+              'scientificSolverExecuted':False,
+          },indent=2))
+          PY
+          rm source-audit/optprop_v2.1.tar.gz
+          test ! -e source-audit/optprop_v2.1.tar.gz
+      - name: Persist compact source-audit evidence only
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-optprop-official-source-audit-v1
+          path: |
+            source-audit/http-headers.txt
+            source-audit/curl-summary.txt
+            source-audit/archive-members.txt
+            source-audit/archive.sha256
+            source-audit/optprop-source-audit.json
+            source-audit/optprop-source-audit.sha256
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record source-audit checkpoint in sole control ledger
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import json,shlex
+          x=json.load(open('source-audit/optprop-source-audit.json'))
+          for key,value in {
+              'STATUS':x['status'],
+              'ARCHIVE_SHA':x['archiveSha256'],
+              'ARCHIVE_SIZE':x['archiveSizeBytes'],
+              'MISSING':len(x['missingRequiredSpecies']),
+          }.items():
+              print(f'{key}={shlex.quote(str(value))}')
+          PY
+          )"
+          REPORT_SHA="$(cut -d' ' -f1 source-audit/optprop-source-audit.sha256)"
+          BODY="AEROSOL_OPTPROP_OFFICIAL_SOURCE_AUDIT_V1 status=${STATUS} main=${GITHUB_SHA} run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} artifact_id=${ARTIFACT_ID} archive_sha256=${ARCHIVE_SHA} archive_size=${ARCHIVE_SIZE} missing_required_species=${MISSING} report_sha256=${REPORT_SHA} uvspec_invoked=false syntax_check=false scientific_solver=false results_opened=false"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" >/dev/null

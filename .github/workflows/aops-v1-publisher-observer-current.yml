@@ -1,0 +1,61 @@
+name: AOPS v1 publisher observer current
+on:
+  push:
+    branches: [status/aops-v1-publisher-observer-current]
+    paths: [.github/workflows/aops-v1-publisher-observer-current.yml]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Wait for the unique current publisher and publish terminal status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=status/aops-v1-dispatch-publisher-ordinal-36
+          found=''
+          for i in $(seq 1 90); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-dispatch-publisher.yml/runs?branch=${branch}&event=push&per_page=100" > /tmp/pages.json
+            python - <<'PY' > /tmp/status.json
+          import json
+          pages=json.load(open('/tmp/pages.json'))
+          rows=[r for page in pages for r in page.get('workflow_runs',[]) if r.get('head_branch')=='status/aops-v1-dispatch-publisher-ordinal-36']
+          if len(rows)>1: raise SystemExit(f'multiple publisher runs: {len(rows)}')
+          if rows:
+              r=rows[0]
+              out={k:r.get(k) for k in ('id','name','path','head_branch','head_sha','run_attempt','status','conclusion','created_at','updated_at')}
+              print(json.dumps(out,sort_keys=True))
+          PY
+            if test -s /tmp/status.json; then
+              state="$(python -c 'import json;print(json.load(open("/tmp/status.json"))["status"])')"
+              if test "$state" = completed; then found=1; break; fi
+            fi
+            sleep 10
+          done
+          test -n "$found"
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/status.json'))
+          assert r['path']=='.github/workflows/aops-v1-dispatch-publisher.yml'
+          assert r['head_branch']=='status/aops-v1-dispatch-publisher-ordinal-36'
+          assert r['run_attempt']==1
+          open('/tmp/out.json','w').write(json.dumps(r,indent=2,sort_keys=True)+'\n')
+          PY
+          git checkout --orphan status/aops-v1-publisher-observer-current-result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          cp /tmp/out.json observer-result/status.json
+          git add observer-result/status.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Record current AOPS publisher status'
+          git push -f origin HEAD:refs/heads/status/aops-v1-publisher-observer-current-result

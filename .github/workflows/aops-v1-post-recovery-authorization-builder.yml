@@ -1,0 +1,143 @@
+name: AOPS v1 post-recovery authorization builder
+on:
+  push:
+    branches: [status/aops-v1-post-recovery-authorization-builder]
+    paths: [.github/workflows/aops-v1-post-recovery-authorization-builder.yml]
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Prove failed authorization history is preserved and still unconsumed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=452b386deafda29d404eb20c2573af15567dfc92
+          FAILED=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          AUTH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          HIST=history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/$AUTH | cut -f1)" = "$FAILED"
+          test "$(git ls-remote origin refs/heads/$HIST | cut -f1)" = "$FAILED"
+          test -z "$(git ls-remote --heads origin refs/heads/dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36)"
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/failed-pr.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32612380809 > /tmp/failed-run.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/failed-pr.json')); r=json.load(open('/tmp/failed-run.json'))
+          assert p['state']=='closed' and p.get('merged_at') is None
+          assert p['head']['ref']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert p['head']['sha']=='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='failure'
+          assert r['head_sha']==p['head']['sha']
+          assert r['path']=='.github/workflows/aops-v1-authorization-review.yml'
+          PY
+      - name: Resolve exact successful post-recovery preauthorization proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=452b386deafda29d404eb20c2573af15567dfc92
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > /tmp/preauth-pages.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.load(open('/tmp/preauth-pages.json'))
+          rows=[r for page in pages for r in page.get('workflow_runs',[]) if r.get('head_sha')=='452b386deafda29d404eb20c2573af15567dfc92']
+          good=[r for r in rows if r.get('run_attempt')==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          assert len(rows)==1 and len(good)==1,(len(rows),len(good))
+          assert good[0]['id']==32619522870
+          Path('/tmp/preauth-run.json').write_text(json.dumps(good[0],sort_keys=True)+'\n')
+          PY
+          RID="$(python -c 'import json;print(json.load(open("/tmp/preauth-run.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100" > /tmp/preauth-artifacts.json
+          AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('/tmp/preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='aops-v1-preauthorization-proof' and not a.get('expired',False)]
+          assert len(good)==1,len(good)
+          assert good[0]['id']==9487994120
+          print(good[0]['id'])
+          PY
+          )"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > /tmp/preauth.zip
+          rm -rf /tmp/preauth && mkdir /tmp/preauth
+          unzip -q /tmp/preauth.zip -d /tmp/preauth
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/preauth/preauthorization.json'))
+          f=json.load(open('/tmp/preauth/freshness.json'))
+          s=json.load(open('/tmp/preauth/seed-authorization-proof.json'))
+          assert p['status']=='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'
+          assert p['exactMainSha']=='452b386deafda29d404eb20c2573af15567dfc92'
+          assert p['latestPriorConsumedScientificOrdinal']==35
+          assert p['nextAvailableScientificOrdinal']==36
+          assert f['authorizationBranchReusableAfterFailedReview'] is True
+          assert f['latestPriorConsumedScientificOrdinal']==35
+          assert f['nextAvailableScientificOrdinal']==36
+          assert s['status']=='PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED'
+          assert s['auditedMainHead']=='452b386deafda29d404eb20c2573af15567dfc92'
+          assert s['candidateSeedCount']==72 and s['allCollisionCountersZero'] is True
+          for d in (p,s):
+              for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed'):
+                  if k in d: assert d[k] is False,(k,d[k])
+          PY
+      - name: Build exact one-file direct-child authorization commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=452b386deafda29d404eb20c2573af15567dfc92
+          FAILED=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          AUTH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$MAIN"
+          git checkout -b build-aops-authorization "$MAIN"
+          python experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/build_authorization.py \
+            --repository-root . \
+            --seed-proof /tmp/preauth/seed-authorization-proof.json \
+            --main-sha "$MAIN" \
+            --ordinal 36 \
+            --output experiments/aerosol-optical-property-sensitivity-v1/authorization.json
+          python - <<'PY'
+          import json
+          p='experiments/aerosol-optical-property-sensitivity-v1/authorization.json'
+          a=json.load(open(p))
+          assert a['status']=='AUTHORIZED_PENDING_SEPARATE_DISPATCH'
+          assert a['scientificOrdinal']==36
+          assert a['executionKey']=='aerosol-optical-property-sensitivity-v1:numerical:36'
+          assert a['authorizationBranch']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert a['dispatchBranch']=='dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert a['exactAuthorizationParentCommit']=='452b386deafda29d404eb20c2573af15567dfc92'
+          assert a['exactAuthorizationCommit'] is None
+          assert a['scientificExecutionAuthorized'] is True and a['solverExecutionAuthorized'] is True
+          assert a['dispatchAuthorized'] is False and a['automaticDispatch'] is False
+          assert a['resultOpeningAuthorized'] is False and a['consumed'] is False
+          assert a['githubRerunAllowed'] is False and a['retryAllowed'] is False and a['resumeAllowed'] is False
+          PY
+          test "$(git status --short | wc -l)" = 1
+          test "$(git status --short | awk '{print $2}')" = experiments/aerosol-optical-property-sensitivity-v1/authorization.json
+          git add experiments/aerosol-optical-property-sensitivity-v1/authorization.json
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Authorize AOPS v1 ordinal 36 pending separate dispatch'
+          test "$(git rev-parse HEAD^)" = "$MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-optical-property-sensitivity-v1/authorization.json
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease="refs/heads/${AUTH}:${FAILED}" origin HEAD:"refs/heads/${AUTH}"

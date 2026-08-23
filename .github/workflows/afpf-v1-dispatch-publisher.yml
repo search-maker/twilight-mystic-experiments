@@ -1,0 +1,315 @@
+name: AFPF v1 dispatch publisher
+run-name: AFPF v1 dispatch publisher ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - "status/afpf-v1-dispatch-publisher-ordinal-*"
+    paths:
+      - .github/dispatch-requests/afpf-v1.json
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: afpf-v1-dispatch-publisher-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact request ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Bind request, authorization, preauthorization and zero-runtime review
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^status/afpf-v1-dispatch-publisher-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t REQUEST_PARENTS < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
+          test "${#REQUEST_PARENTS[@]}" = 1
+          REQUEST_PARENT="${REQUEST_PARENTS[0]}"
+          mapfile -t REQUEST_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#REQUEST_CHANGED[@]}" = 1
+          test "${REQUEST_CHANGED[0]}" = .github/dispatch-requests/afpf-v1.json
+          python - <<'PY' > request.env
+          import json
+          r=json.load(open('.github/dispatch-requests/afpf-v1.json'))
+          if r.get('schemaVersion')!=1 or r.get('stageId')!='aerosol-full-phase-function-sensitivity-v1-dispatch-request': raise SystemExit('request schema/stage drift')
+          if r.get('status')!='REQUEST_ACTUAL_GIT_PUSH_AND_WORKFLOW_DISPATCH': raise SystemExit('request status drift')
+          n=r.get('scientificOrdinal'); h=r.get('authorizationHead'); p=r.get('authorizationParent'); pr=r.get('authorizationPr')
+          if not isinstance(n,int) or n <= 0: raise SystemExit('request ordinal invalid')
+          if not isinstance(h,str) or len(h)!=40 or not isinstance(p,str) or len(p)!=40: raise SystemExit('request authorization identity invalid')
+          if not isinstance(pr,int) or pr <= 0: raise SystemExit('request authorization PR invalid')
+          print(f'ORDINAL={n}'); print(f'AUTH_HEAD={h}'); print(f'AUTH_PARENT_REQUEST={p}'); print(f'PR_REQUEST={pr}')
+          PY
+          source request.env
+          test "$ORDINAL" = "$BRANCH_ORDINAL"
+          AUTH_BRANCH="authorization/aerosol-full-phase-function-sensitivity-v1-ordinal-$ORDINAL"
+          DISPATCH_BRANCH="dispatch/aerosol-full-phase-function-sensitivity-v1-ordinal-$ORDINAL"
+          git fetch origin main "$AUTH_BRANCH"
+          LIVE_MAIN="$(git rev-parse origin/main)"
+          test "$REQUEST_PARENT" = "$LIVE_MAIN"
+          test "$AUTH_PARENT_REQUEST" = "$LIVE_MAIN"
+          AUTH_REMOTE="$(git rev-parse "origin/$AUTH_BRANCH")"
+          test "$AUTH_REMOTE" = "$AUTH_HEAD"
+          mapfile -t AUTH_PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#AUTH_PARENTS[@]}" = 1
+          AUTH_PARENT="${AUTH_PARENTS[0]}"
+          test "$AUTH_PARENT" = "$LIVE_MAIN"
+          mapfile -t AUTH_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_HEAD")
+          test "${#AUTH_CHANGED[@]}" = 1
+          test "${AUTH_CHANGED[0]}" = experiments/aerosol-full-phase-function-sensitivity-v1/authorization.json
+          git checkout --detach "$AUTH_HEAD"
+          export ORDINAL AUTH_HEAD AUTH_PARENT AUTH_BRANCH DISPATCH_BRANCH
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          matches=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['AUTH_HEAD']]
+          if len(matches)!=1: raise SystemExit(f'expected one authorization PR, got {len(matches)}')
+          p=matches[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('head') or {}).get('repo',{}).get('full_name')!=os.environ['GITHUB_REPOSITORY']: raise SystemExit('authorization PR base/repo drift')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          test "$PR_NUMBER" = "$PR_REQUEST"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/afpf-v1-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-review-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_HEAD']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exactly one successful attempt-1 authorization review required: same={len(same)} good={len(good)}')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RUN_ID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts?per_page=100" > auth-review-artifacts.json
+          REVIEW_AID="$(python - <<'PY'
+          import json,os
+          rows=json.load(open('auth-review-artifacts.json')).get('artifacts',[])
+          expected=f'afpf-v1-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'authorization-review artifact count {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${REVIEW_AID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          if r.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME' or r.get('headSha')!=os.environ['AUTH_HEAD'] or r.get('parentSha')!=os.environ['AUTH_PARENT']: raise SystemExit('authorization review evidence drift')
+          if int(r.get('prNumber') or 0)!=int(json.load(open('auth-pr-selected.json'))['number']): raise SystemExit('authorization review PR drift')
+          if int(r.get('runAttempt') or 0)!=1 or r.get('conclusion')!='success': raise SystemExit('authorization review attempt/conclusion drift')
+          if any(r.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('authorization review was not zero-runtime')
+          PY
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/afpf-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          PRE_RID="$(python -c 'import json;print(json.load(open("preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PRE_RID}/artifacts?per_page=100" > preauth-artifacts.json
+          PRE_AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='afpf-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('preauthorization artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preauth-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PRE_AID}/zip" > preauth.zip
+          unzip -q preauth.zip -d preauth-artifact
+          python - <<'PY'
+          import json,os
+          p=json.load(open('preauth-artifact/preauthorization.json'))
+          if p.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED' or p.get('exactMainSha')!=os.environ['AUTH_PARENT']: raise SystemExit('preauthorization identity drift')
+          if int(p.get('nextAvailableScientificOrdinal') or 0)!=int(os.environ['ORDINAL']): raise SystemExit('preauthorization ordinal drift')
+          if any(p.get(k) is not False for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('preauthorization crossed boundary')
+          PY
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "auth_head=$AUTH_HEAD" >> "$GITHUB_OUTPUT"
+          echo "auth_parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "dispatch_branch=$DISPATCH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "review_run_id=$REVIEW_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Prove dispatch eligible before creating ref
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import preauthorization_surface,dispatch_guard
+          root=Path('.'); stage=root/'experiments/aerosol-full-phase-function-sensitivity-v1'
+          auth=json.load(open(stage/'authorization.json')); proof=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          pr=json.load(open('auth-pr-selected.json')); rr=json.load(open('auth-review-selected.json'))
+          review=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=preauthorization_surface.build_dispatch_surface(
+              payload,int(os.environ['ORDINAL']),os.environ['AUTH_HEAD'],os.environ['AUTH_PARENT'],
+              current_pr=int(os.environ['PR_NUMBER']),current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,post_dispatch=False,
+          )
+          ctx={'liveMain':os.environ['AUTH_PARENT'],'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],
+               'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headBranch':pr['head']['ref'],'headSha':pr['head']['sha']},
+               'authorizationReview':{'status':review['status'],'headSha':review['headSha'],'parentSha':review['parentSha'],'prNumber':review['prNumber'],'runAttempt':rr['run_attempt'],'conclusion':rr['conclusion'],'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False},
+               'freshness':surface,'issue60AuthorizationMarkers':surface.get('matchingAuthorizationMarkerBodies',[]),'issue60ConsumedMarkers':surface.get('currentConsumedMarkerBodies',[])}
+          out=dispatch_guard.evaluate(root,auth,proof,ctx,post_dispatch=False)
+          Path('dispatch-pre.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          Path('freshness-pre.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Actual git push consumes dispatch identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$AUTH_PARENT"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          set +e
+          git push origin "$AUTH_HEAD:refs/heads/$DISPATCH_BRANCH" > git-push.stdout 2> git-push.stderr
+          RC=$?
+          set -e
+          test "$RC" = 0
+          git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" > dispatch-ls-remote.txt
+          grep -q "^${AUTH_HEAD}[[:space:]]" dispatch-ls-remote.txt
+
+      - name: Mark consumed once and prove post-dispatch state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          MARKER="ORDINAL${ORDINAL}_AFPF_V1_DISPATCH_CONSUMED"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$MARKER" > consumed-comment.json
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import preauthorization_surface,dispatch_guard
+          root=Path('.'); stage=root/'experiments/aerosol-full-phase-function-sensitivity-v1'
+          auth=json.load(open(stage/'authorization.json')); proof=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          pr=json.load(open('auth-pr-selected.json')); rr=json.load(open('auth-review-selected.json'))
+          review=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=preauthorization_surface.build_dispatch_surface(
+              payload,int(os.environ['ORDINAL']),os.environ['AUTH_HEAD'],os.environ['AUTH_PARENT'],
+              current_pr=int(os.environ['PR_NUMBER']),current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,post_dispatch=True,
+          )
+          ctx={'liveMain':os.environ['AUTH_PARENT'],'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],'dispatchBranchHeadSha':os.environ['AUTH_HEAD'],
+               'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headBranch':pr['head']['ref'],'headSha':pr['head']['sha']},
+               'authorizationReview':{'status':review['status'],'headSha':review['headSha'],'parentSha':review['parentSha'],'prNumber':review['prNumber'],'runAttempt':rr['run_attempt'],'conclusion':rr['conclusion'],'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False},
+               'freshness':surface,'issue60AuthorizationMarkers':surface.get('matchingAuthorizationMarkerBodies',[]),'issue60ConsumedMarkers':surface.get('currentConsumedMarkerBodies',[])}
+          out=dispatch_guard.evaluate(root,auth,proof,ctx,post_dispatch=True)
+          Path('freshness-post.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          Path('dispatch-post.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Stage immutable successful publisher evidence
+        shell: bash
+        env:
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          out={
+            'schemaVersion':1,'stageId':'aerosol-full-phase-function-sensitivity-v1-dispatch-publisher',
+            'status':'DISPATCH_PUBLISHED_ZERO_RUNTIME','scientificOrdinal':int(os.environ['ORDINAL']),
+            'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],'authorizationPr':int(os.environ['PR_NUMBER']),
+            'dispatchBranch':os.environ['DISPATCH_BRANCH'],'dispatchBranchHeadSha':os.environ['AUTH_HEAD'],'actualGitPush':True,
+            'currentConsumedMarkerPosted':True,'scienceTriggerMode':'EXPLICIT_WORKFLOW_DISPATCH_AFTER_ACTUAL_GIT_PUSH',
+            'githubTokenPushReliedUponToTriggerScience':False,'runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'conclusion':'success','scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,
+          }
+          open('dispatch-publisher.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist immutable publisher evidence before science trigger
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-dispatch-publisher-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            dispatch-publisher.json
+            dispatch-pre.json
+            dispatch-post.json
+            freshness-pre.json
+            freshness-post.json
+            consumed-comment.json
+            git-push.stdout
+            git-push.stderr
+            dispatch-ls-remote.txt
+            auth-pr-selected.json
+            auth-review-selected.json
+            preauth-selected.json
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Explicitly dispatch attempt-1 science on pushed ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > science-dispatch.json
+          import json,os
+          print(json.dumps({'ref':os.environ['DISPATCH_BRANCH']},separators=(',',':')))
+          PY
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/afpf-v1-execution.yml/dispatches" --input science-dispatch.json

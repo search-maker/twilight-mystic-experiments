@@ -116,13 +116,14 @@ def build_authorization_review_surface(
 
 
 def build_dispatch_surface(
-    payload: dict[str, Any], ordinal: int, head_sha: str, *, current_pr: int | None = None,
+    payload: dict[str, Any], ordinal: int, head_sha: str, parent_sha: str, *, current_pr: int,
     current_run_id: int | None = None, candidate_seed_authorization_recheck_passed: bool,
     post_dispatch: bool = False,
 ) -> dict[str, Any]:
     freshness, control, _ = _modules()
     surface = control.build_surface(
         payload, ordinal, current_pr=current_pr, current_run_id=current_run_id,
+        marker_head=head_sha, marker_parent=parent_sha,
         active_authorization_path_on_main_exists=False,
         candidate_code_paths_on_main_inspected=True,
         candidate_seed_authorization_recheck_passed=candidate_seed_authorization_recheck_passed,

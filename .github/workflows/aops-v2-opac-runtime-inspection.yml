@@ -1,0 +1,194 @@
+name: AOPS v2 OPAC runtime inventory
+run-name: Inspect exact libRadtran OPAC assets without solver execution
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - .github/workflows/aops-v2-opac-runtime-inspection.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-runtime-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aops-v2-opac-runtime-inspection
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Inventory installed aerosol and OPAC assets without invoking uvspec
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          LOCK="experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+          test -d "$DATA_DIR"
+          test -s "$LOCK"
+          export DATA_DIR LOCK
+          mkdir -p opac-runtime-inspection
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, os, re
+          from pathlib import Path
+
+          data_dir = Path(os.environ['DATA_DIR']).resolve()
+          lock_path = Path(os.environ['LOCK']).resolve()
+          out_dir = Path('opac-runtime-inspection')
+          lock = json.loads(lock_path.read_text())
+          expected_spec = 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1'
+          if lock.get('exactPackageSpec') != expected_spec:
+              raise SystemExit('runtime lock package spec drift')
+          if lock.get('scientificSolverExecution') is not False:
+              raise SystemExit('runtime lock unexpectedly records solver execution')
+
+          mixture_names = [
+              'continental_clean', 'continental_average', 'continental_polluted',
+              'urban', 'maritime_clean', 'maritime_polluted', 'maritime_tropical',
+              'desert', 'antarctic', 'desert_spheroids',
+          ]
+          keyword_re = re.compile(r'(opac|aerosol|species|phase|mie)', re.I)
+          files = [p for p in data_dir.rglob('*') if p.is_file()]
+          relevant = [p for p in files if keyword_re.search(p.relative_to(data_dir).as_posix())]
+          opac = [p for p in files if 'opac' in p.relative_to(data_dir).as_posix().lower()]
+          aerosol = [p for p in files if 'aerosol' in p.relative_to(data_dir).as_posix().lower()]
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def rows(paths):
+              return [
+                  {
+                      'path': p.relative_to(data_dir).as_posix(),
+                      'sizeBytes': p.stat().st_size,
+                      'sha256': sha256(p),
+                  }
+                  for p in sorted(paths)
+              ]
+
+          # Search only reasonably sized text-like files for documented mixture names.
+          text_hits = {name: [] for name in mixture_names}
+          path_hits = {name: [] for name in mixture_names}
+          for p in files:
+              rel = p.relative_to(data_dir).as_posix()
+              low = rel.lower()
+              for name in mixture_names:
+                  if name in low:
+                      path_hits[name].append(rel)
+              if p.stat().st_size > 5_000_000:
+                  continue
+              try:
+                  text = p.read_text(errors='strict').lower()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for name in mixture_names:
+                  if name in text:
+                      text_hits[name].append(rel)
+
+          # Preserve a complete per-file hash inventory for OPAC if present; otherwise
+          # preserve the whole aerosol-named subtree so absence is auditable.
+          hashed_scope = opac if opac else aerosol
+          hashed_rows = rows(hashed_scope)
+          canonical = json.dumps(hashed_rows, sort_keys=True, separators=(',', ':')).encode()
+          scope_sha = hashlib.sha256(canonical).hexdigest()
+
+          top_level = sorted(p.name for p in data_dir.iterdir())
+          aerosol_dirs = sorted(
+              p.relative_to(data_dir).as_posix()
+              for p in data_dir.rglob('*')
+              if p.is_dir() and keyword_re.search(p.relative_to(data_dir).as_posix())
+          )
+          mixture_presence = {
+              name: {
+                  'presentInPath': bool(path_hits[name]),
+                  'presentInText': bool(text_hits[name]),
+                  'pathHits': sorted(path_hits[name]),
+                  'textHits': sorted(text_hits[name]),
+              }
+              for name in mixture_names
+          }
+          present_names = sorted(
+              name for name, hit in mixture_presence.items()
+              if hit['presentInPath'] or hit['presentInText']
+          )
+
+          result = {
+              'schemaVersion': 1,
+              'stageId': 'aops-v2-opac-runtime-inspection',
+              'status': 'OPAC_ASSETS_PRESENT_IN_EXACT_RUNTIME' if opac else 'OPAC_PATH_NOT_FOUND_IN_EXACT_RUNTIME',
+              'runtimePackageSpec': expected_spec,
+              'runtimeLockRawSha256': hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+              'dataDir': str(data_dir),
+              'dataTopLevelEntries': top_level,
+              'installedDataFileCount': len(files),
+              'keywordRelevantFileCount': len(relevant),
+              'aerosolNamedFileCount': len(aerosol),
+              'opacNamedFileCount': len(opac),
+              'aerosolOrOpacDirectories': aerosol_dirs,
+              'documentedBuiltInMixtureNamesSearched': mixture_names,
+              'documentedBuiltInMixtureNamesFound': present_names,
+              'mixturePresence': mixture_presence,
+              'hashedScope': 'opac-named-files' if opac else 'aerosol-named-files',
+              'hashedScopeFileCount': len(hashed_rows),
+              'hashedScopeCanonicalSha256': scope_sha,
+              'scientificExecutionPerformed': False,
+              'solverExecutionPerformed': False,
+              'uvspecInvoked': False,
+              'scientificOrdinalAllocated': False,
+              'scientificSeedAllocated': False,
+              'resultOpeningPerformed': False,
+          }
+          (out_dir / 'opac-runtime-inspection.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          (out_dir / 'opac-file-hashes.json').write_text(json.dumps(hashed_rows, indent=2, sort_keys=True) + '\n')
+          (out_dir / 'aerosol-opac-directories.txt').write_text('\n'.join(aerosol_dirs) + ('\n' if aerosol_dirs else ''))
+          (out_dir / 'mixture-name-hits.json').write_text(json.dumps(mixture_presence, indent=2, sort_keys=True) + '\n')
+          print(json.dumps({
+              'status': result['status'],
+              'aerosolNamedFileCount': len(aerosol),
+              'opacNamedFileCount': len(opac),
+              'mixturesFound': present_names,
+              'hashedScopeCanonicalSha256': scope_sha,
+          }, sort_keys=True))
+          PY
+
+      - name: Prove inspection workflow is zero-science and contains no solver invocation
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/aops-v2-opac-runtime-inspection.yml').read_text().lower()
+          forbidden = (
+              'workflow_dispatch:',
+              'scientific-ordinal',
+              'mc_photons',
+              'rte_solver mystic',
+              '--allow-execution',
+              'uvspec -c',
+              'subprocess.run',
+          )
+          for token in forbidden:
+              if token in text:
+                  raise SystemExit(f'forbidden execution surface in runtime inspection: {token}')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aops-v2-opac-runtime-inspection
+          path: opac-runtime-inspection
+          if-no-files-found: error
+          retention-days: 90

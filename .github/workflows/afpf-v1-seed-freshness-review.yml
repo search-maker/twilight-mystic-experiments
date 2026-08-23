@@ -1,0 +1,213 @@
+name: AFPF v1 candidate seed freshness review
+run-name: AFPF v1 candidate seed freshness review ${{ github.event.pull_request.head.ref }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/workflows/afpf-v1-seed-freshness-review.yml
+      - experiments/aerosol-full-phase-function-sensitivity-v1/seed_ledger.py
+      - experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json
+      - experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json
+      - experiments/aerosol-full-phase-function-sensitivity-v1/tracked_tree_seed_scan.py
+      - experiments/aerosol-full-phase-function-sensitivity-v1/repository_global_seed_scan.py
+      - experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_freshness_proof.py
+      - tests/test_aerosol_full_phase_function_seed_freshness_v1.py
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: afpf-v1-seed-freshness-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review-freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact candidate-seed review head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Bind exact Draft PR and eight-file review surface
+        id: identity
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$HEAD_REF" = review/aerosol-full-phase-function-seed-freshness-v1
+          test "$BASE_REF" = main
+          test "$PR_DRAFT" = true
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          test "$(git merge-base HEAD origin/main)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_SHA".."$HEAD_SHA" | sort)
+          EXPECTED=(
+            .github/workflows/afpf-v1-seed-freshness-review.yml
+            experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_freshness_proof.py
+            experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json
+            experiments/aerosol-full-phase-function-sensitivity-v1/repository_global_seed_scan.py
+            experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json
+            experiments/aerosol-full-phase-function-sensitivity-v1/seed_ledger.py
+            experiments/aerosol-full-phase-function-sensitivity-v1/tracked_tree_seed_scan.py
+            tests/test_aerosol_full_phase_function_seed_freshness_v1.py
+          )
+          mapfile -t EXPECTED_SORTED < <(printf '%s\n' "${EXPECTED[@]}" | sort)
+          test "${#CHANGED[@]}" = "${#EXPECTED_SORTED[@]}"
+          diff -u <(printf '%s\n' "${EXPECTED_SORTED[@]}") <(printf '%s\n' "${CHANGED[@]}")
+          test ! -e evidence/aerosol-full-phase-function-sensitivity-v1/seed-freshness-proof.json
+          mkdir -p seed-review-evidence
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          value={
+            'schemaVersion':1,
+            'stageId':'aerosol-full-phase-function-sensitivity-v1-seed-review-identity',
+            'status':'BOUND_EXACT_DRAFT_REVIEW_HEAD_ZERO_RUNTIME',
+            'prNumber':int(os.environ['PR_NUMBER']),
+            'headBranch':os.environ['HEAD_REF'],
+            'headSha':os.environ['HEAD_SHA'],
+            'baseBranch':os.environ['BASE_REF'],
+            'baseSha':os.environ['BASE_SHA'],
+            'runId':int(os.environ['GITHUB_RUN_ID']),
+            'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'candidateSeedsAppliedToScientificCases':False,
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'scientificRuntimeSetupPerformed':False,
+            'syntaxCheckExecuted':False,
+            'solverExecutionPerformed':False,
+            'resultOpeningPerformed':False,
+          }
+          Path('seed-review-evidence/identity.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+      - name: Validate deterministic candidate ledger and zero-runtime boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/seed_ledger.py > seed-review-evidence/seed-ledger-validation.json
+          python - <<'PY'
+          import json
+          x=json.load(open('experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json'))
+          assert x['candidateSeedCount']==72
+          assert len(x['candidateSeeds'])==72 and len(set(x['candidateSeeds']))==72
+          assert x['candidateSeedFreshnessProven'] is False
+          assert x['authorizationPermitted'] is False
+          assert x['solverExecutionAuthorized'] is False
+          assert x['resultOpeningAuthorized'] is False
+          assert all(10_000_000 <= int(v) < 2_147_483_647 for v in x['candidateSeeds'])
+          PY
+          git ls-files -z > seed-review-evidence/tracked-files.nul
+      - name: Exact-head tracked-tree candidate seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list seed-review-evidence/tracked-files.nul \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --allow-self-ledger-json experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json \
+            --output seed-review-evidence/tracked-seed-scan.json
+      - name: Stable repository-global candidate seed freshness scan
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ steps.identity.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.identity.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json \
+            --output seed-review-evidence/repository-global-seed-scan.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode review-freeze \
+            --expected-branch-name "$HEAD_REF" \
+            --expected-repo-head "$HEAD_SHA"
+      - name: Build freshness proof and nonrenderable seeded review design
+        shell: bash
+        env:
+          HEAD_REF: ${{ steps.identity.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.identity.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/build_seed_freshness_proof.py \
+            --stage-dir experiments/aerosol-full-phase-function-sensitivity-v1 \
+            --tracked-tree-report seed-review-evidence/tracked-seed-scan.json \
+            --repository-global-report seed-review-evidence/repository-global-seed-scan.json \
+            --expected-branch-name "$HEAD_REF" \
+            --expected-head "$HEAD_SHA" \
+            --audit-mode review-freeze \
+            --output-proof seed-review-evidence/seed-freshness-proof.json \
+            --output-design seed-review-evidence/seeded-design.review.json
+          python - <<'PY'
+          import json
+          p=json.load(open('seed-review-evidence/seed-freshness-proof.json'))
+          d=json.load(open('seed-review-evidence/seeded-design.review.json'))
+          assert p['status']=='PASS_CANDIDATE_SEEDS_REVIEW_FREEZE_NOT_AUTHORIZED'
+          assert p['candidateSeedCount']==72 and p['repositoryGlobalCollisionCount']==0 and p['trackedTreeExternalCollisionCount']==0
+          assert p['scientificOrdinalAllocated'] is False and p['authorizationCreated'] is False and p['solverExecutionAuthorized'] is False and p['resultOpeningAuthorized'] is False
+          assert d['status']=='CANDIDATE_SEEDED_DESIGN_FRESHNESS_PROVEN_REVIEW_ONLY'
+          assert d['groupCount']==72 and d['caseCount']==360 and d['statesPerGroup']==5
+          assert d['candidateSeedFreshnessProven'] is True
+          assert d['scientificExecutionAuthorized'] is False and d['solverExecutionAuthorized'] is False and d['resultOpeningAuthorized'] is False
+          assert all(row['renderable'] is False and row['executionAuthorized'] is False for row in d['cases'])
+          PY
+          sha256sum experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json > seed-review-evidence/candidate-seed-ledger.sha256
+          sha256sum seed-review-evidence/seed-freshness-proof.json > seed-review-evidence/seed-freshness-proof.sha256
+          sha256sum seed-review-evidence/seeded-design.review.json > seed-review-evidence/seeded-design.review.sha256
+      - name: Persist immutable zero-runtime seed freshness evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-seed-freshness-review-proof
+          path: |
+            seed-review-evidence/identity.json
+            seed-review-evidence/seed-ledger-validation.json
+            seed-review-evidence/tracked-seed-scan.json
+            seed-review-evidence/repository-global-seed-scan.json
+            seed-review-evidence/seed-freshness-proof.json
+            seed-review-evidence/seed-freshness-proof.sha256
+            seed-review-evidence/seeded-design.review.json
+            seed-review-evidence/seeded-design.review.sha256
+            seed-review-evidence/candidate-seed-ledger.sha256
+            experiments/aerosol-full-phase-function-sensitivity-v1/candidate-seed-ledger.v1.json
+            experiments/aerosol-full-phase-function-sensitivity-v1/seed-self-ledger-policy.v1.json
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record candidate-seed freshness checkpoint without seed literals
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          HEAD_SHA: ${{ steps.identity.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          PROOF_SHA="$(cut -d' ' -f1 seed-review-evidence/seed-freshness-proof.sha256)"
+          DESIGN_SHA="$(cut -d' ' -f1 seed-review-evidence/seeded-design.review.sha256)"
+          BODY="AFPF_V1_CANDIDATE_SEED_FRESHNESS_REVIEW_PASS head=${HEAD_SHA} pr=${PR_NUMBER} run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} artifact_id=${ARTIFACT_ID} candidate_count=72 tracked_collisions=0 repository_global_collisions=0 proof_sha256=${PROOF_SHA} design_sha256=${DESIGN_SHA} scientific_ordinal_allocated=false authorization=false dispatch=false scientific_runtime=false syntax_check=false solver=false results_opened=false"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" >/dev/null

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import re
@@ -23,10 +22,6 @@ def _load(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def normalized_proof_sha256(proof: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(proof, indent=2, sort_keys=True).encode()).hexdigest()
 
 
 def build(
@@ -59,7 +54,7 @@ def build(
         "exactAuthorizationParentCommit": parent_main,
         "reviewPackageMainSha": parent_main,
         "exactAuthorizationCommit": None,
-        "authorizationTimeSeedProofRawSha256": normalized_proof_sha256(seed_authorization_proof),
+        "authorizationTimeSeedProofRawSha256": guard.seed_proof_raw_sha256(seed_authorization_proof),
         "candidateSeedCanonicalSha256": design["candidateSeedCanonicalSha256"],
         "candidateRowsCanonicalSha256": design["candidateRowsCanonicalSha256"],
         "executionDesignCanonicalSha256": design["canonicalDesignSha256"],

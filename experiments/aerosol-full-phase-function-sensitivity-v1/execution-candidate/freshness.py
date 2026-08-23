@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+STAGE_TOKEN = "AFPF_V1"
+STAGE_ID = "aerosol-full-phase-function-sensitivity-v1"
+
+
+class FreshnessRefusal(RuntimeError):
+    pass
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise FreshnessRefusal(message)
+
+
+def authorization_branch(ordinal: int) -> str:
+    return f"authorization/{STAGE_ID}-ordinal-{ordinal}"
+
+
+def dispatch_branch(ordinal: int) -> str:
+    return f"dispatch/{STAGE_ID}-ordinal-{ordinal}"
+
+
+def execution_key(ordinal: int) -> str:
+    return f"{STAGE_ID}:numerical:{ordinal}"
+
+
+def authorization_marker(ordinal: int, head: str, parent: str, pr_number: int) -> str:
+    return (
+        f"ORDINAL{ordinal}_{STAGE_TOKEN}_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED "
+        f"commit={head} parent={parent} pr={pr_number}"
+    )
+
+
+def consumed_marker(ordinal: int) -> str:
+    return f"ORDINAL{ordinal}_{STAGE_TOKEN}_DISPATCH_CONSUMED"
+
+
+def marker_regex(ordinal: int) -> re.Pattern[str]:
+    return re.compile(
+        rf"^ORDINAL{ordinal}_{STAGE_TOKEN}_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED "
+        rf"commit=([0-9a-f]{{40}}) parent=([0-9a-f]{{40}}) pr=([1-9][0-9]*)$",
+        re.I,
+    )
+
+
+def _assertive_markdown_prose(text: str) -> str:
+    out: list[str] = []
+    in_fence = False
+    fence: str | None = None
+    for raw in (text or "").splitlines():
+        stripped = raw.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            token = stripped[:3]
+            if not in_fence:
+                in_fence = True
+                fence = token
+            elif token == fence:
+                in_fence = False
+                fence = None
+            continue
+        if in_fence or stripped.startswith(">"):
+            continue
+        out.append(re.sub(r"`[^`\n]*`", " ", raw))
+    return "\n".join(out)
+
+
+def positive_candidate_claims(text: str, ordinal: int) -> list[str]:
+    ord_pat = rf"ordinal\s*[-:#]?\s*{ordinal}"
+    ordinal_token = re.compile(rf"\b{ord_pat}\b", re.I)
+    marker = marker_regex(ordinal)
+    action = r"(?:allocat(?:e|ed)|reserv(?:e|ed)|authoriz(?:e|ed)|consum(?:e|ed)|dispatch(?:ed)?)"
+    noun = r"(?:allocation|reservation|authorization|consumption|dispatch)"
+    factual = [
+        re.compile(rf"\b(?:we|i|they|the\s+(?:system|repository|project|candidate))\b[^\n.;]{{0,48}}\b{action}\b[^\n.;]{{0,48}}\b{ord_pat}\b", re.I),
+        re.compile(rf"\b{ord_pat}\b[^\n.;]{{0,64}}\b(?:is|was|were|has\s+been|had\s+been)\s+(?:now\s+|already\s+)?{action}\b", re.I),
+        re.compile(rf"\b{noun}\b(?:\s+(?:of|for))?\s+{ord_pat}\b[^\n.;]{{0,40}}\b(?:occurred|completed|succeeded|exists|is\s+active|was\s+active|is\s+granted|was\s+granted)\b", re.I),
+    ]
+    nonfactual = re.compile(
+        r"\b(?:no|not|never|without|pending|requested|request|proposed|proposal|planned|plan|"
+        r"intended|intend|would|could|should|may|might|if|whether|before|after review|review-only|"
+        r"candidate-only|denied|rejected|refused|revoked|rescinded|cancelled|canceled|"
+        r"unauthorized|unallocated|unreserved)\b",
+        re.I,
+    )
+    claims: list[str] = []
+    prose = _assertive_markdown_prose(text)
+    for raw in re.split(r"[\n]+|(?<=[.;])\s+", prose):
+        line = raw.strip()
+        if not line:
+            continue
+        if marker.fullmatch(line):
+            claims.append(line)
+            continue
+        if not ordinal_token.search(line):
+            continue
+        if line.endswith("?") or re.match(
+            r"^(?:did|do|does|is|are|was|were|has|have|had|can|could|would|should|will|may|might|must|who|what|when|where|why|how)\b",
+            line,
+            re.I,
+        ):
+            continue
+        for pat in factual:
+            match = pat.search(line)
+            if not match:
+                continue
+            prefix = line[max(0, match.start() - 72):match.start()]
+            span = line[match.start():match.end()]
+            if nonfactual.search(prefix) or nonfactual.search(span):
+                continue
+            claims.append(line)
+            break
+    return claims
+
+
+def matching_marker(text: str, ordinal: int, head: str, parent: str, pr_number: int) -> bool:
+    match = marker_regex(ordinal).fullmatch((text or "").strip())
+    return bool(
+        match
+        and match.group(1).lower() == head.lower()
+        and match.group(2).lower() == parent.lower()
+        and int(match.group(3)) == int(pr_number)
+    )
+
+
+def validate_common(ctx: dict[str, Any], ordinal: int, *, dispatch_must_be_absent: bool = True) -> None:
+    require(isinstance(ordinal, int) and ordinal > 0, "candidate scientific ordinal invalid")
+    require(ctx.get("nextAvailableScientificOrdinal") == ordinal, "candidate is not the fresh next global scientific ordinal")
+    prior = ctx.get("latestPriorConsumedScientificOrdinal")
+    require(isinstance(prior, int) and prior < ordinal, "latest prior consumed scientific ordinal invalid")
+    require(ctx.get("candidatePriorScientificRunCount") == 0, "candidate ordinal already has scientific runs")
+    require(ctx.get("candidateExecutionKeyPriorUseCount") == 0, "candidate execution key already used")
+    require(ctx.get("positiveCandidateClaimsExcludingCurrent") == 0, "positive candidate ordinal claim already exists")
+    for key in (
+        "allBranchesInspected",
+        "allActionsRunsInspected",
+        "allActionsArtifactsInspected",
+        "allStatePullRequestsInspected",
+        "allStateIssuesInspected",
+        "allRepositoryIssueCommentsInspected",
+        "allRepositoryPullReviewCommentsInspected",
+        "issue60AndCommentsInspected",
+        "candidateCodePathsOnMainInspected",
+    ):
+        require(ctx.get(key) is True, f"freshness surface incomplete: {key}")
+    if dispatch_must_be_absent:
+        require(ctx.get("dispatchBranchExists") is False, "candidate dispatch branch already exists")
+
+
+def validate_preauthorization(ctx: dict[str, Any], ordinal: int) -> None:
+    validate_common(ctx, ordinal)
+    require(ctx.get("currentConsumedMarkerCount") == 0, "candidate consumed marker already exists")
+    require(ctx.get("authorizationBranchExists") is False, "AFPF authorization branch already exists before first allocation")
+    require(ctx.get("activeAuthorizationPathOnMainExists") is False, "active AFPF authorization path already exists on main")
+    require(ctx.get("matchingAuthorizationMarkers") == 0, "authorization marker already exists before review")
+    require(ctx.get("candidateSeedAuthorizationRecheckPassed") is True, "authorization-time candidate seed recheck has not passed")

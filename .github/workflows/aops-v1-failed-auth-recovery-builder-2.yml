@@ -1,0 +1,83 @@
+name: AOPS v1 failed authorization recovery builder 2
+on:
+  push:
+    branches: [status/aops-v1-failed-auth-recovery-builder-2]
+    paths: [.github/workflows/aops-v1-failed-auth-recovery-builder-2.yml]
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Preserve patch script and prove failed identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tools/aops_v1_failed_auth_recovery_builder_2.py /tmp/recovery.py
+          python -m py_compile /tmp/recovery.py
+          MAIN=7297a579112b6089acc5b5d45292e8169039c022
+          FAILED=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          AUTH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          HIST=history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/$AUTH | cut -f1)" = "$FAILED"
+          test "$(git ls-remote origin refs/heads/$HIST | cut -f1)" = "$FAILED"
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/pr.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32612380809 > /tmp/run.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/pr.json')); r=json.load(open('/tmp/run.json'))
+          assert p['state']=='closed' and p.get('merged_at') is None
+          assert p['head']['ref']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'
+          assert p['head']['sha']=='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'
+          assert r['head_sha']==p['head']['sha'] and r['head_branch']==p['head']['ref']
+          assert r['path']=='.github/workflows/aops-v1-authorization-review.yml'
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='failure'
+          PY
+          test -z "$(git ls-remote --heads origin refs/heads/dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36)"
+      - name: Apply narrow recovery on exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -b fix/aops-v1-failed-auth-review-recovery-1 7297a579112b6089acc5b5d45292e8169039c022
+          python /tmp/recovery.py
+          python -m unittest tests.test_aops_v1_failed_authorization_recovery -v
+          git diff --check
+      - name: Run full non-scientific unit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+      - name: Verify boundary and push fix branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json').read_text())
+          for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized'):
+              assert c[k] is False, k
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- .github/workflows/aops-v1-authorization-review.yml .github/workflows/aops-v1-dispatch-publisher.yml experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json tests/test_aops_v1_failed_authorization_recovery.py
+          test "$(git diff --cached --name-only | wc -l)" = 6
+          git commit -m 'Recover AOPS v1 failed authorization review transport'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/fix/aops-v1-failed-auth-review-recovery-1

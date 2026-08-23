@@ -1,0 +1,59 @@
+name: AOPS v1 authorization builder guard diagnostic
+on:
+  push:
+    branches: [status/aops-v1-builder-failure-diagnostic]
+    paths: [.github/workflows/aops-v1-builder-failure-diagnostic.yml]
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+jobs:
+  diagnose:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Record exact live refs and failed review metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, subprocess
+          def ref(name):
+              out=subprocess.run(['git','ls-remote','origin',f'refs/heads/{name}'],capture_output=True,text=True,check=True).stdout.strip()
+              return out.split()[0] if out else None
+          out={
+            'main': ref('main'),
+            'activeAuthorization': ref('authorization/aerosol-optical-property-sensitivity-v1-ordinal-36'),
+            'historyAuthorization': ref('history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1'),
+            'dispatch': ref('dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36'),
+          }
+          open('/tmp/refs.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/pr.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32612380809 > /tmp/run.json
+          python - <<'PY'
+          import json
+          refs=json.load(open('/tmp/refs.json')); p=json.load(open('/tmp/pr.json')); r=json.load(open('/tmp/run.json'))
+          out={
+            'refs':refs,
+            'pr299':{'state':p.get('state'),'merged_at':p.get('merged_at'),'draft':p.get('draft'),'head_ref':p.get('head',{}).get('ref'),'head_sha':p.get('head',{}).get('sha'),'base_sha':p.get('base',{}).get('sha')},
+            'failedReviewRun':{'id':r.get('id'),'path':r.get('path'),'head_branch':r.get('head_branch'),'head_sha':r.get('head_sha'),'run_attempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion')},
+            'expectedFailedHead':'aec35f62bf4971d871b5ae2a50bff6cdfb107ac4',
+            'expectedMain':'452b386deafda29d404eb20c2573af15567dfc92'
+          }
+          open('/tmp/status.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          git checkout --orphan status/aops-v1-builder-failure-diagnostic-result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          cp /tmp/status.json observer-result/status.json
+          git add observer-result/status.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Record AOPS authorization builder guard state'
+          git push -f origin HEAD:refs/heads/status/aops-v1-builder-failure-diagnostic-result

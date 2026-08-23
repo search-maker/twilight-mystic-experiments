@@ -77,14 +77,19 @@ def load_contract(stage_dir: Path) -> dict[str, Any]:
 def validate_bound_sources(repository_root: Path, contract: dict[str, Any]) -> tuple[Path, Path, Path]:
     bindings = contract["sourceBindings"]
     rows = (
+        ("protocolPath", "protocolGitBlobSha1"),
+        ("analysisContractPath", "analysisContractGitBlobSha1"),
+        ("reviewCorePath", "reviewCoreGitBlobSha1"),
+        ("adapterPath", "adapterGitBlobSha1"),
+        ("analysisPath", "analysisGitBlobSha1"),
+        ("levelBAnalysisPath", "levelBAnalysisGitBlobSha1"),
+        ("executionTransportPath", "executionTransportGitBlobSha1"),
+        ("runtimeOverlayPath", "runtimeOverlayGitBlobSha1"),
+        ("executorPath", "executorGitBlobSha1"),
+        ("aggregatorPath", "aggregatorGitBlobSha1"),
         ("processGroupRunnerPath", "processGroupRunnerGitBlobSha1"),
         ("r8DerivedChannelsPath", "r8DerivedChannelsGitBlobSha1"),
         ("wavelengthGridPath", "wavelengthGridGitBlobSha1"),
-        ("adapterPath", "adapterGitBlobSha1"),
-        ("executionTransportPath", "executionTransportGitBlobSha1"),
-        ("runtimeOverlayPath", "runtimeOverlayGitBlobSha1"),
-        ("analysisPath", "analysisGitBlobSha1"),
-        ("levelBAnalysisPath", "levelBAnalysisGitBlobSha1"),
     )
     resolved: dict[str, Path] = {}
     for path_key, blob_key in rows:

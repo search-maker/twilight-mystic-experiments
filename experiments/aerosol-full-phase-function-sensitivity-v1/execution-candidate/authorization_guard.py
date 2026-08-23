@@ -38,6 +38,11 @@ def git_blob_sha1(path: Path) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
+def seed_proof_raw_sha256(proof: dict[str, Any]) -> str:
+    raw = (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
 def required_binding_paths(root: Path) -> dict[str, Path]:
     stage = root / "experiments" / STAGE
     execd = stage / "execution-candidate"
@@ -88,15 +93,14 @@ def validate_bindings(root: Path, observed: Any) -> None:
 
 
 def validate_seed_proof(proof: dict[str, Any], expected_main: str) -> None:
-    design_mod = _load("afpf_execution_design_for_authorization_guard", root_stage(expected_main=None) / "execution_design.py")
+    design_mod = _load("afpf_execution_design_for_authorization_guard", root_stage() / "execution_design.py")
     try:
         design_mod.validate_seed_authorization_proof(proof, expected_main)
     except Exception as exc:
         raise AuthorizationRefusal(f"authorization-time seed proof invalid: {exc}") from exc
 
 
-def root_stage(expected_main: str | None = None) -> Path:
-    del expected_main
+def root_stage() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
@@ -130,9 +134,7 @@ def validate_enabled_document(root: Path, auth: dict[str, Any], expected_main: s
     if auth.get("exactAuthorizationCommit") is not None:
         raise AuthorizationRefusal("authorization document must be reviewed before exact commit is assigned")
     design = build_design(seed_proof, expected_main)
-    if auth.get("authorizationTimeSeedProofRawSha256") != hashlib.sha256(
-        json.dumps(seed_proof, indent=2, sort_keys=True).encode()
-    ).hexdigest():
+    if auth.get("authorizationTimeSeedProofRawSha256") != seed_proof_raw_sha256(seed_proof):
         raise AuthorizationRefusal("authorization seed proof raw hash drift")
     if auth.get("candidateSeedCanonicalSha256") != EXPECTED_SEED_CANONICAL:
         raise AuthorizationRefusal("authorization candidate seed canonical hash drift")
@@ -145,8 +147,7 @@ def validate_enabled_document(root: Path, auth: dict[str, Any], expected_main: s
     if auth.get("officialOptpropArchiveSha256") != EXPECTED_OPTPROP_ARCHIVE:
         raise AuthorizationRefusal("authorization official optprop archive drift")
     validate_bindings(root, auth.get("byteBindings"))
-    required_true = ("scientificExecutionAuthorized", "solverExecutionAuthorized")
-    if any(auth.get(key) is not True for key in required_true):
+    if auth.get("scientificExecutionAuthorized") is not True or auth.get("solverExecutionAuthorized") is not True:
         raise AuthorizationRefusal("authorization did not enable the separately dispatched science guard")
     required_false = (
         "dispatchAuthorized", "resultOpeningAuthorized", "automaticDispatch", "consumed",

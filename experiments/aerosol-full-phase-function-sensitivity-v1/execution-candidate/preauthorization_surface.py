@@ -51,10 +51,9 @@ def _failed_history_must_be_absent(payload: dict[str, Any], ordinal: int) -> dic
 
 
 def _modules():
-    freshness = load_bound("afpf_freshness_for_preauth", HERE / "freshness.py", LOCAL_FRESHNESS_BLOB)
+    freshness = load_bound("afpf_freshness_for_control", HERE / "freshness.py", LOCAL_FRESHNESS_BLOB)
     control = load_bound("afpf_bound_aops_control_surface", AOPS_DIR / "control_surface.py", AOPS_CONTROL_BLOB)
     ordinal = load_bound("afpf_bound_aops_global_ordinal", AOPS_DIR / "global_ordinal.py", AOPS_GLOBAL_ORDINAL_BLOB)
-
     control.authorization_branch = freshness.authorization_branch
     control.dispatch_branch = freshness.dispatch_branch
     control.execution_key = freshness.execution_key
@@ -77,33 +76,60 @@ def latest_consumed_or_dispatched_ordinal(payload: dict[str, Any]) -> int | None
     return control.latest_consumed_or_dispatched_ordinal(payload)
 
 
-def derive_next_global_ordinal(
-    payload: dict[str, Any], latest_consumed: int, *, current_run_id: int | None = None
-):
+def derive_next_global_ordinal(payload: dict[str, Any], latest_consumed: int, *, current_run_id: int | None = None):
     _, _, ordinal = _modules()
     return ordinal.derive_next_global_ordinal(payload, latest_consumed, current_run_id=current_run_id)
 
 
 def build_surface(
-    payload: dict[str, Any],
-    ordinal: int,
-    *,
-    current_run_id: int | None = None,
+    payload: dict[str, Any], ordinal: int, *, current_run_id: int | None = None,
     candidate_seed_authorization_recheck_passed: bool,
 ) -> dict[str, Any]:
     freshness, control, _ = _modules()
     surface = control.build_surface(
-        payload,
-        ordinal,
-        current_run_id=current_run_id,
+        payload, ordinal, current_run_id=current_run_id,
         active_authorization_path_on_main_exists=False,
         candidate_code_paths_on_main_inspected=True,
         candidate_seed_authorization_recheck_passed=candidate_seed_authorization_recheck_passed,
-        allow_authorization_branch=False,
-        allow_dispatch_branch=False,
+        allow_authorization_branch=False, allow_dispatch_branch=False,
     )
     surface["nextAvailableScientificOrdinal"] = ordinal
     freshness.validate_preauthorization(surface, ordinal)
+    return surface
+
+
+def build_authorization_review_surface(
+    payload: dict[str, Any], ordinal: int, head_sha: str, *, current_pr: int,
+    current_run_id: int | None = None, candidate_seed_authorization_recheck_passed: bool,
+) -> dict[str, Any]:
+    freshness, control, _ = _modules()
+    surface = control.build_surface(
+        payload, ordinal, current_pr=current_pr, current_run_id=current_run_id,
+        active_authorization_path_on_main_exists=False,
+        candidate_code_paths_on_main_inspected=True,
+        candidate_seed_authorization_recheck_passed=candidate_seed_authorization_recheck_passed,
+        allow_authorization_branch=True, allow_dispatch_branch=False,
+    )
+    surface["nextAvailableScientificOrdinal"] = ordinal
+    freshness.validate_authorization_review(surface, ordinal, head_sha)
+    return surface
+
+
+def build_dispatch_surface(
+    payload: dict[str, Any], ordinal: int, head_sha: str, *, current_pr: int | None = None,
+    current_run_id: int | None = None, candidate_seed_authorization_recheck_passed: bool,
+    post_dispatch: bool = False,
+) -> dict[str, Any]:
+    freshness, control, _ = _modules()
+    surface = control.build_surface(
+        payload, ordinal, current_pr=current_pr, current_run_id=current_run_id,
+        active_authorization_path_on_main_exists=False,
+        candidate_code_paths_on_main_inspected=True,
+        candidate_seed_authorization_recheck_passed=candidate_seed_authorization_recheck_passed,
+        allow_authorization_branch=True, allow_dispatch_branch=post_dispatch,
+    )
+    surface["nextAvailableScientificOrdinal"] = ordinal
+    freshness.validate_dispatch(surface, ordinal, head_sha, post_dispatch=post_dispatch)
     return surface
 
 

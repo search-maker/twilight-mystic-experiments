@@ -1,0 +1,120 @@
+name: AOPS v1 failed authorization recovery package builder 6
+on:
+  push:
+    branches: [status/aops-v1-failed-auth-recovery-builder-6]
+    paths: [.github/workflows/aops-v1-failed-auth-recovery-builder-6.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  package:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Load deterministic recovery scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tools/aops_v1_failed_auth_recovery_v4_hardening.py /tmp/hardening.py
+          git fetch origin status/aops-v1-failed-auth-recovery-builder-2
+          git show FETCH_HEAD:tools/aops_v1_failed_auth_recovery_builder_2.py > /tmp/recovery.py
+          python -m py_compile /tmp/hardening.py /tmp/recovery.py
+      - name: Apply exact recovery and run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "7297a579112b6089acc5b5d45292e8169039c022"
+          git checkout -b package/aops-v1-failed-auth-review-recovery-1 7297a579112b6089acc5b5d45292e8169039c022
+          python /tmp/recovery.py
+          python /tmp/hardening.py
+          python -m unittest tests.test_aops_v1_failed_authorization_recovery tests.test_aops_v1_module_isolation_recovery tests.test_aerosol_optical_property_sensitivity_v1_global_ordinal_review -v
+          git diff --check
+      - name: Run complete repository test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+      - name: Verify exact eight-file review-only recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/expected-paths.txt <<'EOF'
+          .github/workflows/aops-v1-authorization-review.yml
+          .github/workflows/aops-v1-dispatch-publisher.yml
+          evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json
+          experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py
+          experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py
+          experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json
+          tests/test_aops_v1_failed_authorization_recovery.py
+          tests/test_aops_v1_module_isolation_recovery.py
+          EOF
+          { git diff --name-only 7297a579112b6089acc5b5d45292e8169039c022; git ls-files --others --exclude-standard; } | sort -u > /tmp/actual-paths.txt
+          sort /tmp/expected-paths.txt -o /tmp/expected-paths.txt
+          diff -u /tmp/expected-paths.txt /tmp/actual-paths.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for file in (
+              Path('experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json'),
+              Path('evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json'),
+          ):
+              d=json.loads(file.read_text())
+              for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized'):
+                  assert d[k] is False, (file,k)
+          PY
+      - name: Build byte-manifest package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/aops-recovery-package
+          mkdir -p /tmp/aops-recovery-package
+          while IFS= read -r path; do
+            mkdir -p "/tmp/aops-recovery-package/$(dirname "$path")"
+            cp "$path" "/tmp/aops-recovery-package/$path"
+          done < /tmp/expected-paths.txt
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/aops-recovery-package')
+          rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file()):
+              rel=p.relative_to(root).as_posix(); data=p.read_bytes()
+              rows.append({'path':rel,'size':len(data),'rawSha256':hashlib.sha256(data).hexdigest(),'gitBlobSha1':hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()})
+          assert len(rows)==8
+          manifest={'schemaVersion':1,'stageId':'aops-v1-failed-auth-review-recovery-tested-package-v6','sourceMainSha':'7297a579112b6089acc5b5d45292e8169039c022','failedAuthorizationHead':'aec35f62bf4971d871b5ae2a50bff6cdfb107ac4','failedAuthorizationReviewRunId':32612380809,'fullRepositoryUnitSuitePassed':True,'expectedTestCount':613,'fileCount':8,'files':rows,'scientificExecutionPerformed':False,'solverExecutionPerformed':False}
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Upload exact tested recovery package
+        uses: actions/upload-artifact@v4
+        with:
+          name: aops-v1-failed-auth-recovery-tested-package-v6
+          path: /tmp/aops-recovery-package
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish successful package checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/status.json <<EOF
+          {"schemaVersion":1,"status":"PASS_EXACT_TESTED_RECOVERY_PACKAGE_UPLOADED","runId":${GITHUB_RUN_ID},"runAttempt":${GITHUB_RUN_ATTEMPT},"builderHead":"${GITHUB_SHA}","sourceMainSha":"7297a579112b6089acc5b5d45292e8169039c022","artifactName":"aops-v1-failed-auth-recovery-tested-package-v6","fileCount":8,"fullRepositoryUnitSuitePassed":true,"scientificExecutionPerformed":false,"solverExecutionPerformed":false}
+          EOF
+          git checkout --orphan package-result
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p observer-result
+          cp /tmp/status.json observer-result/status.json
+          git add -- observer-result/status.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Publish tested AOPS recovery package v6 checkpoint'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/status/aops-v1-failed-auth-recovery-builder-6-result

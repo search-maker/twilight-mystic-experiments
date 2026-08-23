@@ -1,0 +1,71 @@
+name: AOPS v1 ordinal 37 analysis recovery observer
+run-name: Observe AOPS v1 ordinal 37 analysis-recovery metadata only
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - .github/workflows/aops-v1-analysis-recovery-observer-37.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Read exact recovery run and job metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: status/aops-v1-analysis-recovery-ordinal-37
+          TARGET_HEAD: e1f241e7e1bfe6edbf18d0e6b3dcdd5b32a08769
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-analysis-recovery-v1.yml/runs?branch=${TARGET_BRANCH}&event=push&per_page=100" > run-pages.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_branch')==os.environ['TARGET_BRANCH'] and r.get('head_sha')==os.environ['TARGET_HEAD']]
+          if len(same)!=1: raise SystemExit(f'expected exactly one matching recovery run, got {len(same)}')
+          print(same[0]['id'])
+          open('run-id.txt','w').write(str(same[0]['id'])+'\n')
+          PY
+          RUN_ID="$(cat run-id.txt)"
+          export RUN_ID
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" > job-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          run_pages=json.load(open('run-pages.json')); runs=[r for page in run_pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_branch')==os.environ['TARGET_BRANCH'] and r.get('head_sha')==os.environ['TARGET_HEAD']]
+          if len(same)!=1: raise SystemExit('recovery run cardinality drift')
+          r=same[0]
+          jobs=[j for page in json.load(open('job-pages.json')) for j in page.get('jobs',[])]
+          rf=('id','name','display_title','event','status','conclusion','run_number','run_attempt','head_branch','head_sha','created_at','updated_at','run_started_at','html_url')
+          jf=('id','name','status','conclusion','started_at','completed_at','html_url')
+          out={
+            'schemaVersion':1,
+            'stageId':'aops-v1-analysis-recovery-observer-37',
+            'status':'CONTROL_METADATA_ONLY_NO_SCIENTIFIC_RESULT_OPENING',
+            'matchingRun':{k:r.get(k) for k in rf},
+            'jobCount':len(jobs),
+            'jobs':[{k:j.get(k) for k in jf} for j in jobs],
+            'scientificArtifactsOpened':False,
+            'scientificResultsInterpreted':False,
+            'rerunRequested':False,
+            'retryRequested':False,
+            'resumeRequested':False,
+          }
+          Path('aops-v1-analysis-recovery-observer.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Persist observer metadata only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aops-v1-analysis-recovery-observer-37
+          path: aops-v1-analysis-recovery-observer.json
+          if-no-files-found: error
+          compression-level: 0

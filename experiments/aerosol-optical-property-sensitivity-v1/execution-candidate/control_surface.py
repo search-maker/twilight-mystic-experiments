@@ -34,7 +34,7 @@ _freshness = _load_bound_sibling(
 )
 _global_ordinal = _load_bound_sibling(
     "aops_control_surface_global_ordinal", _HERE / "global_ordinal.py",
-    "b935b29e8be83efeed508c8177a5c596b663143b",
+    "27f8ac62bc8a520ab22b0215e847ef878db5aa5f",
 )
 authorization_branch = _freshness.authorization_branch
 consumed_marker = _freshness.consumed_marker

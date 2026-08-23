@@ -1,0 +1,112 @@
+name: AOPS v1 publisher retirement recovery builder 4
+on:
+  push:
+    branches: [status/aops-v1-publisher-retirement-recovery-builder-4]
+    paths: [.github/workflows/aops-v1-publisher-retirement-recovery-builder-4.yml]
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+  issues: read
+jobs:
+  build:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Freeze exact ordinal-36 pre-dispatch failure evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=f7d3efc39486d205286afcb31b920ff78dd46698
+          AUTH_HEAD=e1b7fa0860bd9e252f47dd8ddfa9b35e930d7654
+          FAILED_HEAD=aec35f62bf4971d871b5ae2a50bff6cdfb107ac4
+          REQUEST_HEAD=6d0644708dd773ad8b65e8fe80fb2dc61c043cb7
+          AUTH_BRANCH=authorization/aerosol-optical-property-sensitivity-v1-ordinal-36
+          HIST_BRANCH=history/aerosol-optical-property-sensitivity-v1-ordinal-36-auth-review-failed-1
+          PUBLISH_BRANCH=status/aops-v1-dispatch-publisher-ordinal-36
+          DISPATCH_BRANCH=dispatch/aerosol-optical-property-sensitivity-v1-ordinal-36
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/$AUTH_BRANCH | cut -f1)" = "$AUTH_HEAD"
+          test "$(git ls-remote origin refs/heads/$HIST_BRANCH | cut -f1)" = "$FAILED_HEAD"
+          test "$(git ls-remote origin refs/heads/$PUBLISH_BRANCH | cut -f1)" = "$REQUEST_HEAD"
+          test -z "$(git ls-remote --heads origin refs/heads/$DISPATCH_BRANCH)"
+          gh api repos/${GITHUB_REPOSITORY}/pulls/304 > /tmp/pr304.json
+          gh api repos/${GITHUB_REPOSITORY}/pulls/299 > /tmp/pr299.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32620394579 > /tmp/auth-review.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/runs/32620794412 > /tmp/publisher.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/jobs/97148552017 > /tmp/publisher-job.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100 > /tmp/issue60-pages.json
+          gh api --paginate --slurp repos/${GITHUB_REPOSITORY}/actions/workflows/aops-v1-execution.yml/runs?per_page=100 > /tmp/science-pages.json
+          python - <<'PY'
+          import json
+          p304=json.load(open('/tmp/pr304.json')); p299=json.load(open('/tmp/pr299.json'))
+          ar=json.load(open('/tmp/auth-review.json')); pub=json.load(open('/tmp/publisher.json')); job=json.load(open('/tmp/publisher-job.json'))
+          comments=[r for page in json.load(open('/tmp/issue60-pages.json')) for r in page]
+          science=[r for page in json.load(open('/tmp/science-pages.json')) for r in page.get('workflow_runs',[])]
+          main='f7d3efc39486d205286afcb31b920ff78dd46698'; head='e1b7fa0860bd9e252f47dd8ddfa9b35e930d7654'; failed='aec35f62bf4971d871b5ae2a50bff6cdfb107ac4'; request='6d0644708dd773ad8b65e8fe80fb2dc61c043cb7'
+          marker=f'ORDINAL36_AOPS_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit={head} parent={main} pr=304'
+          assert p304['state']=='closed' and p304.get('merged_at') is None and p304.get('draft') is True
+          assert p304['head']['ref']=='authorization/aerosol-optical-property-sensitivity-v1-ordinal-36' and p304['head']['sha']==head and p304['base']['sha']==main
+          assert p299['state']=='closed' and p299.get('merged_at') is None and p299['head']['sha']==failed
+          assert ar['head_sha']==head and ar['run_attempt']==1 and ar['status']=='completed' and ar['conclusion']=='success' and ar['path']=='.github/workflows/aops-v1-authorization-review.yml'
+          assert pub['head_sha']==request and pub['head_branch']=='status/aops-v1-dispatch-publisher-ordinal-36' and pub['run_attempt']==1 and pub['status']=='completed' and pub['conclusion']=='failure' and pub['path']=='.github/workflows/aops-v1-dispatch-publisher.yml'
+          steps={s['name']:s for s in job.get('steps',[])}
+          assert steps['Prove dispatch eligible before creating ref']['conclusion']=='failure'
+          for name in ('Actual git push consumes dispatch identity','Mark consumed once and prove post-dispatch state','Stage immutable successful publisher evidence','Persist immutable publisher evidence before science trigger','Explicitly dispatch attempt-1 science on pushed ref'):
+              assert steps[name]['conclusion']=='skipped',(name,steps[name]['conclusion'])
+          bodies=[str(r.get('body') or '').strip() for r in comments]
+          assert sum(b==marker for b in bodies)==1
+          assert not any(b.lower()=='ordinal36_aops_v1_dispatch_consumed' for b in bodies)
+          assert not any(b.lower()=='ordinal36_aops_v1_authorization_retired_undispatched' for b in bodies)
+          assert not any(r.get('head_sha')==head for r in science)
+          PY
+          git fetch origin status/aops-v1-publisher-retirement-recovery-builder-1
+          git show FETCH_HEAD:tools/aops_v1_publisher_retirement_recovery_builder.py > /tmp/patch.py
+          python -m py_compile /tmp/patch.py
+      - name: Apply narrow control-plane recovery on exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = f7d3efc39486d205286afcb31b920ff78dd46698
+          git checkout -b fix/aops-v1-publisher-retirement-recovery-1 f7d3efc39486d205286afcb31b920ff78dd46698
+          python /tmp/patch.py > /tmp/patch-report.json
+          cat /tmp/patch-report.json
+          test "$(git status --porcelain | wc -l)" = 5
+          git diff --check
+      - name: Run focused AOPS retirement and binding regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_aops_v1_publisher_retirement_recovery tests.test_aops_v1_failed_authorization_recovery tests.test_aops_v1_module_isolation_recovery tests.test_aerosol_optical_property_sensitivity_v1_global_ordinal_review tests.test_aerosol_optical_property_sensitivity_v1_transport -v
+      - name: Run full repository unit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+      - name: Commit and push tested recovery branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = f7d3efc39486d205286afcb31b920ff78dd46698
+          test -z "$(git ls-remote --heads origin refs/heads/fix/aops-v1-publisher-retirement-recovery-1)"
+          git add evidence/aerosol-optical-property-sensitivity-v1/review-freeze.json experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/control_surface.py experiments/aerosol-optical-property-sensitivity-v1/execution-candidate/global_ordinal.py experiments/aerosol-optical-property-sensitivity-v1/transport-contract.v1.json tests/test_aops_v1_publisher_retirement_recovery.py
+          test "$(git diff --cached --name-only | wc -l)" = 5
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Recover AOPS v1 pre-dispatch publisher retirement'
+          test "$(git rev-parse HEAD^)" = f7d3efc39486d205286afcb31b920ff78dd46698
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:refs/heads/fix/aops-v1-publisher-retirement-recovery-1

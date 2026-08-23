@@ -68,14 +68,16 @@ class AerosolFullPhaseFunctionPublisherScienceV1Tests(unittest.TestCase):
 
     def test_optprop_overlay_is_hash_verified_before_case_execution(self) -> None:
         text = SCIENCE.read_text()
-        overlay = text.index("Reconstruct exact frozen OPAC overlay and capture runtime identity")
-        execute = text.index("Execute exactly one preregistered AFPF case")
+        case_surface = text.split("steps: &case_steps", 1)[1]
+        hash_check = case_surface.index("sha256sum -c -")
+        overlay = case_surface.index("stage_frozen_overlay")
+        execute = case_surface.index("Execute exactly one preregistered AFPF case")
+        self.assertLess(hash_check, overlay)
         self.assertLess(overlay, execute)
-        self.assertIn("stage_frozen_overlay", text)
-        self.assertIn("5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80", text)
-        self.assertIn("optprop_v2.1.tar.gz", text)
-        self.assertIn("libradtran-overlay/data", text)
-        self.assertIn("allow_execution=True", text)
+        self.assertIn("5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80", case_surface)
+        self.assertIn("preflight/execution-preflight/optprop_v2.1.tar.gz", case_surface)
+        self.assertIn("libradtran-overlay/data", case_surface)
+        self.assertIn("allow_execution=True", case_surface)
 
     def test_aggregate_refuses_partial_universe_and_level_b_follows_exact360(self) -> None:
         text = SCIENCE.read_text()

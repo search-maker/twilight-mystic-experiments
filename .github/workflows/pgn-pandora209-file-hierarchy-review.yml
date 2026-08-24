@@ -85,26 +85,29 @@ jobs:
           selected_instrument_metadata = instrument_candidates[0]
           instrument = selected_instrument_metadata['pan_id']
 
-          # Spectrometer response shape has not yet been assumed. If it differs from
-          # a pure string list this run stops and prints the metadata shape before any
-          # level query, so no value convention is guessed.
-          spectrometers = require_string_list(
-              module.request_metadata(
-                  openapi,
-                  '/v1/files/{location}/{instrument}',
-                  {},
-                  path_params={'location': location, 'instrument': instrument},
-                  timeout_s=20.0,
-              ),
-              'spectrometers',
+          spectrometers = module.request_metadata(
+              openapi,
+              '/v1/files/{location}/{instrument}',
+              {},
+              path_params={'location': location, 'instrument': instrument},
+              timeout_s=20.0,
           )
-          if 's1' not in spectrometers or 's2' not in spectrometers:
-              print('spectrometers=', json.dumps(spectrometers, indent=2))
-              raise SystemExit('Expected exact s1 and s2 hierarchy identities before level enumeration')
+          if not isinstance(spectrometers, list) or not all(isinstance(item, dict) for item in spectrometers):
+              print('spectrometers=', json.dumps(spectrometers, indent=2, sort_keys=True))
+              raise SystemExit('spectrometers did not return the observed metadata-object list shape')
+          if not all(isinstance(item.get('spectrometer'), int) for item in spectrometers):
+              print('spectrometers=', json.dumps(spectrometers, indent=2, sort_keys=True))
+              raise SystemExit('one or more PGN spectrometer metadata objects has no integer spectrometer identity')
+          spectrometer_ids = [item['spectrometer'] for item in spectrometers]
+          if spectrometer_ids.count(1) != 1 or spectrometer_ids.count(2) != 1:
+              print('spectrometers=', json.dumps(spectrometers, indent=2, sort_keys=True))
+              raise SystemExit(f'Expected exactly one spectrometer=1 and one spectrometer=2; got {spectrometer_ids}')
 
+          # Level response shape is intentionally still unknown. Stop and print if it
+          # is not a pure string list; no date-bounded file query is made here.
           levels = {}
-          for spectrometer in ('s1', 's2'):
-              levels[spectrometer] = require_string_list(
+          for spectrometer in (1, 2):
+              levels[str(spectrometer)] = require_string_list(
                   module.request_metadata(
                       openapi,
                       '/v1/files/{location}/{instrument}/{spectrometer}',
@@ -126,11 +129,12 @@ jobs:
               'selectedInstrumentMetadata': selected_instrument_metadata,
               'selectedInstrumentPanId': instrument,
               'allSpectrometersAtSelectedInstrument': spectrometers,
+              'selectedSpectrometerIds': [1, 2],
               'levelsBySpectrometer': levels,
               'selectionRules': {
                   'location': "unique location metadata object whose name Unicode-diacritic-folds case-insensitively to 'izana'",
-                  'instrument': "unique observed PGN instrument metadata object with integer pan_id=209; no guessed Pandora209 path string",
-                  'spectrometers': "exact identities 's1' and 's2' must both be present before level enumeration",
+                  'instrument': "unique observed PGN instrument metadata object with integer pan_id=209",
+                  'spectrometers': "observed integer spectrometer identities 1 and 2, each required exactly once; no guessed s1/s2 path strings",
               },
               'dateBoundedFileListingPerformed': False,
               'metadataHeaderOpened': False,

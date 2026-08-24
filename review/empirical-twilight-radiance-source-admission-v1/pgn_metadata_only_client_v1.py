@@ -2,23 +2,21 @@
 """Metadata-only PGN API helper for the blinded real-sky validation lane.
 
 This module intentionally refuses PGN download/data endpoints. It discovers the
-actual query-parameter contract from PGN's live OpenAPI document before making
-any request, so the validation package does not guess or silently drift with API
-parameter names.
+actual path and parameter contract from PGN's live OpenAPI document before any
+metadata query is allowed, so the validation package does not guess or silently
+drift with API route/parameter names.
 
-Allowed network surfaces:
-- /openapi.json
-- /v1/calibrationfiles
-- /v1/operationfiles
-- /v1/metadata
-- /v1/files only when explicitly used as a metadata/file-identity listing
+Allowed OpenAPI path families:
+- /v1/calibrationfiles...
+- /v1/operationfiles...
+- /v1/metadata...
+- /v1/files... only for metadata/file-identity listing
 
 Forbidden:
-- /v1/download
-- any endpoint not present in the allow-list below
+- /v1/download and descendants
+- every path outside the four metadata/file-identity families
 
-The caller is responsible for supplying metadata-only filters that identify the
-intended Pandora/site/spectrometer without requesting target spectral payloads.
+The CLI is discovery-only until exact current PGN routes and filters are frozen.
 """
 
 from __future__ import annotations
@@ -32,15 +30,13 @@ from urllib.request import Request, urlopen
 
 BASE_URL = "https://api.pandonia-global-network.org/"
 OPENAPI_PATH = "/openapi.json"
-ALLOWED_PATHS = frozenset(
-    {
-        "/v1/calibrationfiles",
-        "/v1/operationfiles",
-        "/v1/metadata",
-        "/v1/files",
-    }
+ALLOWED_PATH_PREFIXES = (
+    "/v1/calibrationfiles",
+    "/v1/operationfiles",
+    "/v1/metadata",
+    "/v1/files",
 )
-FORBIDDEN_PATHS = frozenset({"/v1/download"})
+FORBIDDEN_PATH_PREFIXES = ("/v1/download",)
 
 
 class MetadataOnlyViolation(RuntimeError):
@@ -64,12 +60,16 @@ def _normalized_path(path: str) -> str:
     return raw.rstrip("/") or "/"
 
 
+def _belongs_to_prefix(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix + "/")
+
+
 def assert_metadata_only_path(path: str) -> str:
     normalized = _normalized_path(path)
-    if normalized in FORBIDDEN_PATHS or normalized.startswith("/v1/download/"):
+    if any(_belongs_to_prefix(normalized, prefix) for prefix in FORBIDDEN_PATH_PREFIXES):
         raise MetadataOnlyViolation(f"PGN download endpoint is forbidden: {normalized}")
-    if normalized not in ALLOWED_PATHS:
-        raise MetadataOnlyViolation(f"PGN endpoint is not metadata allow-listed: {normalized}")
+    if not any(_belongs_to_prefix(normalized, prefix) for prefix in ALLOWED_PATH_PREFIXES):
+        raise MetadataOnlyViolation(f"PGN endpoint is outside metadata allow-listed families: {normalized}")
     return normalized
 
 
@@ -82,7 +82,7 @@ def fetch_json(url: str, *, timeout_s: float = 30.0) -> Any:
         },
         method="GET",
     )
-    with urlopen(request, timeout=timeout_s) as response:  # nosec B310 - fixed HTTPS PGN host
+    with urlopen(request, timeout=timeout_s) as response:  # nosec B310 - official HTTPS host is enforced by callers
         if response.status != 200:
             raise RuntimeError(f"PGN request failed with HTTP {response.status}: {url}")
         return json.loads(response.read().decode("utf-8"))
@@ -98,11 +98,31 @@ def fetch_openapi(*, base_url: str = BASE_URL, timeout_s: float = 30.0) -> Mappi
     return document
 
 
+def discover_metadata_paths(openapi: Mapping[str, Any]) -> tuple[str, ...]:
+    paths = openapi.get("paths")
+    if not isinstance(paths, Mapping):
+        raise RuntimeError("PGN OpenAPI has no paths object")
+    discovered: list[str] = []
+    for raw_path, path_item in paths.items():
+        if not isinstance(raw_path, str) or not isinstance(path_item, Mapping):
+            continue
+        normalized = _normalized_path(raw_path)
+        if any(_belongs_to_prefix(normalized, prefix) for prefix in FORBIDDEN_PATH_PREFIXES):
+            continue
+        if not any(_belongs_to_prefix(normalized, prefix) for prefix in ALLOWED_PATH_PREFIXES):
+            continue
+        if isinstance(path_item.get("get"), Mapping):
+            discovered.append(normalized)
+    if not discovered:
+        raise RuntimeError("PGN OpenAPI exposes no GET paths in the frozen metadata-only families")
+    return tuple(sorted(set(discovered)))
+
+
 def endpoint_parameters(openapi: Mapping[str, Any], path: str) -> tuple[ParameterSpec, ...]:
     normalized = assert_metadata_only_path(path)
     paths = openapi.get("paths")
     if not isinstance(paths, Mapping) or normalized not in paths:
-        raise RuntimeError(f"PGN OpenAPI does not expose expected path {normalized}")
+        raise RuntimeError(f"PGN OpenAPI does not expose exact path {normalized}")
     path_item = paths[normalized]
     if not isinstance(path_item, Mapping):
         raise RuntimeError(f"PGN OpenAPI path item is malformed for {normalized}")
@@ -197,6 +217,10 @@ def build_metadata_url(
     base_url: str = BASE_URL,
 ) -> str:
     normalized = assert_metadata_only_path(path)
+    if "{" in normalized or "}" in normalized:
+        raise MetadataOnlyViolation(
+            "OpenAPI path templates with path parameters must be separately resolved and reviewed before live query"
+        )
     cleaned = validate_query_against_openapi(openapi, normalized, query)
     base = urljoin(base_url, normalized.lstrip("/"))
     return base if not cleaned else f"{base}?{urlencode(cleaned, doseq=False)}"
@@ -214,9 +238,10 @@ def request_metadata(
     return fetch_json(url, timeout_s=timeout_s)
 
 
-def describe_contract(openapi: Mapping[str, Any], paths: Iterable[str] = ALLOWED_PATHS) -> dict[str, Any]:
+def describe_contract(openapi: Mapping[str, Any], paths: Iterable[str] | None = None) -> dict[str, Any]:
+    selected_paths = discover_metadata_paths(openapi) if paths is None else tuple(paths)
     output: dict[str, Any] = {}
-    for path in sorted(paths):
+    for path in sorted(selected_paths):
         specs = endpoint_parameters(openapi, path)
         output[path] = [
             {
@@ -236,12 +261,12 @@ def main() -> int:
     parser.add_argument(
         "--describe",
         action="store_true",
-        help="Fetch live OpenAPI and print only the metadata-endpoint parameter contract.",
+        help="Fetch live OpenAPI and print discovered GET paths/parameters only inside frozen metadata families.",
     )
     args = parser.parse_args()
 
     if not args.describe:
-        parser.error("This review helper currently permits only --describe; exact query filters must be reviewed after live parameter discovery.")
+        parser.error("This review helper currently permits only --describe; exact query routes/filters must be reviewed after live discovery.")
     openapi = fetch_openapi()
     print(json.dumps(describe_contract(openapi), indent=2, sort_keys=True))
     return 0

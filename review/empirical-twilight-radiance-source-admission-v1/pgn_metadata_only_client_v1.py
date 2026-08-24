@@ -99,6 +99,12 @@ def fetch_openapi(*, base_url: str = BASE_URL, timeout_s: float = 30.0) -> Mappi
 
 
 def discover_metadata_paths(openapi: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return exact OpenAPI path keys inside the frozen metadata families.
+
+    The exact raw key is intentionally preserved.  A trailing slash or path
+    template is semantically meaningful for later OpenAPI lookup even though the
+    normalized form is sufficient for the metadata/download safety decision.
+    """
     paths = openapi.get("paths")
     if not isinstance(paths, Mapping):
         raise RuntimeError("PGN OpenAPI has no paths object")
@@ -112,36 +118,61 @@ def discover_metadata_paths(openapi: Mapping[str, Any]) -> tuple[str, ...]:
         if not any(_belongs_to_prefix(normalized, prefix) for prefix in ALLOWED_PATH_PREFIXES):
             continue
         if isinstance(path_item.get("get"), Mapping):
-            discovered.append(normalized)
+            discovered.append(raw_path)
     if not discovered:
         raise RuntimeError("PGN OpenAPI exposes no GET paths in the frozen metadata-only families")
     return tuple(sorted(set(discovered)))
 
 
-def endpoint_parameters(openapi: Mapping[str, Any], path: str) -> tuple[ParameterSpec, ...]:
+def _resolve_openapi_path_key(openapi: Mapping[str, Any], path: str) -> tuple[str, str]:
+    """Resolve a supplied path to one exact OpenAPI key without weakening safety."""
     normalized = assert_metadata_only_path(path)
     paths = openapi.get("paths")
-    if not isinstance(paths, Mapping) or normalized not in paths:
-        raise RuntimeError(f"PGN OpenAPI does not expose exact path {normalized}")
-    path_item = paths[normalized]
+    if not isinstance(paths, Mapping):
+        raise RuntimeError("PGN OpenAPI has no paths object")
+
+    # Prefer the exact raw OpenAPI key. This preserves trailing slashes/templates.
+    if path in paths:
+        return path, normalized
+
+    # A normalized caller is accepted only when it maps uniquely to one live key.
+    matches = [
+        raw_path
+        for raw_path in paths
+        if isinstance(raw_path, str) and _normalized_path(raw_path) == normalized
+    ]
+    if len(matches) == 1:
+        return matches[0], normalized
+    if not matches:
+        raise RuntimeError(f"PGN OpenAPI does not expose path matching {normalized}")
+    raise RuntimeError(
+        f"PGN OpenAPI has multiple raw paths matching normalized path {normalized}: {sorted(matches)}"
+    )
+
+
+def endpoint_parameters(openapi: Mapping[str, Any], path: str) -> tuple[ParameterSpec, ...]:
+    raw_key, normalized = _resolve_openapi_path_key(openapi, path)
+    paths = openapi.get("paths")
+    assert isinstance(paths, Mapping)
+    path_item = paths[raw_key]
     if not isinstance(path_item, Mapping):
-        raise RuntimeError(f"PGN OpenAPI path item is malformed for {normalized}")
+        raise RuntimeError(f"PGN OpenAPI path item is malformed for {raw_key}")
     operation = path_item.get("get")
     if not isinstance(operation, Mapping):
-        raise RuntimeError(f"PGN OpenAPI path {normalized} has no GET operation")
+        raise RuntimeError(f"PGN OpenAPI path {raw_key} has no GET operation")
 
     merged: list[Mapping[str, Any]] = []
     for source in (path_item.get("parameters", []), operation.get("parameters", [])):
         if source is None:
             continue
         if not isinstance(source, list):
-            raise RuntimeError(f"PGN OpenAPI parameters are malformed for {normalized}")
+            raise RuntimeError(f"PGN OpenAPI parameters are malformed for {raw_key}")
         for item in source:
             if not isinstance(item, Mapping):
-                raise RuntimeError(f"PGN OpenAPI parameter entry is malformed for {normalized}")
+                raise RuntimeError(f"PGN OpenAPI parameter entry is malformed for {raw_key}")
             if "$ref" in item:
                 raise RuntimeError(
-                    f"PGN OpenAPI uses unresolved parameter $ref for {normalized}; "
+                    f"PGN OpenAPI uses unresolved parameter $ref for {raw_key}; "
                     "freeze a reviewed resolver before querying"
                 )
             merged.append(item)
@@ -152,7 +183,7 @@ def endpoint_parameters(openapi: Mapping[str, Any], path: str) -> tuple[Paramete
         name = item.get("name")
         location = item.get("in")
         if not isinstance(name, str) or not isinstance(location, str):
-            raise RuntimeError(f"PGN OpenAPI parameter lacks name/in for {normalized}")
+            raise RuntimeError(f"PGN OpenAPI parameter lacks name/in for {raw_key}")
         key = (name, location)
         if key in seen:
             continue
@@ -186,7 +217,7 @@ def validate_query_against_openapi(
     query: Mapping[str, str | int | float | bool | None],
 ) -> dict[str, str | int | float | bool]:
     normalized = assert_metadata_only_path(path)
-    specs = endpoint_parameters(openapi, normalized)
+    specs = endpoint_parameters(openapi, path)
     query_specs = {spec.name: spec for spec in specs if spec.location == "query"}
     unsupported = sorted(set(query) - set(query_specs))
     if unsupported:
@@ -216,13 +247,13 @@ def build_metadata_url(
     *,
     base_url: str = BASE_URL,
 ) -> str:
-    normalized = assert_metadata_only_path(path)
-    if "{" in normalized or "}" in normalized:
+    raw_key, normalized = _resolve_openapi_path_key(openapi, path)
+    if "{" in raw_key or "}" in raw_key:
         raise MetadataOnlyViolation(
             "OpenAPI path templates with path parameters must be separately resolved and reviewed before live query"
         )
-    cleaned = validate_query_against_openapi(openapi, normalized, query)
-    base = urljoin(base_url, normalized.lstrip("/"))
+    cleaned = validate_query_against_openapi(openapi, raw_key, query)
+    base = urljoin(base_url, raw_key.lstrip("/"))
     return base if not cleaned else f"{base}?{urlencode(cleaned, doseq=False)}"
 
 
@@ -261,7 +292,7 @@ def main() -> int:
     parser.add_argument(
         "--describe",
         action="store_true",
-        help="Fetch live OpenAPI and print discovered GET paths/parameters only inside frozen metadata families.",
+        help="Fetch live OpenAPI and print exact discovered GET path keys/parameters only inside frozen metadata families.",
     )
     args = parser.parse_args()
 

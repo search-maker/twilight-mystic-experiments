@@ -83,6 +83,7 @@ def required_binding_paths(root: Path) -> dict[str, Path]:
         "elevationTransform": root / "experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py",
         "afpfReferenceAdapter": root / "experiments/aerosol-full-phase-function-sensitivity-v1/adapter.py",
         "boundHumanThreshold": root / "experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs",
+        "authorizationProposalWorkflow": root / ".github/workflows/asiv-v1-authorization-proposal.yml",
         "authorizationReviewWorkflow": root / ".github/workflows/asiv-v1-authorization-review.yml",
         "dispatchPublisherWorkflow": root / ".github/workflows/asiv-v1-dispatch-publisher.yml",
         "scientificExecutionWorkflow": root / ".github/workflows/asiv-v1-execution.yml",

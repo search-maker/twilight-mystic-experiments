@@ -1,0 +1,108 @@
+name: PGN Pandora209 core metadata review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-pandora209-core-metadata-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_LIVE_OPENAPI_CONTRACT.freeze.json"
+
+permissions:
+  contents: read
+
+jobs:
+  pandora209-core-metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch frozen core metadata queries only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+
+          module_path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_core_metadata_review', module_path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          openapi = module.fetch_openapi(timeout_s=20.0)
+
+          # These three calls are exactly the queries frozen in
+          # PGN_LIVE_OPENAPI_CONTRACT.freeze.json. No file-list, metadata-file,
+          # target-radiance, uncertainty-array, or download request occurs here.
+          results = {
+              'pandora209s1CalibrationFiles': module.request_metadata(
+                  openapi,
+                  '/v1/calibrationfiles/',
+                  {'pan_id': 209, 'spectrometer': 1},
+                  timeout_s=20.0,
+              ),
+              'pandora209s2CalibrationFiles': module.request_metadata(
+                  openapi,
+                  '/v1/calibrationfiles/',
+                  {'pan_id': 209, 'spectrometer': 2},
+                  timeout_s=20.0,
+              ),
+              'pandora209OperationFiles': module.request_metadata(
+                  openapi,
+                  '/v1/operationfiles/',
+                  {'pan_id': 209},
+                  timeout_s=20.0,
+              ),
+          }
+          Path('pandora209_core_metadata.json').write_text(
+              json.dumps(results, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_CORE_METADATA_BEGIN')
+          print(json.dumps(results, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_CORE_METADATA_END')
+          PY
+
+          sha256sum pandora209_core_metadata.json > pandora209_core_metadata.sha256
+          cat pandora209_core_metadata.sha256
+
+      - name: Prove protected endpoint remains inaccessible through client
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+          path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_boundary_after_query', path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          try:
+              module.assert_metadata_only_path('/v1/download')
+          except module.MetadataOnlyViolation:
+              print('protected PGN download endpoint remains blocked')
+          else:
+              raise SystemExit('protected PGN download endpoint unexpectedly allowed')
+          PY
+
+      - name: Upload immutable core metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandora209-core-metadata-only
+          path: |
+            pandora209_core_metadata.json
+            pandora209_core_metadata.sha256
+          if-no-files-found: error
+          retention-days: 30

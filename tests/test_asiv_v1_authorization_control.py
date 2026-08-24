@@ -90,12 +90,18 @@ class AsivV1AuthorizationControlTests(unittest.TestCase):
             self.assertIs(a[key], False, key)
         self.assertEqual(a["selectedModelCanonicalSha256"], "0b11a1691bfd2d9e3f073c786044bacedd3e9210bcb0660c76f21c34128a61af")
         guard.validate_enabled_document(ROOT, a, "a" * 40, proof())
-        self.assertTrue({"authorizationReviewWorkflow", "dispatchPublisherWorkflow", "scientificExecutionWorkflow", "boundHumanThreshold", "runtimeOverlay"} <= set(a["byteBindings"]))
+        self.assertTrue({"authorizationProposalWorkflow", "authorizationReviewWorkflow", "dispatchPublisherWorkflow", "scientificExecutionWorkflow", "boundHumanThreshold", "runtimeOverlay"} <= set(a["byteBindings"]))
 
     def test_workflow_boundaries_are_separate_and_fail_closed(self):
+        proposal = (ROOT / ".github/workflows/asiv-v1-authorization-proposal.yml").read_text()
         auth = (ROOT / ".github/workflows/asiv-v1-authorization-review.yml").read_text()
         publisher = (ROOT / ".github/workflows/asiv-v1-dispatch-publisher.yml").read_text()
         science = (ROOT / ".github/workflows/asiv-v1-execution.yml").read_text()
+        self.assertIn("REQUEST_ZERO_RUNTIME_AUTHORIZATION_PROPOSAL", proposal)
+        self.assertIn("build_authorization.py", proposal)
+        self.assertNotIn("setup-micromamba", proposal)
+        self.assertNotIn("command -v uvspec", proposal)
+        self.assertNotIn("issues: write", proposal)
         self.assertIn("pull_request:", auth)
         self.assertNotIn("setup-micromamba", auth)
         self.assertNotIn("command -v uvspec", auth)
@@ -110,6 +116,7 @@ class AsivV1AuthorizationControlTests(unittest.TestCase):
         self.assertIn("production=false", science)
         self.assertIn("starsvisibility_mutation=false", science)
         self.assertNotIn(".github/dispatch-requests/asiv-v1.json", [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("asiv-v1.json")])
+        self.assertNotIn(".github/authorization-requests/asiv-v1.json", [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("asiv-v1.json")])
 
 
 if __name__ == "__main__":

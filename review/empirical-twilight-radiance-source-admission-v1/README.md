@@ -1,179 +1,320 @@
 # Empirical twilight-radiance source admission v1
 
-## Status
+## Current status
 
-`REVIEW_ONLY_PREVALUE_METHODS_SUBSTANTIALLY_FROZEN_EXTERNAL_PGN_PRODUCT_METADATA_STILL_REQUIRED_NO_TARGET_RADIANCE_OPENED`
+`REVIEW_ONLY_LOCAL_PREVALUE_METHODS_FROZEN_EXTERNAL_PANDORA209_PRODUCT_BINDING_REQUIRED_NO_TARGET_RADIANCE_OPENED`
 
-This package advances the next unresolved validation layer after ASIV v1: **physical twilight model vs measured real sky**. It does not reopen ASIV ordinal 39, execute MYSTIC, inspect selected target sky-radiance values, fit or retune any model, allocate a scientific ordinal, or authorize production.
+This package prepares validation layer 2 only:
 
-The candidate, selection rules, comparison definitions and acceptance budget are frozen before target radiance is opened. The project still keeps three validation layers separate:
+1. surrogate vs MYSTIC — ASIV already advanced this for aerosol transport;
+2. **frozen MYSTIC/atmosphere model vs measured real sky** — this package;
+3. end-to-end model vs human first-seeing — separate work.
 
-1. surrogate vs MYSTIC;
-2. MYSTIC/atmosphere vs measured real sky;
-3. end-to-end prediction vs human first-seeing.
+No selected Pandora target `LEVEL1.DATA`, target per-pixel uncertainty array, derived target channel, or target residual has been opened. No MYSTIC/scientific execution, new ordinal, ASIV rerun/retry/resume, model fitting, UI/default change, or production authorization occurs here.
 
-ASIV v1 advanced layer 1 for aerosol transport. This package prepares layer 2 only.
+## Primary source
 
-## Primary candidate and current external blocker
+Primary candidate:
 
-The primary candidate remains Pandonia Global Network Pandora209 at the Izaña Atmospheric Observatory:
+- Izaña Atmospheric Observatory;
+- `Pandora209s1`;
+- `Pandora209s2`.
 
-- `Pandora209s1`
-- `Pandora209s2`
+The local pre-value methods are now substantially closed. The remaining blockers are Pandora209/current-product facts rather than missing local acceptance algorithms.
 
-The source remains **promising but not yet strictly admitted**. The irreducible external question is whether the intended Pandora209 L1 type-2 sky-radiance measurements have an independently traceable absolute directional-radiance scale, with exact calibration validity, wavelength validity and uncertainty semantics for the selected spectrometer/time periods.
+The most important unresolved fact is the exact independently traceable **absolute sky-radiance calibration/validity chain for Pandora209 spectrometer 2**. Public calibration material shows real s2 calibration-analysis activity, but the reviewed public metadata has not established the finished operational s2 absolute-radiance binding required by the strict gate. This is a blocker, not a claim that s2 is bad.
 
-The public PGN calibration material reviewed so far shows additional Pandora209 spectrometer-2 calibration-analysis activity, but it does not by itself establish a finished operational s2 absolute-radiance calibration/validity binding. Radiance units alone are not treated as proof of independent absolute-radiance traceability.
+## PGN request and provenance
 
-A metadata-only question set was frozen before target opening in `PGN_METADATA_REQUEST.md`. On 2026-08-24 the user explicitly authorized sending that frozen request to PGN; the dispatch is separately recorded in `PGN_METADATA_REQUEST_DISPATCH.review.json`. No selected target spectrum or target radiance was attached, quoted or opened.
+`PGN_METADATA_REQUEST.md` is intentionally preserved as the exact pre-send question artifact. It still says “draft only” because rewriting it after dispatch would destroy the pre-send provenance.
 
-## What is now frozen locally
+Exact request Git blob at dispatch:
 
-### 1. Absolute-radiance admission
+`4dfb2edb4d80c4cf91022016ebb6abe7f4cef036`
 
-Strict use requires L1 data type `2 = radiance [W/m2/nm/sr]` plus an acceptable independent absolute-radiance calibration chain and uncertainty definition. Corrected count rate, irradiance, units alone, normalized radiance, or a radiance scale derived by fitting the same class of twilight RT model are not enough for the strict independent gate.
+The actual send event is separately bound in:
 
-### 2. Exact Level-B support across the complete AOD interval
+`PGN_METADATA_REQUEST_DISPATCH.review.json`
 
-`exact_aod_interval_support_v1.py` implements `EXACT_PAIRWISE_LOWER_ENVELOPE_V1`.
+The request was sent on 2026-08-24 after explicit user authorization. No target spectrum was attached or quoted. A PGN reply may resolve metadata, but a reply cannot authorize target opening by itself.
 
-For fixed geometry/elevation, only normalized AOD varies. Each frozen support-point squared distance is `C_i+(x-a_i)^2`; pairwise distance differences are linear in `x`. The exact maximum nearest-support distance over a closed AOD interval is therefore obtained from the two interval endpoints plus every in-interval pairwise equality crossing. No AOD grid and no target residual are used.
+## Generic PGN Level-1 metadata semantics already resolved
 
-Strict admission requires the entire independently admitted AOD interval to remain inside the physical domain and nearest frozen Level-B training distance `<= 0.60`.
+`PGN_L1_GEOMS_METADATA_SEMANTICS.review.json` freezes the generic field semantics already documented by PGN, so these are no longer treated as unknown merely because Pandora209-specific mapping remains unresolved.
 
-### 3. Independent AOD/QC linkage
+Documented generic fields include:
 
-The AOD contract uses AERONET V3 Level 2.0 as the quantitative anchor and a value-independent MPLNET temporal/stability bridge where eligible. MPLNET is not treated as statistically independent from AERONET when its AER product is constrained/calibrated using AERONET. The resulting entire AOD550 interval must remain inside `[0.05,0.40]` and exact Level-B support.
+- `DATETIME.START` — measurement start, fractional days since 2000-01-01;
+- `DURATION` — seconds;
+- `INTEGRATION.TIME` — milliseconds;
+- `LEVEL1.DATA.TYPE`:
+  - 1 = corrected count rate `[s^-1]`;
+  - 2 = radiance `[W/m2/nm/sr]`;
+  - 3 = irradiance `[W/m2/nm]`;
+- `LEVEL1.DATA`;
+- `LEVEL1.UNCERTAINTY`;
+- `LEVEL1.UNCERTAINTY.INSTRUMENT`;
+- `POINTING.AZIMUTH.ANGLE` / `.MODE`;
+- `POINTING.ZENITH.ANGLE` / `.MODE`;
+- pointing mode 0 = absolute, 1 = relative to Sun, 2 = relative to Moon;
+- `ROUTINE`;
+- filterwheel fields whose physical meaning still requires the applicable operation file.
 
-Cloud evidence remains fail-closed and complementary rather than outcome-selected. Pandora/model residuals may not choose AOD, aerosol family, time matching or cloud disposition.
+Still unresolved and fail-closed:
 
-### 4. Certified model-set extrema over continuous AOD
+- exact current Pandora209 API/archive field mapping;
+- exact sign/reference conversion for relative pointing modes;
+- true per-spectrometer pointing versus merely commanded/nominal pointing;
+- exact operation/filterwheel validity;
+- authoritative s1/s2 pairing;
+- Pandora209 absolute-radiance calibration validity;
+- uncertainty/covariance/common-mode semantics.
 
-`certified_aod_scenario_extrema_v1.py` implements `CERTIFIED_AOD_SCENARIO_EXTREMA_INTERVAL_BNB_V1`.
+## Strict absolute-radiance gate
 
-It binds the exact frozen Level-B v3 and ASIV runtime/model identities, partitions the one-dimensional AOD axis at all model-only k-nearest distance-order crossings and exact-hit points, and applies deterministic outward-enlarged interval branch-and-bound. Default certification tolerance is `1e-4` natural log, approximately `0.00011 mag`, far below the empirical acceptance budget.
+L1 type `2 = radiance [W/m2/nm/sr]` is necessary but not sufficient.
 
-The evaluator covers:
+Strict independent validation additionally requires an independently established absolute directional sky-radiance scale. Units, corrected counts, irradiance calibration, normalized radiance, or a radiance scale obtained by forcing the same class of twilight radiative-transfer model to match the sky are not enough by themselves.
 
-- native Level-B baseline;
-- continental scenario;
-- maritime scenario;
-- desert scenario;
-- desert-spheroids scenario;
+## Exact continuous-AOD Level-B support
+
+`exact_aod_interval_support_v1.py`
+
+Algorithm:
+
+`EXACT_PAIRWISE_LOWER_ENVELOPE_V1`
+
+For fixed geometry/elevation only normalized AOD varies. Every frozen support-point squared distance is `C_i + (x-a_i)^2`; nearest-point identity can change only at pairwise equality crossings. The exact maximum nearest support distance over the admitted AOD interval is therefore evaluated at the interval endpoints and every in-interval crossing, not on a grid.
+
+Strict support requires the whole external AOD interval to remain inside the physical AOD domain and nearest frozen Level-B training distance `<= 0.60`.
+
+## Independent AOD/QC linkage
+
+The frozen atmosphere-input path uses:
+
+- AERONET V3 Solar Level 2.0 as the absolute AOD anchor;
+- MPLNET as a value-independent temporal/stability bridge, not independent absolute truth when its retrieval/calibration itself depends on sun/lunar photometer constraints;
+- conservative interval propagation;
+- no AOD fitting from Pandora radiance;
+- no clamping back into `[0.05,0.40]`;
+- complementary fail-closed MPLNET/SONA cloud evidence.
+
+The final entire AOD interval must remain in `[0.05,0.40]` and pass exact continuous Level-B support.
+
+## Certified full-AOD model-scenario extrema
+
+`certified_aod_scenario_extrema_v1.py`
+
+Algorithm:
+
+`CERTIFIED_AOD_SCENARIO_EXTREMA_INTERVAL_BNB_V1`
+
+The evaluator certifies minima/maxima over the full external AOD interval for:
+
+- native baseline;
+- continental;
+- maritime;
+- desert;
+- desert-spheroids;
 - photopic, scotopic and Johnson-V scalar channels.
 
-It never adapts its search to measured Pandora radiance and does not use epsilon substitution at exact hits.
+It partitions on model-only neighbor-order crossings/exact hits and uses deterministic interval branch-and-bound. Default certification tolerance is `1e-4` natural-log units, about `0.00011 mag`. Target radiance never controls the search and no epsilon substitution is allowed.
 
-### 5. Geometry, pairing and the dual-SkyFOV boundary
+## Measurement-channel integration
 
-True per-exposure pointing metadata must be used. The current validated Level-B provider predicts integrated scalar channels for **one sky direction** and does not expose a validated full-spectral directional provider.
-
-Therefore s1 and s2 records with genuinely different true SkyFOV directions cannot simply be stitched into one spectrum and compared with one scalar Level-B direction. Full three-channel strict use requires authoritative common/equivalent pointing or a separately reviewed pre-value compatibility proof. Spectral smoothness or model agreement may not be used to manufacture that equivalence.
-
-The metadata-only s1/s2 hard-splice rule remains available when its calibration/wavelength/pointing prerequisites are satisfied, with no gain/offset fitting and no validation-value-selected crossover.
-
-### 6. Independent s2-only Johnson-V lane
-
-A useful narrower path is now explicit. Generic Pandora-2S s2 coverage contains the complete frozen Bessell Johnson-V passband, 470-700 nm. If the exact Pandora209s2 product is proven independently absolute-radiance calibrated across that range, Johnson-V can be derived from **s2 alone at its own true pointing** without any s1/s2 spectral splice.
-
-That lane may support only the claim:
-
-`PARTIAL_EMPIRICAL_REAL_SKY_JOHNSON_V_ONLY_PASS`
-
-It cannot be promoted to photopic/scotopic validation, full three-channel Level-B validation, human first-seeing validation or production authorization.
-
-### 7. Measurement-channel integration bytes
-
-`MEASUREMENT_CHANNEL_INTEGRATION_BINDING.review.json` reuses the exact already-reviewed pre-opening Level-B measured-sky integrators instead of choosing new weighting after seeing Pandora data:
+`MEASUREMENT_CHANNEL_INTEGRATION_BINDING.review.json` reuses the exact already-reviewed Level-B measured-sky integrators:
 
 - `integrate_visual_response.py` Git blob `85646e2412ad2b53e7b08d24bd4f778f99f32e6d`;
 - `johnson_v.py` Git blob `4ac7b419f8efec2c87ce71161d945ed0609ee852`;
-- Bessell-V passband Git blob `eced08e8e126d59c9e4cfc52fea314711b3cea9c`, raw SHA-256 `20e8d89346b5bc71f848ff3eee054a92e1ba53872fb048ac670151b52dac99a1`.
+- Bessell-V passband Git blob `eced08e8e126d59c9e4cfc52fea314711b3cea9c`;
+- Bessell-V raw SHA-256 `20e8d89346b5bc71f848ff3eee054a92e1ba53872fb048ac670151b52dac99a1`.
 
-Pandora W/m2/nm/sr radiance is converted by exactly `x1000` to the mW units expected by the frozen integration functions. No convenient-grid target resampling is introduced. Photopic/scotopic strict use still requires full calibrated 380-780 nm coverage; the missing 380-400 nm portion may not be silently dropped for s2-only use.
+Pandora type-2 `W/m2/nm/sr` is multiplied by exactly 1000 before these mW-based integrators are applied. Target spectra are integrated on their supplied strictly increasing wavelength grid; no convenient-grid outcome-dependent resampling is introduced.
 
-### 8. Numeric PASS/FAIL mapping
+Photopic/scotopic strict use still requires calibrated 380–780 nm coverage.
 
-`SET_VALUED_ACCEPTANCE_GATES.review.json` maps the already-frozen MYSTIC-STATE-0074/0075 empirical error budget onto the current nonprobabilistic model set. The old thresholds were chosen before protected radiance was opened and are bound to the same Level-B v3 model/representation/provider; they were not retuned on real-sky residuals.
+Johnson-V requires 470–700 nm.
 
-For each admitted observation/channel, the central measured value is compared with the complete frozen scenario-by-AOD model set. The primary error is the **certified upper bound on central set miss distance**, not distance to a measurement-uncertainty interval. External measurement/metadata uncertainty is then added positively, preserving the earlier conservative error-budget semantics.
+## Conservative measurement-uncertainty propagation
 
-Frozen gates:
+`MEASUREMENT_UNCERTAINTY_PROPAGATION.review.json` freezes the numerical dispatch before selected target uncertainty arrays are opened.
+
+For a fixed wavelength grid, every primary channel is a linear functional:
+
+`channel = sum_i(w_i * radiance_i)`
+
+If full covariance is documented:
+
+`sigma_channel = sqrt(w^T C w)`
+
+If only per-pixel one-sigma uncertainties are documented and wavelength correlation is not documented, independence is **not** assumed. The conservative maximum-correlation upper bound is:
+
+`sigma_channel_upper = sum_i(abs(w_i) * sigma_i)`
+
+If uncertainty coverage is not known to be one-sigma, the source semantics remain unresolved; no coverage factor is guessed.
+
+For the full s1+s2 lane, documented cross-spectrometer covariance/common scale must be preserved. Unknown cross-spectrometer correlation is not set to zero. The s2-only Johnson-V lane avoids this particular cross-spectrometer uncertainty problem.
+
+The resulting measurement contribution feeds the existing `externalSigmaLog <= 0.06` gate. A row may not be deleted after opening because its uncertainty is inconveniently large.
+
+## Geometry, pairing and dual SkyFOV
+
+Use true per-spectrometer pointing and exact exposure time.
+
+`targetAltitudeDeg = 90 - truePointingZenithAngleDeg`
+
+Relative solar azimuth is folded to `[0,180]` only after the target and Sun are expressed in the same absolute azimuth convention.
+
+Pairing must be metadata-only. Brightness, spectral shape, or model agreement may not choose s1/s2 pairs.
+
+The current validated Level-B provider predicts integrated scalar channels for **one sky direction**. Therefore two materially different true s1/s2 SkyFOV directions cannot silently be stitched into one strict single-direction measurement. Full three-channel use requires authoritative common/equivalent pointing or a separately reviewed pre-value directional-compatibility proof.
+
+When full dual-spectrometer use is otherwise admissible, the frozen hard metadata midpoint splice uses no overlap gain/offset fit and no target-smoothness-selected crossover.
+
+## s2-only Johnson-V lane
+
+If exact Pandora209s2 absolute-radiance validity covers 470–700 nm, a strict Johnson-V comparison can proceed from s2 alone at its own true pointing, without s1/s2 stitching.
+
+Maximum possible claim after a terminal PASS:
+
+`PARTIAL_EMPIRICAL_REAL_SKY_JOHNSON_V_ONLY_PASS`
+
+This does not validate photopic/scotopic, full elevation dependence, human first-seeing, or production.
+
+## Absolute real-sky background rule
+
+`ASTROPHYSICAL_BACKGROUND_BOUNDARY.review.json` freezes:
+
+`ABSOLUTE_REAL_SKY_NO_ASTROPHYSICAL_SUBTRACTION_V1`
+
+The primary comparison uses admitted calibrated absolute real-sky radiance after normal instrument corrections. No validation-specific deep-night subtraction, fitted constant, or fitted spectral offset is allowed. Deep-night evidence may remain diagnostic only.
+
+Omitted airglow/zodiacal/integrated-starlight terms therefore remain empirical model-form error for the current generation rather than being removed after seeing residuals.
+
+## Nonprobabilistic set-valued comparison and numeric gates
+
+The complete frozen five-state aerosol scenario set is evaluated over the full external AOD interval. The native baseline remains separately reportable. No scenario probabilities are assigned and nearest scenario is diagnostic only.
+
+Frozen numerical gates inherited from the pre-opening 0074/0075 accuracy budget are:
 
 - external sigma-log `<= 0.06`;
-- equal-session P95 of session-mean conservative set miss `<= 0.20 mag`;
-- worst preregistered marginal-stratum/channel P90 `<= 0.25 mag`;
+- equal-session P95 session-mean conservative set miss `<= 0.20 mag`;
+- worst frozen marginal-stratum/channel P90 `<= 0.25 mag`;
 - maximum single observation/channel `<= 0.60 mag`;
-- signed set-miss bias upper statistic `<= 0.12` in natural-log domain.
+- signed set-miss bias upper statistic `<= 0.12` natural-log units.
 
-AOD interval uncertainty and aerosol-family structural spread are already represented by the model set and are not added again as independent Gaussian sigma terms. No aerosol-family probabilities are introduced.
+AOD interval and aerosol-family spread are already represented by the model set and are not added again as independent Gaussian sigma terms. ASIV computational validation error is not converted into empirical measurement confidence.
 
-### 9. Absolute real-sky background rule
+## Complete metadata-only universe
 
-`ASTROPHYSICAL_BACKGROUND_BOUNDARY.review.json` freezes `ABSOLUTE_REAL_SKY_NO_ASTROPHYSICAL_SUBTRACTION_V1` for the present model generation.
+`METADATA_UNIVERSE_CONTRACT.review.json` and `SESSION_UNIVERSE_FREEZE_PRECONTRACT.review.json` freeze the universe before target opening.
 
-The primary comparison uses the admitted calibrated **absolute real-sky radiance after normal instrument corrections**, with no validation-specific fitted constant, spectral offset or post-hoc deep-night subtraction. Airglow/zodiacal/integrated-starlight mismatch therefore remains empirical model-form error for this generation. A deterministically selected deep-night observation may be retained as a diagnostic, but it cannot rescue a primary FAIL after opening.
+One astronomical dawn or dusk transition is one independent session.
 
-### 10. Complete metadata-only session universe
+Every metadata-eligible session in the applicable frozen validity windows is retained, alongside rejected rows and their frozen rejection reasons.
 
-`SESSION_UNIVERSE_FREEZE_PRECONTRACT.review.json` defines one independent session as one astronomical dawn or dusk transition through Sun depression 2-10.5 degrees. High-cadence rows within one transition do not become independent sessions.
+- fewer than 40 eligible independent sessions: `DATA_REQUIRED` for terminal PASS;
+- 40 or more: retain all eligible sessions;
+- never trim to the 40 best nights;
+- never select by target brightness, residual, nearest aerosol scenario, or post-opening convenience.
 
-Every metadata-eligible session inside the frozen calibration/product/operation validity windows must be included. The universe is not capped at 40 favorable nights:
+The normalized universe contains metadata, external atmosphere/QC, calibration/operation identity, exact support results, and hashes — not selected `LEVEL1.DATA`, target uncertainty values, integrated observed channels, or target residuals.
 
-- fewer than 40 eligible independent sessions -> `DATA_REQUIRED`;
-- 40 or more -> retain all eligible sessions with equal-session aggregation;
-- no replacement, outlier deletion or bad-channel deletion after opening.
+## Exact-object opening contract already frozen
 
-The pre-opening manifest records immutable object identity, calibration/operation validity, type/unit, pointing, AOD/QC provenance, exact support result and source-lane disposition, but **not** the target spectral array, derived target channels or model residual.
+`TARGET_OPENING_MANIFEST_CONTRACT.review.json`
 
-If the provider does not publish a checksum in metadata, the exact provider object identity/header is frozen first; only after separate opening authorization may the object be downloaded, immediately hashed in untouched form, and then parsed.
+Validator:
 
-## Current model-form boundary
+`validate_target_opening_manifest_v1.py`
 
-The validated sky model remains exactly the current five-axis Level-B v3 representation:
+The validator requires:
 
-- Sun depression;
-- target altitude;
-- relative solar azimuth;
-- observer elevation;
-- AOD550.
+- exact dataset freeze ID and lane;
+- canonical hashes of every pre-value binding;
+- exact nonempty object list;
+- source object/provider path identity;
+- site/instrument/spectrometer/exposure identity;
+- metadata hash;
+- calibration and operation binding IDs;
+- explicitly named protected arrays;
+- canonical object ordering;
+- no target outcome/statistics/residual fields;
+- no self-authorization.
 
-The frozen MYSTIC generation uses AFGLUS, surface albedo 0.15, `crs`, `atlas_plus_modtran`, `aerosol_default`, spherical 1D, and 380-780 nm. Water vapor, ozone, local albedo, pressure and detailed aerosol profile are not hidden post-hoc fitting axes. External measurements may be preserved as diagnostics; systematic dependence remains empirical model-form error and may motivate only a new model generation with a genuinely new untouched holdout.
+Allowed v1 lanes are:
 
-## Claim scope
+- `PANDORA209_S2_JOHNSON_V_ONLY_V1`;
+- `PANDORA209_S1S2_THREE_CHANNEL_V1`.
 
-Izaña is near the high-elevation end of the current 0-2500 m domain. A strict Izaña PASS is valuable high-elevation real-sky evidence but does **not** by itself validate model elevation dependence across the full domain.
+The pre-value manifest must say `targetOpeningAuthorized=false`. Opening requires a **separate reviewed authorization artifact bound to the exact manifest canonical SHA-256**.
 
-A full frozen-domain empirical claim requires independent coverage across all frozen marginal strata, including elevation. A source-scoped or Johnson-V-only result must retain that narrower label.
+Post-opening object substitution, threshold changes, AOD/family fitting, pointing-convention changes, s1/s2 re-pairing, stitch changes, or primary background-rule changes are forbidden.
+
+## Secondary sources frozen before primary opening
+
+`SECONDARY_SOURCE_CANDIDATES.review.json` preserves the fallback inventory before any Izaña target opening.
+
+Important examples:
+
+- Jeonju / Pandora241: public s1+s2 archive is visible, but strict continuous AOD/QC and finished s2 absolute-radiance binding are not proven;
+- Seoul-KU / Pandora235: favorable aerosol context and public spec2 calibration activity, but the reviewed public target archive did not surface s2;
+- Yongin / Pandora232: useful low-elevation/AERONET context, but reviewed public target archive did not surface s2.
+
+No fallback is admitted yet.
+
+A fallback may replace Izaña only because Izaña fails a **pre-value source-admission prerequisite**. It may not be chosen because opened Izaña residuals look unfavorable.
+
+## Current frozen model-form boundary
+
+The current Level-B v3 real-sky test keeps exactly the model that exists:
+
+- runtime axes: Sun depression, target altitude, relative solar azimuth, observer elevation, AOD550;
+- AFGLUS;
+- albedo 0.15;
+- `crs`;
+- `atlas_plus_modtran`;
+- `aerosol_default`;
+- spherical 1D;
+- 380–780 nm.
+
+Water vapor, ozone, local albedo, pressure, and detailed aerosol profile are not hidden post-hoc fitting axes. External measurements may be retained as diagnostics. If they explain failure, that failure is preserved and a new model generation requires a new untouched holdout.
 
 ## Remaining true blockers before target opening
 
-Most locally decidable pre-value method choices are now frozen. The principal remaining blockers are external/product-specific rather than permission to inspect the target radiance:
+The remaining work is now source/product specific:
 
-1. exact Pandora209 absolute sky-radiance traceability and calibration validity for the intended lane, especially s2;
-2. exact L1 type-2 uncertainty/covariance and absolute-radiance-valid wavelength/filter semantics;
-3. authoritative PGN per-exposure pointing/time fields and their conventions;
-4. for full three-channel use, authoritative s1/s2 pairing and proof of directional compatibility with the current single-direction Level-B provider;
-5. actual metadata-only enumeration of the complete eligible session universe using the resolved PGN field/product semantics, followed by execution of the already-frozen AOD/support/cloud gates and hashing of that universe;
-6. a separately reviewed exact-file opening manifest/authorization.
+1. prove the exact Pandora209s2 independently traceable absolute sky-radiance calibration/validity chain; for the three-channel lane also bind s1;
+2. bind current type-2 uncertainty coverage/covariance, common absolute-scale uncertainty, and calibrated wavelength/filter validity;
+3. bind exact current archive/API mapping for time, duration, type, routine, filterwheel and pointing; resolve true per-spectrometer pointing and the exact conversion of relative modes;
+4. for the full lane, prove authoritative s1/s2 pairing and directional compatibility;
+5. instantiate the already-frozen complete metadata universe, execute the frozen AOD/cloud/support filters, and hash all eligible/rejected classifications;
+6. bind Pandora209 uncertainty semantics to the already-frozen propagation dispatch;
+7. instantiate the already-frozen exact-object opening manifest;
+8. separately review/authorize that exact manifest hash.
 
-If s2 absolute-radiance calibration and 470-700 nm validity are confirmed before the full dual-spectrometer questions are resolved, the s2-only Johnson-V lane can proceed independently through items 2, 3, 5 and 6.
+If s2 is independently valid over 470–700 nm before the full dual-spectrometer questions are resolved, the Johnson-V-only lane can proceed without s1 pairing.
+
+## Claim scope
+
+Izaña is near the upper end of the current 0–2500 m elevation domain. Even a strict three-channel Izaña PASS is source-scoped/high-elevation evidence, not by itself validation of elevation dependence across the entire domain.
 
 ## Hard boundaries
 
 This package still authorizes none of the following:
 
 - PGN target `/v1/download` for validation;
-- opening selected `LEVEL1.DATA` target arrays;
-- deriving target photopic/scotopic/Johnson-V values before opening authorization;
+- opening selected `LEVEL1.DATA` values;
+- opening selected `LEVEL1.UNCERTAINTY` or `LEVEL1.UNCERTAINTY.INSTRUMENT` values;
+- deriving target photopic/scotopic/Johnson-V before exact-object authorization;
 - MYSTIC/scientific execution or a new ordinal;
 - ASIV rerun/retry/resume;
-- retuning the Level-B or ASIV models;
-- fitting AOD/aerosol family/background/pointing to target radiance;
-- probability or confidence semantics for the five aerosol scenarios;
+- retuning Level-B or ASIV;
+- fitting AOD, aerosol family, background, pointing, pairing, stitch, source selection, or thresholds to target radiance;
+- probability/confidence semantics for the five aerosol scenarios;
 - production/UI/default activation;
 - claiming human first-seeing validation.
 
 ## Next safe transition
 
-While waiting for PGN's metadata reply, no target radiance should be opened. Once the product/calibration/pointing facts are available, bind the exact metadata semantics, construct and hash the complete metadata-only eligible/rejected session universe, execute the frozen support/AOD/QC gates on that universe, and prepare a separate exact-object opening manifest. Only that separately reviewed transition can authorize target-value opening.
+Wait only for the remaining Pandora209/current-product metadata facts; do not invent additional scientific thresholds. Once those facts are bound, instantiate the already-frozen metadata universe and exact-object manifest, review their hashes, and create a separate opening authorization. Only then may the protected target arrays be opened once and evaluated under the frozen terminal rules.

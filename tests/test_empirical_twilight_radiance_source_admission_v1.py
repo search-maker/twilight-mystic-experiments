@@ -77,7 +77,8 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
         self.assertFalse(selection["targetRadianceMayBeUsed"])
         self.assertTrue(selection["supportMustHoldAcrossEntireAodInterval"])
         self.assertFalse(selection["endpointOnlyCheckAllowedWithoutProof"])
-        self.assertIn("EXACT_PAIRWISE_LOWER_ENVELOPE_V1", selection["aodIntervalSupportAlgorithm"])
+        self.assertEqual(selection["aodIntervalSupportAlgorithm"]["id"], "EXACT_PAIRWISE_LOWER_ENVELOPE_V1")
+        self.assertFalse(selection["aodIntervalSupportAlgorithm"]["usesAodGridApproximation"])
 
     def test_comparison_metrics_and_numeric_gates_are_frozen_value_free(self):
         doc = load_json("COMPARISON_METRIC_SKELETON.review.json")

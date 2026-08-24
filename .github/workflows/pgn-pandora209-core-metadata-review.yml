@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch frozen core metadata queries only
+      - name: List calibration and operation file metadata only
         shell: bash
         run: |
           set -euo pipefail
@@ -40,40 +40,63 @@ jobs:
 
           openapi = module.fetch_openapi(timeout_s=20.0)
 
-          # These three calls are exactly the queries frozen in
-          # PGN_LIVE_OPENAPI_CONTRACT.freeze.json. No file-list, metadata-file,
-          # target-radiance, uncertainty-array, or download request occurs here.
-          results = {
-              'pandora209s1CalibrationFiles': module.request_metadata(
-                  openapi,
-                  '/v1/calibrationfiles/',
-                  {'pan_id': 209, 'spectrometer': 1},
-                  timeout_s=20.0,
-              ),
-              'pandora209s2CalibrationFiles': module.request_metadata(
-                  openapi,
-                  '/v1/calibrationfiles/',
-                  {'pan_id': 209, 'spectrometer': 2},
-                  timeout_s=20.0,
-              ),
-              'pandora209OperationFiles': module.request_metadata(
-                  openapi,
-                  '/v1/operationfiles/',
-                  {'pan_id': 209},
-                  timeout_s=20.0,
-              ),
+          # These are list endpoints whose frozen OpenAPI response schemas contain
+          # calibration/operation FILE METADATA only. No /v1/files target universe,
+          # /v1/metadata target header, /v1/download, LEVEL1.DATA or radiance is read.
+          calibration_files = module.request_metadata(
+              openapi,
+              '/v1/calibrationfiles/',
+              {},
+              timeout_s=20.0,
+          )
+          operation_files = module.request_metadata(
+              openapi,
+              '/v1/operationfiles/',
+              {},
+              timeout_s=20.0,
+          )
+          if not isinstance(calibration_files, list) or not isinstance(operation_files, list):
+              raise SystemExit('PGN core metadata endpoints did not return the frozen array response shape')
+
+          # Preserve the complete metadata-list evidence. Candidate extraction is a
+          # deterministic local filename identity filter; no measurement values exist
+          # in these responses according to the frozen OpenAPI schemas.
+          full = {
+              'calibrationFiles': calibration_files,
+              'operationFiles': operation_files,
           }
-          Path('pandora209_core_metadata.json').write_text(
-              json.dumps(results, indent=2, sort_keys=True) + '\n',
+          Path('pgn_core_metadata_full_lists.json').write_text(
+              json.dumps(full, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
           )
-          print('PGN_PANDORA209_CORE_METADATA_BEGIN')
-          print(json.dumps(results, indent=2, sort_keys=True))
-          print('PGN_PANDORA209_CORE_METADATA_END')
+
+          def filename(record):
+              return str(record.get('filename', '')) if isinstance(record, dict) else ''
+
+          candidates = {
+              'pandora209CalibrationCandidates': [
+                  item for item in calibration_files if '209' in filename(item)
+              ],
+              'pandora209OperationCandidates': [
+                  item for item in operation_files if '209' in filename(item)
+              ],
+              'totalCalibrationFileCount': len(calibration_files),
+              'totalOperationFileCount': len(operation_files),
+              'candidateRule': "ASCII substring '209' in immutable filename; review exact naming before any stronger semantic claim",
+          }
+          Path('pandora209_core_metadata_candidates.json').write_text(
+              json.dumps(candidates, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_CORE_METADATA_CANDIDATES_BEGIN')
+          print(json.dumps(candidates, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_CORE_METADATA_CANDIDATES_END')
           PY
 
-          sha256sum pandora209_core_metadata.json > pandora209_core_metadata.sha256
-          cat pandora209_core_metadata.sha256
+          sha256sum pgn_core_metadata_full_lists.json > pgn_core_metadata_full_lists.sha256
+          sha256sum pandora209_core_metadata_candidates.json > pandora209_core_metadata_candidates.sha256
+          cat pgn_core_metadata_full_lists.sha256
+          cat pandora209_core_metadata_candidates.sha256
 
       - name: Prove protected endpoint remains inaccessible through client
         shell: bash
@@ -102,7 +125,9 @@ jobs:
         with:
           name: pandora209-core-metadata-only
           path: |
-            pandora209_core_metadata.json
-            pandora209_core_metadata.sha256
+            pgn_core_metadata_full_lists.json
+            pgn_core_metadata_full_lists.sha256
+            pandora209_core_metadata_candidates.json
+            pandora209_core_metadata_candidates.sha256
           if-no-files-found: error
           retention-days: 30

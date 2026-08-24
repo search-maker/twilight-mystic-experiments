@@ -1,0 +1,134 @@
+name: ASIV v1 fresh preauthorization audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/asiv-v1-preauthorization-audit.yml
+      - experiments/aerosol-scenario-interpolation-validation-v1/**
+      - review/aerosol-scenario-interpolation-validation-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: asiv-v1-preauthorization-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  preauthorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Prove exact attempt-1 main and zero-runtime surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test ! -e experiments/aerosol-scenario-interpolation-validation-v1/authorization.json
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/asiv-v1-preauthorization-audit.yml').read_text()
+          forbidden=('setup-'+'micromamba','rubin-'+'libradtran','command -v '+'uvspec','--allow-'+'execution','git '+'push ','workflow_'+'dispatch:','repository_'+'dispatch:','schedule'+':')
+          found=[x for x in forbidden if x in text]
+          if found: raise SystemExit(f'ASIV preauthorization exposed runtime/dispatch transition: {found}')
+          PY
+          mkdir -p preauthorization-evidence
+          git ls-files -z > tracked-files.nul
+          python experiments/aerosol-scenario-interpolation-validation-v1/seed_ledger.py
+      - name: Exact tracked-tree candidate-seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/tracked_tree_seed_scan.py --repo-root . --file-list tracked-files.nul --candidate-seed-ledger experiments/aerosol-scenario-interpolation-validation-v1/candidate-seed-ledger.v1.json --allow-self-ledger-json experiments/aerosol-scenario-interpolation-validation-v1/seed-self-ledger-policy.v1.json --output preauthorization-evidence/tracked-seed-scan.json
+      - name: Stable repository-global authorization-time candidate-seed recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger experiments/aerosol-scenario-interpolation-validation-v1/candidate-seed-ledger.v1.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name main --expected-repo-head "$GITHUB_SHA" --output preauthorization-evidence/repository-global-seed-scan.json
+      - name: Repository-wide fresh holdout geometry collision audit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/geometry_collision_audit.py --repo-root . --file-list tracked-files.nul --repository "$GITHUB_REPOSITORY" --current-run-id "$GITHUB_RUN_ID" --expected-branch-name main --expected-repo-head "$GITHUB_SHA" --output preauthorization-evidence/geometry-collision-audit.json
+      - name: Build exact-main seed and geometry authorization proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/build_freshness_proof.py --stage-dir experiments/aerosol-scenario-interpolation-validation-v1 --tracked-tree-report preauthorization-evidence/tracked-seed-scan.json --repository-global-report preauthorization-evidence/repository-global-seed-scan.json --geometry-report preauthorization-evidence/geometry-collision-audit.json --expected-main-head "$GITHUB_SHA" --output preauthorization-evidence/freshness-proof.json
+      - name: Derive fresh global ordinal proposal and pass ASIV preauthorization guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-scenario-interpolation-validation-v1 python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          import preauthorization_surface
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          latest=preauthorization_surface.latest_consumed(payload)
+          if latest != 38: raise SystemExit(f'ASIV v1 requires latest consumed ordinal 38, observed {latest}')
+          candidate,observations=preauthorization_surface.derive_next(payload,latest,current_run_id=int(os.environ['GITHUB_RUN_ID']))
+          if candidate != 39: raise SystemExit(f'ASIV v1 expected next global ordinal 39, observed {candidate}')
+          proof=json.loads(Path('preauthorization-evidence/freshness-proof.json').read_text())
+          if proof.get('status')!='PASS_ASIV_SEED_AND_GEOMETRY_AUTHORIZATION_RECHECK_NOT_ALLOCATED': raise SystemExit('ASIV freshness proof did not pass')
+          if proof.get('auditedMainHead')!=os.environ['GITHUB_SHA']: raise SystemExit('freshness proof head drift')
+          surface=preauthorization_surface.build(payload,candidate,current_run_id=int(os.environ['GITHUB_RUN_ID']),seed_ok=True,geometry_ok=True)
+          ident=preauthorization_surface.identity(candidate)
+          report={'schemaVersion':1,'stageId':'aerosol-scenario-interpolation-validation-v1-preauthorization','status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED','exactMainSha':os.environ['GITHUB_SHA'],'runId':int(os.environ['GITHUB_RUN_ID']),'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'latestPriorConsumedScientificOrdinal':surface['latestPriorConsumedScientificOrdinal'],'nextAvailableScientificOrdinal':candidate,'globalOrdinalObservationCount':len(observations),'authorizationBranch':ident['authorizationBranch'],'dispatchBranch':ident['dispatchBranch'],'executionKey':ident['executionKey'],'identityGuardStatus':'ASIV_PREAUTHORIZATION_FRESH_GLOBAL_IDENTITY_NOT_ALLOCATED','freshnessProofStatus':proof['status'],'candidateSeedCount':proof['candidateSeedCount'],'candidateSeedCanonicalSha256':proof['candidateSeedCanonicalSha256'],'trackedTreeExternalCollisionCount':proof['trackedTreeExternalCollisionCount'],'repositoryGlobalSeedCollisionCount':proof['repositoryGlobalCollisionCount'],'holdoutGeometryCount':proof['holdoutGeometryCount'],'trackedGeometryCollisionCount':proof['trackedGeometryCollisionCount'],'metadataGeometryCollisionCount':proof['metadataGeometryCollisionCount'],'scientificOrdinalAllocated':False,'authorizationCreated':False,'dispatchCreated':False,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,'holdoutValuesOpened':False,'githubRerunAllowed':False,'retryAllowed':False,'resumeAllowed':False}
+          report['reportSha256']=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          Path('preauthorization-evidence/global-ordinal-observations.json').write_text(json.dumps(observations,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/freshness-surface.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/preauthorization.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Persist zero-runtime preauthorization evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-v1-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish terminal observable checkpoint to Issue 60
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,re,urllib.request
+          from pathlib import Path
+          r=json.loads(Path('preauthorization-evidence/preauthorization.json').read_text())
+          if r.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('preauthorization not pass')
+          if any(r.get(k) is not False for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed','holdoutValuesOpened')): raise SystemExit('ASIV preauthorization crossed identity/runtime/result boundary')
+          aid=os.environ.get('ARTIFACT_ID','').strip(); dig=os.environ.get('ARTIFACT_DIGEST','').strip()
+          if not aid.isdigit() or re.fullmatch(r'[0-9a-f]{64}',dig) is None: raise SystemExit('artifact identity malformed')
+          body='\n'.join(['ASIV-V1-PREAUTHORIZATION-RUN',f'exact_main={r["exactMainSha"]}',f'run={os.environ["GITHUB_RUN_ID"]}',f'attempt={r["runAttempt"]}',f'status={r["status"]}',f'latest_consumed={r["latestPriorConsumedScientificOrdinal"]}',f'next_if_separately_allocated={r["nextAvailableScientificOrdinal"]}',f'candidate_seeds={r["candidateSeedCount"]}',f'seed_collisions={r["repositoryGlobalSeedCollisionCount"]}',f'geometry_collisions={r["trackedGeometryCollisionCount"]+r["metadataGeometryCollisionCount"]}',f'artifact_id={aid}',f'artifact_digest=sha256:{dig}',f'report_sha256={r["reportSha256"]}','authorization_created=false','scientific_identity_allocated=false','dispatch_created=false','scientific_runtime=false','solver_execution=false','holdout_opened=false'])
+          req=urllib.request.Request(f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/60/comments',data=json.dumps({'body':body}).encode(),headers={'Authorization':f'Bearer {os.environ["GITHUB_TOKEN"]}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=90) as response: row=json.load(response)
+          if not int(row.get('id') or 0): raise SystemExit('Issue 60 checkpoint failed')
+          print(f'issue60_comment_id={row["id"]}')
+          PY

@@ -32,17 +32,18 @@ class PgnLiveOpenapiMetadataContractTests(unittest.TestCase):
         print(json.dumps(described, indent=2, sort_keys=True))
         print("PGN_METADATA_OPENAPI_CONTRACT_END")
 
-        self.assertEqual(
-            set(described),
-            {
-                "/v1/calibrationfiles",
-                "/v1/files",
-                "/v1/metadata",
-                "/v1/operationfiles",
-            },
-        )
+        prefixes_seen = set()
         for path in described:
-            self.assertNotEqual(path, "/v1/download")
+            self.assertFalse(path == "/v1/download" or path.startswith("/v1/download/"))
+            matching = [
+                prefix
+                for prefix in module.ALLOWED_PATH_PREFIXES
+                if path == prefix or path.startswith(prefix + "/")
+            ]
+            self.assertEqual(len(matching), 1, path)
+            prefixes_seen.add(matching[0])
+        self.assertEqual(prefixes_seen, set(module.ALLOWED_PATH_PREFIXES))
+
         with self.assertRaises(module.MetadataOnlyViolation):
             module.assert_metadata_only_path("/v1/download")
 

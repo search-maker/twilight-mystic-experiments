@@ -1,0 +1,158 @@
+name: ASIV v1 authorization proposal
+run-name: ASIV v1 authorization proposal ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - "status/asiv-v1-authorization-proposal-ordinal-*"
+    paths:
+      - .github/authorization-requests/asiv-v1.json
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: asiv-v1-authorization-proposal-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  proposal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Prove exact one-file request direct from live main
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^status/asiv-v1-authorization-proposal-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/authorization-requests/asiv-v1.json
+          python - <<'PY' > request.env
+          import json
+          r=json.load(open('.github/authorization-requests/asiv-v1.json'))
+          if r.get('schemaVersion')!=1: raise SystemExit('request schema drift')
+          if r.get('stageId')!='aerosol-scenario-interpolation-validation-v1-authorization-proposal-request': raise SystemExit('request stage drift')
+          if r.get('status')!='REQUEST_ZERO_RUNTIME_AUTHORIZATION_PROPOSAL': raise SystemExit('request status drift')
+          n=r.get('scientificOrdinal'); p=r.get('exactMainSha')
+          if not isinstance(n,int) or n<=0: raise SystemExit('request ordinal invalid')
+          if not isinstance(p,str) or len(p)!=40: raise SystemExit('request main identity invalid')
+          print(f'REQUEST_ORDINAL={n}'); print(f'REQUEST_PARENT={p}')
+          PY
+          source request.env
+          test "$REQUEST_ORDINAL" = "$BRANCH_ORDINAL"
+          test "$REQUEST_PARENT" = "$PARENT"
+          echo "ordinal=$REQUEST_ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "parent=$PARENT" >> "$GITHUB_OUTPUT"
+          mkdir -p preauth-artifact proposal-evidence
+
+      - name: Resolve exact successful attempt-1 parent preauthorization
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('proposal-evidence/preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          RID="$(python -c 'import json;print(json.load(open("proposal-evidence/preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100" > preauth-artifacts.json
+          AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='asiv-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one ASIV preauthorization artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preauth.zip
+          unzip -q preauth.zip -d preauth-artifact
+          cp preauth-artifacts.json proposal-evidence/preauth-artifacts.json
+
+      - name: Validate preauthorization remains clean and exact
+        shell: bash
+        env:
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.load(open('preauth-artifact/preauthorization.json'))
+          f=json.load(open('preauth-artifact/freshness-proof.json'))
+          if p.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('preauthorization status drift')
+          if p.get('exactMainSha')!=os.environ['PARENT'] or f.get('auditedMainHead')!=os.environ['PARENT']: raise SystemExit('preauthorization parent drift')
+          if p.get('nextAvailableScientificOrdinal')!=int(os.environ['ORDINAL']): raise SystemExit('preauthorization ordinal drift')
+          if f.get('status')!='PASS_ASIV_SEED_AND_GEOMETRY_AUTHORIZATION_RECHECK_NOT_ALLOCATED': raise SystemExit('freshness proof status drift')
+          if f.get('candidateSeedCount')!=24 or f.get('holdoutGeometryCount')!=8 or f.get('allCollisionCountersZero') is not True: raise SystemExit('freshness proof cardinality/collision drift')
+          for key in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized'):
+              if f.get(key) is not False: raise SystemExit(f'preauthorization crossed boundary: {key}')
+          Path('proposal-evidence/preauthorization.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          Path('proposal-evidence/freshness-proof.json').write_text(json.dumps(f,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Build deterministic one-file authorization proposal
+        shell: bash
+        env:
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/execution-candidate/build_authorization.py \
+            --repository-root . \
+            --parent-main "$PARENT" \
+            --scientific-ordinal "$ORDINAL" \
+            --freshness-proof preauth-artifact/freshness-proof.json \
+            --output proposal-evidence/authorization.json
+          python - <<'PY'
+          import json,os
+          a=json.load(open('proposal-evidence/authorization.json'))
+          if a.get('status')!='AUTHORIZED_PENDING_SEPARATE_DISPATCH': raise SystemExit('authorization proposal status drift')
+          if a.get('scientificOrdinal')!=int(os.environ['ORDINAL']): raise SystemExit('authorization proposal ordinal drift')
+          if a.get('exactAuthorizationParentCommit')!=os.environ['PARENT']: raise SystemExit('authorization proposal parent drift')
+          if a.get('caseCount')!=120 or a.get('groupCount')!=24 or a.get('holdoutGeometryCount')!=8: raise SystemExit('authorization proposal cardinality drift')
+          if a.get('scientificExecutionAuthorized') is not True or a.get('solverExecutionAuthorized') is not True: raise SystemExit('guarded science permission missing')
+          for key in ('dispatchAuthorized','resultOpeningAuthorized','automaticDispatch','consumed','githubRerunAllowed','retryAllowed','resumeAllowed','postHoldoutRetuningAllowed','productionAuthorized'):
+              if a.get(key) is not False: raise SystemExit(f'authorization proposal opened forbidden boundary: {key}')
+          PY
+          sha256sum proposal-evidence/authorization.json > proposal-evidence/authorization.sha256
+
+      - name: Persist zero-runtime authorization proposal
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-v1-authorization-proposal-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: proposal-evidence/
+          if-no-files-found: error
+          compression-level: 0

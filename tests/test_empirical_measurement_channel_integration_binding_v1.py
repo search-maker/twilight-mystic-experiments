@@ -33,12 +33,24 @@ class EmpiricalMeasurementChannelIntegrationBindingV1Tests(unittest.TestCase):
         self.assertFalse(channels["photopic"]["maySilentlyDrop380To400NmForS2Only"])
         self.assertFalse(channels["scotopic"]["maySilentlyDrop380To400NmForS2Only"])
 
-    def test_dual_fov_and_background_remain_fail_closed(self):
+    def test_dual_fov_background_and_uncertainty_are_fail_closed(self):
         dual = self.doc["dualSpectrometerBoundary"]
         self.assertFalse(dual["twoDifferentTrueSkyFovsMayBeCollapsedIntoOneMeasuredSpectrumForStrictPassFailWithoutCompatibilityProof"])
+
         background = self.doc["backgroundBoundary"]
-        self.assertTrue(background["astrophysicalBackgroundTreatmentMustBeFrozenBeforeTargetOpening"])
+        self.assertTrue(background["astrophysicalBackgroundTreatmentFrozen"])
+        self.assertEqual(background["currentPandoraDisposition"], "ABSOLUTE_REAL_SKY_NO_ASTROPHYSICAL_SUBTRACTION_V1")
+        self.assertFalse(background["subtractMatchedDeepNightSpectrumForPrimaryPassFail"])
+        self.assertFalse(background["fitConstantOrSpectralOffsetToResiduals"])
         self.assertFalse(background["mayChooseBackgroundSubtractionAfterSeeingResiduals"])
+
+        uncertainty = self.doc["uncertaintyContract"]
+        self.assertTrue(uncertainty["numericPropagationAlgorithmFrozen"])
+        self.assertTrue(uncertainty["numericExecutionStillRequiresPandora209ProductSemantics"])
+        self.assertFalse(uncertainty["wavelengthSamplesIndependentByDefault"])
+        self.assertIn("sum(abs(w_i)*sigma_i)", uncertainty["undocumentedCorrelationFallback"])
+        self.assertEqual(uncertainty["unknownCoverageOrNonOneSigmaSemanticsDisposition"], "HOLD_SOURCE_SEMANTICS_UNRESOLVED_BEFORE_OPENING")
+
         self.assertTrue(all(value is False for value in self.doc["authorization"].values()))
 
 

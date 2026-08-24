@@ -25,7 +25,8 @@ Could you please clarify the following for `Pandora209s1` and `Pandora209s2` at 
 4. For those L1 radiance measurements, where are the absolute-radiometric calibration and per-wavelength measurement uncertainties documented?
 5. Does the radiometric calibration apply independently to both spectrometers, including spectrometer 2 over the visible/NIR range, and are there wavelength or filter ranges that should be excluded from absolute-radiance use?
 6. Is there a recommended public API query for retrieving only the calibration/operation metadata and file headers for Pandora 209, without downloading the spectral measurement values?
-7. If zenith-sky L1 radiance measurements are available, is the actual pointing (zenith/azimuth or measurement sequence geometry) recoverable from metadata for each exposure?
+7. For sky/profile L1 radiance measurements, is the actual pointing for each exposure recoverable directly from metadata (zenith angle, azimuth angle, and whether each angle is absolute or relative to the Sun/Moon)?
+8. For Pandora209 as a two-spectrometer system, are `s1` and `s2` exposures simultaneous or otherwise traceably paired to the same optical input, routine, UTC interval and pointing? If pairing is not one-to-one, what metadata should be used to associate the two spectrometers without matching on spectral values?
 
 For context, the current public calibration report shows historical spectrometer-1 CF entries (`20220720 v5` and `20221111 v4`) and ongoing Izaña calibration-analysis sessions including spectrometer 2 session 4, but I do not want to infer the current s2 calibration/validity from that report alone.
 
@@ -42,5 +43,7 @@ The project will not treat an L1 file as absolute radiance merely because it is 
 - type 3: irradiance `[W/m2/nm]`.
 
 Only a traceably calibrated type-2 directional-radiance path can satisfy the current strict real-sky validation target without a separately reviewed conversion.
+
+For the current frozen Level-B validation domain, zenith (`90°` target altitude) is outside support. The project will therefore admit only sky exposures whose metadata places the target altitude within the frozen `5–80°` interval and whose Sun depression is within `2–10.5°`, before any target radiance array is inspected.
 
 No selected target spectral values should be attached to, summarized in, or used to revise this request.

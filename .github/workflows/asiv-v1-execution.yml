@@ -1,0 +1,474 @@
+name: ASIV v1 scientific execution
+run-name: ASIV v1 science ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: asiv-v1-science-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      ordinal: ${{ steps.identity.outputs.ordinal }}
+      parent: ${{ steps.identity.outputs.parent }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout exact dispatched authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - name: Bind dispatch authorization review publisher and parent preauthorization
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^dispatch/aerosol-scenario-interpolation-validation-v1-ordinal-([1-9][0-9]*)$ ]]
+          ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python - <<'PY' > auth.env
+          import json
+          a=json.load(open('experiments/aerosol-scenario-interpolation-validation-v1/authorization.json'))
+          n=a.get('scientificOrdinal')
+          if not isinstance(n,int) or n<=0: raise SystemExit('authorization ordinal invalid')
+          print(f'AUTH_ORDINAL={n}'); print(f'AUTH_BRANCH={a.get("authorizationBranch","")}'); print(f'DISPATCH_BRANCH={a.get("dispatchBranch","")}'); print(f'AUTH_PARENT_DOC={a.get("exactAuthorizationParentCommit","")}')
+          PY
+          source auth.env
+          test "$AUTH_ORDINAL" = "$ORDINAL"
+          test "$DISPATCH_BRANCH" = "$GITHUB_REF_NAME"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          AUTH_PARENT="${PARENTS[0]}"
+          test "$AUTH_PARENT" = "$AUTH_PARENT_DOC"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = experiments/aerosol-scenario-interpolation-validation-v1/authorization.json
+          git fetch origin main "$AUTH_BRANCH" "$DISPATCH_BRANCH"
+          test "$(git rev-parse origin/main)" = "$AUTH_PARENT"
+          test "$(git rev-parse "origin/$AUTH_BRANCH")" = "$GITHUB_SHA"
+          test "$(git rev-parse "origin/$DISPATCH_BRANCH")" = "$GITHUB_SHA"
+          export ORDINAL AUTH_BRANCH AUTH_PARENT
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          good=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(good)!=1: raise SystemExit(f'expected one authorization PR, got {len(good)}')
+          p=good[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None or (p.get('base') or {}).get('ref')!='main': raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-v1-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-review-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'authorization review history invalid: same={len(same)} good={len(good)}')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RID}/artifacts?per_page=100" > auth-review-artifacts.json
+          REVIEW_AID="$(python - <<'PY'
+          import json,os
+          rows=json.load(open('auth-review-artifacts.json')).get('artifacts',[]); expected=f'asiv-v1-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('authorization review artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${REVIEW_AID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          PUBLISH_BRANCH="status/asiv-v1-dispatch-publisher-ordinal-$ORDINAL"
+          export PUBLISH_BRANCH
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-v1-dispatch-publisher.yml/runs?branch=${PUBLISH_BRANCH}&event=push&per_page=100" > publisher-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('publisher-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if (r.get('head_branch') or '')==os.environ['PUBLISH_BRANCH']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'publisher history invalid: same={len(same)} good={len(good)}')
+          Path('publisher-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          PUB_RID="$(python -c 'import json;print(json.load(open("publisher-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PUB_RID}/artifacts?per_page=100" > publisher-artifacts.json
+          PUB_AID="$(python - <<'PY'
+          import json,os
+          rows=json.load(open('publisher-artifacts.json')).get('artifacts',[]); expected=f'asiv-v1-dispatch-publisher-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('publisher artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir publisher-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUB_AID}/zip" > publisher.zip
+          unzip -q publisher.zip -d publisher-artifact
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-v1-preauthorization-audit.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact-parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          PRE_RID="$(python -c 'import json;print(json.load(open("preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PRE_RID}/artifacts?per_page=100" > preauth-artifacts.json
+          PRE_AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[]); good=[a for a in rows if a.get('name')=='asiv-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('preauthorization artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preauth-artifact execution-preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PRE_AID}/zip" > preauth.zip
+          unzip -q preauth.zip -d preauth-artifact
+          git ls-files -z > tracked-files.nul
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"; echo "parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"; echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"; echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Fresh pre-solver seed and geometry audits on dispatch head
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/tracked_tree_seed_scan.py --repo-root . --file-list tracked-files.nul --candidate-seed-ledger experiments/aerosol-scenario-interpolation-validation-v1/candidate-seed-ledger.v1.json --allow-self-ledger-json experiments/aerosol-scenario-interpolation-validation-v1/seed-self-ledger-policy.v1.json --output execution-preflight/tracked-seed-scan.json
+          python experiments/aerosol-scenario-interpolation-validation-v1/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger experiments/aerosol-scenario-interpolation-validation-v1/candidate-seed-ledger.v1.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name "$GITHUB_REF_NAME" --expected-repo-head "$GITHUB_SHA" --output execution-preflight/repository-global-seed-scan.json
+          python experiments/aerosol-scenario-interpolation-validation-v1/geometry_collision_audit.py --repo-root . --file-list tracked-files.nul --repository "$GITHUB_REPOSITORY" --current-run-id "$GITHUB_RUN_ID" --expected-branch-name "$GITHUB_REF_NAME" --expected-repo-head "$GITHUB_SHA" --output execution-preflight/geometry-collision-audit.json
+          python experiments/aerosol-scenario-interpolation-validation-v1/build_freshness_proof.py --stage-dir experiments/aerosol-scenario-interpolation-validation-v1 --tracked-tree-report execution-preflight/tracked-seed-scan.json --repository-global-report execution-preflight/repository-global-seed-scan.json --geometry-report execution-preflight/geometry-collision-audit.json --expected-main-head "$GITHUB_SHA" --output execution-preflight/live-freshness-proof.json
+
+      - name: Build exact one-use science guard and frozen seeded design
+        id: matrix
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_PARENT: ${{ steps.identity.outputs.parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-scenario-interpolation-validation-v1/execution-candidate python - <<'PY'
+          import importlib.util,json,os
+          from pathlib import Path
+          import control_surface,science_guard
+          root=Path('.'); stage=root/'experiments/aerosol-scenario-interpolation-validation-v1'
+          auth=json.load(open(stage/'authorization.json')); parent_proof=json.load(open('preauth-artifact/freshness-proof.json')); live_proof=json.load(open('execution-preflight/live-freshness-proof.json'))
+          pr=json.load(open('auth-pr-selected.json')); rr=json.load(open('auth-review-selected.json')); review=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json')))); pubrun=json.load(open('publisher-selected.json')); publisher=json.load(open(next(Path('publisher-artifact').rglob('dispatch-publisher.json'))))
+          payload=control_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=control_surface.build_dispatch_surface(payload,int(os.environ['ORDINAL']),os.environ['GITHUB_SHA'],os.environ['AUTH_PARENT'],current_pr=int(os.environ['PR_NUMBER']),current_run_id=int(os.environ['GITHUB_RUN_ID']),candidate_seed_authorization_recheck_passed=True,candidate_geometry_authorization_recheck_passed=True,post_dispatch=True)
+          ctx={'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'headSha':os.environ['GITHUB_SHA'],'refName':os.environ['GITHUB_REF_NAME'],'dispatchBranchHeadSha':os.environ['GITHUB_SHA'],'authorizationBranchHeadSha':os.environ['GITHUB_SHA'],'liveMain':os.environ['AUTH_PARENT'],'workflowRunId':int(os.environ['GITHUB_RUN_ID']),'authorizationHead':os.environ['GITHUB_SHA'],'authorizationParent':os.environ['AUTH_PARENT'],'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headBranch':pr['head']['ref'],'headSha':pr['head']['sha']},'authorizationReview':{'status':review['status'],'headSha':review['headSha'],'parentSha':review['parentSha'],'prNumber':review['prNumber'],'runAttempt':rr['run_attempt'],'conclusion':rr['conclusion'],'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False},'publisherRun':{'runAttempt':pubrun['run_attempt'],'status':pubrun['status'],'conclusion':pubrun['conclusion']},'publisherEvidence':publisher,'freshness':surface,'issue60AuthorizationMarkers':surface.get('matchingAuthorizationMarkerBodies',[]),'issue60ConsumedMarkers':surface.get('currentConsumedMarkerBodies',[])}
+          guard=science_guard.evaluate(root,auth,parent_proof,live_proof,ctx)
+          Path('execution-preflight/execution-guard.json').write_text(json.dumps(guard,indent=2,sort_keys=True)+'\n'); Path('execution-preflight/freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          spec=importlib.util.spec_from_file_location('asiv_execution_design',stage/'execution_design.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          design=m.build_review_execution_design(parent_proof,os.environ['AUTH_PARENT'])
+          if design['canonicalDesignSha256']!=auth['executionDesignCanonicalSha256'] or design['caseCount']!=120 or design['groupCount']!=24: raise SystemExit('frozen execution design drift')
+          Path('execution-preflight/execution-design.json').write_text(json.dumps(design,indent=2,sort_keys=True)+'\n')
+          matrix={'include':[{'caseId':row['caseId']} for row in design['cases']]}
+          if len(matrix['include'])!=120: raise SystemExit('case matrix cardinality drift')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
+          PY
+
+      - name: Acquire and hash-bind exact OPAC archive once
+        shell: bash
+        env:
+          SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+          EXPECTED_ARCHIVE_SHA256: 11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e
+          EXPECTED_ARCHIVE_SIZE: '743391266'
+        run: |
+          set -euo pipefail
+          OUT=execution-preflight/optprop_v2.1.tar.gz
+          curl --location --fail-with-body --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 2700 --user-agent 'twilight-mystic-experiments asiv-v1-science-preflight/1.0' --output "$OUT" "$SOURCE_URL"
+          test "$(stat -c %s "$OUT")" = "$EXPECTED_ARCHIVE_SIZE"
+          printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$OUT" | sha256sum -c -
+
+      - name: Persist pre-solver guard evidence and exact OPAC bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-v1-preflight-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            execution-preflight/
+            auth-pr-selected.json
+            auth-review-selected.json
+            publisher-selected.json
+            preauth-selected.json
+            experiments/aerosol-scenario-interpolation-validation-v1/authorization.json
+          if-no-files-found: error
+          compression-level: 0
+
+  cases:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: asiv-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Fetch exact same-run preflight artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > current-run-artifact-pages.json
+          AID="$(python - <<'PY'
+          import json,os
+          pages=json.load(open('current-run-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'asiv-v1-preflight-ordinal-{os.environ["ORDINAL"]}'; good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one preflight artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preflight.zip
+          unzip -q preflight.zip -d preflight
+          test -f preflight/execution-preflight/execution-guard.json
+          test -f preflight/execution-preflight/execution-design.json
+          test -f preflight/execution-preflight/optprop_v2.1.tar.gz
+      - name: Reconstruct frozen OPAC overlay and capture runtime identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          ARCHIVE=preflight/execution-preflight/optprop_v2.1.tar.gz
+          test "$(stat -c %s "$ARCHIVE")" = 743391266
+          printf '%s  %s\n' '11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e' "$ARCHIVE" | sha256sum -c -
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from runtime_overlay import stage_frozen_overlay
+          base=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'; archive=Path('preflight/execution-preflight/optprop_v2.1.tar.gz')
+          report=stage_frozen_overlay(base,archive,Path('libradtran-overlay'))
+          Path('overlay-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          if report.get('status')!='FROZEN_OPAC_RUNTIME_OVERLAY_STAGED' or report.get('augmentedDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('overlay staging drift')
+          PY
+          python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$PWD/libradtran-overlay/data" --atmosphere "$PWD/libradtran-overlay/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --output runtime-report.json
+      - name: Execute exactly one preregistered ASIV case
+        shell: micromamba-shell {0}
+        env:
+          CASE_ID: ${{ matrix.caseId }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-scenario-interpolation-validation-v1/execution-candidate python - <<'PY'
+          import os,shutil
+          from pathlib import Path
+          from executor import execute_case
+          uvspec=shutil.which('uvspec')
+          if not uvspec: raise SystemExit('uvspec missing')
+          execute_case(Path('.'),Path('preflight/execution-preflight/execution-design.json'),Path('preflight/execution-preflight/execution-guard.json'),Path('runtime-report.json'),os.environ['CASE_ID'],Path('libradtran-overlay/data'),Path('case-output'),Path(uvspec),allow_execution=True)
+          PY
+          cp overlay-report.json "case-output/${CASE_ID}/overlay-report.json"
+      - name: Persist immutable raw case evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-v1-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}/
+          if-no-files-found: error
+          compression-level: 0
+
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases.result == 'success' }}
+    needs: [preflight, cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Fetch exact same-run preflight design
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > preflight-artifact-pages.json
+          AID="$(python - <<'PY'
+          import json,os
+          pages=json.load(open('preflight-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'asiv-v1-preflight-ordinal-{os.environ["ORDINAL"]}'; good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('preflight artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preflight.zip
+          unzip -q preflight.zip -d preflight
+      - name: Enumerate exact current-run 120 case artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > artifact-pages.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.load(open('artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]; cases=[a for a in rows if str(a.get('name') or '').startswith('asiv-v1-case-') and not a.get('expired',False)]
+          if len(cases)!=120 or len({a['name'] for a in cases})!=120: raise SystemExit(f'exact 120 unique current-run case artifacts required, got {len(cases)}')
+          Path('case-artifacts.json').write_text(json.dumps({'artifacts':cases},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Download and hash exact current-run case artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p case-artifacts case-zips
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          for row in json.load(open('case-artifacts.json'))['artifacts']:
+              name=row['name']; aid=row['id']; z=Path('case-zips')/(name+'.zip')
+              with z.open('wb') as fh: subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{aid}/zip"],stdout=fh,check=True)
+              digest=hashlib.sha256(z.read_bytes()).hexdigest(); expected=str(row.get('digest') or '')
+              if expected and expected!='sha256:'+digest: raise SystemExit(f'artifact zip digest mismatch: {name}')
+              target=Path('case-artifacts')/name; target.mkdir(); subprocess.run(['unzip','-q',str(z),'-d',str(target)],check=True)
+          PY
+      - name: Run exact-120 acquisition scalar truth and spectral diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-scenario-interpolation-validation-v1/execution-candidate/aggregate_results.py --repository-root . --execution-design preflight/execution-preflight/execution-design.json --artifact-root case-artifacts --artifact-metadata case-artifacts.json --workflow-run-id "$GITHUB_RUN_ID" --scientific-ordinal "${{ needs.preflight.outputs.ordinal }}" --output-acquisition acquisition-manifest.json --output-case-results normalized-case-results.json --output-scalar-truth scalar-truth.json --output-spectral spectral-diagnostics.json
+          python - <<'PY'
+          import json
+          a=json.load(open('acquisition-manifest.json')); s=json.load(open('scalar-truth.json')); p=json.load(open('spectral-diagnostics.json'))
+          if a.get('status')!='COMPLETE_EXACT_120_CASE_ARTIFACT_UNIVERSE' or a.get('caseArtifactCount')!=120 or a.get('groupCount')!=24 or a.get('holdoutCount')!=8: raise SystemExit('acquisition drift')
+          if s.get('status')!='COMPLETE_EXACT_120_CASE_SCALAR_TRUTH' or s.get('finiteThreeReplicateStateVsNativeChannelRows')!=96: raise SystemExit('scalar truth drift')
+          if p.get('status')!='COMPLETED_REQUIRED_DIAGNOSTIC_NO_SPECTRAL_PASS_CLAIM' or p.get('contrastReplicateRowCount')!=96 or p.get('epsilonSubstitutionPerformed') is not False: raise SystemExit('spectral diagnostic drift')
+          PY
+      - name: Fetch immutable ordinal-38 training analysis artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9504775903" > ordinal38-artifact.json
+          python - <<'PY'
+          import json
+          a=json.load(open('ordinal38-artifact.json'))
+          if a.get('name')!='afpf-v1-analysis-recovery-ordinal-38' or a.get('expired',False): raise SystemExit('ordinal38 training artifact unavailable/drifted')
+          if a.get('digest')!='sha256:fa824ff1e693682ee5b89aa108259452823e1f8f10818d82c34f5d01ba9dac0a': raise SystemExit('ordinal38 artifact digest drift')
+          PY
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9504775903/zip" > ordinal38.zip
+          printf '%s  %s\n' 'fa824ff1e693682ee5b89aa108259452823e1f8f10818d82c34f5d01ba9dac0a' ordinal38.zip | sha256sum -c -
+          mkdir ordinal38
+          unzip -q ordinal38.zip -d ordinal38
+          python - <<'PY'
+          from pathlib import Path
+          rows=list(Path('ordinal38').rglob('analysis-index.json'))
+          if len(rows)!=1: raise SystemExit(f'exactly one ordinal38 analysis-index required, got {len(rows)}')
+          Path('ordinal38-analysis-path.txt').write_text(str(rows[0])+'\n')
+          PY
+      - name: Run frozen selected model on eight holdouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.load(open('review/aerosol-scenario-interpolation-validation-v1/protocol.review.json'))
+          rows=[{'geometryId':r['holdoutId'],'geometry':r['geometry']} for r in p['freshHoldoutGeometrySelection']['selectedGeometries']]
+          if len(rows)!=8: raise SystemExit('holdout count drift')
+          Path('holdout-geometries.json').write_text(json.dumps({'geometries':rows},indent=2,sort_keys=True)+'\n')
+          PY
+          ANALYSIS_INDEX="$(cat ordinal38-analysis-path.txt)"
+          python review/aerosol-scenario-interpolation-validation-v1/evaluate_selected_model_v1.py --analysis-index "$ANALYSIS_INDEX" --input holdout-geometries.json --output predictions.json
+      - name: Evaluate frozen scalar gates and derived Level-B gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANALYSIS_INDEX="$(cat ordinal38-analysis-path.txt)"
+          PYTHONPATH=experiments/aerosol-scenario-interpolation-validation-v1 python - "$ANALYSIS_INDEX" <<'PY'
+          import json,sys
+          from pathlib import Path
+          import analysis
+          out=analysis.evaluate(Path('.'),json.load(open('scalar-truth.json')),json.load(open('predictions.json')),Path(sys.argv[1]))
+          Path('scalar-evaluation.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          node experiments/aerosol-scenario-interpolation-validation-v1/level_b_runner.mjs --truth scalar-truth.json --predictions predictions.json --human-threshold experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs --output level-b-evaluation.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          scalar=json.load(open('scalar-evaluation.json')); levelb=json.load(open('level-b-evaluation.json')); spectral=json.load(open('spectral-diagnostics.json'))
+          if scalar.get('status') not in ('PASS_FROZEN_SCALAR_GATES','FAIL_FROZEN_SCALAR_GATES') or scalar.get('retuningPerformed') is not False or scalar.get('productionAuthorized') is not False: raise SystemExit('scalar evaluation identity drift')
+          if levelb.get('status') not in ('PASS_FROZEN_LEVEL_B_GATES','FAIL_FROZEN_LEVEL_B_GATES') or levelb.get('levelBSeparatelyFit') is not False or levelb.get('productionAuthorized') is not False: raise SystemExit('Level-B evaluation identity drift')
+          final={'schemaVersion':1,'stageId':'aerosol-scenario-interpolation-validation-v1-final-evaluation','status':'PASS_FROZEN_ASIV_SCALAR_AND_LEVEL_B_GATES' if scalar['allScalarGatesPass'] and levelb['allLevelBGatesPass'] else 'FAIL_FROZEN_ASIV_SCALAR_OR_LEVEL_B_GATES','scientificOrdinal':int('${{ needs.preflight.outputs.ordinal }}'),'workflowRunId':int('${{ github.run_id }}'),'workflowRunAttempt':int('${{ github.run_attempt }}'),'caseCount':120,'groupCount':24,'holdoutCount':8,'scalarStatus':scalar['status'],'levelBStatus':levelb['status'],'spectralDiagnosticStatus':spectral['status'],'totalUnresolvedSpectralNodeCount':spectral['totalUnresolvedNodeCount'],'fullSpectrumInterpolationPassClaim':False,'postResultRetuningPerformed':False,'productionAuthorized':False,'starsvisibilityMutationAuthorized':False,'githubRerun':False,'retryPerformed':False,'resumePerformed':False}
+          Path('final-evaluation.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Persist complete immutable ASIV analysis evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-v1-analysis
+          path: |
+            case-artifacts.json
+            preflight/execution-preflight/execution-design.json
+            acquisition-manifest.json
+            normalized-case-results.json
+            scalar-truth.json
+            spectral-diagnostics.json
+            ordinal38-artifact.json
+            holdout-geometries.json
+            predictions.json
+            scalar-evaluation.json
+            level-b-evaluation.json
+            final-evaluation.json
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish terminal ASIV science checkpoint to Issue 60
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > checkpoint.txt
+          import json,os
+          x=json.load(open('final-evaluation.json'))
+          print(f"ASIV-V1-SCIENCE-COMPLETED ordinal={x['scientificOrdinal']} run={x['workflowRunId']} attempt={x['workflowRunAttempt']} cases=120 groups=24 holdouts=8 scalar_status={x['scalarStatus']} levelb_status={x['levelBStatus']} spectral_unresolved_nodes={x['totalUnresolvedSpectralNodeCount']} artifact_id={os.environ['ARTIFACT_ID']} artifact_digest=sha256:{os.environ['ARTIFACT_DIGEST']} full_spectrum_pass_claim=false production=false starsvisibility_mutation=false rerun=false retry=false resume=false")
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$(cat checkpoint.txt)" > /dev/null

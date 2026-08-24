@@ -1,0 +1,163 @@
+name: AFPF v1 ordinal 38 failure observer
+run-name: Observe AFPF v1 ordinal 38 terminal failure metadata
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/afpf-v1-ordinal38-failure-observer.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  observe:
+    if: ${{ github.event.pull_request.head.ref == 'observer/afpf-v1-ordinal38-failure-metadata-v1' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact terminal source run metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: "32672764808"
+          SOURCE_ORDINAL: "38"
+          SOURCE_BRANCH: dispatch/aerosol-full-phase-function-sensitivity-v1-ordinal-38
+          SOURCE_HEAD: 7c160d1b1d1fbaa534076b7d30c14fcceda0e877
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.head.ref }}" = observer/afpf-v1-ordinal38-failure-metadata-v1
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > source-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?filter=latest&per_page=100" > source-job-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" > source-artifact-pages.json
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          source = json.load(open('source-run.json'))
+          if int(source.get('id') or 0) != int(os.environ['SOURCE_RUN_ID']):
+              raise SystemExit('source run id drift')
+          if int(source.get('run_attempt') or 0) != 1:
+              raise SystemExit('source run attempt drift')
+          if source.get('event') != 'workflow_dispatch':
+              raise SystemExit('source event drift')
+          if source.get('status') != 'completed' or source.get('conclusion') != 'failure':
+              raise SystemExit('source run is not the exact terminal failure')
+          if source.get('head_branch') != os.environ['SOURCE_BRANCH'] or source.get('head_sha') != os.environ['SOURCE_HEAD']:
+              raise SystemExit('source branch/head drift')
+
+          job_pages = json.load(open('source-job-pages.json'))
+          jobs = [j for page in job_pages for j in page.get('jobs', [])]
+          artifact_pages = json.load(open('source-artifact-pages.json'))
+          artifacts = [a for page in artifact_pages for a in page.get('artifacts', [])]
+
+          preflight = [j for j in jobs if j.get('name') == 'preflight']
+          cases = [j for j in jobs if str(j.get('name') or '').startswith('cases-dep')]
+          aggregate = [j for j in jobs if j.get('name') == 'aggregate']
+          failed = [j for j in jobs if j.get('conclusion') == 'failure']
+          case_artifacts = [a for a in artifacts if str(a.get('name') or '').startswith('afpf-v1-case-') and not a.get('expired', False)]
+          analysis_artifacts = [a for a in artifacts if a.get('name') == 'afpf-v1-analysis' and not a.get('expired', False)]
+          preflight_artifacts = [a for a in artifacts if str(a.get('name') or '').startswith('afpf-v1-preflight-ordinal-38') and not a.get('expired', False)]
+
+          def slim_job(j):
+              return {
+                  'id': j.get('id'),
+                  'name': j.get('name'),
+                  'status': j.get('status'),
+                  'conclusion': j.get('conclusion'),
+                  'started_at': j.get('started_at'),
+                  'completed_at': j.get('completed_at'),
+                  'html_url': j.get('html_url'),
+                  'steps': [
+                      {
+                          'number': s.get('number'),
+                          'name': s.get('name'),
+                          'status': s.get('status'),
+                          'conclusion': s.get('conclusion'),
+                          'started_at': s.get('started_at'),
+                          'completed_at': s.get('completed_at'),
+                      }
+                      for s in j.get('steps', [])
+                  ],
+              }
+
+          case_success = sum(j.get('conclusion') == 'success' for j in cases)
+          aggregate_steps = {}
+          if len(aggregate) == 1:
+              aggregate_steps = {s.get('name'): s.get('conclusion') for s in aggregate[0].get('steps', [])}
+
+          classification = 'REVIEW_REQUIRED'
+          if (
+              len(preflight) == 1 and preflight[0].get('conclusion') == 'success'
+              and len(cases) == 360 and case_success == 360
+              and len(case_artifacts) == 360 and len({a.get('name') for a in case_artifacts}) == 360
+              and len(aggregate) == 1 and aggregate[0].get('conclusion') == 'failure'
+          ):
+              if (
+                  aggregate_steps.get('Run frozen exact-360 acquisition and scalar spectral analysis') == 'success'
+                  and aggregate_steps.get('Fetch exact bound starsvisibility human-threshold implementation') == 'failure'
+                  and aggregate_steps.get('Run frozen Level-B propagation only after exact-360 aggregate') in (None, 'skipped')
+              ):
+                  classification = 'ANALYSIS_ONLY_RECOVERY_CANDIDATE_CROSS_REPOSITORY_HUMAN_THRESHOLD_FETCH'
+              else:
+                  classification = 'EXACT_360_SCIENCE_COMPLETE_AGGREGATE_FAILURE_REVIEW_REQUIRED'
+          elif len(cases) != 360 or case_success != len(cases):
+              classification = 'CASE_UNIVERSE_NOT_EXACT_360_SUCCESS'
+
+          summary = {
+              'schemaVersion': 1,
+              'stageId': 'afpf-v1-ordinal38-terminal-failure-observer',
+              'status': 'OBSERVED_TERMINAL_FAILURE_METADATA_ONLY',
+              'sourceRunId': int(os.environ['SOURCE_RUN_ID']),
+              'sourceScientificOrdinal': int(os.environ['SOURCE_ORDINAL']),
+              'sourceRunAttempt': int(source.get('run_attempt') or 0),
+              'sourceHeadBranch': source.get('head_branch'),
+              'sourceHeadSha': source.get('head_sha'),
+              'sourceCreatedAt': source.get('created_at'),
+              'sourceUpdatedAt': source.get('updated_at'),
+              'sourceConclusion': source.get('conclusion'),
+              'jobCount': len(jobs),
+              'preflightCount': len(preflight),
+              'preflightConclusion': preflight[0].get('conclusion') if len(preflight) == 1 else None,
+              'caseJobCount': len(cases),
+              'caseJobSuccessCount': case_success,
+              'aggregateCount': len(aggregate),
+              'failedJobCount': len(failed),
+              'failedJobs': [slim_job(j) for j in failed],
+              'aggregate': [slim_job(j) for j in aggregate],
+              'artifactCount': len(artifacts),
+              'caseArtifactCount': len(case_artifacts),
+              'uniqueCaseArtifactNameCount': len({a.get('name') for a in case_artifacts}),
+              'analysisArtifactCount': len(analysis_artifacts),
+              'preflightArtifactCount': len(preflight_artifacts),
+              'classification': classification,
+              'scientificRuntimeExecutedByObserver': False,
+              'solverExecutedByObserver': False,
+              'scientificCaseExecutedByObserver': False,
+              'rerunPerformedByObserver': False,
+              'retryPerformedByObserver': False,
+              'resumePerformedByObserver': False,
+          }
+          Path('observer-summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload immutable observer metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-ordinal38-failure-observer
+          path: |
+            source-run.json
+            source-job-pages.json
+            source-artifact-pages.json
+            observer-summary.json
+          if-no-files-found: error
+          compression-level: 0

@@ -1,0 +1,174 @@
+name: ASIV v1 training-only selector
+
+on:
+  push:
+    branches:
+      - status/asiv-v1-training-selection-v1
+    paths:
+      - .github/selection-requests/asiv-v1.json
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: asiv-v1-training-selection
+  cancel-in-progress: false
+
+jobs:
+  select-training-model:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact request head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prove single-use request and exact implementation identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "${GITHUB_REF_NAME}" = "status/asiv-v1-training-selection-v1"
+          test -f .github/selection-requests/asiv-v1.json
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          python - <<'PY'
+          import json,subprocess
+          p=json.load(open('.github/selection-requests/asiv-v1.json'))
+          if p.get('schemaVersion')!=1 or p.get('stageId')!='asiv-v1-training-selection-request' or p.get('status')!='REQUEST_TRAINING_ONLY_SELECTION_FROM_ALREADY_OPENED_ORDINAL38': raise SystemExit('request identity drift')
+          exact=str(p.get('exactImplementationMain') or '')
+          parent=subprocess.check_output(['git','rev-parse','HEAD^']).decode().strip()
+          live=subprocess.check_output(['git','rev-parse','refs/remotes/origin/main']).decode().strip()
+          if not exact or parent!=exact or live!=exact: raise SystemExit(f'exact-main request drift parent={parent} live={live} request={exact}')
+          changed=subprocess.check_output(['git','diff','--name-only','HEAD^','HEAD']).decode().splitlines()
+          if changed!=['.github/selection-requests/asiv-v1.json']: raise SystemExit(f'request must be sole changed path: {changed}')
+          required={
+            'selectorGitBlobSha1':'c65183f959244abc851de45e609bfc5a9b38cd67',
+            'selectorContractGitBlobSha1':'0914ea1539dda8bf9ac2c629f9cf5f1282a77e3f',
+            'asivProtocolGitBlobSha1':'27923f9d40d35b001c15b20b7909e3fcd12fd833',
+            'sourceArtifactId':9504775903,
+            'sourceArtifactDigest':'sha256:fa824ff1e693682ee5b89aa108259452823e1f8f10818d82c34f5d01ba9dac0a',
+          }
+          for k,v in required.items():
+            if p.get(k)!=v: raise SystemExit(f'request binding drift: {k}')
+          if any(p.get(k) is not False for k in ('scientificOrdinalAllocated','scientificSeedAllocated','solverExecutionAuthorized','holdoutExecutionAuthorized')): raise SystemExit('request must remain zero-science')
+          PY
+          test "$(git hash-object review/asiv-v1-training-selector-implementation/select_training_model_v1.py)" = "c65183f959244abc851de45e609bfc5a9b38cd67"
+          test "$(git hash-object review/asiv-v1-training-selector-implementation/selector-contract-v1.json)" = "0914ea1539dda8bf9ac2c629f9cf5f1282a77e3f"
+          test "$(git hash-object review/aerosol-scenario-interpolation-validation-v1/protocol.review.json)" = "27923f9d40d35b001c15b20b7909e3fcd12fd833"
+
+      - name: Download and verify already-opened ordinal-38 training artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9504775903/zip" > source.zip
+          python - <<'PY'
+          import hashlib
+          actual='sha256:'+hashlib.sha256(open('source.zip','rb').read()).hexdigest()
+          expected='sha256:fa824ff1e693682ee5b89aa108259452823e1f8f10818d82c34f5d01ba9dac0a'
+          if actual!=expected: raise SystemExit(f'source artifact digest mismatch: {actual} != {expected}')
+          PY
+          mkdir source
+          unzip -q source.zip analysis-index.json recovery-provenance.json -d source
+          python - <<'PY'
+          import hashlib,json
+          expected={
+            'analysis-index.json':('e19b44b875d4c3e8082cdf89062d068c68e05ef1a896068ec59e48a80b9f4547','b7259c9675fc7f0f592218b37a69416a26518879400669775c2c0551bf3e013d'),
+            'recovery-provenance.json':('16190195ce97d165f5705d053e4d5c30649701a123cf7f8c54da738b98b67b2d','6c15a6ee9bad68a279842b1cd82448ca01c8785e702bf35f46fbbc9481da2dc0'),
+          }
+          for name,(raw_want,can_want) in expected.items():
+            raw=open('source/'+name,'rb').read(); obj=json.loads(raw)
+            raw_got=hashlib.sha256(raw).hexdigest(); can=hashlib.sha256(json.dumps(obj,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+            if raw_got!=raw_want or can!=can_want: raise SystemExit(f'member binding mismatch: {name}')
+          p=json.load(open('source/recovery-provenance.json'))
+          if p.get('sourceScientificOrdinal')!=38 or p.get('caseArtifactCount')!=360 or p.get('scientificCaseExecutionPerformed') is not False or p.get('solverExecutionPerformed') is not False: raise SystemExit('recovery provenance drift')
+          PY
+
+      - name: Run frozen training-only selector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/asiv-v1-training-selector-implementation/select_training_model_v1.py \
+            --protocol review/aerosol-scenario-interpolation-validation-v1/protocol.review.json \
+            --contract review/asiv-v1-training-selector-implementation/selector-contract-v1.json \
+            --analysis-index source/analysis-index.json \
+            --report training-selection-report.json \
+            --model selected-model.json
+          python - <<'PY'
+          import json
+          r=json.load(open('training-selection-report.json')); m=json.load(open('selected-model.json'))
+          if r.get('sourceScientificOrdinal')!=38 or r.get('candidateCount')!=17: raise SystemExit('selector report identity/cardinality drift')
+          if any(r.get(k) is not False for k in ('holdoutValuesOpened','scientificExecutionPerformed','solverExecutionPerformed','ordinal39Allocated','githubRerun','retry','resume')): raise SystemExit('selector report scientific boundary drift')
+          if m.get('ordinal39Allocated') is not False or m.get('scientificExecutionPerformed') is not False or m.get('solverExecutionPerformed') is not False: raise SystemExit('selected model boundary drift')
+          if r.get('status') not in ('ELIGIBLE_SELECTED_MODEL','NO_ELIGIBLE_CANDIDATE_STOP_NO_ORDINAL39_AUTHORIZATION'): raise SystemExit('selector terminal status drift')
+          PY
+
+      - name: Build immutable selector provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          def h(p): return hashlib.sha256(open(p,'rb').read()).hexdigest()
+          r=json.load(open('training-selection-report.json'))
+          value={
+            'schemaVersion':1,
+            'stageId':'asiv-v1-training-selection-provenance',
+            'status':'TRAINING_ONLY_SELECTION_COMPLETED_READY_FOR_UPLOAD',
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'requestHead':os.environ['GITHUB_SHA'],
+            'sourceScientificOrdinal':38,
+            'sourceArtifactId':9504775903,
+            'sourceArtifactDigest':'sha256:fa824ff1e693682ee5b89aa108259452823e1f8f10818d82c34f5d01ba9dac0a',
+            'selectedCandidateId':r.get('selectedCandidateId'),
+            'eligibleCandidateCount':r.get('eligibleCandidateCount'),
+            'selectionStatus':r.get('status'),
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+            'libRadtranRuntimeSetupPerformed':False,
+            'scientificOrdinalAllocated':False,
+            'scientificSeedAllocated':False,
+            'holdoutValuesOpened':False,
+            'githubRerun':False,
+            'retry':False,
+            'resume':False,
+            'outputSha256':{
+              'training-selection-report.json':h('training-selection-report.json'),
+              'selected-model.json':h('selected-model.json'),
+            },
+          }
+          open('training-selection-provenance.json','w').write(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload immutable training-only selection
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: asiv-v1-training-selection
+          path: |
+            training-selection-report.json
+            selected-model.json
+            training-selection-provenance.json
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish terminal training-selection checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          read -r STATUS SELECTED ELIGIBLE <<< "$(python - <<'PY'
+          import json
+          r=json.load(open('training-selection-report.json'))
+          print(r['status'],r.get('selectedCandidateId') or 'NONE',r.get('eligibleCandidateCount',0))
+          PY
+          )"
+          BODY="ASIV-V1-TRAINING-SELECTION-COMPLETED run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} source_ordinal=38 status=${STATUS} selected=${SELECTED} eligible_candidates=${ELIGIBLE} artifact_id=${ARTIFACT_ID} artifact_digest=sha256:${ARTIFACT_DIGEST} ordinal39_allocated=false solver=false holdout_opened=false rerun=false retry=false resume=false"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" > /dev/null

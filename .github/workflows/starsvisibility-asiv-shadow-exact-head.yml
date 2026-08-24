@@ -1,0 +1,130 @@
+name: Starsvisibility ASIV shadow exact-head software gate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-asiv-shadow-exact-head.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: starsvisibility-asiv-shadow-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APPLICATION_REPO: search-maker/starsvisibility
+      APPLICATION_SHA: ebc55c28363be671d6e790e4d36246e339e233cb
+      EXPECTED_ASIV_MODEL_SHA256: 0b11a1691bfd2d9e3f073c786044bacedd3e9210bcb0660c76f21c34128a61af
+      EXPECTED_ASIV_RUNTIME_SHA256: a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060
+      EXPECTED_ASIV_SCIENCE_RUN: '32748300014'
+      EXPECTED_ASIV_ANALYSIS_ARTIFACT: '9530075455'
+
+    steps:
+      - name: Checkout public verification lane
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact starsvisibility PR 100 head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact immutable application identity and ASIV runtime bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C app remote remove origin || true
+          test "$(sha256sum app/scientific-tools/visibility-v3/aerosol-scenario-interpolator-runtime-v1.json | awk '{print $1}')" = "$EXPECTED_ASIV_RUNTIME_SHA256"
+          if grep -Fq 'asiv-holdout-' app/scientific-tools/visibility-v3/aerosol-scenario-interpolator-runtime-v1.json; then
+            echo 'Protected ordinal-39 holdout identity leaked into portable runtime.' >&2
+            exit 1
+          fi
+          grep -Fq "$EXPECTED_ASIV_MODEL_SHA256" app/scientific-tools/visibility-v3/aerosol-scenario-interpolator.mjs
+          grep -Fq "$EXPECTED_ASIV_SCIENCE_RUN" app/scientific-tools/visibility-v3/aerosol-scenario-envelope.mjs
+          grep -Fq "$EXPECTED_ASIV_ANALYSIS_ARTIFACT" app/scientific-tools/visibility-v3/aerosol-scenario-envelope.mjs
+
+      - name: Set up exact Node version
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+
+      - name: Install exact application dependencies
+        working-directory: app
+        shell: bash
+        run: npm ci
+
+      - name: Execute full Level-B parity and Pages prebuild/build contract
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          npm run build:pages
+
+      - name: Verify ASIV shadow integration remained non-production after build
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/level-b-software-status.json
+          grep -Fq 'ASIV five-state aerosol scenario envelope shadow integration with current observer criterion/evidence labels: PASS' <(npm run test:level-b-parity 2>&1)
+          grep -Fq 'productionAuthorized: false' scientific-tools/visibility-v3/aerosol-scenario-envelope.mjs
+          grep -Fq 'shadowOnly: true' scientific-tools/visibility-v3/aerosol-scenario-envelope.mjs
+          grep -Fq 'available: false' scientific-tools/visibility-v3/aerosol-scenario-envelope.mjs
+          git diff --exit-code -- scientific-tools/visibility-v3/aerosol-scenario-interpolator-runtime-v1.json
+
+      - name: Seal public-safe software verification summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/asiv-shadow-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = {
+              'verificationKind': 'starsvisibility-asiv-shadow-software-only',
+              'applicationRepo': os.environ['APPLICATION_REPO'],
+              'applicationSha': os.environ['APPLICATION_SHA'],
+              'asivSelectedModelCanonicalSha256': os.environ['EXPECTED_ASIV_MODEL_SHA256'],
+              'asivPortableRuntimeSha256': os.environ['EXPECTED_ASIV_RUNTIME_SHA256'],
+              'asivScienceRun': int(os.environ['EXPECTED_ASIV_SCIENCE_RUN']),
+              'asivAnalysisArtifact': int(os.environ['EXPECTED_ASIV_ANALYSIS_ARTIFACT']),
+              'githubRunId': int(os.environ['GITHUB_RUN_ID']),
+              'githubRunAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'scientificExecutionPerformed': False,
+              'mysticExecutionPerformed': False,
+              'productionAuthorized': False,
+              'starsvisibilityProductionActivationAuthorized': False,
+              'claimBoundary': 'software-shadow-integration-only-not-full-spectrum-not-real-sky-not-human-first-seeing',
+          }
+          marker = Path('app/dist/level-b-software-status.json')
+          if marker.exists():
+              out['buildMarker'] = json.loads(marker.read_text())
+          p = Path(os.environ['RUNNER_TEMP'])/'asiv-shadow-summary'/'summary.json'
+          p.write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
+          print(json.dumps({k:v for k,v in out.items() if k != 'buildMarker'}, sort_keys=True))
+          PY
+
+      - name: Upload public-safe software evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: starsvisibility-asiv-shadow-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/asiv-shadow-summary/summary.json

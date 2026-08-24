@@ -52,7 +52,7 @@ class AsivV1AuthorizationControlTests(unittest.TestCase):
         d = design_mod.build_review_execution_design(proof(), "a" * 40)
         transport.validate_authorized_design(ROOT, d)
         self.assertEqual(d["status"], "CANDIDATE_SEEDED_DESIGN_FRESHNESS_PROVEN_REVIEW_ONLY")
-        self.assertEqual((d["groupCount"], d["caseCount"], d["holdoutGeometryCount"]), (24, 120, 8))
+        self.assertEqual((d["groupCount"], d["caseCount"], d["holdoutCount"]), (24, 120, 8))
         self.assertIs(d["candidateSeedsAllocated"], True)
         self.assertIs(d["candidateSeedFreshnessProven"], True)
         self.assertIs(d["scientificOrdinalAllocated"], False)

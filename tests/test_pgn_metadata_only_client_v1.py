@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -11,8 +12,9 @@ MODULE_PATH = (
     / "pgn_metadata_only_client_v1.py"
 )
 SPEC = importlib.util.spec_from_file_location("pgn_metadata_only_client_v1", MODULE_PATH)
-module = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
+module = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
 

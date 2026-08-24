@@ -1,0 +1,365 @@
+name: AFPF v1 ordinal 38 analysis-only recovery
+run-name: Recover AFPF v1 ordinal 38 analysis from immutable case artifacts
+
+on:
+  push:
+    branches:
+      - status/afpf-v1-analysis-recovery-ordinal-38
+    paths:
+      - experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/execution-request.json
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: afpf-v1-analysis-recovery-ordinal-38
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact recovery request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Bind single-use analysis-recovery request and exact source failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: "32672764808"
+          SOURCE_ORDINAL: "38"
+          SOURCE_BRANCH: dispatch/aerosol-full-phase-function-sensitivity-v1-ordinal-38
+          SOURCE_HEAD: 7c160d1b1d1fbaa534076b7d30c14fcceda0e877
+          SOURCE_AGGREGATE_JOB_ID: "97294103672"
+          SOURCE_PREFLIGHT_ARTIFACT_ID: "9501900123"
+          SOURCE_PREFLIGHT_ARTIFACT_DIGEST: sha256:33807259982a4bceae06e079338af1bbbecb60a6024ca4bf94c4267e65d4c1b2
+          REQUEST_PATH: experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/execution-request.json
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/afpf-v1-analysis-recovery-ordinal-38
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          REQUEST_PARENT="${PARENTS[0]}"
+          export REQUEST_PARENT
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$REQUEST_PATH"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$REQUEST_PARENT"
+
+          python - <<'PY'
+          import json,os
+          r=json.load(open(os.environ['REQUEST_PATH']))
+          expected={
+            'schemaVersion':1,
+            'stageId':'aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1-request',
+            'status':'REQUEST_ANALYSIS_ONLY_RECOVERY',
+            'sourceWorkflowRunId':32672764808,
+            'sourceScientificOrdinal':38,
+            'sourceDispatchHead':'7c160d1b1d1fbaa534076b7d30c14fcceda0e877',
+            'sourceCaseArtifactCount':360,
+            'solverExecutionPermitted':False,
+            'scientificCaseExecutionPermitted':False,
+            'githubRerunPermitted':False,
+            'retryPermitted':False,
+            'resumePermitted':False,
+          }
+          for k,v in expected.items():
+            if r.get(k)!=v: raise SystemExit(f'recovery request drift: {k}={r.get(k)!r} expected {v!r}')
+          if r.get('exactRecoveryParentMain')!=os.environ['REQUEST_PARENT']:
+            raise SystemExit('recovery request/main binding drift')
+          PY
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > source-run.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?filter=latest&per_page=100" > source-job-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" > source-artifact-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/afpf-v1-analysis-recovery-v1.yml/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > recovery-run-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-pages.json
+
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          source=json.load(open('source-run.json'))
+          if int(source.get('id') or 0)!=32672764808 or int(source.get('run_attempt') or 0)!=1:
+            raise SystemExit('source run identity drift')
+          if source.get('event')!='workflow_dispatch' or source.get('status')!='completed' or source.get('conclusion')!='failure':
+            raise SystemExit('source run is not exact terminal attempt-1 failure')
+          if source.get('head_branch')!=os.environ['SOURCE_BRANCH'] or source.get('head_sha')!=os.environ['SOURCE_HEAD']:
+            raise SystemExit('source branch/head drift')
+
+          job_pages=json.load(open('source-job-pages.json')); jobs=[j for page in job_pages for j in page.get('jobs',[])]
+          if len(jobs)!=362: raise SystemExit(f'expected exact 362 source jobs, got {len(jobs)}')
+          pre=[j for j in jobs if j.get('name')=='preflight']
+          cases=[j for j in jobs if str(j.get('name') or '').startswith('cases-dep')]
+          agg=[j for j in jobs if j.get('name')=='aggregate']
+          if len(pre)!=1 or pre[0].get('conclusion')!='success': raise SystemExit('source preflight not success')
+          if len(cases)!=360 or any(j.get('conclusion')!='success' for j in cases): raise SystemExit('source case jobs not exact 360/360 success')
+          if len(agg)!=1 or int(agg[0].get('id') or 0)!=97294103672 or agg[0].get('conclusion')!='failure': raise SystemExit('source aggregate failure identity drift')
+          steps={s.get('name'):s.get('conclusion') for s in agg[0].get('steps',[])}
+          required={
+            'Enumerate exact current-run case artifact metadata':'success',
+            'Download exact current-run cases only after complete enumeration':'success',
+            'Run frozen exact-360 acquisition and scalar spectral analysis':'success',
+            'Build Level-B input only after exact-360 aggregate success':'success',
+            'Fetch exact bound starsvisibility human-threshold implementation':'failure',
+            'Run frozen Level-B propagation only after exact-360 aggregate':'skipped',
+            'Persist complete preregistered AFPF analysis evidence':'skipped',
+            'Publish terminal success checkpoint to Issue 60':'skipped',
+          }
+          for k,v in required.items():
+            if steps.get(k)!=v: raise SystemExit(f'source aggregate step drift: {k}={steps.get(k)!r}')
+
+          artifact_pages=json.load(open('source-artifact-pages.json')); artifacts=[a for page in artifact_pages for a in page.get('artifacts',[])]
+          if len(artifacts)!=361: raise SystemExit(f'expected exact 361 source artifacts, got {len(artifacts)}')
+          cases_meta=[a for a in artifacts if str(a.get('name') or '').startswith('afpf-v1-case-') and not a.get('expired',False)]
+          if len(cases_meta)!=360 or len({a.get('name') for a in cases_meta})!=360:
+            raise SystemExit('source case artifact universe is not exact unique 360')
+          pre_meta=[a for a in artifacts if a.get('name')=='afpf-v1-preflight-ordinal-38' and not a.get('expired',False)]
+          if len(pre_meta)!=1: raise SystemExit('source preflight artifact count drift')
+          if int(pre_meta[0].get('id') or 0)!=9501900123 or str(pre_meta[0].get('digest') or '')!='sha256:33807259982a4bceae06e079338af1bbbecb60a6024ca4bf94c4267e65d4c1b2':
+            raise SystemExit('source preflight artifact identity/digest drift')
+          if any(a.get('name')=='afpf-v1-analysis' for a in artifacts):
+            raise SystemExit('source unexpectedly already has final analysis artifact')
+          Path('case-artifacts.json').write_text(json.dumps({'artifacts':cases_meta},indent=2,sort_keys=True)+'\n')
+          Path('source-preflight-artifact.json').write_text(json.dumps(pre_meta[0],indent=2,sort_keys=True)+'\n')
+          Path('source-failure-shape.json').write_text(json.dumps({
+            'sourceRunId':32672764808,
+            'sourceRunAttempt':1,
+            'sourceAggregateJobId':97294103672,
+            'jobCount':len(jobs),
+            'caseJobCount':len(cases),
+            'caseJobSuccessCount':sum(j.get('conclusion')=='success' for j in cases),
+            'artifactCount':len(artifacts),
+            'caseArtifactCount':len(cases_meta),
+            'aggregateSteps':steps,
+          },indent=2,sort_keys=True)+'\n')
+
+          run_pages=json.load(open('recovery-run-pages.json')); runs=[r for page in run_pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_branch')==os.environ['GITHUB_REF_NAME']]
+          if len(same)!=1 or int(same[0].get('id') or 0)!=int(os.environ['GITHUB_RUN_ID']) or int(same[0].get('run_attempt') or 0)!=1:
+            raise SystemExit(f'recovery request is not single-use attempt-1: observed runs={[(r.get("id"),r.get("run_attempt")) for r in same]}')
+          comments=[c for page in json.load(open('issue60-pages.json')) for c in page]
+          prefix='AFPF-V1-ANALYSIS-RECOVERY-COMPLETED ordinal=38 source_run=32672764808 '
+          if any(str(c.get('body') or '').startswith(prefix) for c in comments):
+            raise SystemExit('analysis recovery success marker already exists')
+          PY
+
+      - name: Prove frozen analysis bytes and local human-threshold byte identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/aggregate_results.py)" = 205ba6e37f914675c859575bd7ff217310cd45cd
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/analysis.py)" = e0278e54f9b283dbed1f462daa4c5837b6d515c1
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/build_level_b_input.py)" = e0567742ed9ab952202947896342ee2ecc35dada
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/level_b_runner.mjs)" = 96f36ea39d72c4c49376cf9d0d0c72909449cdbc
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/level_b_analysis.mjs)" = 881df5cec9b9f346455612ab27c09df5ae7574a5
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1/execution-contract.review.json)" = 8f8b0061aa8b0ddb21fb0e3e0a7ec775deb3aaa7
+          test "$(git hash-object .github/workflows/afpf-v1-execution.yml)" = 2f6fa865c1e73c68eacb01a52d29a64dd722b889
+          test "$(git hash-object experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs)" = bb4cd0ff02159ecffe276022cec9d292c7a434a3
+
+      - name: Download and verify exact source preflight design
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9501900123/zip" > preflight.zip
+          python - <<'PY'
+          import hashlib
+          actual='sha256:'+hashlib.sha256(open('preflight.zip','rb').read()).hexdigest()
+          expected='sha256:33807259982a4bceae06e079338af1bbbecb60a6024ca4bf94c4267e65d4c1b2'
+          if actual!=expected: raise SystemExit(f'preflight artifact digest mismatch: {actual} != {expected}')
+          PY
+          mkdir preflight
+          unzip -q preflight.zip -d preflight
+          test -f preflight/execution-preflight/execution-design.json
+          python - <<'PY'
+          import json
+          d=json.load(open('preflight/execution-preflight/execution-design.json'))
+          if d.get('status')!='CANDIDATE_SEEDED_DESIGN_FRESHNESS_PROVEN_REVIEW_ONLY': raise SystemExit('execution design status drift')
+          if d.get('caseCount')!=360 or d.get('groupCount')!=72 or d.get('analysisCellCount')!=24: raise SystemExit('execution design cardinality drift')
+          if d.get('canonicalDesignSha256')!='d2ad0e3ebcea48b2c683ab8a1c255af074cdaaa084c7082ac9345d021c8c9f62': raise SystemExit('execution design canonical hash drift')
+          PY
+
+      - name: Download immutable exact-360 source cases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p case-artifacts case-zips
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          rows=json.load(open('case-artifacts.json'))['artifacts']
+          for row in rows:
+            name=str(row['name']); aid=int(row['id']); z=Path('case-zips')/(name+'.zip')
+            with z.open('wb') as fh:
+              subprocess.run(['gh','api',f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{aid}/zip"],stdout=fh,check=True)
+            expected=str(row.get('digest') or '')
+            actual='sha256:'+hashlib.sha256(z.read_bytes()).hexdigest()
+            if not expected or actual!=expected: raise SystemExit(f'artifact digest mismatch: {name}: {actual} != {expected}')
+            target=Path('case-artifacts')/name; target.mkdir(); subprocess.run(['unzip','-q',str(z),'-d',str(target)],check=True)
+          PY
+
+      - name: Replay exact frozen acquisition and scalar-spectral analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/aggregate_results.py \
+            --repository-root . \
+            --execution-design preflight/execution-preflight/execution-design.json \
+            --artifact-root case-artifacts \
+            --artifact-metadata case-artifacts.json \
+            --workflow-run-id 32672764808 \
+            --scientific-ordinal 38 \
+            --output-acquisition acquisition-manifest.json \
+            --output-analysis analysis-index.json \
+            --output-spectral spectral-analysis.json
+          python - <<'PY'
+          import json
+          a=json.load(open('acquisition-manifest.json')); x=json.load(open('analysis-index.json')); s=json.load(open('spectral-analysis.json'))
+          if a.get('status')!='COMPLETE_EXACT_360_CASE_ARTIFACT_UNIVERSE' or a.get('workflowRunId')!=32672764808 or a.get('scientificOrdinal')!=38 or a.get('caseArtifactCount')!=360 or a.get('groupCount')!=72 or a.get('analysisCellCount')!=24:
+            raise SystemExit('recovered acquisition status/identity/cardinality drift')
+          if x.get('status')!='COMPLETED_PREREGISTERED_AFPF_V1_ANALYSIS' or x.get('analysisCellCount')!=24 or x.get('comparisonGroupCount')!=72 or x.get('contrastCountPerPrimaryChannelPerCell')!=7:
+            raise SystemExit('recovered scalar analysis status/cardinality drift')
+          if x.get('priorityShapeContrast')!='desert_spheroids_vs_desert': raise SystemExit('recovered scalar priority contrast drift')
+          if s.get('status')!='COMPLETED_PREREGISTERED_AFPF_V1_SPECTRAL_ANALYSIS' or s.get('analysisCellCount')!=24 or s.get('contrastCountPerCell')!=7:
+            raise SystemExit('recovered spectral analysis status/cardinality drift')
+          if s.get('priorityShapeContrast')!='desert_spheroids_vs_desert': raise SystemExit('recovered spectral priority contrast drift')
+          PY
+
+      - name: Rebuild frozen Level-B input after exact-360 replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/build_level_b_input.py \
+            --execution-design preflight/execution-preflight/execution-design.json \
+            --acquisition acquisition-manifest.json \
+            --artifact-root case-artifacts \
+            --workflow-run-id 32672764808 \
+            --scientific-ordinal 38 \
+            --output level-b-input.json
+          python - <<'PY'
+          import json
+          x=json.load(open('level-b-input.json'))
+          if x.get('status')!='COMPLETE_EXACT_360_LEVEL_B_INPUT_AFTER_AGGREGATE_VERIFICATION' or x.get('workflowRunId')!=32672764808 or x.get('scientificOrdinal')!=38: raise SystemExit('Level-B input identity/status drift')
+          if x.get('caseCount')!=360 or x.get('groupCount')!=72 or x.get('analysisCellCount')!=24 or x.get('statesPerGroup')!=5 or x.get('contrastCountPerCell')!=7: raise SystemExit('Level-B input cardinality drift')
+          if x.get('designCanonicalSha256')!='d2ad0e3ebcea48b2c683ab8a1c255af074cdaaa084c7082ac9345d021c8c9f62': raise SystemExit('Level-B input design hash drift')
+          PY
+
+      - name: Complete frozen preregistered Level-B propagation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/level_b_runner.mjs \
+            --input level-b-input.json \
+            --human-threshold experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs \
+            --output level-b-analysis.json
+          node - <<'JS'
+          const x=JSON.parse(require('fs').readFileSync('level-b-analysis.json','utf8'));
+          if(x.status!=='COMPLETED_PREREGISTERED_AFPF_V1_LEVEL_B'||x.workflowRunId!==32672764808||x.scientificOrdinal!==38) throw new Error('Level-B output identity/status drift');
+          if(x.caseCount!==360||x.groupCount!==72||x.analysisCellCount!==24||x.statesPerGroup!==5||x.contrastCountPerCell!==7) throw new Error('Level-B output cardinality drift');
+          if(x.priorityShapeContrast!=='desert_spheroids_vs_desert') throw new Error('Level-B priority shape contrast drift');
+          if(x.humanThresholdGitBlobSha1!=='bb4cd0ff02159ecffe276022cec9d292c7a434a3') throw new Error('Level-B human-threshold binding drift');
+          if(x.pValuesPermitted!==false||x.confidenceIntervalsPermitted!==false||x.epsilonSubstitutionPermitted!==false||x.universalSunDepressionToMinutesConversionPermitted!==false) throw new Error('Level-B frozen rule drift');
+          JS
+
+      - name: Build recovery provenance after complete frozen replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def h(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          value={
+            'schemaVersion':1,
+            'stageId':'aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1',
+            'status':'COMPLETED_ANALYSIS_ONLY_RECOVERY_READY_FOR_IMMUTABLE_UPLOAD',
+            'sourceWorkflowRunId':32672764808,
+            'sourceWorkflowRunAttempt':1,
+            'sourceScientificOrdinal':38,
+            'sourceDispatchHead':'7c160d1b1d1fbaa534076b7d30c14fcceda0e877',
+            'sourceAggregateJobId':97294103672,
+            'sourcePreflightArtifactId':9501900123,
+            'sourcePreflightArtifactDigest':'sha256:33807259982a4bceae06e079338af1bbbecb60a6024ca4bf94c4267e65d4c1b2',
+            'recoveryWorkflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'recoveryWorkflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'recoveryRequestHead':os.environ['GITHUB_SHA'],
+            'caseArtifactCount':360,
+            'comparisonGroupCount':72,
+            'analysisCellCount':24,
+            'contrastCountPerCell':7,
+            'priorityShapeContrast':'desert_spheroids_vs_desert',
+            'scientificCaseExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+            'libRadtranRuntimeSetupPerformed':False,
+            'scientificOrdinalAllocated':False,
+            'scientificSeedAllocated':False,
+            'githubRerun':False,
+            'retryPerformed':False,
+            'resumePerformed':False,
+            'humanThresholdGitBlobSha1':'bb4cd0ff02159ecffe276022cec9d292c7a434a3',
+            'outputSha256':{
+              'case-artifacts.json':h('case-artifacts.json'),
+              'source-failure-shape.json':h('source-failure-shape.json'),
+              'execution-design.json':h('preflight/execution-preflight/execution-design.json'),
+              'acquisition-manifest.json':h('acquisition-manifest.json'),
+              'analysis-index.json':h('analysis-index.json'),
+              'spectral-analysis.json':h('spectral-analysis.json'),
+              'level-b-input.json':h('level-b-input.json'),
+              'level-b-analysis.json':h('level-b-analysis.json'),
+              'bound-human-threshold.mjs':h('experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs'),
+            },
+          }
+          Path('recovery-provenance.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist complete AFPF ordinal 38 analysis-recovery evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afpf-v1-analysis-recovery-ordinal-38
+          path: |
+            case-artifacts.json
+            source-preflight-artifact.json
+            source-failure-shape.json
+            preflight/execution-preflight/execution-design.json
+            acquisition-manifest.json
+            analysis-index.json
+            spectral-analysis.json
+            level-b-input.json
+            level-b-analysis.json
+            recovery-provenance.json
+            experiments/aerosol-full-phase-function-sensitivity-v1-analysis-recovery-v1/bound-human-threshold.mjs
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish distinct terminal recovery checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          BODY="AFPF-V1-ANALYSIS-RECOVERY-COMPLETED ordinal=38 source_run=32672764808 recovery_run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} cases=360 groups=72 cells=24 contrasts=7 artifact_id=${ARTIFACT_ID} artifact_digest=sha256:${ARTIFACT_DIGEST} solver=false rerun=false retry=false resume=false"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" > /dev/null

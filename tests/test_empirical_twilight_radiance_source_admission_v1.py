@@ -17,6 +17,7 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
             "source-admission.review.json",
             "AOD_QC_PRECONTRACT.review.json",
             "COMPARISON_METRIC_SKELETON.review.json",
+            "MODEL_FORM_ATMOSPHERE_BOUNDARY.review.json",
             "PGN_METADATA_ACQUISITION_BOUNDARY.review.json",
             "PGN_METADATA_REQUEST.md",
             "README.md",
@@ -126,6 +127,42 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
         self.assertFalse(prereq["numericGatesMayUsePandoraModelResidualsFromTheSelectedValidationUniverse"])
         self.assertTrue(prereq["failureAfterOpeningMustBePreserved"])
         self.assertFalse(prereq["failedValidationMayBeRetunedOnSameOpenedSessions"])
+
+        auth = doc["authorization"]
+        self.assertTrue(all(value is False for value in auth.values()))
+
+    def test_current_model_form_is_frozen_and_not_posthoc_conditioned(self):
+        doc = load_json("MODEL_FORM_ATMOSPHERE_BOUNDARY.review.json")
+        runtime = doc["currentSkySurrogateRuntimeAxes"]
+        self.assertTrue(runtime["sunDepressionDeg"])
+        self.assertTrue(runtime["targetAltitudeDeg"])
+        self.assertTrue(runtime["relativeAzimuthDeg"])
+        self.assertTrue(runtime["observerElevationM"])
+        self.assertTrue(runtime["aod550"])
+        self.assertFalse(runtime["angstromExponentUsedByValidatedSkyPrediction"])
+        self.assertFalse(runtime["precipitableWaterUsedByValidatedSkyPrediction"])
+        self.assertFalse(runtime["ozoneUsedByValidatedSkyPrediction"])
+        self.assertFalse(runtime["surfacePressureUsedByValidatedSkyPrediction"])
+        self.assertFalse(runtime["surfaceAlbedoUsedAsRuntimeAxis"])
+
+        frozen = doc["frozenMysticModelForm"]
+        self.assertEqual(frozen["atmosphereProfile"], "AFGLUS / libRadtran atmmod/afglus.dat")
+        self.assertEqual(frozen["surfaceAlbedo"], 0.15)
+        self.assertEqual(frozen["molecularAbsorption"], "crs")
+        self.assertEqual(frozen["solarFlux"], "libRadtran solar_flux/atlas_plus_modtran")
+        self.assertEqual(frozen["aerosolBase"], "aerosol_default")
+        self.assertEqual(frozen["wavelengthDomainNm"], [380.0, 780.0])
+
+        interpretation = doc["empiricalValidationInterpretation"]
+        self.assertFalse(interpretation["mayReplaceAfglusWithMeasuredAtmosphericProfileAfterSeeingResiduals"])
+        self.assertFalse(interpretation["mayReplaceAlbedo015WithLocalMeasuredAlbedoAfterSeeingResiduals"])
+        self.assertFalse(interpretation["mayScaleWaterVaporOrOzoneToImproveFitAfterSeeingResiduals"])
+        self.assertFalse(interpretation["mayChangeAerosolVerticalProfileOrFamilyOutsideFrozenScenarioMechanismAfterSeeingResiduals"])
+        self.assertTrue(interpretation["residualsCausedByFixedModelFormRemainPartOfEmpiricalError"])
+
+        future = doc["futureModelGenerationBoundary"]
+        self.assertFalse(future["sameOpenedSessionsMayTrainOrTuneReplacementModel"])
+        self.assertTrue(future["replacementModelRequiresNewUntouchedHoldout"])
 
         auth = doc["authorization"]
         self.assertTrue(all(value is False for value in auth.values()))

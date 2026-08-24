@@ -1,0 +1,85 @@
+name: ASIV v1 authorization proposal observer v1
+
+on:
+  push:
+    branches:
+      - "observer/asiv-v1-auth-proposal-ordinal39-v1"
+    paths:
+      - .github/workflows/asiv-v1-auth-proposal-observer-v1.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Observe exact proposal run and publish metadata checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: status/asiv-v1-authorization-proposal-ordinal-39
+          TARGET_HEAD: 5d7d7dd12d9944e4159c32b2e38caff10b1e2071
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-v1-authorization-proposal.yml/runs?branch=${TARGET_BRANCH}&event=push&per_page=100" > runs.json
+            python - <<'PY' > state.env
+          import json, os
+          pages=json.load(open('runs.json'))
+          runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_branch')==os.environ['TARGET_BRANCH'] and r.get('head_sha')==os.environ['TARGET_HEAD']]
+          if len(same)!=1:
+              print('FOUND=0')
+          else:
+              r=same[0]
+              print('FOUND=1')
+              print('RUN_ID='+str(r.get('id') or 0))
+              print('RUN_ATTEMPT='+str(r.get('run_attempt') or 0))
+              print('RUN_STATUS='+str(r.get('status') or ''))
+              print('RUN_CONCLUSION='+str(r.get('conclusion') or ''))
+          PY
+            source state.env
+            if [ "${FOUND:-0}" = 1 ] && [ "${RUN_STATUS:-}" = completed ]; then break; fi
+            sleep 2
+          done
+          test "${FOUND:-0}" = 1
+          test "${RUN_ATTEMPT:-0}" = 1
+          test "${RUN_STATUS:-}" = completed
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" > artifacts.json
+          python - <<'PY' > artifact.env
+          import json, os
+          rows=json.load(open('artifacts.json')).get('artifacts',[])
+          expected='asiv-v1-authorization-proposal-ordinal-39'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          print('ARTIFACT_COUNT='+str(len(good)))
+          if good:
+              a=good[0]
+              print('ARTIFACT_ID='+str(a.get('id') or 0))
+              print('ARTIFACT_DIGEST='+str(a.get('digest') or ''))
+          else:
+              print('ARTIFACT_ID=0')
+              print('ARTIFACT_DIGEST=')
+          PY
+          source artifact.env
+          BODY=$(cat <<EOF
+          ASIV-V1-AUTHORIZATION-PROPOSAL-OBSERVER
+          target_head=${TARGET_HEAD}
+          run=${RUN_ID}
+          attempt=${RUN_ATTEMPT}
+          status=${RUN_STATUS}
+          conclusion=${RUN_CONCLUSION}
+          artifact_count=${ARTIFACT_COUNT}
+          artifact_id=${ARTIFACT_ID}
+          artifact_digest=${ARTIFACT_DIGEST}
+          observer_only=true
+          ordinal39_allocated=false
+          scientific_runtime=false
+          solver_execution=false
+          holdout_opened=false
+          EOF
+          )
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/60/comments" -f body="$BODY" > /dev/null

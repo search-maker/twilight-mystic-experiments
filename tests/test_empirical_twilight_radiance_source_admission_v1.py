@@ -16,6 +16,7 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
         for name in (
             "source-admission.review.json",
             "AOD_QC_PRECONTRACT.review.json",
+            "BASE_MODEL_SUPPORT_PREVALUE_GATE.review.json",
             "COMPARISON_METRIC_SKELETON.review.json",
             "MODEL_FORM_ATMOSPHERE_BOUNDARY.review.json",
             "PGN_METADATA_ACQUISITION_BOUNDARY.review.json",
@@ -87,6 +88,28 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
         self.assertIn("model-predicted radiance", forbidden)
         self.assertIn("after seeing model residuals", forbidden)
 
+        auth = doc["authorization"]
+        self.assertTrue(all(value is False for value in auth.values()))
+
+    def test_exact_base_model_support_is_required_before_value_opening(self):
+        doc = load_json("BASE_MODEL_SUPPORT_PREVALUE_GATE.review.json")
+        binding = doc["applicationBinding"]
+        self.assertEqual(binding["providerId"], "level-b-v3-validated-primary")
+        self.assertEqual(binding["runtimeDataSha256"], "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4")
+        rule = doc["validatedSupportRule"]
+        self.assertEqual(rule["maxNearestFrozenTrainingDistance"], 0.60)
+        self.assertFalse(rule["nominalInBoxAloneSufficient"])
+        self.assertTrue(rule["validatedSupportRequired"])
+        selection = doc["preValueSelection"]
+        self.assertFalse(selection["targetRadianceMayBeUsed"])
+        self.assertFalse(selection["targetBrightnessMayBeUsed"])
+        self.assertFalse(selection["modelResidualMayBeUsed"])
+        self.assertTrue(selection["exactProviderSupportClassifierMustBeUsed"])
+        self.assertTrue(selection["supportMustHoldAcrossEntireAodInterval"])
+        self.assertFalse(selection["endpointOnlyCheckAllowedWithoutProof"])
+        self.assertFalse(selection["adaptiveAodGridChosenFromTargetResidualAllowed"])
+        aerosol = doc["aerosolInterpolationEvidenceBoundary"]
+        self.assertFalse(aerosol["asivObservedMaximumMayBePromotedToNewAcceptanceThreshold"])
         auth = doc["authorization"]
         self.assertTrue(all(value is False for value in auth.values()))
 

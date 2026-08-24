@@ -1,0 +1,160 @@
+name: PGN Pandora209 file hierarchy review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-pandora209-file-hierarchy-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209_CORE_METADATA_EVIDENCE.review.json"
+      - "tests/test_pgn_metadata_only_client_v1.py"
+
+permissions:
+  contents: read
+
+jobs:
+  hierarchy-names-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Enumerate metadata hierarchy names only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          import unicodedata
+          from pathlib import Path
+
+          module_path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_hierarchy_review', module_path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          openapi = module.fetch_openapi(timeout_s=20.0)
+
+          def require_string_list(value, label):
+              if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                  print(label, json.dumps(value, indent=2, sort_keys=True))
+                  raise SystemExit(f'{label} did not return a pure string list; stop before deeper hierarchy query')
+              return value
+
+          def ascii_fold(value):
+              decomposed = unicodedata.normalize('NFKD', value)
+              return ''.join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+          locations = require_string_list(
+              module.request_metadata(openapi, '/v1/files/locations', {}, timeout_s=20.0),
+              'locations',
+          )
+          location_candidates = [item for item in locations if ascii_fold(item) == 'izana']
+          if len(location_candidates) != 1:
+              print('locations=', json.dumps(locations, indent=2))
+              raise SystemExit(f'Expected exactly one metadata location identity folding to Izana; got {location_candidates}')
+          location = location_candidates[0]
+
+          instruments = require_string_list(
+              module.request_metadata(
+                  openapi,
+                  '/v1/files/{location}',
+                  {},
+                  path_params={'location': location},
+                  timeout_s=20.0,
+              ),
+              'instruments',
+          )
+          if instruments.count('Pandora209') != 1:
+              print('instruments=', json.dumps(instruments, indent=2))
+              raise SystemExit('Exact public archive instrument identity Pandora209 was not uniquely present')
+          instrument = 'Pandora209'
+
+          spectrometers = require_string_list(
+              module.request_metadata(
+                  openapi,
+                  '/v1/files/{location}/{instrument}',
+                  {},
+                  path_params={'location': location, 'instrument': instrument},
+                  timeout_s=20.0,
+              ),
+              'spectrometers',
+          )
+          if 's1' not in spectrometers or 's2' not in spectrometers:
+              print('spectrometers=', json.dumps(spectrometers, indent=2))
+              raise SystemExit('Expected exact s1 and s2 hierarchy identities before level enumeration')
+
+          levels = {}
+          for spectrometer in ('s1', 's2'):
+              levels[spectrometer] = require_string_list(
+                  module.request_metadata(
+                      openapi,
+                      '/v1/files/{location}/{instrument}/{spectrometer}',
+                      {},
+                      path_params={
+                          'location': location,
+                          'instrument': instrument,
+                          'spectrometer': spectrometer,
+                      },
+                      timeout_s=20.0,
+                  ),
+                  f'levels-{spectrometer}',
+              )
+
+          evidence = {
+              'allLocations': locations,
+              'selectedLocation': location,
+              'allInstrumentsAtSelectedLocation': instruments,
+              'selectedInstrument': instrument,
+              'allSpectrometersAtSelectedInstrument': spectrometers,
+              'levelsBySpectrometer': levels,
+              'selectionRules': {
+                  'location': "unique Unicode-diacritic-folded case-insensitive identity equal to 'izana'",
+                  'instrument': "exact identity 'Pandora209' already bound by the public archive candidate",
+                  'spectrometers': "exact identities 's1' and 's2' must both be present",
+              },
+              'dateBoundedFileListingPerformed': False,
+              'metadataHeaderOpened': False,
+              'downloadPerformed': False,
+          }
+          Path('pandora209_file_hierarchy_names.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_FILE_HIERARCHY_BEGIN')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_FILE_HIERARCHY_END')
+          PY
+
+          sha256sum pandora209_file_hierarchy_names.json > pandora209_file_hierarchy_names.sha256
+          cat pandora209_file_hierarchy_names.sha256
+
+      - name: Prove no level/date target-file listing or download occurred
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = json.loads(Path('pandora209_file_hierarchy_names.json').read_text())
+          assert evidence['dateBoundedFileListingPerformed'] is False
+          assert evidence['metadataHeaderOpened'] is False
+          assert evidence['downloadPerformed'] is False
+          print('hierarchy review remained names-only')
+          PY
+
+      - name: Upload immutable hierarchy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandora209-file-hierarchy-names-only
+          path: |
+            pandora209_file_hierarchy_names.json
+            pandora209_file_hierarchy_names.sha256
+          if-no-files-found: error
+          retention-days: 30

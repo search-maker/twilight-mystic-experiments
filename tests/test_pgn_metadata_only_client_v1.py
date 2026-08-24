@@ -50,6 +50,14 @@ FAKE_OPENAPI = {
                 ]
             }
         },
+        "/v1/files/{location}/{instrument}": {
+            "get": {
+                "parameters": [
+                    {"name": "location", "in": "path", "required": True, "schema": {"type": "string"}},
+                    {"name": "instrument", "in": "path", "required": True, "schema": {"type": "string"}},
+                ]
+            }
+        },
         "/v1/download": {"get": {"parameters": []}},
     },
 }
@@ -78,7 +86,7 @@ class PgnMetadataOnlyClientTests(unittest.TestCase):
                 {"panid": 209},
             )
 
-    def test_required_parameter_must_be_present(self):
+    def test_required_query_parameter_must_be_present(self):
         with self.assertRaises(module.MetadataOnlyViolation):
             module.validate_query_against_openapi(
                 FAKE_OPENAPI,
@@ -95,6 +103,36 @@ class PgnMetadataOnlyClientTests(unittest.TestCase):
         self.assertEqual(
             url,
             "https://api.pandonia-global-network.org/v1/calibrationfiles?instrument=209&spectrometer=2",
+        )
+
+    def test_path_template_requires_every_live_openapi_path_parameter(self):
+        with self.assertRaises(module.MetadataOnlyViolation):
+            module.build_metadata_url(
+                FAKE_OPENAPI,
+                "/v1/files/{location}/{instrument}",
+                {},
+                path_params={"location": "Izana"},
+            )
+
+    def test_path_template_rejects_undeclared_parameter(self):
+        with self.assertRaises(module.MetadataOnlyViolation):
+            module.build_metadata_url(
+                FAKE_OPENAPI,
+                "/v1/files/{location}/{instrument}",
+                {},
+                path_params={"location": "Izana", "instrument": "Pandora209", "level": "L1"},
+            )
+
+    def test_path_template_values_are_opaque_and_url_encoded(self):
+        url = module.build_metadata_url(
+            FAKE_OPENAPI,
+            "/v1/files/{location}/{instrument}",
+            {},
+            path_params={"location": "Izaña / test", "instrument": "Pandora209"},
+        )
+        self.assertEqual(
+            url,
+            "https://api.pandonia-global-network.org/v1/files/Iza%C3%B1a%20%2F%20test/Pandora209",
         )
 
     def test_exact_openapi_key_is_preserved_when_normalization_removes_trailing_slash(self):
@@ -114,7 +152,6 @@ class PgnMetadataOnlyClientTests(unittest.TestCase):
             module.query_parameter_names(spec, "/v1/calibrationfiles/"),
             frozenset({"instrument"}),
         )
-        # A normalized caller is safe only because the mapping is unique.
         self.assertEqual(
             module.query_parameter_names(spec, "/v1/calibrationfiles"),
             frozenset({"instrument"}),
@@ -139,6 +176,7 @@ class PgnMetadataOnlyClientTests(unittest.TestCase):
             {
                 "/v1/calibrationfiles",
                 "/v1/files",
+                "/v1/files/{location}/{instrument}",
                 "/v1/metadata",
                 "/v1/operationfiles",
             },

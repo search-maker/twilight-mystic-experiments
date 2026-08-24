@@ -2,7 +2,7 @@
 
 ## Status
 
-`REVIEW_ONLY_PRIMARY_METADATA_CANDIDATE_IDENTIFIED_NO_TARGET_RADIANCE_OPENED_NO_VALIDATION_EXECUTED`
+`REVIEW_ONLY_PRIMARY_METADATA_CANDIDATE_IDENTIFIED_CALIBRATION_READINESS_BLOCKED_NO_TARGET_RADIANCE_OPENED`
 
 This package advances the next unresolved validation layer after ASIV v1: **physical twilight model vs measured real sky**. It does not reopen ASIV ordinal 39, execute MYSTIC, inspect the selected candidate's target sky-radiance values, fit or retune any model, allocate a scientific ordinal, or authorize production.
 
@@ -55,7 +55,7 @@ https://www.pandonia-global-network.org/
 
 The paired `s1`/`s2` identity is consistent with a Pandora-2S dual-spectrometer installation, but **this review does not elevate that inference to an exact instrument/calibration binding**. The exact calibration files, applicable dates, radiance units, uncertainty representation, observation type/pointing, and usable twilight session universe must be verified from PGN metadata before target radiance values are read.
 
-Generic Pandora-2S descriptions indicate complementary spectrometers spanning roughly 270–530 nm and 400–900 nm, which would be sufficient in principle for the visible photopic/Johnson-V region. This is only an instrument-family capability statement until exact Pandora209 calibration and product metadata are bound.
+Generic Pandora-2S descriptions indicate complementary spectrometers spanning roughly 270–530 nm and 400–900 nm. Spectrometer 1 alone therefore does not cover the full 380–780 nm photopic target; spectrometer 2 evidence is required for the intended full-visible strict validation.
 
 ### Critical L1 product-type gate
 
@@ -74,6 +74,42 @@ References for these semantics:
 https://pandora.gsfc.nasa.gov/Data/html/processing.html
 
 https://pandora.gsfc.nasa.gov/Data/html/versions.html
+
+## Current calibration-readiness finding — blocker, not failure
+
+The PGN Calibration Report reviewed for this package was published 2026-08-18 and generated at 2026-08-18 11:54 UTC:
+
+https://reports.hetzner.pandonia-global-network.org/calibrationReport.html
+
+The report surfaces historical finished processing for Pandora209 spectrometer 1 at Izaña with calibration-file identities:
+
+- `20220720, v5` — Blick 1.8.50, processed 2022-12-01;
+- `20221111, v4` — Blick 1.8.50, processed 2022-12-01.
+
+The same current report lists open Izaña calibration-analysis sessions for Pandora209:
+
+- s1 session 11 (`ID1796`, AnaFld, Blick 1.9.5);
+- s1 session 12 (`ID1804`, AnaFld, Blick 1.9.5);
+- s1 session 14 (`ID1805`, AnaFld, Blick 1.9.5);
+- **s2 session 4 (`ID1806`, AnaFld, Blick 1.9.5)**.
+
+The visible open-session row for `ID1806` does not show an assigned `NewCF` and still lists `EndDate` among missing documentation. The review also did not surface a finished/current Izaña s2 calibration-file identity elsewhere in that public calibration report.
+
+This does **not** prove that spectrometer 2 is bad or uncalibrated. It proves only that the exact current s2 calibration file and its validity period have not yet been demonstrated from the metadata reviewed so far. Because s2 is needed for the full visible target, strict dual-spectrometer admission is therefore blocked until exact PGN calibration-file metadata resolves this point.
+
+A separate public `calibrationfiles/` directory was also inspected. It did not surface any filename matching `Pandora209` in the indexed listing. That directory is therefore not treated as a complete authoritative inventory for Pandora209; absence there is not evidence that no ICF exists.
+
+### Exact next calibration question
+
+Before constructing a strict validation session universe, resolve through `/v1/calibrationfiles`, `/v1/operationfiles`, or equivalent PGN metadata:
+
+1. which exact ICF(s) apply to `Pandora209s1` and `Pandora209s2`;
+2. each ICF validity start/version and applicable observation dates;
+3. the matching IOF/operation configuration;
+4. whether selected L1 observations are data type `2 = radiance` rather than corrected counts or irradiance;
+5. the radiance uncertainty semantics and wavelength validity/filter ranges.
+
+All of this is metadata/header work. Target sky-radiance arrays remain closed.
 
 ## Why Izaña is unusually promising
 
@@ -99,21 +135,22 @@ The validation AOD must be taken from an independently frozen external source an
 
 No Pandora209 target twilight radiance is authorized to be read for validation until all of the following are frozen and independently reviewable:
 
-1. **Exact calibration binding** — identify exact PGN calibration/operation files applicable to each selected Pandora209 spectrometer/session.
-2. **Absolute-radiance product gate** — prove from metadata that every selected strict-validation measurement is L1 data type `2 = radiance [W/m2/nm/sr]`; reject ordinary corrected-count-rate type 1 and irradiance type 3 for this directional-radiance target.
-3. **Uncertainty semantics** — bind the exact uncertainty representation and usable wavelength/filter ranges for each spectrometer.
-4. **Metadata-only session universe** — enumerate candidate sessions/files without reading target spectral radiance arrays; confirm the required twilight and pointing coverage.
-5. **Dual-spectrometer stitching** — freeze a deterministic overlap/stitch rule for s1/s2 without examining the validation sky values.
-6. **Independent AOD contract** — freeze source hierarchy, AOD550 conversion/interpolation, uncertainty propagation, maximum temporal separation and atmospheric-stability rejection criteria.
-7. **Cloud/glare QC** — freeze independent QC sources and synchronization rules, including how SONA/BSRN/AERONET or equivalent metadata cause exclusion.
-8. **Immutable provenance** — hash raw source files and bind calibration/operation/metadata identities before value opening.
-9. **Session isolation** — assign sessions to calibration/validation roles deterministically before outcomes are examined.
-10. **Comparison target** — freeze the exact model output to compare (direction, spectral integration, atmosphere inputs, refraction/geometry convention).
-11. **Pass/fail metrics** — freeze uncertainty-aware aggregate and worst-case gates before target values are opened.
+1. **Resolve s2 calibration readiness** — bind an exact PGN ICF/validity period for Pandora209 spectrometer 2; do not infer one merely from the presence of an s2 archive or an open calibration session.
+2. **Exact calibration binding** — identify exact PGN ICF and operation files applicable to each selected s1/s2 session.
+3. **Absolute-radiance product gate** — prove from metadata that every selected strict-validation measurement is L1 data type `2 = radiance [W/m2/nm/sr]`; reject ordinary corrected-count-rate type 1 and irradiance type 3 for this directional-radiance target.
+4. **Uncertainty semantics** — bind the exact uncertainty representation and usable wavelength/filter ranges for each spectrometer.
+5. **Metadata-only session universe** — enumerate candidate sessions/files without reading target spectral radiance arrays; confirm the required twilight and pointing coverage.
+6. **Dual-spectrometer stitching** — freeze a deterministic overlap/stitch rule for s1/s2 without examining the validation sky values.
+7. **Independent AOD contract** — freeze source hierarchy, AOD550 conversion/interpolation, uncertainty propagation, maximum temporal separation and atmospheric-stability rejection criteria.
+8. **Cloud/glare QC** — freeze independent QC sources and synchronization rules, including how SONA/BSRN/AERONET or equivalent metadata cause exclusion.
+9. **Immutable provenance** — hash raw source files and bind calibration/operation/metadata identities before value opening.
+10. **Session isolation** — assign sessions to calibration/validation roles deterministically before outcomes are examined.
+11. **Comparison target** — freeze the exact model output to compare (direction, spectral integration, atmosphere inputs, refraction/geometry convention).
+12. **Pass/fail metrics** — freeze uncertainty-aware aggregate and worst-case gates before target values are opened.
 
 Until these checks pass, candidate status remains:
 
-`PROMISING_METADATA_ONLY_NOT_YET_ADMITTED`
+`PROMISING_METADATA_ONLY_STRICT_DUAL_SPECTROMETER_ADMISSION_BLOCKED_PENDING_EXACT_CALIBRATION_AND_L1_TYPE2_PROOF`
 
 ## Other sources and their role
 
@@ -173,4 +210,4 @@ This review authorizes none of the following:
 
 ## Next safe transition
 
-Build a **metadata-only Izaña/Pandora209 session universe** from PGN/AERONET/IZA metadata, freeze the calibration/AOD/QC/stitching/comparison contracts, and independently review those bytes. Only then may a separate transition authorize opening a selected untouched validation subset.
+Perform a **metadata-only exact ICF/IOF and L1-type availability lookup for Pandora209 s1/s2**. Only after the s2 calibration/type-2 radiance blocker is resolved should the project construct a strict Izaña validation session universe and freeze the AOD/QC/stitching/comparison contracts. Target spectral radiance values remain unopened until a separate reviewed transition authorizes them.

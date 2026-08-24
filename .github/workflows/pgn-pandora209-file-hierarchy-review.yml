@@ -41,12 +41,6 @@ jobs:
           spec.loader.exec_module(module)
           openapi = module.fetch_openapi(timeout_s=20.0)
 
-          def require_string_list(value, label):
-              if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                  print(label, json.dumps(value, indent=2, sort_keys=True))
-                  raise SystemExit(f'{label} did not return a pure string list; stop before deeper hierarchy query')
-              return value
-
           def ascii_fold(value):
               decomposed = unicodedata.normalize('NFKD', value)
               return ''.join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
@@ -103,24 +97,26 @@ jobs:
               print('spectrometers=', json.dumps(spectrometers, indent=2, sort_keys=True))
               raise SystemExit(f'Expected exactly one spectrometer=1 and one spectrometer=2; got {spectrometer_ids}')
 
-          # Level response shape is intentionally still unknown. Stop and print if it
-          # is not a pure string list; no date-bounded file query is made here.
           levels = {}
           for spectrometer in (1, 2):
-              levels[str(spectrometer)] = require_string_list(
-                  module.request_metadata(
-                      openapi,
-                      '/v1/files/{location}/{instrument}/{spectrometer}',
-                      {},
-                      path_params={
-                          'location': location,
-                          'instrument': instrument,
-                          'spectrometer': spectrometer,
-                      },
-                      timeout_s=20.0,
-                  ),
-                  f'levels-{spectrometer}',
+              level_metadata = module.request_metadata(
+                  openapi,
+                  '/v1/files/{location}/{instrument}/{spectrometer}',
+                  {},
+                  path_params={
+                      'location': location,
+                      'instrument': instrument,
+                      'spectrometer': spectrometer,
+                  },
+                  timeout_s=20.0,
               )
+              if not isinstance(level_metadata, list) or not all(isinstance(item, dict) for item in level_metadata):
+                  print(f'levels-{spectrometer}=', json.dumps(level_metadata, indent=2, sort_keys=True))
+                  raise SystemExit(f'levels-{spectrometer} did not return the observed metadata-object list shape')
+              if not all(isinstance(item.get('level'), str) for item in level_metadata):
+                  print(f'levels-{spectrometer}=', json.dumps(level_metadata, indent=2, sort_keys=True))
+                  raise SystemExit(f'one or more levels-{spectrometer} metadata objects has no string level')
+              levels[str(spectrometer)] = level_metadata
 
           evidence = {
               'selectedLocationMetadata': selected_location_metadata,
@@ -134,7 +130,8 @@ jobs:
               'selectionRules': {
                   'location': "unique location metadata object whose name Unicode-diacritic-folds case-insensitively to 'izana'",
                   'instrument': "unique observed PGN instrument metadata object with integer pan_id=209",
-                  'spectrometers': "observed integer spectrometer identities 1 and 2, each required exactly once; no guessed s1/s2 path strings",
+                  'spectrometers': "observed integer spectrometer identities 1 and 2, each required exactly once",
+                  'levels': "retain every returned metadata object with a string level; do not choose a level yet",
               },
               'dateBoundedFileListingPerformed': False,
               'metadataHeaderOpened': False,

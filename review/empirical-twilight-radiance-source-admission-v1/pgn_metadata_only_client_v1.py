@@ -16,7 +16,9 @@ Forbidden:
 - /v1/download and descendants
 - every path outside the four metadata/file-identity families
 
-The CLI is discovery-only until exact current PGN routes and filters are frozen.
+Path-template requests are permitted only when the exact template is present in
+live OpenAPI and every declared path parameter is supplied exactly once. Values
+are URL-encoded as opaque identities; they do not change endpoint authorization.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 BASE_URL = "https://api.pandonia-global-network.org/"
@@ -99,12 +101,7 @@ def fetch_openapi(*, base_url: str = BASE_URL, timeout_s: float = 30.0) -> Mappi
 
 
 def discover_metadata_paths(openapi: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return exact OpenAPI path keys inside the frozen metadata families.
-
-    The exact raw key is intentionally preserved.  A trailing slash or path
-    template is semantically meaningful for later OpenAPI lookup even though the
-    normalized form is sufficient for the metadata/download safety decision.
-    """
+    """Return exact OpenAPI path keys inside the frozen metadata families."""
     paths = openapi.get("paths")
     if not isinstance(paths, Mapping):
         raise RuntimeError("PGN OpenAPI has no paths object")
@@ -125,17 +122,15 @@ def discover_metadata_paths(openapi: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _resolve_openapi_path_key(openapi: Mapping[str, Any], path: str) -> tuple[str, str]:
-    """Resolve a supplied path to one exact OpenAPI key without weakening safety."""
+    """Resolve a supplied path/template to one exact OpenAPI key without weakening safety."""
     normalized = assert_metadata_only_path(path)
     paths = openapi.get("paths")
     if not isinstance(paths, Mapping):
         raise RuntimeError("PGN OpenAPI has no paths object")
 
-    # Prefer the exact raw OpenAPI key. This preserves trailing slashes/templates.
     if path in paths:
         return path, normalized
 
-    # A normalized caller is accepted only when it maps uniquely to one live key.
     matches = [
         raw_path
         for raw_path in paths
@@ -151,7 +146,7 @@ def _resolve_openapi_path_key(openapi: Mapping[str, Any], path: str) -> tuple[st
 
 
 def endpoint_parameters(openapi: Mapping[str, Any], path: str) -> tuple[ParameterSpec, ...]:
-    raw_key, normalized = _resolve_openapi_path_key(openapi, path)
+    raw_key, _ = _resolve_openapi_path_key(openapi, path)
     paths = openapi.get("paths")
     assert isinstance(paths, Mapping)
     path_item = paths[raw_key]
@@ -240,20 +235,52 @@ def validate_query_against_openapi(
     return cleaned
 
 
+def render_path_template(
+    openapi: Mapping[str, Any],
+    path: str,
+    path_params: Mapping[str, str | int | float | bool] | None,
+) -> tuple[str, str]:
+    """Render an exact live OpenAPI metadata path template with opaque values."""
+    raw_key, _ = _resolve_openapi_path_key(openapi, path)
+    specs = endpoint_parameters(openapi, raw_key)
+    path_specs = {spec.name: spec for spec in specs if spec.location == "path"}
+    supplied = dict(path_params or {})
+    unsupported = sorted(set(supplied) - set(path_specs))
+    if unsupported:
+        raise MetadataOnlyViolation(
+            f"Path uses parameters not declared by live PGN OpenAPI for {raw_key}: {unsupported}"
+        )
+    missing = sorted(name for name, spec in path_specs.items() if spec.required and name not in supplied)
+    if missing:
+        raise MetadataOnlyViolation(f"Path omits required PGN parameters for {raw_key}: {missing}")
+    if not path_specs and supplied:
+        raise MetadataOnlyViolation(f"Path {raw_key} declares no path parameters")
+
+    rendered = raw_key
+    for name in sorted(path_specs):
+        if name not in supplied:
+            continue
+        value = supplied[name]
+        if value is None or not str(value):
+            raise MetadataOnlyViolation(f"Path parameter {name} must be non-empty")
+        rendered = rendered.replace("{" + name + "}", quote(str(value), safe=""))
+    if "{" in rendered or "}" in rendered:
+        raise MetadataOnlyViolation(f"Unresolved PGN OpenAPI path template remains: {raw_key}")
+    assert_metadata_only_path(rendered)
+    return raw_key, rendered
+
+
 def build_metadata_url(
     openapi: Mapping[str, Any],
     path: str,
     query: Mapping[str, str | int | float | bool | None],
     *,
+    path_params: Mapping[str, str | int | float | bool] | None = None,
     base_url: str = BASE_URL,
 ) -> str:
-    raw_key, normalized = _resolve_openapi_path_key(openapi, path)
-    if "{" in raw_key or "}" in raw_key:
-        raise MetadataOnlyViolation(
-            "OpenAPI path templates with path parameters must be separately resolved and reviewed before live query"
-        )
+    raw_key, rendered_path = render_path_template(openapi, path, path_params)
     cleaned = validate_query_against_openapi(openapi, raw_key, query)
-    base = urljoin(base_url, raw_key.lstrip("/"))
+    base = urljoin(base_url, rendered_path.lstrip("/"))
     return base if not cleaned else f"{base}?{urlencode(cleaned, doseq=False)}"
 
 
@@ -262,10 +289,17 @@ def request_metadata(
     path: str,
     query: Mapping[str, str | int | float | bool | None],
     *,
+    path_params: Mapping[str, str | int | float | bool] | None = None,
     base_url: str = BASE_URL,
     timeout_s: float = 30.0,
 ) -> Any:
-    url = build_metadata_url(openapi, path, query, base_url=base_url)
+    url = build_metadata_url(
+        openapi,
+        path,
+        query,
+        path_params=path_params,
+        base_url=base_url,
+    )
     return fetch_json(url, timeout_s=timeout_s)
 
 
@@ -297,7 +331,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.describe:
-        parser.error("This review helper currently permits only --describe; exact query routes/filters must be reviewed after live discovery.")
+        parser.error("This review helper currently permits only --describe; exact metadata queries must be separately frozen in review workflows.")
     openapi = fetch_openapi()
     print(json.dumps(describe_contract(openapi), indent=2, sort_keys=True))
     return 0

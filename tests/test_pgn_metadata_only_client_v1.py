@@ -97,6 +97,29 @@ class PgnMetadataOnlyClientTests(unittest.TestCase):
             "https://api.pandonia-global-network.org/v1/calibrationfiles?instrument=209&spectrometer=2",
         )
 
+    def test_exact_openapi_key_is_preserved_when_normalization_removes_trailing_slash(self):
+        spec = {
+            "paths": {
+                "/v1/calibrationfiles/": {
+                    "get": {
+                        "parameters": [
+                            {"name": "instrument", "in": "query", "required": True, "schema": {"type": "integer"}}
+                        ]
+                    }
+                }
+            }
+        }
+        self.assertEqual(module.discover_metadata_paths(spec), ("/v1/calibrationfiles/",))
+        self.assertEqual(
+            module.query_parameter_names(spec, "/v1/calibrationfiles/"),
+            frozenset({"instrument"}),
+        )
+        # A normalized caller is safe only because the mapping is unique.
+        self.assertEqual(
+            module.query_parameter_names(spec, "/v1/calibrationfiles"),
+            frozenset({"instrument"}),
+        )
+
     def test_unresolved_parameter_refs_fail_closed(self):
         spec = {
             "paths": {

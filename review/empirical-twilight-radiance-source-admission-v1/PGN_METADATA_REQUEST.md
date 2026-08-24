@@ -1,7 +1,7 @@
 # PGN metadata resolution request — Pandora209 at Izaña
 
 **Status:** draft only; not sent by this repository action.  
-**Purpose:** resolve calibration/product metadata before any selected target sky-radiance values are opened.
+**Purpose:** metadata-only resolution of calibration/product metadata before any selected target sky-radiance values are opened.
 
 Suggested primary contact: `productinfo@pandonia-global-network.org` (Calibration & Production / PGN data questions).  
 API-specific fallback: `techsupport@pandonia-global-network.org`.  

@@ -22,6 +22,8 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
             "SET_VALUED_ACCEPTANCE_GATES.review.json",
             "MEASUREMENT_CHANNEL_INTEGRATION_BINDING.review.json",
             "GEOMETRY_PAIRING_STITCH_PRECONTRACT.review.json",
+            "ASTROPHYSICAL_BACKGROUND_BOUNDARY.review.json",
+            "SESSION_UNIVERSE_FREEZE_PRECONTRACT.review.json",
             "MODEL_FORM_ATMOSPHERE_BOUNDARY.review.json",
             "PGN_METADATA_ACQUISITION_BOUNDARY.review.json",
             "PGN_METADATA_REQUEST.md",
@@ -102,6 +104,16 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
         self.assertEqual(gates["externalSigmaLogMaximum"], 0.06)
         self.assertFalse(doc["nextSafeWork"]["targetRadianceOpeningAllowed"])
         self.assertTrue(all(value is False for value in doc["authorization"].values()))
+
+    def test_background_and_session_universe_are_frozen_value_free(self):
+        background = load_json("ASTROPHYSICAL_BACKGROUND_BOUNDARY.review.json")
+        self.assertFalse(background["targetRadianceOpened"])
+        self.assertFalse(background["currentClaimChoice"]["subtractMatchedDeepNightSpectrumForPrimaryPassFail"])
+        sessions = load_json("SESSION_UNIVERSE_FREEZE_PRECONTRACT.review.json")
+        self.assertFalse(sessions["targetRadianceOpened"])
+        self.assertTrue(sessions["completeUniverseRule"]["includeEveryMetadataEligibleSessionInAdmittedAcquisitionWindows"])
+        self.assertFalse(sessions["completeUniverseRule"]["capAtFortySessions"])
+        self.assertFalse(sessions["completeUniverseRule"]["dropOutlierSessionAfterTargetOpening"])
 
     def test_current_model_form_is_frozen_and_not_posthoc_conditioned(self):
         doc = load_json("MODEL_FORM_ATMOSPHERE_BOUNDARY.review.json")

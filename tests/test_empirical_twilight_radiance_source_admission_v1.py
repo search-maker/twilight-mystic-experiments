@@ -17,6 +17,7 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
             "source-admission.review.json",
             "AOD_QC_PRECONTRACT.review.json",
             "COMPARISON_METRIC_SKELETON.review.json",
+            "PGN_METADATA_ACQUISITION_BOUNDARY.review.json",
             "PGN_METADATA_REQUEST.md",
             "README.md",
         ):
@@ -128,6 +129,29 @@ class EmpiricalTwilightRadianceSourceAdmissionV1Tests(unittest.TestCase):
 
         auth = doc["authorization"]
         self.assertTrue(all(value is False for value in auth.values()))
+
+    def test_pgn_metadata_acquisition_boundary_forbids_data_download(self):
+        doc = load_json("PGN_METADATA_ACQUISITION_BOUNDARY.review.json")
+        allowed = {row["endpointFamily"] for row in doc["allowedPreValueOperations"]}
+        self.assertEqual(
+            allowed,
+            {"/v1/calibrationfiles", "/v1/operationfiles", "/v1/files", "/v1/metadata", "/v1/tutorial"},
+        )
+        forbidden = doc["forbiddenBeforeSeparateOpeningAuthorization"]
+        self.assertTrue(any(row.get("endpointFamily") == "/v1/download" for row in forbidden))
+        forbidden_text = "\n".join(row.get("action", "") + " " + row.get("reason", "") for row in forbidden)
+        self.assertIn("LEVEL1.DATA", forbidden_text)
+        self.assertIn("model agreement", forbidden_text)
+        selection = doc["selectionRules"]
+        self.assertTrue(selection["mayNotInspectTargetValuesToResolveMetadataAmbiguity"])
+        self.assertEqual(selection["metadataAmbiguityDisposition"], "REJECT_OR_HOLD_UNRESOLVED_NOT_OPEN_VALUES")
+        auth = doc["authorization"]
+        self.assertTrue(auth["metadataLookupAuthorized"])
+        self.assertFalse(auth["targetFileDownloadAuthorized"])
+        self.assertFalse(auth["targetRadianceOpeningAuthorized"])
+        self.assertFalse(auth["scientificExecutionAuthorized"])
+        self.assertFalse(auth["modelRetuningAuthorized"])
+        self.assertFalse(auth["productionActivationAuthorized"])
 
     def test_pgn_request_is_unsent_and_value_free(self):
         text = (REVIEW / "PGN_METADATA_REQUEST.md").read_text(encoding="utf-8")

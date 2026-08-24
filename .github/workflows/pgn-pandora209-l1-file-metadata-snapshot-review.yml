@@ -58,6 +58,7 @@ jobs:
               'end': '2026-08-24T23:59:59',
           }
           full = {}
+          api_dispositions = {}
           for spectrometer in (1, 2):
               try:
                   records = module.request_metadata(
@@ -74,20 +75,25 @@ jobs:
                   )
               except HTTPError as exc:
                   body = exc.read().decode('utf-8', errors='replace')
-                  print('PGN_L1_LISTING_HTTP_ERROR_BEGIN')
-                  print(json.dumps({
+                  error_evidence = {
                       'spectrometer': spectrometer,
                       'status': exc.code,
-                      'reason': exc.reason,
+                      'reason': str(exc.reason),
                       'url': exc.geturl(),
                       'body': body,
                       'frozenQueryUnchanged': True,
-                      'targetPayloadOpened': False,
-                      'metadataHeaderOpened': False,
-                      'downloadPerformed': False,
-                  }, indent=2, sort_keys=True))
+                  }
+                  api_dispositions[str(spectrometer)] = {
+                      'status': 'HTTP_ERROR_NO_FILE_METADATA_RETURNED',
+                      'error': error_evidence,
+                      'mustNotBeInterpretedAsEmptyFileList': True,
+                  }
+                  full[str(spectrometer)] = None
+                  print('PGN_L1_LISTING_HTTP_ERROR_BEGIN')
+                  print(json.dumps(error_evidence, indent=2, sort_keys=True))
                   print('PGN_L1_LISTING_HTTP_ERROR_END')
-                  raise
+                  continue
+
               if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
                   print(f'spectrometer-{spectrometer}-response=', json.dumps(records, indent=2, sort_keys=True))
                   raise SystemExit('L1 file listing did not return the frozen metadata-object array shape')
@@ -99,9 +105,29 @@ jobs:
                   if not isinstance(item.get('filename'), str) or not item['filename']:
                       raise SystemExit('L1 file metadata record lacks immutable filename')
               full[str(spectrometer)] = records
+              api_dispositions[str(spectrometer)] = {
+                  'status': 'METADATA_LIST_RETURNED',
+                  'count': len(records),
+              }
 
+          full_evidence = {
+              'snapshotQuery': {
+                  'location': 'Izana',
+                  'instrument': 209,
+                  'level': 'L1',
+                  'spectrometers': [1, 2],
+                  'startModificationTime': query['start'],
+                  'endModificationTime': query['end'],
+                  'codeFilter': None,
+              },
+              'recordsBySpectrometer': full,
+              'apiDispositions': api_dispositions,
+              'targetPayloadOpened': False,
+              'metadataHeaderOpened': False,
+              'downloadPerformed': False,
+          }
           full_path = Path('pandora209_l1_file_metadata_snapshot.json')
-          full_bytes = (json.dumps(full, indent=2, sort_keys=True) + '\n').encode('utf-8')
+          full_bytes = (json.dumps(full_evidence, indent=2, sort_keys=True) + '\n').encode('utf-8')
           full_path.write_bytes(full_bytes)
           full_sha = hashlib.sha256(full_bytes).hexdigest()
 
@@ -112,15 +138,7 @@ jobs:
               return sorted(str(item['metadata_date']) for item in records if item.get('metadata_date') is not None)
 
           summary = {
-              'snapshotQuery': {
-                  'location': 'Izana',
-                  'instrument': 209,
-                  'level': 'L1',
-                  'spectrometers': [1, 2],
-                  'startModificationTime': query['start'],
-                  'endModificationTime': query['end'],
-                  'codeFilter': None,
-              },
+              'snapshotQuery': full_evidence['snapshotQuery'],
               'fullSnapshotSha256': full_sha,
               'spectrometers': {},
               'targetPayloadOpened': False,
@@ -129,9 +147,17 @@ jobs:
           }
           for spectrometer in (1, 2):
               records = full[str(spectrometer)]
+              if records is None:
+                  summary['spectrometers'][str(spectrometer)] = {
+                      'metadataListAvailable': False,
+                      'apiDisposition': api_dispositions[str(spectrometer)],
+                      'count': None,
+                  }
+                  continue
               dates = nonnull_dates(records)
               filenames = sorted(item['filename'] for item in records)
               summary['spectrometers'][str(spectrometer)] = {
+                  'metadataListAvailable': True,
                   'count': len(records),
                   'metadataCodes': unique(records, 'metadata_code'),
                   'metadataBlickpVersions': unique(records, 'metadata_blickp_version'),
@@ -143,6 +169,16 @@ jobs:
                   'filenameMinimum': filenames[0] if filenames else None,
                   'filenameMaximum': filenames[-1] if filenames else None,
               }
+
+          summary['completeTwoSpectrometerSnapshotAvailable'] = all(
+              summary['spectrometers'][str(s)].get('metadataListAvailable') is True
+              for s in (1, 2)
+          )
+          summary['terminalMetadataDisposition'] = (
+              'COMPLETE_TWO_SPECTROMETER_METADATA_SNAPSHOT'
+              if summary['completeTwoSpectrometerSnapshotAvailable']
+              else 'PARTIAL_METADATA_ONLY_API_LIMITATION_REMAINS'
+          )
 
           summary_path = Path('pandora209_l1_file_metadata_summary.json')
           summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n', encoding='utf-8')
@@ -167,7 +203,11 @@ jobs:
           assert summary['targetPayloadOpened'] is False
           assert summary['metadataHeaderOpened'] is False
           assert summary['downloadPerformed'] is False
-          print('L1 snapshot remained metadata-only')
+          spec2 = summary['spectrometers']['2']
+          if spec2.get('metadataListAvailable') is False:
+              assert spec2['count'] is None
+              assert spec2['apiDisposition']['mustNotBeInterpretedAsEmptyFileList'] is True
+          print('L1 snapshot remained metadata-only and API errors are not reclassified as empty lists')
           PY
 
       - name: Upload immutable L1 metadata snapshot artifact

@@ -57,6 +57,24 @@ The paired `s1`/`s2` identity is consistent with a Pandora-2S dual-spectrometer 
 
 Generic Pandora-2S descriptions indicate complementary spectrometers spanning roughly 270–530 nm and 400–900 nm, which would be sufficient in principle for the visible photopic/Johnson-V region. This is only an instrument-family capability statement until exact Pandora209 calibration and product metadata are bound.
 
+### Critical L1 product-type gate
+
+PGN/NASA documentation describes L0 as raw field spectra and L1 as data after instrument-characteristic corrections. That does **not** imply that every L1 row is an absolute radiance. The Blick file contract explicitly provides a `Level 1 data type` field with these semantics:
+
+- `1` = corrected count rate `[s^-1]`;
+- `2` = radiance `[W/m2/nm/sr]`;
+- `3` = irradiance `[W/m2/nm]`.
+
+Therefore the strict real-sky directional-radiance validation will admit only selected Pandora209 measurements whose metadata independently states **L1 data type 2**, with radiance units `W/m2/nm/sr` and an acceptable uncertainty/calibration binding. Type 1 corrected-count-rate rows and type 3 irradiance rows are ineligible for this strict target unless a separately reviewed, traceable absolute-radiance conversion is frozen before target values are opened.
+
+This type/units check is metadata-only and may be performed before reading the target spectral value arrays.
+
+References for these semantics:
+
+https://pandora.gsfc.nasa.gov/Data/html/processing.html
+
+https://pandora.gsfc.nasa.gov/Data/html/versions.html
+
 ## Why Izaña is unusually promising
 
 Izaña provides independent environmental context that can satisfy requirements which blocked earlier historical sources:
@@ -82,15 +100,16 @@ The validation AOD must be taken from an independently frozen external source an
 No Pandora209 target twilight radiance is authorized to be read for validation until all of the following are frozen and independently reviewable:
 
 1. **Exact calibration binding** — identify exact PGN calibration/operation files applicable to each selected Pandora209 spectrometer/session.
-2. **Product semantics** — prove exact L0/L1 field meanings, radiance units, corrections, uncertainty representation, timestamps and pointing metadata.
-3. **Metadata-only session universe** — enumerate candidate sessions/files without reading target spectral radiance arrays; confirm the required twilight and pointing coverage.
-4. **Dual-spectrometer stitching** — freeze a deterministic overlap/stitch rule for s1/s2 without examining the validation sky values.
-5. **Independent AOD contract** — freeze source hierarchy, AOD550 conversion/interpolation, uncertainty propagation, maximum temporal separation and atmospheric-stability rejection criteria.
-6. **Cloud/glare QC** — freeze independent QC sources and synchronization rules, including how SONA/BSRN/AERONET or equivalent metadata cause exclusion.
-7. **Immutable provenance** — hash raw source files and bind calibration/operation/metadata identities before value opening.
-8. **Session isolation** — assign sessions to calibration/validation roles deterministically before outcomes are examined.
-9. **Comparison target** — freeze the exact model output to compare (direction, spectral integration, atmosphere inputs, refraction/geometry convention).
-10. **Pass/fail metrics** — freeze uncertainty-aware aggregate and worst-case gates before target values are opened.
+2. **Absolute-radiance product gate** — prove from metadata that every selected strict-validation measurement is L1 data type `2 = radiance [W/m2/nm/sr]`; reject ordinary corrected-count-rate type 1 and irradiance type 3 for this directional-radiance target.
+3. **Uncertainty semantics** — bind the exact uncertainty representation and usable wavelength/filter ranges for each spectrometer.
+4. **Metadata-only session universe** — enumerate candidate sessions/files without reading target spectral radiance arrays; confirm the required twilight and pointing coverage.
+5. **Dual-spectrometer stitching** — freeze a deterministic overlap/stitch rule for s1/s2 without examining the validation sky values.
+6. **Independent AOD contract** — freeze source hierarchy, AOD550 conversion/interpolation, uncertainty propagation, maximum temporal separation and atmospheric-stability rejection criteria.
+7. **Cloud/glare QC** — freeze independent QC sources and synchronization rules, including how SONA/BSRN/AERONET or equivalent metadata cause exclusion.
+8. **Immutable provenance** — hash raw source files and bind calibration/operation/metadata identities before value opening.
+9. **Session isolation** — assign sessions to calibration/validation roles deterministically before outcomes are examined.
+10. **Comparison target** — freeze the exact model output to compare (direction, spectral integration, atmosphere inputs, refraction/geometry convention).
+11. **Pass/fail metrics** — freeze uncertainty-aware aggregate and worst-case gates before target values are opened.
 
 Until these checks pass, candidate status remains:
 

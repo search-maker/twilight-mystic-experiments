@@ -1,0 +1,106 @@
+name: Koomen certified paired twilight shape v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/koomen-certified-shape-v1.yml"
+      - "review/published-twilight-radiance-benchmark-v1/certified_paired_shape_v1.py"
+      - "review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json"
+      - "review/published-twilight-radiance-benchmark-v1/frozen-runtime/**"
+
+permissions:
+  contents: read
+
+jobs:
+  certified-paired-shape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialize exact frozen runtimes and reviewed evaluator sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-inputs
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/validated-v3-primary-runtime-v1.json benchmark-inputs/base.json
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/aerosol-scenario-interpolator-runtime-v1.json benchmark-inputs/asiv.json
+          printf '%s  %s\n' "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4" benchmark-inputs/base.json | sha256sum -c -
+          printf '%s  %s\n' "a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060" benchmark-inputs/asiv.json | sha256sum -c -
+
+          git fetch --no-tags --depth=1 origin 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/exact_aod_interval_support_v1.py > benchmark-inputs/support.py
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/certified_aod_scenario_extrema_v1.py > benchmark-inputs/model.py
+          sha256sum benchmark-inputs/support.py benchmark-inputs/model.py > benchmark-inputs/evaluator-sources.sha256
+
+      - name: Verify published-only paired-shape boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('review/published-twilight-radiance-benchmark-v1')
+          data = json.loads((root/'KOOMEN_1952_MARYLAND_PHOTOPIC_48.json').read_text())
+          assert len(data['rows']) == 48 == data['selection']['rowCount']
+          assert sorted(set(r['sunDepressionDeg'] for r in data['rows'])) == [3, 6]
+          assert all(r['observerElevationM'] == 30.0 for r in data['rows'])
+          print('Published-only 24-pair source boundary verified')
+          PY
+
+      - name: Run certified same-AOD same-scenario paired-shape evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/certified_paired_shape_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/base.json \
+            --asiv-runtime benchmark-inputs/asiv.json \
+            --support-evaluator benchmark-inputs/support.py \
+            --extrema-evaluator benchmark-inputs/model.py \
+            --output KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.json \
+            --workers 4
+          sha256sum KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.json > KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.sha256
+          cat KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.sha256
+
+      - name: Prove claim and holdout boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r = json.load(open('KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.json'))
+          assert r['claimClass'] == 'MATHEMATICALLY_CERTIFIED_MODEL_SHAPE_ENVELOPE_AGAINST_PUBLISHED_HISTORICAL_DATA_NOT_STRICT_MODERN_VALIDATION'
+          assert r['pairCount'] == 24
+          assert r['boundary']['pandoraTargetDataUsed'] is False
+          assert r['boundary']['historicalPublishedValuesAlreadyOpen'] is True
+          assert r['boundary']['strictModernValidationClaimAuthorized'] is False
+          assert r['boundary']['modelRetuningAuthorized'] is False
+          assert r['boundary']['productionAuthorization'] is False
+          for row in r['rows']:
+              if row['status'] == 'CERTIFIED_PAIRED_SHAPE_EVALUATED':
+                  c = row['certification']
+                  assert c['certified'] is True
+                  assert c['sameAodRequired'] is True
+                  assert c['sameScenarioRequired'] is True
+                  assert c['logTolerance'] == 1e-4
+                  assert c['failures'] == []
+          print('Certified-shape claim boundary verified')
+          PY
+
+      - name: Upload immutable certified-shape result
+        uses: actions/upload-artifact@v4
+        with:
+          name: koomen-certified-paired-shape-v1
+          path: |
+            KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.json
+            KOOMEN_CERTIFIED_PAIRED_SHAPE_RESULT.sha256
+            benchmark-inputs/evaluator-sources.sha256
+          if-no-files-found: error
+          retention-days: 30

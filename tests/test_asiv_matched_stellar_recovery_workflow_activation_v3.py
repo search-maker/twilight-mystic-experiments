@@ -23,8 +23,8 @@ AUTHORIZATION = ROOT / "review/asiv-matched-stellar-transport-v1/authorization-r
 ACTIVATION_REVIEW = ROOT / ".github/workflows/asiv-matched-stellar-recovery-workflow-activation-review-v3.yml"
 
 EXPECTED_CONTROL_BLOB = "1c9ba7e3f30388835bd87d24e3e2c7d03c050126"
-EXPECTED_AUTH_BLOB = "4311cab5dd400c3fe8bee7e459687da1d0cbe713"
-EXPECTED_SCIENCE_BLOB = "36428e9d719e47550a7baa21c6dab61e38a3cd98"
+EXPECTED_AUTH_BLOB = "86564ecd4d33c6c5f94d657214c3aa98f09c211a"
+EXPECTED_SCIENCE_BLOB = "fd844e53da4d4433a3a5322a40af2dd734238376"
 EXPECTED_HELPER_BLOB = "ce2ebe14f5128308fb8d138d38b064f8387feb29"
 EXPECTED_EVIDENCE_BLOB = "2caae4d121e13eced92cfb7b362c29502d2a25f4"
 EXPECTED_V2_AUTH_BLOB = "a334c8d4537f4503a502978f106daf83c87a1c9e"
@@ -47,7 +47,7 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(SCIENCE_ACTIVE), EXPECTED_SCIENCE_BLOB)
         self.assertEqual(SCIENCE_ACTIVE.read_bytes(), SCIENCE_CANDIDATE.read_bytes())
 
-    def test_activation_contract_binds_exact_control_and_retry_layer(self):
+    def test_activation_contract_binds_exact_control_retry_and_strict_gate_alignment(self):
         control = json.loads(CONTROL.read_text(encoding="utf-8"))
         activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
         self.assertEqual(git_blob_sha1(CONTROL), EXPECTED_CONTROL_BLOB)
@@ -59,6 +59,14 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(roles["authorization-review"]["activeGitBlobSha1Required"], EXPECTED_AUTH_BLOB)
         self.assertEqual(roles["science"]["candidateGitBlobSha1"], EXPECTED_SCIENCE_BLOB)
         self.assertEqual(roles["science"]["activeGitBlobSha1Required"], EXPECTED_SCIENCE_BLOB)
+        alignment = activation["strictGateAlignment"]
+        self.assertEqual(alignment["immutableStrictGateGitBlobSha1"], "9bbe4f8fe64f7f32dd3e3e69469a15b30f658dde")
+        self.assertEqual(alignment["requiredScientificAuthorizationStageId"], "asiv-matched-stellar-transport-v1-execution-authorization")
+        self.assertEqual(alignment["recoveryControlStageId"], "asiv-matched-stellar-transport-recovery-v3-authorization")
+        self.assertTrue(alignment["strictCaseUniverseMustEqualExecutionContractExactly"])
+        self.assertTrue(alignment["batchCardinalityMustRemainInBatchBindings"])
+        self.assertTrue(alignment["authorizationReviewMustExecuteStrictGateValidation"])
+        self.assertTrue(alignment["authorizationReviewMustExecuteBatchGateValidation"])
         self.assertEqual(control["readOnlyApiRetryPolicy"]["retryHttpStatuses"], [502, 503, 504])
         self.assertEqual(control["readOnlyApiRetryPolicy"]["maxAttempts"], 3)
         self.assertFalse(control["readOnlyApiRetryPolicy"]["solverRetryPermitted"])
@@ -70,7 +78,7 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(V1_AUTH_ACTIVE), EXPECTED_V1_AUTH_BLOB)
         self.assertEqual(git_blob_sha1(V1_SCIENCE_ACTIVE), EXPECTED_V1_SCIENCE_BLOB)
 
-    def test_activation_creates_no_authorization_or_dispatch(self):
+    def test_alignment_creates_no_authorization_or_dispatch(self):
         self.assertFalse(AUTHORIZATION.exists())
         activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
         for key in (
@@ -87,13 +95,17 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertTrue(boundary["bothPriorPreSolverFailuresMustStillBeReverifiedAtDispatch"])
         self.assertTrue(boundary["readOnlyApiTransportRetryDoesNotAuthorizeSolverRetry"])
 
-    def test_active_v3_science_semantics_remain_frozen(self):
+    def test_active_v3_control_and_science_semantics_remain_frozen(self):
         auth = AUTH_ACTIVE.read_text(encoding="utf-8")
         science = SCIENCE_ACTIVE.read_text(encoding="utf-8")
         self.assertIn("pull_request:", auth)
         self.assertIn("authorization-recovery-v3.json", auth)
         self.assertNotIn("workflow_dispatch:", auth)
         self.assertNotIn("uvspec", auth)
+        self.assertIn("asiv-matched-stellar-transport-v1-execution-authorization", auth)
+        self.assertIn("asiv-matched-stellar-transport-recovery-v3-authorization", auth)
+        self.assertIn("gate.validate_strict_authorization(auth)", auth)
+        self.assertIn("batch.validate_batch_authorization(auth)", auth)
         self.assertIn("workflow_dispatch:", science)
         self.assertIn("dispatch/asiv-matched-stellar-transport-recovery-v3", science)
         self.assertIn("32848973816", science)
@@ -105,7 +117,8 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertIn("Execute exactly one frozen shard with no retry or resume", science)
         self.assertIn("execute_shard_strict", science)
         self.assertIn("allow_execution=True", science)
-        self.assertIn("3468", science)
+        self.assertIn("batch.get('totalCaseCount')!=3468", science)
+        self.assertIn("universe.get('validationJohnsonVComparisonsTotal')!=2304", science)
         self.assertIn("exactly 99 unique complete Recovery v3 shard artifacts required", science)
         self.assertIn("artifact digest mismatch", science)
         self.assertNotIn("gh api ", science)

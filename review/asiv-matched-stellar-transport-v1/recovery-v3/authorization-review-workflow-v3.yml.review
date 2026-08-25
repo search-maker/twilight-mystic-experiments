@@ -49,7 +49,7 @@ jobs:
           test "${CHANGED[0]}" = review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json
           export AUTH_HEAD AUTH_BRANCH BASE_SHA PR_NUMBER
           python - <<'PY'
-          import hashlib,json,os,subprocess
+          import hashlib,importlib.util,json,os,subprocess
           from pathlib import Path
           root=Path('.')
           auth_path=root/'review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json'
@@ -57,7 +57,8 @@ jobs:
           def need(key,value):
               if auth.get(key)!=value: raise SystemExit(f'Recovery v3 authorization mismatch: {key}')
           need('schemaVersion',1)
-          need('stageId','asiv-matched-stellar-transport-recovery-v3-authorization')
+          need('stageId','asiv-matched-stellar-transport-v1-execution-authorization')
+          need('controlStageId','asiv-matched-stellar-transport-recovery-v3-authorization')
           need('recoveryVersion',3)
           need('authorizationBranch',os.environ['AUTH_BRANCH'])
           need('dispatchBranch','dispatch/asiv-matched-stellar-transport-recovery-v3')
@@ -84,17 +85,27 @@ jobs:
           expected_retry={'readOnlyGetOnly':True,'maxAttempts':3,'retryHttpStatuses':[502,503,504],'backoffSeconds':[2,4],'mutatingMethodsForbidden':True}
           for k,v in expected_retry.items():
               if retry.get(k)!=v: raise SystemExit(f'Recovery v3 read-only retry policy drift: {k}')
-          universe=auth.get('caseUniverse') or {}
           expected_universe={
               'trainingSpectraTotal':2700,
+              'trainingSpectraPerFamily':675,
               'validationAtmosphericSpectraTotal':768,
+              'validationAtmosphericSpectraPerFamily':192,
+              'validationSedRepresentatives':3,
               'validationJohnsonVComparisonsTotal':2304,
-              'totalCaseCount':3468,
-              'totalShardCount':99,
-              'batchManifestCanonicalSha256':'1756c756e1e865c729a3d93a1084c6081a5eefa6a05f4e874bdaed84e8359663',
+              'validationJohnsonVComparisonsPerFamily':576,
+              'partialResultInterpretationPermitted':False,
           }
-          for k,v in expected_universe.items():
-              if universe.get(k)!=v: raise SystemExit(f'Recovery v3 case-universe drift: {k}')
+          if auth.get('caseUniverse') != expected_universe:
+              raise SystemExit('Recovery v3 strict caseUniverse drift')
+          expected_batch={
+              'batchOrchestrationGitBlobSha1':'d1c4f156967e592ee41f4c1a829e7d551a4f7ea7',
+              'batchContractGitBlobSha1':'7214a7e6ff969242cab20d9019ccc522ab96ddde',
+              'batchManifestCanonicalSha256':'1756c756e1e865c729a3d93a1084c6081a5eefa6a05f4e874bdaed84e8359663',
+              'totalShardCount':99,
+              'totalCaseCount':3468,
+          }
+          if auth.get('batchBindings') != expected_batch:
+              raise SystemExit('Recovery v3 batch binding drift')
           gates=auth.get('acceptanceGates') or {}
           if gates.get('perFamilyMaxAbsDeltaAvMag')!=0.025 or gates.get('perFamilyRmsDeltaAvMag')!=0.01:
               raise SystemExit('Recovery v3 validation thresholds drift')
@@ -116,6 +127,14 @@ jobs:
           for key,path in paths.items():
               observed=subprocess.check_output(['git','hash-object',path],text=True).strip()
               if bindings.get(key)!=observed: raise SystemExit(f'Recovery v3 blob binding drift: {key}')
+          gate_path=root/'review/asiv-matched-stellar-transport-v1/execution_authorization_gate_review.py'
+          spec=importlib.util.spec_from_file_location('recovery_v3_strict_execution_gate',gate_path)
+          gate=importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
+          gate.validate_strict_authorization(auth)
+          batch_path=root/'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py'
+          bspec=importlib.util.spec_from_file_location('recovery_v3_batch_gate',batch_path)
+          batch=importlib.util.module_from_spec(bspec); bspec.loader.exec_module(batch)
+          batch.validate_batch_authorization(auth)
           raw=auth_path.read_bytes()
           receipt={
               'schemaVersion':1,
@@ -130,6 +149,8 @@ jobs:
               'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
               'recoveryVersion':3,
               'priorFailedScienceRunIds':[32848973816,32868735547],
+              'strictExecutionGateVerified':True,
+              'strictBatchGateVerified':True,
               'readOnlyApiRetryPolicyVerified':True,
               'scientificExecutionPerformed':False,
               'solverExecutionPerformed':False,

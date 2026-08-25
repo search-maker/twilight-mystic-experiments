@@ -1,0 +1,278 @@
+name: ASIV matched stellar authorization review recovery v4
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/asiv-matched-stellar-transport-v1/authorization-recovery-v4.json'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review-authorization:
+    if: ${{ github.event.pull_request.draft == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact Recovery v4 authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify exact one-file Draft Recovery v4 authorization proposal
+        shell: bash
+        env:
+          AUTH_HEAD: ${{ github.event.pull_request.head.sha }}
+          AUTH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$BASE_REF" = main
+          test "$AUTH_BRANCH" = authorization/asiv-matched-stellar-transport-recovery-v4
+          test "$(git rev-parse HEAD)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = review/asiv-matched-stellar-transport-v1/authorization-recovery-v4.json
+          export AUTH_HEAD AUTH_BRANCH BASE_SHA PR_NUMBER
+          python - <<'PY'
+          import importlib.util,json,os,subprocess
+          from pathlib import Path
+          root=Path('.')
+          auth_path=root/'review/asiv-matched-stellar-transport-v1/authorization-recovery-v4.json'
+          auth=json.loads(auth_path.read_text(encoding='utf-8'))
+          def need(key,value):
+              if auth.get(key)!=value: raise SystemExit(f'Recovery v4 authorization mismatch: {key}')
+          need('schemaVersion',1)
+          need('stageId','asiv-matched-stellar-transport-v1-execution-authorization')
+          need('controlStageId','asiv-matched-stellar-transport-recovery-v4-authorization')
+          need('recoveryVersion',4)
+          need('authorizationBranch',os.environ['AUTH_BRANCH'])
+          need('dispatchBranch','dispatch/asiv-matched-stellar-transport-recovery-v4')
+          need('executionKey','asiv-matched-stellar-transport-recovery-v4-one-shot')
+          need('exactAuthorizationParentCommit',os.environ['BASE_SHA'])
+          need('automaticDispatch',False)
+          need('dispatchAuthorized',False)
+          need('consumed',False)
+          need('githubRerunPermitted',False)
+          need('solverRetryPermitted',False)
+          need('solverResumePermitted',False)
+          need('readOnlyApiTransportRetryAllowed',True)
+          need('nativeRenderable',False)
+          need('nativeRebuildAuthorized',False)
+          need('pandoraHoldoutAccessAllowed',False)
+          need('starsvisibilityMutationAuthorized',False)
+          need('productionAuthorized',False)
+          prior=auth.get('priorFailedScienceRuns')
+          if not isinstance(prior,list) or [x.get('runId') for x in prior] != [32848973816,32868735547,32874586374]:
+              raise SystemExit('Recovery v4 prior-run binding drift')
+          if any(x.get('solverExecutionObserved') is not False for x in prior):
+              raise SystemExit('Recovery v4 may only follow preserved pre-solver failures')
+          retry=auth.get('readOnlyApiRetryPolicy') or {}
+          expected_retry={'readOnlyGetOnly':True,'maxAttempts':8,'retryHttpStatuses':[502,503,504],'backoffSeconds':[2,4,8,16,30,30,30],'mutatingMethodsForbidden':True}
+          for k,v in expected_retry.items():
+              if retry.get(k)!=v: raise SystemExit(f'Recovery v4 read-only retry policy drift: {k}')
+          expected_universe={
+              'trainingSpectraTotal':2700,
+              'trainingSpectraPerFamily':675,
+              'validationAtmosphericSpectraTotal':768,
+              'validationAtmosphericSpectraPerFamily':192,
+              'validationSedRepresentatives':3,
+              'validationJohnsonVComparisonsTotal':2304,
+              'validationJohnsonVComparisonsPerFamily':576,
+              'partialResultInterpretationPermitted':False,
+          }
+          if auth.get('caseUniverse') != expected_universe:
+              raise SystemExit('Recovery v4 strict caseUniverse drift')
+          expected_batch={
+              'batchOrchestrationGitBlobSha1':'d1c4f156967e592ee41f4c1a829e7d551a4f7ea7',
+              'batchContractGitBlobSha1':'7214a7e6ff969242cab20d9019ccc522ab96ddde',
+              'batchManifestCanonicalSha256':'1756c756e1e865c729a3d93a1084c6081a5eefa6a05f4e874bdaed84e8359663',
+              'totalShardCount':99,
+              'totalCaseCount':3468,
+          }
+          if auth.get('batchBindings') != expected_batch:
+              raise SystemExit('Recovery v4 batch binding drift')
+          gates=auth.get('acceptanceGates') or {}
+          if gates.get('perFamilyMaxAbsDeltaAvMag')!=0.025 or gates.get('perFamilyRmsDeltaAvMag')!=0.01:
+              raise SystemExit('Recovery v4 validation thresholds drift')
+          if gates.get('everyFamilyMustPassSeparately') is not True:
+              raise SystemExit('Recovery v4 per-family gate weakened')
+          if any(gates.get(k) is not False for k in ('postResultThresholdRelaxationPermitted','postResultKnotRetuningPermitted','postResultInterpolationRetuningPermitted')):
+              raise SystemExit('Recovery v4 post-result tuning must remain forbidden')
+          bindings=auth.get('controlBindings') or {}
+          paths={
+              'scienceWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-science-recovery-v4.yml',
+              'authorizationReviewWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-authorization-review-recovery-v4.yml',
+              'readOnlyApiRetryHelperGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v4/read_only_gh_api_retry_v4.py',
+              'historicalPreSolverEvidenceGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v4/HISTORICAL_PRE_SOLVER_EVIDENCE.review.json',
+              'recoveryControlContractGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v4/RECOVERY_CONTROL_CONTRACT.review.json',
+              'batchOrchestrationGitBlobSha1':'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py',
+              'executionTransportGitBlobSha1':'review/asiv-matched-stellar-transport-v1/execution_transport_review.py',
+              'validationAssemblerGitBlobSha1':'review/asiv-matched-stellar-transport-v1/assemble_validate_matched_stellar_v1.py',
+          }
+          for key,path in paths.items():
+              observed=subprocess.check_output(['git','hash-object',path],text=True).strip()
+              if bindings.get(key)!=observed: raise SystemExit(f'Recovery v4 blob binding drift: {key}')
+          gate_path=root/'review/asiv-matched-stellar-transport-v1/execution_authorization_gate_review.py'
+          spec=importlib.util.spec_from_file_location('recovery_v4_strict_execution_gate',gate_path)
+          gate=importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
+          gate.validate_strict_authorization(auth)
+          batch_path=root/'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py'
+          bspec=importlib.util.spec_from_file_location('recovery_v4_batch_gate',batch_path)
+          batch=importlib.util.module_from_spec(bspec); bspec.loader.exec_module(batch)
+          batch.validate_batch_authorization(auth)
+          PY
+      - name: Live-verify v1 v2 and v3 historical pre-solver evidence before dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v4/read_only_gh_api_retry_v4.py
+          for RID in 32848973816 32868735547 32874586374; do
+            python "$HELPER" --output "run-${RID}.json" -- "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}"
+            python "$HELPER" --output "jobs-${RID}.json" -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/jobs?per_page=100"
+            python "$HELPER" --output "artifacts-${RID}.json" -- "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100"
+          done
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          evidence_path=Path('review/asiv-matched-stellar-transport-v1/recovery-v4/HISTORICAL_PRE_SOLVER_EVIDENCE.review.json')
+          evidence=json.loads(evidence_path.read_text(encoding='utf-8'))
+          expected_ids=[32848973816,32868735547,32874586374]
+          if [x.get('runId') for x in evidence.get('priorRuns',[])]!=expected_ids:
+              raise SystemExit('Recovery v4 historical evidence run-id drift')
+          def load(name): return json.load(open(name))
+          def flat_jobs(rid):
+              pages=load(f'jobs-{rid}.json')
+              return [j for page in pages for j in page.get('jobs',[])]
+          def arts(rid): return load(f'artifacts-{rid}.json').get('artifacts',[])
+          def verify_run(row):
+              rid=int(row['runId']); live=load(f'run-{rid}.json')
+              expected={'id':rid,'run_attempt':row['runAttempt'],'status':'completed','conclusion':row['conclusion'],'head_branch':row['headBranch'],'head_sha':row['headSha']}
+              for k,v in expected.items():
+                  if live.get(k)!=v: raise SystemExit(f'historical run {rid} identity/status drift: {k}')
+              jobs=flat_jobs(rid)
+              executed=[]
+              for job in jobs:
+                  for step in job.get('steps') or []:
+                      if step.get('name')=='Execute exactly one frozen shard with no retry or resume' and step.get('conclusion') not in ('skipped',None):
+                          executed.append((job.get('name'),step.get('conclusion')))
+              if executed: raise SystemExit(f'historical run {rid} solver execution cannot be excluded: {executed}')
+              return jobs,arts(rid)
+          r1,r2,r3=evidence['priorRuns']
+          j1,a1=verify_run(r1)
+          failed=[j for j in j1 if int(j.get('id') or 0)==r1['failedJobId']]
+          if len(failed)!=1 or failed[0].get('name')!=r1['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v1 failed-job drift')
+          s1={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
+          if s1.get(r1['failedStepName'])!='failure' or s1.get('Execute exactly one frozen shard with no retry or resume')!='skipped': raise SystemExit('v1 pre-solver step drift')
+          pre1=[a for a in a1 if a.get('name')=='asiv-matched-stellar-preflight-v1']
+          shard1=[a for a in a1 if str(a.get('name') or '').startswith('asiv-matched-stellar-shard-v1-')]
+          final1=[a for a in a1 if a.get('name')=='asiv-matched-stellar-final-validation-v1']
+          if len(pre1)!=1 or int(pre1[0].get('id') or 0)!=r1['preflightArtifactId'] or shard1 or final1: raise SystemExit('v1 artifact boundary drift')
+          j2,a2=verify_run(r2)
+          failed=[j for j in j2 if int(j.get('id') or 0)==r2['failedJobId']]
+          if len(failed)!=1 or failed[0].get('name')!=r2['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v2 failed-job drift')
+          s2={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
+          if s2.get('Verify one-use recovery dispatch, exact authorization and successful review')!='success': raise SystemExit('v2 authorization identity drift')
+          if s2.get(r2['failedStepName'])!='failure' or s2.get('Build exact frozen 99-shard matrix')!='skipped': raise SystemExit('v2 pre-solver step drift')
+          if a2: raise SystemExit('v2 artifact universe must remain empty')
+          j3,a3=verify_run(r3)
+          failed=[j for j in j3 if int(j.get('id') or 0)==r3['failedJobId']]
+          if len(failed)!=1 or failed[0].get('name')!=r3['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v3 failed-job drift')
+          s3={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
+          if s3.get('Verify one-use Recovery v3 dispatch, exact authorization and successful review')!='success': raise SystemExit('v3 authorization identity drift')
+          if s3.get(r3['failedStepName'])!='failure': raise SystemExit('v3 historical-read failure-step drift')
+          for name in ('Build exact frozen 99-shard matrix','Fetch exact official OPAC archive once and verify before any solver job','Publish same-run verified Recovery v3 preflight inputs'):
+              if s3.get(name)!='skipped': raise SystemExit(f'v3 unexpectedly crossed pre-solver boundary: {name}')
+          if a3: raise SystemExit('v3 artifact universe must remain empty')
+          common=evidence.get('commonBoundary') or {}
+          for key in ('scientificSolverExecutionObserved','scientificShardArtifactsObserved','finalValidationArtifactsObserved','githubJobRerunPermitted','solverRetryPermitted','solverResumePermitted','pandoraHoldoutOpened','productionAuthorized','starsvisibilityMutationAuthorized'):
+              if common.get(key) is not False: raise SystemExit(f'historical common boundary drift: {key}')
+          raw=evidence_path.read_bytes()
+          verification={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-transport-recovery-v4-historical-live-verification',
+              'status':'HISTORICAL_PRE_SOLVER_EVIDENCE_LIVE_VERIFIED',
+              'runIds':expected_ids,
+              'historicalEvidenceRawSha256':hashlib.sha256(raw).hexdigest(),
+              'historicalEvidenceGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
+              'solverExecutionObserved':False,
+              'scientificShardArtifactsObserved':False,
+              'finalValidationArtifactsObserved':False,
+              'verificationPerformedBeforeScienceDispatch':True,
+          }
+          Path('historical-presolver-verification-v4.json').write_text(json.dumps(verification,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(verification,sort_keys=True))
+          PY
+      - name: Build Recovery v4 authorization review receipt with historical evidence handoff
+        shell: bash
+        env:
+          AUTH_HEAD: ${{ github.event.pull_request.head.sha }}
+          AUTH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          export AUTH_HEAD AUTH_BRANCH BASE_SHA PR_NUMBER
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          auth_path=Path('review/asiv-matched-stellar-transport-v1/authorization-recovery-v4.json')
+          raw=auth_path.read_bytes()
+          history=json.load(open('historical-presolver-verification-v4.json'))
+          if history.get('status')!='HISTORICAL_PRE_SOLVER_EVIDENCE_LIVE_VERIFIED': raise SystemExit('historical evidence verification missing')
+          receipt={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-transport-recovery-v4-authorization-review',
+              'status':'AUTHORIZATION_REVIEW_PASS_NO_DISPATCH',
+              'authorizationHeadSha':os.environ['AUTH_HEAD'],
+              'authorizationParentSha':os.environ['BASE_SHA'],
+              'authorizationBranch':os.environ['AUTH_BRANCH'],
+              'prNumber':int(os.environ['PR_NUMBER']),
+              'authorizationRawSha256':hashlib.sha256(raw).hexdigest(),
+              'authorizationGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
+              'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'recoveryVersion':4,
+              'priorFailedScienceRunIds':[32848973816,32868735547,32874586374],
+              'historicalPreSolverEvidenceVerified':True,
+              'historicalEvidenceRawSha256':history['historicalEvidenceRawSha256'],
+              'historicalEvidenceGitBlobSha1':history['historicalEvidenceGitBlobSha1'],
+              'strictExecutionGateVerified':True,
+              'strictBatchGateVerified':True,
+              'readOnlyApiRetryPolicyVerified':True,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'dispatchPerformed':False,
+              'resultOpeningAuthorized':False,
+              'pandoraHoldoutOpened':False,
+              'productionAuthorized':False,
+          }
+          Path('authorization-review-recovery-v4.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+      - name: Publish Recovery v4 review receipt and historical verification only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-authorization-review-recovery-v4
+          path: |
+            authorization-review-recovery-v4.json
+            historical-presolver-verification-v4.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

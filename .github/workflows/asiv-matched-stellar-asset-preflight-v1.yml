@@ -49,7 +49,7 @@ jobs:
           print('matched-stellar review remains zero-runtime and non-authorizing')
           PY
 
-  recover-exact-photometric-assets:
+  recover-exact-pickles-asset:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -58,29 +58,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Materialize exact upstream builder and Johnson-V bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/upstream /tmp/pickles98
-          BASE='https://raw.githubusercontent.com/search-maker/starsvisibility/404c255a15158ed172bb2d6a7ac97b4ea24a9f29/scientific-tools/visibility-v3'
-          curl -fsSL --retry 3 --retry-all-errors "$BASE/build_pickles_sed_bundle.py" -o /tmp/upstream/build_pickles_sed_bundle.py
-          curl -fsSL --retry 3 --retry-all-errors "$BASE/generated/johnson-v-1nm.json" -o /tmp/upstream/johnson-v-1nm.json
-          python - <<'PY'
-          from pathlib import Path
-          import hashlib
-          def blob(path):
-              b=Path(path).read_bytes()
-              return hashlib.sha1(b'blob '+str(len(b)).encode('ascii')+b'\0'+b).hexdigest()
-          assert blob('/tmp/upstream/build_pickles_sed_bundle.py') == 'c0c051582f4e4b7b2d7e6d41f19412e4de7b7964'
-          assert blob('/tmp/upstream/johnson-v-1nm.json') == 'bbc12bf5543f373676612e00e411071cbf86acce'
-          assert hashlib.sha256(Path('/tmp/upstream/johnson-v-1nm.json').read_bytes()).hexdigest() == '51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a'
-          PY
-
       - name: Download authoritative VizieR metadata and exact STScI Pickles atlas members
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p /tmp/pickles98
           metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
           curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
             --data-urlencode '-source=J/PASP/110/863/synphot' \
@@ -154,17 +136,13 @@ jobs:
           PY
 
       - name: Rebuild and classify exact Pickles SED bundle
-        id: bundle
         shell: bash
         run: |
-          set -uo pipefail
-          python /tmp/upstream/build_pickles_sed_bundle.py \
+          set -euo pipefail
+          python review/asiv-matched-stellar-transport-v1/recover_pickles_sed_bundle_v1.py \
             --pickles-dir /tmp/pickles98 \
             --libmags-table6 /tmp/table6.dat \
             --output /tmp/pickles-sed-1nm.json
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
           python - <<'PY'
           import hashlib, json
           from pathlib import Path
@@ -172,17 +150,15 @@ jobs:
           sed_path=Path('/tmp/pickles-sed-1nm.json')
           sed=json.loads(sed_path.read_text())
           actual=hashlib.sha256(sed_path.read_bytes()).hexdigest()
-          syn=hashlib.sha256(Path('/tmp/pickles98/synphot.dat').read_bytes()).hexdigest()
-          tab=hashlib.sha256(Path('/tmp/table6.dat').read_bytes()).hexdigest()
           report={
               'schemaVersion':1,
-              'stageId':'asiv-matched-stellar-photometric-asset-recovery-v1',
+              'stageId':'asiv-matched-stellar-pickles-asset-recovery-v1',
               'status':'EXACT_ASSET_RECOVERED' if actual==expected else 'ASSET_HASH_MISMATCH',
               'expectedPicklesSedBundleSha256':expected,
               'actualPicklesSedBundleSha256':actual,
               'exactBundleRecovered':actual==expected,
-              'synphotMetadataSha256':syn,
-              'table6MetadataSha256':tab,
+              'synphotMetadataSha256':hashlib.sha256(Path('/tmp/pickles98/synphot.dat').read_bytes()).hexdigest(),
+              'table6MetadataSha256':hashlib.sha256(Path('/tmp/table6.dat').read_bytes()).hexdigest(),
               'templateCount':len(sed.get('templates',[])),
               'wavelengthIdentity':sed.get('wavelengthNm')==list(range(380,781)),
               'sourceKind':sed.get('provenance',{}).get('pickles1998',{}).get('spectrumSourceKind'),
@@ -199,14 +175,13 @@ jobs:
               raise SystemExit('recovered Pickles bundle structural identity drift')
           PY
 
-      - name: Upload provenance-only asset recovery evidence
+      - name: Upload provenance-only Pickles recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: asiv-matched-stellar-photometric-asset-preflight-v1
+          name: asiv-matched-stellar-pickles-asset-preflight-v1
           if-no-files-found: warn
           retention-days: 30
           path: |
             /tmp/asset-recovery-report.json
             /tmp/pickles-sed-1nm.json
-            /tmp/upstream/johnson-v-1nm.json

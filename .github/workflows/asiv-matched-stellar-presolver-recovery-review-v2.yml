@@ -1,0 +1,95 @@
+name: ASIV matched stellar pre-solver recovery review v2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/asiv-matched-stellar-presolver-recovery-review-v2.yml'
+      - 'review/asiv-matched-stellar-transport-v1/recovery-v2/**'
+      - 'tests/test_asiv_matched_stellar_recovery_v2.py'
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-control-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Run recovery and inherited control regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v \
+            tests.test_asiv_matched_stellar_recovery_v2 \
+            tests.test_asiv_matched_stellar_science_control_v1 \
+            tests.test_asiv_matched_stellar_workflow_activation_v1
+      - name: Prove recovery review is inert and exact-byte bound
+        shell: bash
+        run: |
+          set -euo pipefail
+          REC=review/asiv-matched-stellar-transport-v1/recovery-v2
+          test ! -e review/asiv-matched-stellar-transport-v1/authorization-recovery-v2.json
+          test ! -e .github/workflows/asiv-matched-stellar-authorization-review-recovery-v2.yml
+          test ! -e .github/workflows/asiv-matched-stellar-science-recovery-v2.yml
+          test "$(git hash-object "$REC/micromamba_list_parser_v2.py")" = 531a27296e7ba4747d8d28b1c4d9beef7cbbd33a
+          test "$(git hash-object "$REC/authorization_builder_recovery_v2.py")" = 3c3935e04f232350dd0a488f2afbf944d93e75f6
+          test "$(git hash-object "$REC/authorization-review-workflow-v2.yml.review")" = a334c8d4537f4503a502978f106daf83c87a1c9e
+          test "$(git hash-object "$REC/science-workflow-v2.yml.review")" = 91fc9bc11102cc30db9c3ed46a2ee9290747c986
+          test "$(git hash-object "$REC/RUN_32848973816_PRE_SOLVER_FAILURE.review.json")" = d06f7e26d4b64b47ea2bb7cb8f5ccc10bee7c9af
+          test "$(git hash-object .github/workflows/asiv-matched-stellar-science-v1.yml)" = 396bb79f0f00b36888f809f7f3bff40d62646632
+          test "$(git hash-object .github/workflows/asiv-matched-stellar-authorization-review-v1.yml)" = 6ed68a90f2614dd762b5484e740a146e2cb636cc
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('review/asiv-matched-stellar-transport-v1/recovery-v2/RECOVERY_CONTROL_CONTRACT.review.json').read_text())
+          assert c['status']=='FROZEN_REVIEW_ONLY_PRESOLVER_RECOVERY_V2_NO_AUTHORIZATION_NO_DISPATCH'
+          assert c['recoveryEvidence']['priorRunId']==32848973816
+          assert c['recoveryEvidence']['priorSolverExecutionObserved'] is False
+          assert c['recoveryEvidence']['priorScientificShardArtifactCount']==0
+          assert c['scientificInvariance']['totalCaseCount']==3468
+          assert c['scientificInvariance']['totalShardCount']==99
+          assert c['scientificInvariance']['acceptanceGatesChangedByRecovery'] is False
+          for key in ('scientificExecutionAuthorized','solverExecutionAuthorized','workflowDispatchAuthorized','pandoraHoldoutAccessAllowed','starsvisibilityMutationAuthorized','productionActivationAuthorized','retryPermitted','resumePermitted','githubRerunPermitted'):
+              assert c[key] is False,key
+          print('recovery v2 control is inert and preserves v1 science bytes/gates')
+          PY
+
+  live-micromamba-metadata-parser-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: matched-stellar-recovery-parser-v2
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Parse current live micromamba list JSON without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          micromamba --version
+          micromamba list --json > micromamba-list.json
+          python - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          p=Path('review/asiv-matched-stellar-transport-v1/recovery-v2/micromamba_list_parser_v2.py')
+          s=importlib.util.spec_from_file_location('mmparser',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          payload=json.load(open('micromamba-list.json'))
+          record=m.extract_unique_package_record(payload,'rubin-libradtran')
+          observed=m.exact_package_spec(record)
+          expected='rubin-libradtran=2.0.6=py312pl5321he9373c2_1'
+          if observed!=expected: raise SystemExit(f'exact package metadata drift: {observed} != {expected}')
+          print(json.dumps({'status':'LIVE_MICROMAMBA_METADATA_PARSER_PASS_NO_UVSPEC','observedExactPackageSpec':observed},sort_keys=True))
+          PY

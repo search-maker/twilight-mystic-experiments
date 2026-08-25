@@ -27,19 +27,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.4'
-      - name: Verify zero-solver probe contract and helper tests
+      - name: Verify zero-solver Jobs-API-free probe contract and helper tests
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = pull_request
           test "$GITHUB_RUN_ATTEMPT" = 1
-          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py)" = 2bc293c7db73c436ba422f80566513459df77c7e
-          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/PROBE_CONTRACT.review.json)" = e4dcf9652eeefdbe8efb02a1ad97d16da52d5ba0
+          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py)" = 204fac871877e7f48833b5d7a5b8c478c9c42741
+          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/PROBE_CONTRACT.review.json)" = ea975f150266b076ac932bda6398a4fe22f52090
           test ! -e review/asiv-matched-stellar-transport-v1/authorization-recovery-v5.json
           python -m unittest discover -s tests -p 'test_asiv_matched_stellar_recovery_v5_http_transport_probe.py' -v
           python - <<'PY'
           import json
           row=json.load(open('review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/PROBE_CONTRACT.review.json'))
+          helper=row.get('helper') or {}
+          if helper.get('jobsApiPermitted') is not False or helper.get('actionsRunsApiPermitted') is not False or helper.get('artifactsApiPermittedThroughHelper') is not False:
+              raise SystemExit('Jobs/Actions API surface reopened in v5 helper contract')
           for key in ('scientificExecutionAuthorized','solverExecutionAuthorized','authorizationFileCreated','authorizationBranchCreated','dispatchBranchCreated','workflowDispatchPerformed','solverRetryPermitted','solverResumePermitted','githubJobRerunPermitted','resultOpeningAuthorized','pandoraHoldoutAccessAllowed','starsvisibilityMutationAuthorized','productionAuthorized'):
               if row.get(key) is not False: raise SystemExit(f'probe authority drift: {key}')
           PY
@@ -81,7 +84,7 @@ jobs:
           for k,v in expected.items():
               if row.get(k)!=v: raise SystemExit(f'cross-run receipt mismatch: {k}')
           PY
-      - name: Probe direct HTTPS GET only on current pull request metadata
+      - name: Probe exact scoped direct HTTPS GET on current pull request only
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -90,11 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           H=review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py
-          python "$H" pull-request --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" --output transport-probe/current-pr.json
+          python "$H" --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" --output transport-probe/current-pr.json
           export PR_NUMBER HEAD_SHA
           python - <<'PY'
           import json,os
           row=json.load(open('transport-probe/current-pr.json'))
+          if row.get('scope')!='single-pull-request-metadata-only': raise SystemExit('v5 helper scope drift')
           pr=row.get('pullRequest') or {}
           if int(pr.get('number') or 0)!=int(os.environ['PR_NUMBER']): raise SystemExit('direct REST current PR number drift')
           if pr.get('state')!='open': raise SystemExit('direct REST current PR must be open during probe')
@@ -103,7 +107,7 @@ jobs:
           if (row.get('audit') or {}).get('requestMethod')!='GET' or (row.get('audit') or {}).get('writeMethodPermitted') is not False:
               raise SystemExit('current PR transport not proven read-only GET')
           PY
-      - name: Verify frozen historical pre-solver evidence can replace Jobs API at dispatch
+      - name: Verify frozen historical pre-solver evidence replaces Jobs API
         shell: bash
         run: |
           set -euo pipefail
@@ -118,11 +122,12 @@ jobs:
           if any(x.get('solverExecutionObserved') is not False for x in prior): raise SystemExit('historical evidence no-solver boundary drift')
           if any(int(x.get('scientificShardArtifactCount') or 0)!=0 for x in prior): raise SystemExit('historical scientific artifact boundary drift')
           result={
-              'schemaVersion':1,
+              'schemaVersion':2,
               'stageId':'asiv-matched-stellar-recovery-v5-jobs-api-free-transport-probe-result',
               'status':'JOBS_API_FREE_CONTROL_TRANSPORT_PROBE_PASS',
               'crossRunAuthorizationReceiptDownloadPassed':True,
               'currentPullRequestReadOnlyGetPassed':True,
+              'helperJobsApiSurfacePresent':False,
               'historicalJobsApiRequiredAtDispatch':False,
               'historicalEvidenceGitBlobSha1':'b779f3dc46773fb4819fea6999ddd2fd68904aa1',
               'scientificExecutionPerformed':False,
@@ -135,7 +140,7 @@ jobs:
           Path('transport-probe/PROBE_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n',encoding='utf-8')
           print(json.dumps(result,sort_keys=True))
           PY
-      - name: Publish zero-solver jobs-API-free transport probe evidence only
+      - name: Publish zero-solver Jobs-API-free transport probe evidence only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: asiv-matched-stellar-recovery-v5-jobs-api-free-transport-probe

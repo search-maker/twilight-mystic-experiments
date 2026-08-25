@@ -46,6 +46,11 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertEqual(bindings["scienceWorkflowCandidateGitBlobSha1"], mod.git_blob_sha1(SCIENCE_CANDIDATE))
         self.assertEqual(bindings["batchOrchestrationGitBlobSha1"], "d1c4f156967e592ee41f4c1a829e7d551a4f7ea7")
         self.assertEqual(bindings["batchOrchestrationContractGitBlobSha1"], "7214a7e6ff969242cab20d9019ccc522ab96ddde")
+        auth_control = contract["authorizationControl"]
+        self.assertTrue(auth_control["activeAuthorizationReviewWorkflowMustExistBeforeAuthorization"])
+        self.assertTrue(auth_control["activeScienceWorkflowMustExistBeforeAuthorization"])
+        self.assertTrue(auth_control["activeAuthorizationReviewWorkflowMustBeGitBlobIdenticalToCandidate"])
+        self.assertTrue(auth_control["activeScienceWorkflowMustBeGitBlobIdenticalToCandidate"])
 
     def test_no_authorization_or_active_science_workflow_exists_in_review_package(self):
         self.assertFalse(AUTHORIZATION_PATH.exists())
@@ -56,11 +61,18 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertFalse(str(AUTH_REVIEW_CANDIDATE.relative_to(ROOT)).startswith(".github/workflows/"))
         self.assertFalse(str(SCIENCE_CANDIDATE.relative_to(ROOT)).startswith(".github/workflows/"))
 
-    def test_builder_constructs_and_validates_only_an_in_memory_authorization(self):
+    def test_real_authorization_default_refuses_before_workflow_activation(self):
+        mod = load_builder()
+        parent = "d" * 40
+        with self.assertRaises(mod.AuthorizationBuilderRefusal) as ctx:
+            mod.build_authorization(ROOT, parent)
+        self.assertIn("active authorization-review workflow is absent", str(ctx.exception))
+
+    def test_builder_constructs_and_validates_only_an_in_memory_pre_activation_template(self):
         mod = load_builder()
         parent = "a" * 40
         self.assertFalse(AUTHORIZATION_PATH.exists())
-        auth = mod.build_authorization(ROOT, parent)
+        auth = mod.build_authorization(ROOT, parent, require_active_workflows=False)
         self.assertFalse(AUTHORIZATION_PATH.exists())
         self.assertEqual(auth["status"], "AUTHORIZED_ONE_SHOT_SCIENTIFIC_EXECUTION")
         self.assertTrue(auth["scientificExecutionAuthorized"])
@@ -73,25 +85,27 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertEqual(auth["authorizationBranch"], "authorization/asiv-matched-stellar-transport-v1")
         self.assertEqual(auth["dispatchBranch"], "dispatch/asiv-matched-stellar-transport-v1")
         self.assertEqual(auth["workflowRunAttemptRequired"], 1)
-        mod.validate_authorization(ROOT, auth, parent)
+        self.assertEqual(auth["controlBindings"]["authorizationReviewWorkflowActiveGitBlobSha1Expected"], "6ed68a90f2614dd762b5484e740a146e2cb636cc")
+        self.assertEqual(auth["controlBindings"]["scienceWorkflowActiveGitBlobSha1Expected"], "d59151ae4746db7deed7f20656c0574f5c46b883")
+        mod.validate_authorization(ROOT, auth, parent, require_active_workflows=False)
 
     def test_control_binding_drift_is_refused(self):
         mod = load_builder()
         parent = "b" * 40
-        auth = mod.build_authorization(ROOT, parent)
+        auth = mod.build_authorization(ROOT, parent, require_active_workflows=False)
         drifted = copy.deepcopy(auth)
         drifted["controlBindings"]["scienceWorkflowCandidateGitBlobSha1"] = "0" * 40
         with self.assertRaises(mod.AuthorizationBuilderRefusal):
-            mod.validate_authorization(ROOT, drifted, parent)
+            mod.validate_authorization(ROOT, drifted, parent, require_active_workflows=False)
 
     def test_batch_binding_drift_is_refused_through_control_builder(self):
         mod = load_builder()
         parent = "c" * 40
-        auth = mod.build_authorization(ROOT, parent)
+        auth = mod.build_authorization(ROOT, parent, require_active_workflows=False)
         drifted = copy.deepcopy(auth)
         drifted["batchBindings"]["batchManifestCanonicalSha256"] = "0" * 64
         with self.assertRaises(Exception):
-            mod.validate_authorization(ROOT, drifted, parent)
+            mod.validate_authorization(ROOT, drifted, parent, require_active_workflows=False)
 
     def test_authorization_review_candidate_is_review_only(self):
         text = AUTH_REVIEW_CANDIDATE.read_text(encoding="utf-8")
@@ -136,6 +150,7 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertTrue(activation["activationMustNotCreateAuthorizationJson"])
         self.assertTrue(activation["activationMustNotCreateAuthorizationOrDispatchBranches"])
         self.assertTrue(activation["activationMustNotDispatchScience"])
+        self.assertTrue(activation["authorizationBuilderDefaultMustRefuseBeforeExactActiveWorkflowsExist"])
         self.assertTrue(activation["authorizationMayBeCreatedOnlyAfterActivationReviewIsGreenAndMerged"])
 
 

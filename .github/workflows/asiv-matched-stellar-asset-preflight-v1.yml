@@ -1,0 +1,212 @@
+name: ASIV matched stellar asset preflight v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/asiv-matched-stellar-asset-preflight-v1.yml'
+      - 'review/asiv-matched-stellar-transport-v1/**'
+      - 'tests/test_asiv_matched_stellar_transport_v1.py'
+      - 'tests/test_asiv_matched_stellar_transport_execution_v1.py'
+      - 'tests/test_asiv_matched_stellar_transport_validation_v1.py'
+
+permissions:
+  contents: read
+
+jobs:
+  review-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run matched-stellar review tests only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v \
+            tests.test_asiv_matched_stellar_transport_v1 \
+            tests.test_asiv_matched_stellar_transport_execution_v1 \
+            tests.test_asiv_matched_stellar_transport_validation_v1
+      - name: Prove no scientific workflow or protected-data opening is authorized
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('review/asiv-matched-stellar-transport-v1')
+          pre=json.loads((root/'PRECONTRACT.review.json').read_text())
+          con=json.loads((root/'EXECUTION_TRANSPORT_CONTRACT.review.json').read_text())
+          assert pre['sequencing']['scientificExecutionAuthorizedByThisFile'] is False
+          assert pre['sequencing']['solverExecutionAuthorized'] is False
+          assert con['scientificExecutionAuthorized'] is False
+          assert con['solverExecutionAuthorized'] is False
+          assert con['resultOpeningAuthorized'] is False
+          assert con['pandoraHoldoutAccessAllowed'] is False
+          assert con['productionActivationAuthorized'] is False
+          print('matched-stellar review remains zero-runtime and non-authorizing')
+          PY
+
+  recover-exact-photometric-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Materialize exact upstream builder and Johnson-V bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/upstream /tmp/pickles98
+          BASE='https://raw.githubusercontent.com/search-maker/starsvisibility/404c255a15158ed172bb2d6a7ac97b4ea24a9f29/scientific-tools/visibility-v3'
+          curl -fsSL --retry 3 --retry-all-errors "$BASE/build_pickles_sed_bundle.py" -o /tmp/upstream/build_pickles_sed_bundle.py
+          curl -fsSL --retry 3 --retry-all-errors "$BASE/generated/johnson-v-1nm.json" -o /tmp/upstream/johnson-v-1nm.json
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          def blob(path):
+              b=Path(path).read_bytes()
+              return hashlib.sha1(b'blob '+str(len(b)).encode('ascii')+b'\0'+b).hexdigest()
+          assert blob('/tmp/upstream/build_pickles_sed_bundle.py') == 'c0c051582f4e4b7b2d7e6d41f19412e4de7b7964'
+          assert blob('/tmp/upstream/johnson-v-1nm.json') == 'bbc12bf5543f373676612e00e411071cbf86acce'
+          assert hashlib.sha256(Path('/tmp/upstream/johnson-v-1nm.json').read_bytes()).hexdigest() == '51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a'
+          PY
+
+      - name: Download authoritative VizieR metadata and exact STScI Pickles atlas members
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=J/PASP/110/863/synphot' \
+            --data-urlencode '-out=num,SpType,LogTe,file' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output /tmp/pickles98/synphot.dat
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=VI/135/table6' \
+            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output /tmp/table6.dat
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError, URLError
+          import math, time
+
+          root=Path('/tmp/pickles98')
+          lines=(root/'synphot.dat').read_text(encoding='ascii').splitlines()
+          header=None; start=0
+          for index, raw in enumerate(lines):
+              if raw.startswith('#') or '\t' not in raw: continue
+              cols=[item.strip() for item in raw.split('\t')]
+              if all(name in cols for name in ('num','file')):
+                  header=cols; start=index+1; break
+          if header is None: raise SystemExit('VizieR synphot TSV header not found')
+          ni,fi=header.index('num'),header.index('file')
+          mapping={}
+          for raw in lines[start:]:
+              if not raw.strip() or raw.startswith('#'): continue
+              cols=[item.strip() for item in raw.split('\t')]
+              if len(cols)!=len(header): continue
+              try: n=int(cols[ni])
+              except ValueError: continue
+              if 1 <= n <= 131:
+                  name=cols[fi].removesuffix('.dat')
+                  if not name or n in mapping: raise SystemExit(f'invalid/duplicate Pickles mapping {n}')
+                  mapping[n]=name
+          if set(mapping) != set(range(1,132)) or len(set(mapping.values())) != 131:
+              raise SystemExit('VizieR metadata must bind exactly 131 distinct Pickles members')
+
+          base='https://ssb.stsci.edu/cdbs/deliveries/etc/trds.24.3xxxx/grid/pickles/dat_uvk'
+          for n in range(1,132):
+              filename=f'pickles_uk_{n}.ascii'
+              last=None
+              for attempt in range(3):
+                  try:
+                      req=Request(f'{base}/{filename}',headers={'User-Agent':'starsvisibility-level-b-preflight/2.0'})
+                      with urlopen(req,timeout=60) as response: payload=response.read()
+                      if not payload: raise RuntimeError('empty response')
+                      break
+                  except (HTTPError,URLError,TimeoutError,RuntimeError) as exc:
+                      last=exc
+                      if attempt == 2: raise SystemExit(f'{filename} fetch failed: {last}')
+                      time.sleep(1+attempt)
+              rows=[]
+              for raw in payload.decode('ascii').splitlines():
+                  parts=raw.split()
+                  if len(parts) < 2: continue
+                  try: w=float(parts[0]); f=float(parts[1])
+                  except ValueError: continue
+                  if not 1000 <= w <= 30000: continue
+                  if not math.isfinite(f) or f < 0: raise SystemExit(f'{filename}: invalid flux')
+                  if rows and w <= rows[-1]: raise SystemExit(f'{filename}: non-increasing wavelength')
+                  rows.append(w)
+              if len(rows) < 1000 or rows[0] > 1150.000001 or rows[-1] < 10619.999999:
+                  raise SystemExit(f'{filename}: invalid Pickles coverage/row count')
+              (root/filename).write_bytes(payload)
+          PY
+
+      - name: Rebuild and classify exact Pickles SED bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -uo pipefail
+          python /tmp/upstream/build_pickles_sed_bundle.py \
+            --pickles-dir /tmp/pickles98 \
+            --libmags-table6 /tmp/table6.dat \
+            --output /tmp/pickles-sed-1nm.json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          expected='85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb'
+          sed_path=Path('/tmp/pickles-sed-1nm.json')
+          sed=json.loads(sed_path.read_text())
+          actual=hashlib.sha256(sed_path.read_bytes()).hexdigest()
+          syn=hashlib.sha256(Path('/tmp/pickles98/synphot.dat').read_bytes()).hexdigest()
+          tab=hashlib.sha256(Path('/tmp/table6.dat').read_bytes()).hexdigest()
+          report={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-photometric-asset-recovery-v1',
+              'status':'EXACT_ASSET_RECOVERED' if actual==expected else 'ASSET_HASH_MISMATCH',
+              'expectedPicklesSedBundleSha256':expected,
+              'actualPicklesSedBundleSha256':actual,
+              'exactBundleRecovered':actual==expected,
+              'synphotMetadataSha256':syn,
+              'table6MetadataSha256':tab,
+              'templateCount':len(sed.get('templates',[])),
+              'wavelengthIdentity':sed.get('wavelengthNm')==list(range(380,781)),
+              'sourceKind':sed.get('provenance',{}).get('pickles1998',{}).get('spectrumSourceKind'),
+              'solverExecutionPerformed':False,
+              'scientificResidualComputed':False,
+              'pandoraHoldoutOpened':False,
+              'productionAuthorized':False,
+          }
+          Path('/tmp/asset-recovery-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          if actual != expected:
+              raise SystemExit('exact historical Pickles SED bundle SHA-256 was not reproduced')
+          if report['templateCount'] != 131 or not report['wavelengthIdentity'] or report['sourceKind'] != 'STScI-MAST-Pickles-Atlas':
+              raise SystemExit('recovered Pickles bundle structural identity drift')
+          PY
+
+      - name: Upload provenance-only asset recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asiv-matched-stellar-photometric-asset-preflight-v1
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            /tmp/asset-recovery-report.json
+            /tmp/pickles-sed-1nm.json
+            /tmp/upstream/johnson-v-1nm.json

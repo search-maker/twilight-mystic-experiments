@@ -1,0 +1,70 @@
+name: Koomen fixed-grid diagnostic v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/koomen-grid-diagnostic-v1.yml"
+      - "review/published-twilight-radiance-benchmark-v1/quick_grid_diagnostic_v1.py"
+      - "review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json"
+      - "review/published-twilight-radiance-benchmark-v1/frozen-runtime/**"
+
+permissions:
+  contents: read
+
+jobs:
+  fixed-grid-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Materialize reviewed evaluator sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-inputs
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/validated-v3-primary-runtime-v1.json benchmark-inputs/base.json
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/aerosol-scenario-interpolator-runtime-v1.json benchmark-inputs/asiv.json
+          printf '%s  %s\n' "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4" benchmark-inputs/base.json | sha256sum -c -
+          printf '%s  %s\n' "a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060" benchmark-inputs/asiv.json | sha256sum -c -
+          git fetch --no-tags --depth=1 origin 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/exact_aod_interval_support_v1.py > benchmark-inputs/support.py
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/certified_aod_scenario_extrema_v1.py > benchmark-inputs/model.py
+      - name: Run diagnostic-only grid evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/quick_grid_diagnostic_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/base.json \
+            --asiv-runtime benchmark-inputs/asiv.json \
+            --support-evaluator benchmark-inputs/support.py \
+            --extrema-evaluator benchmark-inputs/model.py \
+            --output KOOMEN_GRID_DIAGNOSTIC_RESULT.json
+          sha256sum KOOMEN_GRID_DIAGNOSTIC_RESULT.json > KOOMEN_GRID_DIAGNOSTIC_RESULT.sha256
+      - name: Prove diagnostic boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('KOOMEN_GRID_DIAGNOSTIC_RESULT.json'))
+          assert r['claimClass']=='DIAGNOSTIC_ONLY_NOT_CERTIFIED_NOT_STRICT_VALIDATION'
+          assert r['boundary']['gridExtremaAreCertified'] is False
+          assert r['boundary']['formalPassFailAuthorized'] is False
+          assert r['boundary']['pandoraTargetDataUsed'] is False
+          assert r['boundary']['modelRetuningAuthorized'] is False
+          print('Diagnostic-only boundary verified')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koomen-fixed-grid-diagnostic-v1
+          path: |
+            KOOMEN_GRID_DIAGNOSTIC_RESULT.json
+            KOOMEN_GRID_DIAGNOSTIC_RESULT.sha256
+          if-no-files-found: error
+          retention-days: 30

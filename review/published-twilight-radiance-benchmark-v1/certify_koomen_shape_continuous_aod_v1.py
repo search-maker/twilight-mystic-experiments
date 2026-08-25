@@ -158,11 +158,15 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
     for x in cuts:
         absorb_point(x)
 
-    def all_bounds(fixed, sun: float, lo: float, hi: float) -> dict:
-        """Return all scenario bounds while reusing scenario-independent work."""
+    def neighbor_sets(fixed, lo: float, hi: float):
         midpoint = (lo + hi) / 2.0
-        base_selected = extrema._neighbors(extrema._base_query(fixed, midpoint), base_rows, 6, "coord", "id")
-        asiv_selected = extrema._neighbors(extrema._asiv_query(fixed, midpoint), asiv["training"], 8, "coord", "cellId")
+        return (
+            extrema._neighbors(extrema._base_query(fixed, midpoint), base_rows, 6, "coord", "id"),
+            extrema._neighbors(extrema._asiv_query(fixed, midpoint), asiv["training"], 8, "coord", "cellId"),
+        )
+
+    def all_bounds(fixed, sun: float, lo: float, hi: float, base_selected, asiv_selected) -> dict:
+        """Return all scenario bounds while reusing scenario-independent work."""
         aod_segment_lo, aod_segment_hi = aod_from_x(lo), aod_from_x(hi)
         polynomial = extrema._primary_poly_bound(base, sun, alt, az, elev, aod_segment_lo, aod_segment_hi, 0)
         residual = extrema._idw_bound(base_rows, "coord", "target", fixed, 4, base_selected, lo, hi, 1, 0)
@@ -177,7 +181,7 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
             bounds[scenario] = native.add(contrasts[contrast_index * 3])
         return bounds
 
-    def recurse(lo: float, hi: float, depth: int) -> None:
+    def recurse(lo: float, hi: float, depth: int, selected3, selected6) -> None:
         nonlocal nodes, maximum_depth_seen
         nodes += 1
         maximum_depth_seen = max(maximum_depth_seen, depth)
@@ -186,8 +190,8 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
             return
         bounds = {}
         maximum_width = 0.0
-        bounds3 = all_bounds(fixed3, 3.0, lo, hi)
-        bounds6 = all_bounds(fixed6, 6.0, lo, hi)
+        bounds3 = all_bounds(fixed3, 3.0, lo, hi, *selected3)
+        bounds6 = all_bounds(fixed6, 6.0, lo, hi, *selected6)
         for scenario in SCENARIOS:
             b3 = bounds3[scenario]
             b6 = bounds6[scenario]
@@ -210,12 +214,14 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
                 row["outerMin"] = min(row["outerMin"], interval.lo)
                 row["outerMax"] = max(row["outerMax"], interval.hi)
             return
-        recurse(lo, midpoint, depth + 1)
-        recurse(midpoint, hi, depth + 1)
+        recurse(lo, midpoint, depth + 1, selected3, selected6)
+        recurse(midpoint, hi, depth + 1, selected3, selected6)
 
     for lo, hi in zip(cuts, cuts[1:]):
         if hi > lo:
-            recurse(lo, hi, 0)
+            selected3 = neighbor_sets(fixed3, lo, hi)
+            selected6 = neighbor_sets(fixed6, lo, hi)
+            recurse(lo, hi, 0, selected3, selected6)
 
     certified = not failures
     for scenario in SCENARIOS:

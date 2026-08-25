@@ -1,0 +1,93 @@
+name: ASIV matched stellar authorization review v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/asiv-matched-stellar-transport-v1/authorization.json'
+
+permissions:
+  contents: read
+
+jobs:
+  review-authorization:
+    if: ${{ github.event.pull_request.draft == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify exact one-file Draft authorization proposal
+        shell: bash
+        env:
+          AUTH_HEAD: ${{ github.event.pull_request.head.sha }}
+          AUTH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$BASE_REF" = main
+          test "$(git rev-parse HEAD)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = review/asiv-matched-stellar-transport-v1/authorization.json
+          export AUTH_HEAD AUTH_BRANCH BASE_SHA PR_NUMBER
+          python - <<'PY'
+          import hashlib,importlib.util,json,os
+          from pathlib import Path
+          root=Path('.')
+          auth_path=root/'review/asiv-matched-stellar-transport-v1/authorization.json'
+          builder_path=root/'review/asiv-matched-stellar-transport-v1/science-control/authorization_builder_review.py'
+          spec=importlib.util.spec_from_file_location('matched_stellar_auth_builder',builder_path)
+          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          auth=json.loads(auth_path.read_text(encoding='utf-8'))
+          mod.validate_authorization(root,auth,os.environ['BASE_SHA'])
+          if auth.get('authorizationBranch')!=os.environ['AUTH_BRANCH']:
+              raise SystemExit('authorization branch identity drift')
+          if auth.get('dispatchAuthorized') is not False or auth.get('automaticDispatch') is not False or auth.get('consumed') is not False:
+              raise SystemExit('authorization review must not authorize dispatch or consumption')
+          raw=auth_path.read_bytes()
+          receipt={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-transport-v1-authorization-review',
+              'status':'AUTHORIZATION_REVIEW_PASS_NO_DISPATCH',
+              'authorizationHeadSha':os.environ['AUTH_HEAD'],
+              'authorizationParentSha':os.environ['BASE_SHA'],
+              'authorizationBranch':os.environ['AUTH_BRANCH'],
+              'prNumber':int(os.environ['PR_NUMBER']),
+              'authorizationRawSha256':hashlib.sha256(raw).hexdigest(),
+              'authorizationGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
+              'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'dispatchPerformed':False,
+              'resultOpeningAuthorized':False,
+              'pandoraHoldoutOpened':False,
+              'productionAuthorized':False,
+          }
+          Path('authorization-review.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+      - name: Publish review receipt only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-authorization-review-v1
+          path: authorization-review.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

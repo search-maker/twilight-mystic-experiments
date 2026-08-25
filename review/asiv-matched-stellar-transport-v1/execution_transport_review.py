@@ -25,11 +25,13 @@ CONTRACT_PATH = HERE / "EXECUTION_TRANSPORT_CONTRACT.review.json"
 OVERLAY_PATH = ROOT / "experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate/runtime_overlay.py"
 PROCESS_RUNNER_PATH = ROOT / "experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/process_runner.py"
 RUNTIME_LOCK_PATH = ROOT / "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+WAVELENGTH_GRID_PATH = ROOT / "experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat"
 
 EXPECTED_CANDIDATE_GIT_BLOB_SHA1 = "ec433aa3a594311738a6f6aa2b339a7e33d43447"
 EXPECTED_OVERLAY_GIT_BLOB_SHA1 = "b7586825d4053f7d4a1e05f057b7c8411f76650b"
 EXPECTED_PROCESS_RUNNER_GIT_BLOB_SHA1 = "e23d724e99c1cf9b0b862f8ab48356bd3d9bc56c"
 EXPECTED_RUNTIME_LOCK_GIT_BLOB_SHA1 = "8573f62829371a0eb866976a5062ea61dc0767b1"
+EXPECTED_WAVELENGTH_GRID_GIT_BLOB_SHA1 = "3bb3db96580d555ef758f57cabd6cac55b61cebb"
 EXPECTED_RUNTIME_LOCK_RAW_SHA256 = "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5"
 EXPECTED_PACKAGE_SPEC = "rubin-libradtran=2.0.6=py312pl5321he9373c2_1"
 EXPECTED_UVSPEC_SHA256 = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
@@ -96,6 +98,16 @@ def load_bound_process_runner_module():
     return _load_module(PROCESS_RUNNER_PATH, "matched_stellar_bound_process_runner")
 
 
+def validate_wavelength_grid_binding() -> None:
+    if not WAVELENGTH_GRID_PATH.is_file():
+        raise ExecutionTransportRefusal("frozen 401-node wavelength grid is missing")
+    if git_blob_sha1(WAVELENGTH_GRID_PATH) != EXPECTED_WAVELENGTH_GRID_GIT_BLOB_SHA1:
+        raise ExecutionTransportRefusal("frozen 401-node wavelength grid Git blob drift")
+    values = [int(line) for line in WAVELENGTH_GRID_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if values != list(EXPECTED_WAVELENGTH_NM):
+        raise ExecutionTransportRefusal("frozen wavelength grid content is not exact 380-780 nm / 1 nm")
+
+
 def current_transport_binding() -> dict[str, str]:
     return {
         "executionTransportSha256": sha256_file(Path(__file__).resolve()),
@@ -149,6 +161,7 @@ def build_runtime_report(*, uvspec: Path, augmented_data_dir: Path, atmosphere_f
         raise ExecutionTransportRefusal("runtime-lock Git blob drift")
     if sha256_file(RUNTIME_LOCK_PATH) != EXPECTED_RUNTIME_LOCK_RAW_SHA256:
         raise ExecutionTransportRefusal("runtime-lock raw SHA-256 drift")
+    validate_wavelength_grid_binding()
     if observed_package_spec != EXPECTED_PACKAGE_SPEC:
         raise ExecutionTransportRefusal("libRadtran package build drift")
     uvspec = Path(uvspec).resolve()
@@ -178,6 +191,7 @@ def build_runtime_report(*, uvspec: Path, augmented_data_dir: Path, atmosphere_f
         "augmentedDataByteCount": byte_count,
         "atmospherePath": str(atmosphere_file),
         "atmosphereSha256": EXPECTED_ATMOSPHERE_SHA256,
+        "wavelengthGridGitBlobSha1": EXPECTED_WAVELENGTH_GRID_GIT_BLOB_SHA1,
         "scientificSolverExecuted": False,
     }
 
@@ -190,6 +204,7 @@ def validate_runtime_report(report: dict[str, Any]) -> None:
         "uvspecHelpSha256": EXPECTED_UVSPEC_HELP_SHA256,
         "augmentedDataTreeSha256": EXPECTED_AUGMENTED_DATA_TREE_SHA256,
         "atmosphereSha256": EXPECTED_ATMOSPHERE_SHA256,
+        "wavelengthGridGitBlobSha1": EXPECTED_WAVELENGTH_GRID_GIT_BLOB_SHA1,
     }
     if report.get("schemaVersion") != 1 or report.get("status") != "MATCHED_STELLAR_RUNTIME_IDENTITY_VERIFIED":
         raise ExecutionTransportRefusal("runtime report is not a verified matched-stellar preflight")
@@ -259,6 +274,7 @@ def execute_one_case(*, authorization: dict[str, Any], runtime_report: dict[str,
     """
     validate_authorization_document(authorization)
     validate_runtime_report(runtime_report)
+    validate_wavelength_grid_binding()
     if family == NATIVE_STATE:
         raise ExecutionTransportRefusal("native MYSTIC-STATE-0081 comparator cannot be rendered or rebuilt")
     if family not in NON_NATIVE_FAMILIES:
@@ -267,14 +283,11 @@ def execute_one_case(*, authorization: dict[str, Any], runtime_report: dict[str,
     uvspec = Path(runtime_report["uvspecPath"])
     data_dir = Path(runtime_report["augmentedDataDir"])
     atmosphere_file = Path(runtime_report["atmospherePath"])
-    wavelength_grid_file = HERE / "wavelength-grid-1nm.dat"
-    if not wavelength_grid_file.is_file():
-        raise ExecutionTransportRefusal("frozen wavelength grid is missing")
     input_text = candidate.render_uvspec_input(
         family=family,
         data_dir=data_dir,
         atmosphere_file=atmosphere_file,
-        wavelength_grid_file=wavelength_grid_file,
+        wavelength_grid_file=WAVELENGTH_GRID_PATH,
         target_altitude_deg=target_altitude_deg,
         observer_elevation_m=observer_elevation_m,
         aod550=aod550,
@@ -309,8 +322,6 @@ def execute_one_case(*, authorization: dict[str, Any], runtime_report: dict[str,
 
 
 def main() -> int:
-    # Review-only CLI: print exact bytes that a future authorization must bind.
-    # There is intentionally no execute subcommand in this review package.
     print(json.dumps({
         "status": "REVIEW_ONLY_NO_EXECUTION_CLI",
         "sourceBindings": current_transport_binding(),

@@ -86,7 +86,7 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertEqual(auth["dispatchBranch"], "dispatch/asiv-matched-stellar-transport-v1")
         self.assertEqual(auth["workflowRunAttemptRequired"], 1)
         self.assertEqual(auth["controlBindings"]["authorizationReviewWorkflowActiveGitBlobSha1Expected"], "6ed68a90f2614dd762b5484e740a146e2cb636cc")
-        self.assertEqual(auth["controlBindings"]["scienceWorkflowActiveGitBlobSha1Expected"], "d59151ae4746db7deed7f20656c0574f5c46b883")
+        self.assertEqual(auth["controlBindings"]["scienceWorkflowActiveGitBlobSha1Expected"], "396bb79f0f00b36888f809f7f3bff40d62646632")
         mod.validate_authorization(ROOT, auth, parent, require_active_workflows=False)
 
     def test_control_binding_drift_is_refused(self):
@@ -137,6 +137,8 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertIn("validate_complete_universe", text)
         self.assertIn("743391266", text)
         self.assertIn("11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e", text)
+        self.assertIn("[str(uvspec),'--help']", text)
+        self.assertNotIn("[str(uvspec),'-h']", text)
         self.assertNotIn("git push", text)
         self.assertNotIn("repository: search-maker/starsvisibility", text)
         self.assertNotIn("secrets.", text)

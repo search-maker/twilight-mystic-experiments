@@ -29,6 +29,12 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
         self.assertEqual(payload["validation"]["atmosphericCasesPerFamily"], 192)
         self.assertEqual(payload["validation"]["johnsonVComparisonCount"], 2304)
         self.assertEqual(payload["validation"]["johnsonVComparisonsPerFamily"], 576)
+        self.assertEqual(payload["nativeComparator"], {
+            "stateId": "native-rural-ss",
+            "representation": "MYSTIC-STATE-0081 stellar-transport-v2",
+            "rebuildAuthorized": False,
+            "renderPathPresent": False,
+        })
         self.assertEqual(payload["authorization"], {
             "solverExecutionAuthorized": False,
             "scientificExecutionAuthorized": False,
@@ -78,13 +84,8 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
                 f"aerosol_species_file {species}",
                 "aerosol_set_tau_at_wvl 550 0.20000000",
             ])
-        self.assertEqual(mod.aerosol_block("native-rural-ss", 0.2), [
-            "aerosol_default",
-            "aerosol_haze 1",
-            "aerosol_vulcan 1",
-            "aerosol_season 1",
-            "aerosol_set_tau_at_wvl 550 0.20000000",
-        ])
+        with self.assertRaises(mod.CandidateRefusal):
+            mod.aerosol_block("native-rural-ss", 0.2)
 
     def test_rendered_non_native_input_matches_direct_transport_contract(self):
         mod = load_candidate()
@@ -121,7 +122,7 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
         self.assertNotIn("mc_", text.lower())
         self.assertNotIn("angstrom", text.lower())
 
-    def test_native_rebuild_is_refused_by_default(self):
+    def test_native_rebuild_and_render_are_unconditionally_refused(self):
         mod = load_candidate()
         with self.assertRaises(mod.CandidateRefusal):
             mod.validate_case(
@@ -130,14 +131,32 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
                 observer_elevation_m=0,
                 aod550=0.1,
             )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            atmosphere = tmp_path / "afglus.dat"
+            atmosphere.write_text("120 1\n0 1\n", encoding="utf-8")
+            grid = tmp_path / "wavelength-1nm.dat"
+            grid.write_text("380\n780\n", encoding="ascii")
+            with self.assertRaises(mod.CandidateRefusal):
+                mod.render_uvspec_input(
+                    family="native-rural-ss",
+                    data_dir=tmp_path,
+                    atmosphere_file=atmosphere,
+                    wavelength_grid_file=grid,
+                    target_altitude_deg=20,
+                    observer_elevation_m=0,
+                    aod550=0.1,
+                )
 
-    def test_source_contains_no_solver_invocation_surface(self):
+    def test_source_contains_no_solver_invocation_or_native_override_surface(self):
         source = CANDIDATE.read_text(encoding="utf-8")
         self.assertNotIn("import subprocess", source)
         self.assertNotIn("subprocess.", source)
         self.assertNotIn("find_uvspec", source)
         self.assertNotIn("run_reference(", source)
         self.assertNotIn("UVSPEC", source)
+        self.assertNotIn("allow_native_render", source)
+        self.assertNotIn("--allow-native-render", source)
 
 
 if __name__ == "__main__":

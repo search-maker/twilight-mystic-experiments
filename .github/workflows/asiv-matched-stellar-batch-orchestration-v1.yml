@@ -1,0 +1,59 @@
+name: ASIV matched stellar batch orchestration v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/asiv-matched-stellar-batch-orchestration-v1.yml'
+      - 'review/asiv-matched-stellar-transport-v1/BATCH_ORCHESTRATION_CONTRACT.review.json'
+      - 'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py'
+      - 'tests/test_asiv_matched_stellar_batch_orchestration_v1.py'
+
+permissions:
+  contents: read
+
+jobs:
+  review-only-batch-orchestration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run batch orchestration zero-runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_asiv_matched_stellar_batch_orchestration_v1
+      - name: Prove review surface is non-authorizing and cannot dispatch science
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/asiv-matched-stellar-transport-v1/authorization.json
+          ! grep -F 'workflow_dispatch:' .github/workflows/asiv-matched-stellar-batch-orchestration-v1.yml
+          ! grep -E '(^|[[:space:]])uvspec([[:space:]]|$)' .github/workflows/asiv-matched-stellar-batch-orchestration-v1.yml
+          ! grep -F -- '--allow-execution' .github/workflows/asiv-matched-stellar-batch-orchestration-v1.yml
+          python - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          root=Path('review/asiv-matched-stellar-transport-v1')
+          contract=json.loads((root/'BATCH_ORCHESTRATION_CONTRACT.review.json').read_text())
+          for key in (
+              'scientificExecutionAuthorized','solverExecutionAuthorized','workflowDispatchAuthorized',
+              'resultOpeningAuthorized','productionActivationAuthorized','pandoraHoldoutAccessAllowed',
+              'starsvisibilityMutationAuthorized','nativeRebuildAuthorized','retryPermitted',
+              'resumePermitted','githubRerunPermitted','partialShardInterpretationPermitted',
+              'partialUniverseValidationPermitted',
+          ):
+              assert contract[key] is False, key
+          spec=importlib.util.spec_from_file_location('batch',root/'batch_orchestration_review.py')
+          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          manifest=mod.build_batch_manifest()
+          assert manifest['shardCount']==99 and manifest['totalCaseCount']==3468
+          assert mod.canonical_sha256(manifest)=='1756c756e1e865c729a3d93a1084c6081a5eefa6a05f4e874bdaed84e8359663'
+          print(json.dumps({'status':'PASS','shards':99,'cases':3468,'solverExecutionPerformed':False},sort_keys=True))
+          PY

@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 CANDIDATE_PATH = HERE / "execution_candidate.py"
 STRICT_GATE_PATH = HERE / "execution_authorization_gate_review.py"
 VALIDATOR_PATH = HERE / "assemble_validate_matched_stellar_v1.py"
+BATCH_CONTRACT_PATH = HERE / "BATCH_ORCHESTRATION_CONTRACT.review.json"
 
 EXPECTED_CANDIDATE_GIT_BLOB_SHA1 = "ec433aa3a594311738a6f6aa2b339a7e33d43447"
 EXPECTED_STRICT_GATE_GIT_BLOB_SHA1 = "9bbe4f8fe64f7f32dd3e3e69469a15b30f658dde"
@@ -121,16 +122,8 @@ def build_batch_manifest() -> dict[str, Any]:
         "totalCaseCount": TOTAL_CASE_COUNT,
         "shardCount": TOTAL_SHARD_COUNT,
         "roles": {
-            "training": {
-                "caseCount": 2700,
-                "shardCount": TRAINING_SHARD_COUNT,
-                "casesPerShard": TRAINING_CASES_PER_SHARD,
-            },
-            "validation": {
-                "caseCount": 768,
-                "shardCount": VALIDATION_SHARD_COUNT,
-                "casesPerShard": VALIDATION_CASES_PER_SHARD,
-            },
+            "training": {"caseCount": 2700, "shardCount": TRAINING_SHARD_COUNT, "casesPerShard": TRAINING_CASES_PER_SHARD},
+            "validation": {"caseCount": 768, "shardCount": VALIDATION_SHARD_COUNT, "casesPerShard": VALIDATION_CASES_PER_SHARD},
         },
         "shards": shards,
     }
@@ -140,6 +133,38 @@ def build_batch_manifest() -> dict[str, Any]:
             f"batch manifest canonical hash drift: {observed} != {EXPECTED_BATCH_MANIFEST_CANONICAL_SHA256}"
         )
     return manifest
+
+
+def current_batch_binding() -> dict[str, Any]:
+    batch = build_batch_manifest()
+    contract = json.loads(BATCH_CONTRACT_PATH.read_text(encoding="utf-8"))
+    if contract.get("schemaVersion") != 1 or contract.get("stageId") != batch["stageId"]:
+        raise BatchOrchestrationRefusal("batch contract schema/stage drift")
+    if contract.get("status") != "FROZEN_REVIEW_ONLY_BATCH_ORCHESTRATION_NO_AUTHORIZATION":
+        raise BatchOrchestrationRefusal("batch review contract unexpectedly changed authorization state")
+    this_blob = git_blob_sha1(Path(__file__).resolve())
+    if contract.get("sourceBindings", {}).get("batchOrchestrationGitBlobSha1") != this_blob:
+        raise BatchOrchestrationRefusal("batch contract does not bind current batch orchestrator bytes")
+    return {
+        "batchOrchestrationGitBlobSha1": this_blob,
+        "batchContractGitBlobSha1": git_blob_sha1(BATCH_CONTRACT_PATH),
+        "batchManifestCanonicalSha256": EXPECTED_BATCH_MANIFEST_CANONICAL_SHA256,
+        "totalShardCount": TOTAL_SHARD_COUNT,
+        "totalCaseCount": TOTAL_CASE_COUNT,
+    }
+
+
+def validate_batch_authorization(document: dict[str, Any]) -> None:
+    gate = load_strict_gate()
+    gate.validate_strict_authorization(document)
+    if document.get("batchExecutionAuthorized") is not True:
+        raise BatchOrchestrationRefusal("batch execution is not positively authorized")
+    if document.get("partialShardInterpretationPermitted") is not False:
+        raise BatchOrchestrationRefusal("partial shard interpretation must remain forbidden")
+    if document.get("partialUniverseValidationPermitted") is not False:
+        raise BatchOrchestrationRefusal("partial universe validation must remain forbidden")
+    if document.get("batchBindings") != current_batch_binding():
+        raise BatchOrchestrationRefusal("authorization does not bind exact batch contract/orchestrator/manifest")
 
 
 def shard_rows(shard_id: str) -> tuple[str, list[dict[str, Any]]]:
@@ -162,17 +187,11 @@ def execute_shard_strict(*, shard_id: str, authorization: dict[str, Any],
                          runtime_report: dict[str, Any], output_root: Path,
                          process_runner: Callable[..., dict[str, Any]] | None = None,
                          allow_execution: bool = False) -> dict[str, Any]:
-    """Future execution primitive; unavailable unless all external gates are positive.
-
-    The function is intentionally unreachable from this module's CLI. Review
-    tests may inject a fake process runner. A future science workflow must bind
-    this file by exact bytes and pass allow_execution=True only after a separate
-    authorization review.
-    """
+    """Future execution primitive; unavailable unless all external gates are positive."""
     if allow_execution is not True:
         raise BatchOrchestrationRefusal("explicit allow_execution=True is required")
+    validate_batch_authorization(authorization)
     gate = load_strict_gate()
-    gate.validate_strict_authorization(authorization)
     role, rows = shard_rows(shard_id)
     output_root = Path(output_root)
     if output_root.exists():
@@ -215,9 +234,7 @@ def execute_shard_strict(*, shard_id: str, authorization: dict[str, Any],
         "githubRerunPermitted": False,
         "partialShardInterpretationPermitted": False,
     }
-    (partial / "shard-result.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
-    )
+    (partial / "shard-result.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     partial.rename(output_root)
     return summary
 
@@ -271,7 +288,6 @@ def collect_complete_case_payloads(shard_roots: list[Path]) -> list[dict[str, An
 
 def validate_complete_universe(*, shard_roots: list[Path], sed_bundle_path: Path,
                                johnson_v_path: Path) -> dict[str, Any]:
-    """Invoke the frozen validator only after exact 99-shard completeness passes."""
     payloads = collect_complete_case_payloads(shard_roots)
     validator = load_validator()
     return validator.assemble_and_validate(

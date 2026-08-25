@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = ROOT / "review/asiv-matched-stellar-transport-v1/execution_candidate.py"
+PRECONTRACT = ROOT / "review/asiv-matched-stellar-transport-v1/PRECONTRACT.review.json"
 
 
 def load_candidate():
@@ -86,6 +88,22 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
             ])
         with self.assertRaises(mod.CandidateRefusal):
             mod.aerosol_block("native-rural-ss", 0.2)
+
+    def test_precontract_marks_native_directives_provenance_only(self):
+        pre = json.loads(PRECONTRACT.read_text(encoding="utf-8"))
+        directives = pre["exactAerosolDirectiveContract"]
+        self.assertEqual(
+            directives["nativeDirectiveStatus"],
+            "PROVENANCE_ONLY_NOT_RENDERABLE_BY_THIS_EXTENSION",
+        )
+        self.assertIn("four OPAC family directives", directives["rule"])
+        self.assertIn("must not be rendered or rebuilt", directives["rule"])
+        self.assertEqual(
+            pre["runtimeRepresentation"]["nativeStatePolicy"],
+            "Do not rebuild, alter, or replace the accepted MYSTIC-STATE-0081 native LUT as part of the non-native extension. Native remains the frozen comparator unless a separately preregistered reason requires a new state."
+        )
+        self.assertFalse(pre["sequencing"]["scientificExecutionAuthorizedByThisFile"])
+        self.assertFalse(pre["sequencing"]["solverExecutionAuthorized"])
 
     def test_rendered_non_native_input_matches_direct_transport_contract(self):
         mod = load_candidate()

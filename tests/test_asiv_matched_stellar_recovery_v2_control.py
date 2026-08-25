@@ -42,6 +42,10 @@ class MatchedStellarRecoveryV2ControlTests(unittest.TestCase):
         self.assertEqual(c['scientificUniverse']['validationJohnsonVComparisonsTotal'], 2304)
         self.assertEqual(c['acceptance']['maxAbsoluteJohnsonVExtinctionErrorMagPerFamily'], 0.025)
         self.assertEqual(c['acceptance']['rmsJohnsonVExtinctionErrorMagPerFamily'], 0.01)
+        self.assertEqual(c['sourceBindings']['batchOrchestrationGitBlobSha1'], 'd1c4f156967e592ee41f4c1a829e7d551a4f7ea7')
+        self.assertEqual(c['sourceBindings']['strictAuthorizationGateGitBlobSha1'], '9bbe4f8fe64f7f32dd3e3e69469a15b30f658dde')
+        self.assertEqual(c['sourceBindings']['executionTransportGitBlobSha1'], '2bfb94758e048868aa0a6009a654e0805af35f0a')
+        self.assertEqual(c['sourceBindings']['completeSetValidatorGitBlobSha1'], '9492ca0297136654bdacc81bf0fa2c90d63108b9')
 
     def test_recovery_builder_binds_exact_active_workflow_bytes_and_frozen_gates(self):
         m = load_builder()
@@ -74,7 +78,6 @@ class MatchedStellarRecoveryV2ControlTests(unittest.TestCase):
         self.assertIn("rubin-libradtran=2.0.6=py312pl5321he9373c2_1", text)
         self.assertIn("RECOVERY_SOURCE_CONFIRMED_PRE_SOLVER_FAILURE", text)
         self.assertIn("32848973816", text)
-        self.assertIn("d1c4f156967e592ee41f4c1a829e7d551a4f7ea7", (STAGE / 'BATCH_ORCHESTRATION_CONTRACT.review.json').read_text(encoding='utf-8') if False else 'd1c4f156967e592ee41f4c1a829e7d551a4f7ea7')
         self.assertFalse(AUTH_PATH.exists())
 
     def test_recovery_workflows_have_expected_triggers_and_no_automatic_dispatch(self):

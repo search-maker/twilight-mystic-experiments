@@ -23,7 +23,7 @@ AUTHORIZATION = ROOT / "review/asiv-matched-stellar-transport-v1/authorization-r
 ACTIVATION_REVIEW = ROOT / ".github/workflows/asiv-matched-stellar-recovery-workflow-activation-review-v3.yml"
 
 EXPECTED_CONTROL_BLOB = "1c9ba7e3f30388835bd87d24e3e2c7d03c050126"
-EXPECTED_AUTH_BLOB = "4311cab5dd400c3fe8bee7e459687da1d0cbe713"
+EXPECTED_AUTH_BLOB = "7d902c2e08a437d25357b005e8f52d99c1b096aa"
 EXPECTED_SCIENCE_BLOB = "36428e9d719e47550a7baa21c6dab61e38a3cd98"
 EXPECTED_HELPER_BLOB = "ce2ebe14f5128308fb8d138d38b064f8387feb29"
 EXPECTED_EVIDENCE_BLOB = "2caae4d121e13eced92cfb7b362c29502d2a25f4"
@@ -46,6 +46,25 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(SCIENCE_CANDIDATE), EXPECTED_SCIENCE_BLOB)
         self.assertEqual(git_blob_sha1(SCIENCE_ACTIVE), EXPECTED_SCIENCE_BLOB)
         self.assertEqual(SCIENCE_ACTIVE.read_bytes(), SCIENCE_CANDIDATE.read_bytes())
+
+    def test_authorization_review_prevalidates_exact_frozen_execution_gate(self):
+        auth = AUTH_ACTIVE.read_text(encoding="utf-8")
+        self.assertIn("validate_batch_authorization(auth)", auth)
+        self.assertIn("asiv-matched-stellar-transport-v1-execution-authorization", auth)
+        self.assertIn("asiv-matched-stellar-transport-recovery-v3-authorization", auth)
+        self.assertIn("AUTHORIZED_ONE_SHOT_SCIENTIFIC_EXECUTION", auth)
+        self.assertNotIn("execute_shard_strict(", auth)
+        self.assertNotIn("execute_one_case_strict(", auth)
+        activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
+        parity = activation["strictAuthorizationParity"]
+        self.assertTrue(parity["authorizationReviewMustCallFrozenBatchValidator"])
+        self.assertEqual(parity["batchValidatorFunction"], "validate_batch_authorization")
+        self.assertEqual(
+            parity["authorizationStageIdRequiredByFrozenStrictGate"],
+            "asiv-matched-stellar-transport-v1-execution-authorization",
+        )
+        self.assertEqual(parity["recoveryIdentityField"], "recoveryStageId")
+        self.assertTrue(parity["authorizationReviewMayNotExecuteSolver"])
 
     def test_activation_contract_binds_exact_control_and_retry_layer(self):
         control = json.loads(CONTROL.read_text(encoding="utf-8"))

@@ -1,0 +1,151 @@
+name: ASIV matched stellar authorization review recovery v3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json'
+
+permissions:
+  contents: read
+
+jobs:
+  review-authorization:
+    if: ${{ github.event.pull_request.draft == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact Recovery v3 authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify exact one-file Draft Recovery v3 authorization proposal
+        shell: bash
+        env:
+          AUTH_HEAD: ${{ github.event.pull_request.head.sha }}
+          AUTH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$BASE_REF" = main
+          test "$AUTH_BRANCH" = authorization/asiv-matched-stellar-transport-recovery-v3
+          test "$(git rev-parse HEAD)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json
+          export AUTH_HEAD AUTH_BRANCH BASE_SHA PR_NUMBER
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          root=Path('.')
+          auth_path=root/'review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json'
+          auth=json.loads(auth_path.read_text(encoding='utf-8'))
+          def need(key,value):
+              if auth.get(key)!=value: raise SystemExit(f'Recovery v3 authorization mismatch: {key}')
+          need('schemaVersion',1)
+          need('stageId','asiv-matched-stellar-transport-recovery-v3-authorization')
+          need('recoveryVersion',3)
+          need('authorizationBranch',os.environ['AUTH_BRANCH'])
+          need('dispatchBranch','dispatch/asiv-matched-stellar-transport-recovery-v3')
+          need('executionKey','asiv-matched-stellar-transport-recovery-v3-one-shot')
+          need('exactAuthorizationParentCommit',os.environ['BASE_SHA'])
+          need('automaticDispatch',False)
+          need('dispatchAuthorized',False)
+          need('consumed',False)
+          need('githubRerunPermitted',False)
+          need('solverRetryPermitted',False)
+          need('solverResumePermitted',False)
+          need('readOnlyApiTransportRetryAllowed',True)
+          need('nativeRenderable',False)
+          need('nativeRebuildAuthorized',False)
+          need('pandoraHoldoutAccessAllowed',False)
+          need('starsvisibilityMutationAuthorized',False)
+          need('productionAuthorized',False)
+          prior=auth.get('priorFailedScienceRuns')
+          if not isinstance(prior,list) or [x.get('runId') for x in prior] != [32848973816,32868735547]:
+              raise SystemExit('Recovery v3 prior-run binding drift')
+          if any(x.get('solverExecutionObserved') is not False for x in prior):
+              raise SystemExit('Recovery v3 may only follow preserved pre-solver failures')
+          retry=auth.get('readOnlyApiRetryPolicy') or {}
+          expected_retry={'readOnlyGetOnly':True,'maxAttempts':3,'retryHttpStatuses':[502,503,504],'backoffSeconds':[2,4],'mutatingMethodsForbidden':True}
+          for k,v in expected_retry.items():
+              if retry.get(k)!=v: raise SystemExit(f'Recovery v3 read-only retry policy drift: {k}')
+          universe=auth.get('caseUniverse') or {}
+          expected_universe={
+              'trainingSpectraTotal':2700,
+              'validationAtmosphericSpectraTotal':768,
+              'validationJohnsonVComparisonsTotal':2304,
+              'totalCaseCount':3468,
+              'totalShardCount':99,
+              'batchManifestCanonicalSha256':'1756c756e1e865c729a3d93a1084c6081a5eefa6a05f4e874bdaed84e8359663',
+          }
+          for k,v in expected_universe.items():
+              if universe.get(k)!=v: raise SystemExit(f'Recovery v3 case-universe drift: {k}')
+          gates=auth.get('acceptanceGates') or {}
+          if gates.get('perFamilyMaxAbsDeltaAvMag')!=0.025 or gates.get('perFamilyRmsDeltaAvMag')!=0.01:
+              raise SystemExit('Recovery v3 validation thresholds drift')
+          if gates.get('everyFamilyMustPassSeparately') is not True:
+              raise SystemExit('Recovery v3 per-family gate weakened')
+          if any(gates.get(k) is not False for k in ('postResultThresholdRelaxationPermitted','postResultKnotRetuningPermitted','postResultInterpolationRetuningPermitted')):
+              raise SystemExit('Recovery v3 post-result tuning must remain forbidden')
+          bindings=auth.get('controlBindings') or {}
+          paths={
+              'scienceWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-science-recovery-v3.yml',
+              'authorizationReviewWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-authorization-review-recovery-v3.yml',
+              'readOnlyApiRetryHelperGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py',
+              'recoveryControlContractGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/RECOVERY_CONTROL_CONTRACT.review.json',
+              'v2FailureEvidenceGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/RUN_32868735547_PRE_SOLVER_FAILURE.review.json',
+              'batchOrchestrationGitBlobSha1':'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py',
+              'executionTransportGitBlobSha1':'review/asiv-matched-stellar-transport-v1/execution_transport_review.py',
+              'validationAssemblerGitBlobSha1':'review/asiv-matched-stellar-transport-v1/assemble_validate_matched_stellar_v1.py',
+          }
+          for key,path in paths.items():
+              observed=subprocess.check_output(['git','hash-object',path],text=True).strip()
+              if bindings.get(key)!=observed: raise SystemExit(f'Recovery v3 blob binding drift: {key}')
+          raw=auth_path.read_bytes()
+          receipt={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-transport-recovery-v3-authorization-review',
+              'status':'AUTHORIZATION_REVIEW_PASS_NO_DISPATCH',
+              'authorizationHeadSha':os.environ['AUTH_HEAD'],
+              'authorizationParentSha':os.environ['BASE_SHA'],
+              'authorizationBranch':os.environ['AUTH_BRANCH'],
+              'prNumber':int(os.environ['PR_NUMBER']),
+              'authorizationRawSha256':hashlib.sha256(raw).hexdigest(),
+              'authorizationGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
+              'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'recoveryVersion':3,
+              'priorFailedScienceRunIds':[32848973816,32868735547],
+              'readOnlyApiRetryPolicyVerified':True,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'dispatchPerformed':False,
+              'resultOpeningAuthorized':False,
+              'pandoraHoldoutOpened':False,
+              'productionAuthorized':False,
+          }
+          Path('authorization-review-recovery-v3.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+      - name: Publish Recovery v3 review receipt only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-authorization-review-recovery-v3
+          path: authorization-review-recovery-v3.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

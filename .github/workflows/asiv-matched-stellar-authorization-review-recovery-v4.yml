@@ -137,7 +137,7 @@ jobs:
           batch=importlib.util.module_from_spec(bspec); bspec.loader.exec_module(batch)
           batch.validate_batch_authorization(auth)
           PY
-      - name: Live-verify v1 v2 and v3 historical pre-solver evidence before dispatch
+      - name: Compact-live verify immutable v1 v2 and v3 pre-solver evidence before dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,70 +146,65 @@ jobs:
           HELPER=review/asiv-matched-stellar-transport-v1/recovery-v4/read_only_gh_api_retry_v4.py
           for RID in 32848973816 32868735547 32874586374; do
             python "$HELPER" --output "run-${RID}.json" -- "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}"
-            python "$HELPER" --output "jobs-${RID}.json" -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/jobs?per_page=100"
             python "$HELPER" --output "artifacts-${RID}.json" -- "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100"
           done
+          python "$HELPER" --output job-97805508810.json -- "repos/${GITHUB_REPOSITORY}/actions/jobs/97805508810"
+          python "$HELPER" --output job-97870360724.json -- "repos/${GITHUB_REPOSITORY}/actions/jobs/97870360724"
+          python "$HELPER" --output job-97889371107.json -- "repos/${GITHUB_REPOSITORY}/actions/jobs/97889371107"
           python - <<'PY'
-          import hashlib,json
+          import hashlib,json,subprocess
           from pathlib import Path
           evidence_path=Path('review/asiv-matched-stellar-transport-v1/recovery-v4/HISTORICAL_PRE_SOLVER_EVIDENCE.review.json')
           evidence=json.loads(evidence_path.read_text(encoding='utf-8'))
+          if subprocess.check_output(['git','hash-object',str(evidence_path)],text=True).strip()!='b779f3dc46773fb4819fea6999ddd2fd68904aa1':
+              raise SystemExit('Recovery v4 immutable historical evidence blob drift')
           expected_ids=[32848973816,32868735547,32874586374]
-          if [x.get('runId') for x in evidence.get('priorRuns',[])]!=expected_ids:
-              raise SystemExit('Recovery v4 historical evidence run-id drift')
-          def load(name): return json.load(open(name))
-          def flat_jobs(rid):
-              pages=load(f'jobs-{rid}.json')
-              return [j for page in pages for j in page.get('jobs',[])]
-          def arts(rid): return load(f'artifacts-{rid}.json').get('artifacts',[])
-          def verify_run(row):
-              rid=int(row['runId']); live=load(f'run-{rid}.json')
-              expected={'id':rid,'run_attempt':row['runAttempt'],'status':'completed','conclusion':row['conclusion'],'head_branch':row['headBranch'],'head_sha':row['headSha']}
-              for k,v in expected.items():
-                  if live.get(k)!=v: raise SystemExit(f'historical run {rid} identity/status drift: {k}')
-              jobs=flat_jobs(rid)
-              executed=[]
-              for job in jobs:
-                  for step in job.get('steps') or []:
-                      if step.get('name')=='Execute exactly one frozen shard with no retry or resume' and step.get('conclusion') not in ('skipped',None):
-                          executed.append((job.get('name'),step.get('conclusion')))
-              if executed: raise SystemExit(f'historical run {rid} solver execution cannot be excluded: {executed}')
-              return jobs,arts(rid)
-          r1,r2,r3=evidence['priorRuns']
-          j1,a1=verify_run(r1)
-          failed=[j for j in j1 if int(j.get('id') or 0)==r1['failedJobId']]
-          if len(failed)!=1 or failed[0].get('name')!=r1['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v1 failed-job drift')
-          s1={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
-          if s1.get(r1['failedStepName'])!='failure' or s1.get('Execute exactly one frozen shard with no retry or resume')!='skipped': raise SystemExit('v1 pre-solver step drift')
-          pre1=[a for a in a1 if a.get('name')=='asiv-matched-stellar-preflight-v1']
-          shard1=[a for a in a1 if str(a.get('name') or '').startswith('asiv-matched-stellar-shard-v1-')]
-          final1=[a for a in a1 if a.get('name')=='asiv-matched-stellar-final-validation-v1']
-          if len(pre1)!=1 or int(pre1[0].get('id') or 0)!=r1['preflightArtifactId'] or shard1 or final1: raise SystemExit('v1 artifact boundary drift')
-          j2,a2=verify_run(r2)
-          failed=[j for j in j2 if int(j.get('id') or 0)==r2['failedJobId']]
-          if len(failed)!=1 or failed[0].get('name')!=r2['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v2 failed-job drift')
-          s2={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
-          if s2.get('Verify one-use recovery dispatch, exact authorization and successful review')!='success': raise SystemExit('v2 authorization identity drift')
-          if s2.get(r2['failedStepName'])!='failure' or s2.get('Build exact frozen 99-shard matrix')!='skipped': raise SystemExit('v2 pre-solver step drift')
-          if a2: raise SystemExit('v2 artifact universe must remain empty')
-          j3,a3=verify_run(r3)
-          failed=[j for j in j3 if int(j.get('id') or 0)==r3['failedJobId']]
-          if len(failed)!=1 or failed[0].get('name')!=r3['failedJobName'] or failed[0].get('conclusion')!='failure': raise SystemExit('v3 failed-job drift')
-          s3={s.get('name'):s.get('conclusion') for s in failed[0].get('steps') or []}
-          if s3.get('Verify one-use Recovery v3 dispatch, exact authorization and successful review')!='success': raise SystemExit('v3 authorization identity drift')
-          if s3.get(r3['failedStepName'])!='failure': raise SystemExit('v3 historical-read failure-step drift')
-          for name in ('Build exact frozen 99-shard matrix','Fetch exact official OPAC archive once and verify before any solver job','Publish same-run verified Recovery v3 preflight inputs'):
-              if s3.get(name)!='skipped': raise SystemExit(f'v3 unexpectedly crossed pre-solver boundary: {name}')
-          if a3: raise SystemExit('v3 artifact universe must remain empty')
+          prior=evidence.get('priorRuns') or []
+          if [x.get('runId') for x in prior]!=expected_ids: raise SystemExit('Recovery v4 historical evidence run-id drift')
           common=evidence.get('commonBoundary') or {}
           for key in ('scientificSolverExecutionObserved','scientificShardArtifactsObserved','finalValidationArtifactsObserved','githubJobRerunPermitted','solverRetryPermitted','solverResumePermitted','pandoraHoldoutOpened','productionAuthorized','starsvisibilityMutationAuthorized'):
-              if common.get(key) is not False: raise SystemExit(f'historical common boundary drift: {key}')
+              if common.get(key) is not False: raise SystemExit(f'historical immutable boundary drift: {key}')
+          for row in prior:
+              if row.get('solverExecutionObserved') is not False or row.get('scientificShardArtifactCount')!=0 or row.get('finalValidationArtifactCount')!=0:
+                  raise SystemExit(f'historical frozen evidence no longer proves pre-solver boundary for {row.get("runId")}')
+          def load(path): return json.load(open(path))
+          for row in prior:
+              rid=int(row['runId']); live=load(f'run-{rid}.json')
+              expected={'id':rid,'run_attempt':row['runAttempt'],'status':'completed','conclusion':row['conclusion'],'head_branch':row['headBranch'],'head_sha':row['headSha']}
+              for key,value in expected.items():
+                  if live.get(key)!=value: raise SystemExit(f'historical run {rid} identity/status drift: {key}')
+          jobs={
+              32848973816:load('job-97805508810.json'),
+              32868735547:load('job-97870360724.json'),
+              32874586374:load('job-97889371107.json'),
+          }
+          for row in prior:
+              job=jobs[row['runId']]
+              if int(job.get('id') or 0)!=row['failedJobId'] or job.get('name')!=row['failedJobName'] or job.get('conclusion')!='failure':
+                  raise SystemExit(f'historical failed-job drift for {row["runId"]}')
+              steps={s.get('name'):s.get('conclusion') for s in job.get('steps') or []}
+              if steps.get(row['failedStepName'])!='failure': raise SystemExit(f'historical failed-step drift for {row["runId"]}')
+              if row['runId']==32848973816 and steps.get('Execute exactly one frozen shard with no retry or resume')!='skipped':
+                  raise SystemExit('v1 failed shard crossed solver boundary')
+              if row['runId'] in (32868735547,32874586374) and steps.get('Build exact frozen 99-shard matrix')!='skipped':
+                  raise SystemExit(f'historical run {row["runId"]} unexpectedly built matrix')
+          a1=load('artifacts-32848973816.json').get('artifacts',[])
+          pre=[a for a in a1 if a.get('name')=='asiv-matched-stellar-preflight-v1']
+          shards=[a for a in a1 if str(a.get('name') or '').startswith('asiv-matched-stellar-shard-v1-')]
+          final=[a for a in a1 if a.get('name')=='asiv-matched-stellar-final-validation-v1']
+          if len(pre)!=1 or int(pre[0].get('id') or 0)!=9563491205 or shards or final: raise SystemExit('v1 compact artifact boundary drift')
+          if load('artifacts-32868735547.json').get('artifacts',[]): raise SystemExit('v2 artifact universe must remain empty')
+          if load('artifacts-32874586374.json').get('artifacts',[]): raise SystemExit('v3 artifact universe must remain empty')
           raw=evidence_path.read_bytes()
           verification={
               'schemaVersion':1,
               'stageId':'asiv-matched-stellar-transport-recovery-v4-historical-live-verification',
               'status':'HISTORICAL_PRE_SOLVER_EVIDENCE_LIVE_VERIFIED',
+              'verificationMode':'IMMUTABLE_FULL_ENUMERATION_EVIDENCE_PLUS_COMPACT_LIVE_IDENTITY_JOB_ARTIFACT_CHECK',
               'runIds':expected_ids,
+              'liveFailedJobIds':[97805508810,97870360724,97889371107],
+              'fullHistoricalJobsEnumerationPerformedInThisReview':False,
+              'immutableFullEnumerationEvidenceGitBlobSha1':'b779f3dc46773fb4819fea6999ddd2fd68904aa1',
               'historicalEvidenceRawSha256':hashlib.sha256(raw).hexdigest(),
               'historicalEvidenceGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
               'solverExecutionObserved':False,
@@ -237,6 +232,7 @@ jobs:
           raw=auth_path.read_bytes()
           history=json.load(open('historical-presolver-verification-v4.json'))
           if history.get('status')!='HISTORICAL_PRE_SOLVER_EVIDENCE_LIVE_VERIFIED': raise SystemExit('historical evidence verification missing')
+          if history.get('fullHistoricalJobsEnumerationPerformedInThisReview') is not False: raise SystemExit('compact historical verification boundary drift')
           receipt={
               'schemaVersion':1,
               'stageId':'asiv-matched-stellar-transport-recovery-v4-authorization-review',
@@ -251,6 +247,7 @@ jobs:
               'recoveryVersion':4,
               'priorFailedScienceRunIds':[32848973816,32868735547,32874586374],
               'historicalPreSolverEvidenceVerified':True,
+              'historicalVerificationMode':history['verificationMode'],
               'historicalEvidenceRawSha256':history['historicalEvidenceRawSha256'],
               'historicalEvidenceGitBlobSha1':history['historicalEvidenceGitBlobSha1'],
               'strictExecutionGateVerified':True,
@@ -266,7 +263,7 @@ jobs:
           Path('authorization-review-recovery-v4.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
           print(json.dumps(receipt,sort_keys=True))
           PY
-      - name: Publish Recovery v4 review receipt and historical verification only
+      - name: Publish Recovery v4 review receipt and compact historical verification only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: asiv-matched-stellar-authorization-review-recovery-v4

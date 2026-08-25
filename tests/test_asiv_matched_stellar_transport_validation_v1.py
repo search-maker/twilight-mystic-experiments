@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import math
@@ -139,11 +140,20 @@ class AsivMatchedStellarTransportValidationV1Tests(unittest.TestCase):
 
     def test_validator_has_no_solver_or_process_execution_surface(self):
         source = VALIDATOR.read_text(encoding="utf-8")
-        self.assertNotIn("import subprocess", source)
-        self.assertNotIn("subprocess.", source)
-        self.assertNotIn("run_process_group", source)
-        self.assertNotIn("Popen(", source)
-        self.assertNotIn("os.system", source)
+        tree = ast.parse(source)
+        forbidden_modules = {"subprocess", "os", "multiprocessing"}
+        forbidden_calls = {"Popen", "run", "call", "check_call", "check_output", "system", "popen", "run_process_group"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                self.assertTrue(all(alias.name.split(".")[0] not in forbidden_modules for alias in node.names))
+            elif isinstance(node, ast.ImportFrom):
+                self.assertNotIn((node.module or "").split(".")[0], forbidden_modules)
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name):
+                    self.assertNotIn(func.id, forbidden_calls)
+                elif isinstance(func, ast.Attribute):
+                    self.assertNotIn(func.attr, forbidden_calls)
         self.assertIn("REVIEW_ONLY_COMPLETE_SET_VALIDATOR_NOT_EXECUTED", source)
 
 

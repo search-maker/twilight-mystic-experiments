@@ -28,7 +28,18 @@ SOURCE_TWILIGHT_MAIN = "5293a7d86a6ec31825da4f9dfbfc9cecfea3afc0"
 SOURCE_STELLAR_RUNNER_BLOB = "a513336c5fcd6d16279e25fd257533ef45e9bbbb"
 SOURCE_STELLAR_PROTOCOL_BLOB = "1e605731111e07bbbc8a0eae355d7bcbb71ae1d4"
 SOURCE_ASIV_ADAPTER_BLOB = "5fd4fc92e9ee06cc7377114813a7d84f85459b66"
+SOURCE_ASIV_EXECUTION_CONTRACT_BLOB = "a2c4ebac5be8daf096ca3b543fd2f994ec4146a1"
 SOURCE_ASIV_OPAC_TREE_SHA256 = "5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80"
+
+RUNTIME_LOCK_PATH = "experiments/mystic-batch-v1/runtime-lock.micromamba.json"
+RUNTIME_LOCK_GIT_BLOB_SHA1 = "8573f62829371a0eb866976a5062ea61dc0767b1"
+RUNTIME_LOCK_RAW_SHA256 = "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5"
+EXACT_LIBRADTRAN_PACKAGE = "rubin-libradtran=2.0.6=py312pl5321he9373c2_1"
+UVSPEC_SHA256 = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+UVSPEC_HELP_SHA256 = "868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548"
+BASE_DATA_TREE_SHA256 = "ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7"
+OFFICIAL_OPTPROP_ARCHIVE_SHA256 = "11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e"
+AFGLUS_ATMOSPHERE_SHA256 = "dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5"
 
 WAVELENGTH_NM = tuple(range(380, 781))
 ATMOSPHERE_NAME = "afglus"
@@ -256,7 +267,21 @@ def build_prefrozen_manifest() -> dict:
             "stellarReferenceRunnerGitBlobSha1": SOURCE_STELLAR_RUNNER_BLOB,
             "stellarValidationProtocolGitBlobSha1": SOURCE_STELLAR_PROTOCOL_BLOB,
             "asivAerosolDirectiveAdapterGitBlobSha1": SOURCE_ASIV_ADAPTER_BLOB,
+            "asivExecutionContractGitBlobSha1": SOURCE_ASIV_EXECUTION_CONTRACT_BLOB,
             "augmentedOpacDataTreeSha256": SOURCE_ASIV_OPAC_TREE_SHA256,
+        },
+        "runtimeIdentity": {
+            "runtimeLockPath": RUNTIME_LOCK_PATH,
+            "runtimeLockGitBlobSha1": RUNTIME_LOCK_GIT_BLOB_SHA1,
+            "runtimeLockRawSha256": RUNTIME_LOCK_RAW_SHA256,
+            "exactPackageSpec": EXACT_LIBRADTRAN_PACKAGE,
+            "uvspecSha256": UVSPEC_SHA256,
+            "uvspecHelpSha256": UVSPEC_HELP_SHA256,
+            "baseDataTreeSha256": BASE_DATA_TREE_SHA256,
+            "augmentedDataTreeSha256": SOURCE_ASIV_OPAC_TREE_SHA256,
+            "officialOptpropArchiveSha256": OFFICIAL_OPTPROP_ARCHIVE_SHA256,
+            "atmosphereSha256": AFGLUS_ATMOSPHERE_SHA256,
+            "verificationRequiredBeforeAnyFutureSolverExecution": True,
         },
         "physics": {
             "atmosphere": ATMOSPHERE_NAME,

@@ -1,0 +1,483 @@
+name: ASIV matched stellar scientific recovery v3
+run-name: ASIV matched stellar recovery v3 ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: asiv-matched-stellar-science-recovery-v3
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      auth_branch: ${{ steps.identity.outputs.auth_branch }}
+      auth_parent: ${{ steps.identity.outputs.auth_parent }}
+    steps:
+      - name: Checkout exact dispatched Recovery v3 authorization head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify one-use Recovery v3 dispatch, exact authorization and successful review
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = dispatch/asiv-matched-stellar-transport-recovery-v3
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python - <<'PY' > auth.env
+          import json
+          p='review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json'
+          a=json.load(open(p))
+          print(f'AUTH_BRANCH={a.get("authorizationBranch","")}')
+          print(f'DISPATCH_BRANCH={a.get("dispatchBranch","")}')
+          print(f'AUTH_PARENT_DOC={a.get("exactAuthorizationParentCommit","")}')
+          print(f'EXECUTION_KEY={a.get("executionKey","")}')
+          PY
+          source auth.env
+          test "$AUTH_BRANCH" = authorization/asiv-matched-stellar-transport-recovery-v3
+          test "$DISPATCH_BRANCH" = "$GITHUB_REF_NAME"
+          test "$EXECUTION_KEY" = asiv-matched-stellar-transport-recovery-v3-one-shot
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          AUTH_PARENT="${PARENTS[0]}"
+          test "$AUTH_PARENT" = "$AUTH_PARENT_DOC"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json
+          git fetch origin main "$AUTH_BRANCH" "$GITHUB_REF_NAME"
+          test "$(git rev-parse origin/main)" = "$AUTH_PARENT"
+          test "$(git rev-parse "origin/$AUTH_BRANCH")" = "$GITHUB_SHA"
+          test "$(git rev-parse "origin/$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+          export AUTH_BRANCH AUTH_PARENT
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          python "$HELPER" --output auth-pr-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100"
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          good=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['GITHUB_SHA']]
+          if len(good)!=1: raise SystemExit(f'expected exactly one Recovery v3 authorization PR for exact head; got {len(good)}')
+          p=good[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None or (p.get('base') or {}).get('ref')!='main':
+              raise SystemExit('Recovery v3 authorization PR must remain Draft/open/unmerged against main')
+          open('auth-pr-selected.json','w').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          python "$HELPER" --output auth-review-run-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-matched-stellar-authorization-review-recovery-v3.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100"
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('auth-review-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['GITHUB_SHA']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'Recovery v3 authorization review history invalid: same={len(same)} good={len(good)}')
+          open('auth-review-selected.json','w').write(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          python "$HELPER" --output auth-review-artifacts.json -- "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RID}/artifacts?per_page=100"
+          REVIEW_AID="$(python - <<'PY'
+          import json
+          rows=json.load(open('auth-review-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='asiv-matched-stellar-authorization-review-recovery-v3' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('Recovery v3 authorization review receipt artifact missing/drifted')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir auth-review-artifact
+          python "$HELPER" --output auth-review.zip -- "repos/${GITHUB_REPOSITORY}/actions/artifacts/${REVIEW_AID}/zip"
+          unzip -q auth-review.zip -d auth-review-artifact
+          export PR_NUMBER
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          root=Path('.')
+          auth_path=root/'review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json'
+          auth=json.loads(auth_path.read_text(encoding='utf-8'))
+          receipt=json.load(open('auth-review-artifact/authorization-review-recovery-v3.json'))
+          raw=auth_path.read_bytes()
+          expected={
+              'status':'AUTHORIZATION_REVIEW_PASS_NO_DISPATCH',
+              'authorizationHeadSha':os.environ['GITHUB_SHA'],
+              'authorizationParentSha':os.environ['AUTH_PARENT'],
+              'authorizationBranch':os.environ['AUTH_BRANCH'],
+              'prNumber':int(os.environ['PR_NUMBER']),
+              'authorizationRawSha256':hashlib.sha256(raw).hexdigest(),
+              'authorizationGitBlobSha1':hashlib.sha1(b'blob '+str(len(raw)).encode('ascii')+b'\0'+raw).hexdigest(),
+              'workflowRunAttempt':1,
+              'recoveryVersion':3,
+              'priorFailedScienceRunIds':[32848973816,32868735547],
+              'readOnlyApiRetryPolicyVerified':True,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'dispatchPerformed':False,
+              'resultOpeningAuthorized':False,
+              'pandoraHoldoutOpened':False,
+              'productionAuthorized':False,
+          }
+          for key,value in expected.items():
+              if receipt.get(key)!=value: raise SystemExit(f'Recovery v3 authorization receipt mismatch: {key}')
+          def need(key,value):
+              if auth.get(key)!=value: raise SystemExit(f'Recovery v3 authorization mismatch: {key}')
+          need('recoveryVersion',3)
+          need('exactAuthorizationParentCommit',os.environ['AUTH_PARENT'])
+          need('dispatchAuthorized',False)
+          need('automaticDispatch',False)
+          need('githubRerunPermitted',False)
+          need('solverRetryPermitted',False)
+          need('solverResumePermitted',False)
+          need('readOnlyApiTransportRetryAllowed',True)
+          retry=auth.get('readOnlyApiRetryPolicy') or {}
+          if retry.get('maxAttempts')!=3 or retry.get('retryHttpStatuses')!=[502,503,504] or retry.get('readOnlyGetOnly') is not True:
+              raise SystemExit('Recovery v3 read-only retry policy drift')
+          universe=auth.get('caseUniverse') or {}
+          if universe.get('totalCaseCount')!=3468 or universe.get('totalShardCount')!=99 or universe.get('validationJohnsonVComparisonsTotal')!=2304:
+              raise SystemExit('Recovery v3 case universe drift')
+          bindings=auth.get('controlBindings') or {}
+          paths={
+              'scienceWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-science-recovery-v3.yml',
+              'authorizationReviewWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-authorization-review-recovery-v3.yml',
+              'readOnlyApiRetryHelperGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py',
+              'recoveryControlContractGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/RECOVERY_CONTROL_CONTRACT.review.json',
+              'v2FailureEvidenceGitBlobSha1':'review/asiv-matched-stellar-transport-v1/recovery-v3/RUN_32868735547_PRE_SOLVER_FAILURE.review.json',
+              'batchOrchestrationGitBlobSha1':'review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py',
+              'executionTransportGitBlobSha1':'review/asiv-matched-stellar-transport-v1/execution_transport_review.py',
+              'validationAssemblerGitBlobSha1':'review/asiv-matched-stellar-transport-v1/assemble_validate_matched_stellar_v1.py',
+          }
+          for key,path in paths.items():
+              if bindings.get(key)!=subprocess.check_output(['git','hash-object',path],text=True).strip():
+                  raise SystemExit(f'Recovery v3 control binding drift: {key}')
+          PY
+          python "$HELPER" --output science-run-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/asiv-matched-stellar-science-recovery-v3.yml/runs?branch=${GITHUB_REF_NAME}&event=workflow_dispatch&per_page=100"
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('science-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if (r.get('head_branch') or '')==os.environ['GITHUB_REF_NAME']]
+          ids=[int(r['id']) for r in same]
+          if ids != [int(os.environ['GITHUB_RUN_ID'])]: raise SystemExit(f'Recovery v3 one-shot science history violated: {ids}')
+          PY
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "auth_parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+      - name: Prove v1 and Recovery v2 stopped before any stellar solver execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py
+          python "$HELPER" --output prior-v1-run.json -- "repos/${GITHUB_REPOSITORY}/actions/runs/32848973816"
+          python "$HELPER" --output prior-v1-job-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/32848973816/jobs?per_page=100"
+          python "$HELPER" --output prior-v1-artifacts.json -- "repos/${GITHUB_REPOSITORY}/actions/runs/32848973816/artifacts?per_page=100"
+          python "$HELPER" --output prior-v2-run.json -- "repos/${GITHUB_REPOSITORY}/actions/runs/32868735547"
+          python "$HELPER" --output prior-v2-job-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/32868735547/jobs?per_page=100"
+          python "$HELPER" --output prior-v2-artifacts.json -- "repos/${GITHUB_REPOSITORY}/actions/runs/32868735547/artifacts?per_page=100"
+          python - <<'PY'
+          import json
+          v1=json.load(open('prior-v1-run.json'))
+          expected_v1={'id':32848973816,'run_attempt':1,'status':'completed','conclusion':'failure','head_branch':'dispatch/asiv-matched-stellar-transport-v1','head_sha':'30b7c491f9c0f7ae331d7346f8d001c74a9cb905'}
+          for k,v in expected_v1.items():
+              if v1.get(k)!=v: raise SystemExit(f'v1 run identity/status drift: {k}')
+          v1pages=json.load(open('prior-v1-job-pages.json')); v1jobs=[j for page in v1pages for j in page.get('jobs',[])]
+          v1executed=[]; v1failed=[]
+          for job in v1jobs:
+              for step in job.get('steps') or []:
+                  if step.get('name')=='Execute exactly one frozen shard with no retry or resume' and step.get('conclusion') not in ('skipped',None):
+                      v1executed.append((job.get('name'),step.get('conclusion')))
+                  if job.get('id')==97805508810 and step.get('name')=='Reconstruct exact OPAC overlay and verify runtime identity' and step.get('conclusion')=='failure':
+                      v1failed.append(job.get('name'))
+          if v1executed: raise SystemExit(f'v1 solver execution cannot be excluded: {v1executed}')
+          if v1failed!=['shards (training-004)']: raise SystemExit(f'v1 exact pre-solver failure drift: {v1failed}')
+          v1arts=json.load(open('prior-v1-artifacts.json')).get('artifacts',[])
+          v1pre=[a for a in v1arts if a.get('name')=='asiv-matched-stellar-preflight-v1']
+          v1shards=[a for a in v1arts if str(a.get('name') or '').startswith('asiv-matched-stellar-shard-v1-')]
+          v1final=[a for a in v1arts if a.get('name')=='asiv-matched-stellar-final-validation-v1']
+          if len(v1pre)!=1 or int(v1pre[0].get('id') or 0)!=9563491205: raise SystemExit('v1 preflight artifact identity drift')
+          if v1shards or v1final: raise SystemExit('v1 produced scientific artifacts; Recovery v3 forbidden')
+
+          v2=json.load(open('prior-v2-run.json'))
+          expected_v2={'id':32868735547,'run_attempt':1,'status':'completed','conclusion':'failure','head_branch':'dispatch/asiv-matched-stellar-transport-recovery-v2','head_sha':'ce0e0fa81d85b8867db1b09359d40c501cd68512'}
+          for k,v in expected_v2.items():
+              if v2.get(k)!=v: raise SystemExit(f'v2 run identity/status drift: {k}')
+          v2pages=json.load(open('prior-v2-job-pages.json')); v2jobs=[j for page in v2pages for j in page.get('jobs',[])]
+          pre=[j for j in v2jobs if int(j.get('id') or 0)==97870360724]
+          if len(pre)!=1 or pre[0].get('name')!='preflight' or pre[0].get('conclusion')!='failure': raise SystemExit('v2 preflight job identity drift')
+          steps={s.get('name'):s.get('conclusion') for s in pre[0].get('steps') or []}
+          if steps.get('Verify one-use recovery dispatch, exact authorization and successful review')!='success': raise SystemExit('v2 identity step drift')
+          if steps.get('Prove v1 stopped before any stellar solver execution')!='failure': raise SystemExit('v2 expected read-only API failure step drift')
+          if steps.get('Build exact frozen 99-shard matrix')!='skipped': raise SystemExit('v2 unexpectedly built matrix')
+          v2executed=[]
+          for job in v2jobs:
+              for step in job.get('steps') or []:
+                  if step.get('name')=='Execute exactly one frozen shard with no retry or resume' and step.get('conclusion') not in ('skipped',None):
+                      v2executed.append((job.get('name'),step.get('conclusion')))
+          if v2executed: raise SystemExit(f'v2 solver execution cannot be excluded: {v2executed}')
+          v2arts=json.load(open('prior-v2-artifacts.json')).get('artifacts',[])
+          if v2arts: raise SystemExit(f'v2 artifact universe must be empty; got {len(v2arts)}')
+          evidence={
+              'schemaVersion':1,
+              'status':'V1_AND_V2_PRE_SOLVER_FAILURES_CONFIRMED',
+              'priorRuns':[{
+                  'runId':32848973816,'runAttempt':1,'priorScientificShardArtifactCount':0,'priorSolverExecutionObserved':False,
+                  'failedJobId':97805508810,'failureClass':'PRE_SOLVER_MICROMAMBA_JSON_SHAPE'
+              },{
+                  'runId':32868735547,'runAttempt':1,'priorScientificShardArtifactCount':0,'priorFinalValidationArtifactCount':0,
+                  'artifactCount':0,'priorSolverExecutionObserved':False,'matrixBuilt':False,'failedJobId':97870360724,
+                  'failureClass':'READ_ONLY_GITHUB_API_TRANSIENT_502'
+              }],
+              'readOnlyApiRetryPolicy':{'maxAttempts':3,'retryHttpStatuses':[502,503,504],'readOnlyGetOnly':True},
+          }
+          open('prior-presolver-evidence-v3.json','w').write(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,sort_keys=True))
+          PY
+      - name: Build exact frozen 99-shard matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import importlib.util,json
+          from pathlib import Path
+          p=Path('review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py')
+          s=importlib.util.spec_from_file_location('batch',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          manifest=m.build_batch_manifest()
+          if manifest['shardCount']!=99 or manifest['totalCaseCount']!=3468: raise SystemExit('batch manifest drift')
+          matrix={'include':[{'shardId':row['shardId']} for row in manifest['shards']]}
+          print('matrix='+json.dumps(matrix,separators=(',',':')))
+          PY
+      - name: Fetch exact official OPAC archive once and verify before any solver job
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p execution-preflight/api-read-audit
+          curl --fail --location --retry 3 --retry-all-errors \
+            'https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz' \
+            --output execution-preflight/optprop_v2.1.tar.gz
+          test "$(stat -c %s execution-preflight/optprop_v2.1.tar.gz)" = 743391266
+          printf '%s  %s\n' '11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e' execution-preflight/optprop_v2.1.tar.gz | sha256sum -c -
+          cp review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json execution-preflight/authorization.json
+          cp auth-review-artifact/authorization-review-recovery-v3.json execution-preflight/authorization-review.json
+          cp prior-presolver-evidence-v3.json execution-preflight/prior-presolver-evidence-v3.json
+          cp -f *.read-audit.json execution-preflight/api-read-audit/ 2>/dev/null || true
+      - name: Publish same-run verified Recovery v3 preflight inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-preflight-recovery-v3
+          path: execution-preflight/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  shards:
+    needs: preflight
+    strategy:
+      fail-fast: true
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: matched-stellar-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Fetch exact same-run Recovery v3 preflight artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py
+          python "$HELPER" --output current-run-artifact-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100"
+          AID="$(python - <<'PY'
+          import json
+          pages=json.load(open('current-run-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          good=[a for a in rows if a.get('name')=='asiv-matched-stellar-preflight-recovery-v3' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected exact Recovery v3 preflight artifact; got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          python "$HELPER" --output preflight.zip -- "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip"
+          unzip -q preflight.zip -d preflight
+          test -f preflight/authorization.json
+          test -f preflight/authorization-review.json
+          test -f preflight/prior-presolver-evidence-v3.json
+          test -f preflight/optprop_v2.1.tar.gz
+          test "$(stat -c %s preflight/optprop_v2.1.tar.gz)" = 743391266
+          printf '%s  %s\n' '11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e' preflight/optprop_v2.1.tar.gz | sha256sum -c -
+      - name: Reconstruct exact OPAC overlay and verify runtime identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from runtime_overlay import stage_frozen_overlay
+          base=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'
+          report=stage_frozen_overlay(base,Path('preflight/optprop_v2.1.tar.gz'),Path('libradtran-overlay'))
+          if report.get('augmentedDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('OPAC overlay drift')
+          Path('overlay-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+          python - <<'PY'
+          import hashlib,importlib.util,json,shutil,subprocess
+          from pathlib import Path
+          payload=json.loads(subprocess.check_output(['micromamba','list','--json'],text=True))
+          parser_path=Path('review/asiv-matched-stellar-transport-v1/recovery-v2/micromamba_list_parser_v2.py')
+          pspec=importlib.util.spec_from_file_location('matched_stellar_mm_parser_v2',parser_path)
+          pm=importlib.util.module_from_spec(pspec); pspec.loader.exec_module(pm)
+          r=pm.extract_unique_package_record(payload,'rubin-libradtran')
+          observed=pm.exact_package_spec(r)
+          uvspec=Path(shutil.which('uvspec') or '')
+          if not uvspec.is_file(): raise SystemExit('uvspec missing')
+          help_run=subprocess.run([str(uvspec),'--help'],capture_output=True,check=True)
+          help_sha=hashlib.sha256(help_run.stdout+help_run.stderr).hexdigest()
+          path=Path('review/asiv-matched-stellar-transport-v1/execution_transport_review.py')
+          spec=importlib.util.spec_from_file_location('transport',path); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          report=m.build_runtime_report(
+              uvspec=uvspec,
+              augmented_data_dir=Path('libradtran-overlay/data'),
+              atmosphere_file=Path('libradtran-overlay/data/atmmod/afglus.dat'),
+              observed_package_spec=observed,
+              observed_uvspec_help_sha256=help_sha,
+          )
+          Path('matched-runtime-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Execute exactly one frozen shard with no retry or resume
+        shell: micromamba-shell {0}
+        env:
+          SHARD_ID: ${{ matrix.shardId }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,os,shutil
+          from pathlib import Path
+          p=Path('review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py')
+          s=importlib.util.spec_from_file_location('batch',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          auth=json.load(open('preflight/authorization.json'))
+          runtime=json.load(open('matched-runtime-report.json'))
+          out=Path('shard-output')
+          m.execute_shard_strict(
+              shard_id=os.environ['SHARD_ID'], authorization=auth, runtime_report=runtime,
+              output_root=out, allow_execution=True,
+          )
+          shutil.copy2('matched-runtime-report.json',out/'runtime-report.json')
+          shutil.copy2('overlay-report.json',out/'overlay-report.json')
+          PY
+      - name: Persist complete shard evidence only after full shard success
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-shard-recovery-v3-${{ matrix.shardId }}
+          path: shard-output/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  aggregate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.shards.result == 'success' }}
+    needs: [preflight, shards]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Enumerate exact same-run 99-shard Recovery v3 artifact universe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py
+          python "$HELPER" --output artifact-pages.json -- --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pages=json.load(open('artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          shards=[a for a in rows if str(a.get('name') or '').startswith('asiv-matched-stellar-shard-recovery-v3-') and not a.get('expired',False)]
+          pre=[a for a in rows if a.get('name')=='asiv-matched-stellar-preflight-recovery-v3' and not a.get('expired',False)]
+          if len(pre)!=1: raise SystemExit('exactly one same-run Recovery v3 preflight artifact required')
+          if len(shards)!=99 or len({a['name'] for a in shards})!=99: raise SystemExit(f'exactly 99 unique complete Recovery v3 shard artifacts required; got {len(shards)}')
+          Path('shard-artifacts.json').write_text(json.dumps({'artifacts':shards},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Download and verify exact same-run Recovery v3 shard artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p shard-artifacts shard-zips
+          python - <<'PY'
+          import json,subprocess
+          from pathlib import Path
+          helper=Path('review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py')
+          for row in json.load(open('shard-artifacts.json'))['artifacts']:
+              name=row['name']; aid=row['id']; z=Path('shard-zips')/(name+'.zip')
+              subprocess.run(['python',str(helper),'--output',str(z),'--',f"repos/${{GITHUB_REPOSITORY}}/actions/artifacts/{aid}/zip"],check=True)
+              target=Path('shard-artifacts')/name; target.mkdir(); subprocess.run(['unzip','-q',str(z),'-d',str(target)],check=True)
+          PY
+      - name: Validate only the complete exact 3468-case universe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          p=Path('review/asiv-matched-stellar-transport-v1/batch_orchestration_review.py')
+          s=importlib.util.spec_from_file_location('batch',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          roots=sorted([x for x in Path('shard-artifacts').iterdir() if x.is_dir()])
+          result=m.validate_complete_universe(
+              shard_roots=roots,
+              sed_bundle_path=Path('review/asiv-matched-stellar-transport-v1/frozen-assets/pickles-sed-1nm.json'),
+              johnson_v_path=Path('review/asiv-matched-stellar-transport-v1/frozen-assets/johnson-v-1nm.json'),
+          )
+          result['workflowRunId']=int('${{ github.run_id }}')
+          result['workflowRunAttempt']=int('${{ github.run_attempt }}')
+          result['shardArtifactCount']=99
+          result['scientificCaseCount']=3468
+          result['recoveryVersion']=3
+          result['recoveryPriorRunIds']=[32848973816,32868735547]
+          result['recoveryPriorRunsWerePreSolverFailures']=True
+          result['readOnlyApiTransportRetryAllowed']=True
+          result['readOnlyApiRetryHttpStatuses']=[502,503,504]
+          result['githubRerun']=False
+          result['solverRetryPerformed']=False
+          result['solverResumePerformed']=False
+          result['pandoraHoldoutOpened']=False
+          result['starsvisibilityMutationAuthorized']=False
+          result['productionAuthorized']=False
+          Path('matched-stellar-final-validation-recovery-v3.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          print(json.dumps({'status':result.get('status'),'workflowRunId':result['workflowRunId'],'caseCount':3468,'recoveryVersion':3},sort_keys=True))
+          PY
+      - name: Publish complete final Recovery v3 validation evidence only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-final-validation-recovery-v3
+          path: |
+            matched-stellar-final-validation-recovery-v3.json
+            shard-artifacts.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

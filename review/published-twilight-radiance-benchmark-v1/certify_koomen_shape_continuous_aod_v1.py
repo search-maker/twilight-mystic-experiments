@@ -83,7 +83,14 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
     for x in cuts:
         absorb_point(x)
 
-    def total_bound(fixed, sun: float, lo: float, hi: float, scenario: str):
+    def all_bounds(fixed, sun: float, lo: float, hi: float) -> dict:
+        """Return all scenario bounds while reusing their identical native work.
+
+        This is algebraically identical to the former per-scenario total_bound:
+        nearest-neighbor selection, native polynomial/residual intervals, OPAC
+        contrast intervals, rounding helpers, and subdivision semantics are
+        unchanged. Only scenario-independent calculations are performed once.
+        """
         midpoint = (lo + hi) / 2.0
         base_selected = extrema._neighbors(extrema._base_query(fixed, midpoint), base_rows, 6, "coord", "id")
         asiv_selected = extrema._neighbors(extrema._asiv_query(fixed, midpoint), asiv["training"], 8, "coord", "cellId")
@@ -91,14 +98,14 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
         polynomial = extrema._primary_poly_bound(base, sun, alt, az, elev, aod_segment_lo, aod_segment_hi, 0)
         residual = extrema._idw_bound(base_rows, "coord", "target", fixed, 4, base_selected, lo, hi, 1, 0)
         native = polynomial.add(residual)
-        if scenario == "native":
-            return native
-        contrast_index = CONTRASTS.index(scenario)
-        contrast = extrema._idw_bound(
-            asiv["training"], "coord", "target", fixed[:3], 3, asiv_selected,
-            lo, hi, 2, contrast_index * 3,
-        )
-        return native.add(contrast)
+        bounds = {"native": native}
+        for contrast_index, scenario in enumerate(CONTRASTS):
+            contrast = extrema._idw_bound(
+                asiv["training"], "coord", "target", fixed[:3], 3, asiv_selected,
+                lo, hi, 2, contrast_index * 3,
+            )
+            bounds[scenario] = native.add(contrast)
+        return bounds
 
     def recurse(lo: float, hi: float, depth: int) -> None:
         nonlocal nodes, maximum_depth_seen
@@ -109,9 +116,11 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
             return
         bounds = {}
         maximum_width = 0.0
+        bounds3 = all_bounds(fixed3, 3.0, lo, hi)
+        bounds6 = all_bounds(fixed6, 6.0, lo, hi)
         for scenario in SCENARIOS:
-            b3 = total_bound(fixed3, 3.0, lo, hi, scenario)
-            b6 = total_bound(fixed6, 6.0, lo, hi, scenario)
+            b3 = bounds3[scenario]
+            b6 = bounds6[scenario]
             diff = extrema.Interval(extrema._down(b6.lo - b3.hi), extrema._up(b6.hi - b3.lo))
             bounds[scenario] = diff
             maximum_width = max(maximum_width, diff.width)

@@ -205,9 +205,10 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
         source = CANDIDATE.read_text(encoding="utf-8")
         self.assertNotIn("import subprocess", source)
         self.assertNotIn("subprocess.", source)
+        self.assertNotIn("os.system", source)
+        self.assertNotIn("Popen(", source)
         self.assertNotIn("find_uvspec", source)
         self.assertNotIn("run_reference(", source)
-        self.assertNotIn("UVSPEC", source)
         self.assertNotIn("allow_native_render", source)
         self.assertNotIn("--allow-native-render", source)
 

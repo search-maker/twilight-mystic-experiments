@@ -1,0 +1,87 @@
+name: Koomen shape separation certificate v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/koomen-shape-separation-certificate-v1.yml"
+      - "review/published-twilight-radiance-benchmark-v1/certify_shape_separation_v1.py"
+
+permissions:
+  contents: read
+
+jobs:
+  directional-separation-certificate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialize exact frozen inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-inputs
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/validated-v3-primary-runtime-v1.json benchmark-inputs/base.json
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/aerosol-scenario-interpolator-runtime-v1.json benchmark-inputs/asiv.json
+          printf '%s  %s\n' "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4" benchmark-inputs/base.json | sha256sum -c -
+          printf '%s  %s\n' "a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060" benchmark-inputs/asiv.json | sha256sum -c -
+          git fetch --no-tags --depth=1 origin 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/exact_aod_interval_support_v1.py > benchmark-inputs/support.py
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/certified_aod_scenario_extrema_v1.py > benchmark-inputs/model.py
+          sha256sum benchmark-inputs/support.py benchmark-inputs/model.py > benchmark-inputs/evaluator-sources.sha256
+
+      - name: Run directional interval separation certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/certify_shape_separation_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/base.json \
+            --asiv-runtime benchmark-inputs/asiv.json \
+            --support-evaluator benchmark-inputs/support.py \
+            --extrema-evaluator benchmark-inputs/model.py \
+            --pair-evaluator review/published-twilight-radiance-benchmark-v1/certified_paired_shape_v1.py \
+            --output KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.json \
+            --workers 4
+          sha256sum KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.json > KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.sha256
+          cat KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.sha256
+
+      - name: Prove directional-certificate claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.json'))
+          assert r['claimClass']=='DIRECTIONAL_INTERVAL_CERTIFICATE_AGAINST_PUBLISHED_HISTORICAL_DATA_NOT_STRICT_MODERN_VALIDATION'
+          assert r['pairCount']==24
+          assert r['boundary']['pandoraTargetDataUsed'] is False
+          assert r['boundary']['strictModernValidationClaimAuthorized'] is False
+          assert r['boundary']['modelRetuningAuthorized'] is False
+          assert r['boundary']['productionAuthorization'] is False
+          assert r['boundary']['fullModelExtremaComputed'] is False
+          for row in r['rows']:
+              if row['status']=='CERTIFIED_OBSERVED_DIMS_FASTER_THAN_ALL_MODEL':
+                  c=row['separationCertificate']
+                  assert c['certifiedObservedDimsFasterThanAllModel'] is True
+                  assert c['sameAodRequired'] is True
+                  assert c['sameScenarioRequired'] is True
+                  assert c['minimumCertifiedSeparationLog'] > 0
+                  assert c['failures']==[]
+          print('Directional separation claim boundary verified')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koomen-shape-separation-certificate-v1
+          path: |
+            KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.json
+            KOOMEN_SHAPE_SEPARATION_CERTIFICATE_RESULT.sha256
+            benchmark-inputs/evaluator-sources.sha256
+          if-no-files-found: error
+          retention-days: 30

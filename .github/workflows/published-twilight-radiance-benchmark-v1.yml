@@ -87,10 +87,12 @@ jobs:
           sha256sum KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.json > KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.sha256
           cat KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.sha256
 
-      - name: Certify same-AOD same-scenario Koomen shape over continuous AOD
+      - name: Certify and classify same-AOD same-scenario Koomen shape over continuous AOD
+        id: koomen_continuous
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          set +e
           python review/published-twilight-radiance-benchmark-v1/certify_koomen_shape_continuous_aod_v1.py \
             --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
             --base-runtime benchmark-inputs/validated-v3-primary-runtime-v1.json \
@@ -98,8 +100,43 @@ jobs:
             --support-evaluator benchmark-inputs/exact_aod_interval_support_v1.py \
             --extrema-evaluator benchmark-inputs/certified_aod_scenario_extrema_v1.py \
             --output KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "unexpected certifier execution exit code: $rc" >&2
+            exit "$rc"
+          fi
+          test -s KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json
+          python - "$rc" <<'PY'
+          import json, sys
+          rc = int(sys.argv[1])
+          data = json.load(open('KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json'))
+          if data.get('pairCount') != 24:
+              raise SystemExit('continuous diagnostic pair-count drift')
+          boundary = data.get('interpretationBoundary') or {}
+          if boundary.get('formalPassFailAuthorized') is not False:
+              raise SystemExit('continuous diagnostic unexpectedly became formal pass/fail')
+          if boundary.get('modelRetuningAuthorized') is not False or boundary.get('pandoraHoldoutOpened') is not False:
+              raise SystemExit('continuous diagnostic crossed retuning/holdout boundary')
+          failed = [p for p in data.get('pairs', []) if p.get('status') == 'CONTINUOUS_AOD_CERTIFICATION_FAILED']
+          if rc == 0 and failed:
+              raise SystemExit('certifier exited 0 while reporting failed continuous certification')
+          if rc == 2 and not failed:
+              raise SystemExit('certifier exited 2 without an explicit failed certification record')
+          for pair in failed:
+              cert = pair.get('certification') or {}
+              if cert.get('certified') is not False or not cert.get('failures'):
+                  raise SystemExit('failed certification record lacks explicit numerical failure evidence')
+          print(json.dumps({
+              'certifierExitCode': rc,
+              'certifiedEvaluatedPairCount': data.get('certifiedEvaluatedPairCount'),
+              'failedCertificationPairCount': len(failed),
+              'diagnosticClassificationAccepted': True,
+          }, indent=2, sort_keys=True))
+          PY
           sha256sum KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json > KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.sha256
           cat KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.sha256
+          echo "certifier_exit_code=$rc" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable shape diagnostics
         if: always()

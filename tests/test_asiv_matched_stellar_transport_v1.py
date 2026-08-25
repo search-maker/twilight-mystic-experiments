@@ -105,6 +105,41 @@ class AsivMatchedStellarTransportV1Tests(unittest.TestCase):
         self.assertFalse(pre["sequencing"]["scientificExecutionAuthorizedByThisFile"])
         self.assertFalse(pre["sequencing"]["solverExecutionAuthorized"])
 
+    def test_exact_asiv_runtime_identity_is_frozen_in_candidate_and_precontract(self):
+        mod = load_candidate()
+        payload = mod.build_prefrozen_manifest()
+        pre = json.loads(PRECONTRACT.read_text(encoding="utf-8"))
+        expected = {
+            "runtimeLockPath": "experiments/mystic-batch-v1/runtime-lock.micromamba.json",
+            "runtimeLockGitBlobSha1": "8573f62829371a0eb866976a5062ea61dc0767b1",
+            "runtimeLockRawSha256": "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5",
+            "exactPackageSpec": "rubin-libradtran=2.0.6=py312pl5321he9373c2_1",
+            "uvspecSha256": "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3",
+            "uvspecHelpSha256": "868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548",
+            "baseDataTreeSha256": "ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7",
+            "augmentedDataTreeSha256": "5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80",
+            "officialOptpropArchiveSha256": "11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e",
+            "atmosphereSha256": "dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5",
+        }
+        for key, value in expected.items():
+            self.assertEqual(payload["runtimeIdentity"][key], value)
+            self.assertEqual(pre["runtimeIdentity"][key], value)
+        self.assertTrue(payload["runtimeIdentity"]["verificationRequiredBeforeAnyFutureSolverExecution"])
+        self.assertTrue(pre["runtimeIdentity"]["verificationRequiredBeforeAnyFutureSolverExecution"])
+        self.assertFalse(pre["runtimeIdentity"]["approximatelyEquivalentRuntimeAllowed"])
+        self.assertTrue(pre["runtimeIdentity"]["inheritExactlyFromAsivExecutionContract"])
+        self.assertEqual(
+            payload["sourceBindings"]["asivExecutionContractGitBlobSha1"],
+            "a2c4ebac5be8daf096ca3b543fd2f994ec4146a1",
+        )
+        self.assertEqual(
+            pre["sourceBindings"]["exactAsivExecutionContract"],
+            {
+                "path": "experiments/aerosol-scenario-interpolation-validation-v1/execution-contract.review.json",
+                "gitBlobSha1": "a2c4ebac5be8daf096ca3b543fd2f994ec4146a1",
+            },
+        )
+
     def test_rendered_non_native_input_matches_direct_transport_contract(self):
         mod = load_candidate()
         with tempfile.TemporaryDirectory() as tmp:

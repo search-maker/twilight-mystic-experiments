@@ -35,25 +35,23 @@ def signed_interval_miss(value: float, lo: float, hi: float) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--absolute-result", type=Path, required=True)
     parser.add_argument("--base-runtime", type=Path, required=True)
     parser.add_argument("--asiv-runtime", type=Path, required=True)
+    parser.add_argument("--support-evaluator", type=Path, required=True)
     parser.add_argument("--extrema-evaluator", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
     dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
-    absolute = json.loads(args.absolute_result.read_text(encoding="utf-8"))
     if dataset["selection"]["rowCount"] != 48 or len(dataset["rows"]) != 48:
         raise ValueError("frozen Koomen benchmark cardinality drift")
-    if absolute.get("benchmarkId") != "koomen-1952-maryland-photopic-48-v1":
-        raise ValueError("absolute benchmark result identity drift")
 
+    support_mod = load_module(args.support_evaluator, "frozen_support_for_shape_grid")
     extrema = load_module(args.extrema_evaluator, "frozen_extrema_for_shape_grid")
+    base_for_support = support_mod.load_bound_runtime(args.base_runtime)
     base = extrema.load_base_runtime(args.base_runtime)
     asiv = extrema.load_asiv_runtime(args.asiv_runtime)
 
-    result_rows = {row["cellId"]: row for row in absolute["rows"]}
     by_key = {}
     for row in dataset["rows"]:
         key = (float(row["relativeAzimuthDeg"]), float(row["targetAltitudeDeg"]))
@@ -69,47 +67,61 @@ def main() -> int:
             continue
         row3 = pair[3]
         row6 = pair[6]
-        abs3 = result_rows[row3["cellId"]]
-        abs6 = result_rows[row6["cellId"]]
+        elev = float(row3["observerElevationM"])
+        if float(row6["observerElevationM"]) != elev:
+            raise ValueError("matched Koomen pair elevation drift")
         l3 = float(row3["observedPhotopicLuminanceCdM2"])
         l6 = float(row6["observedPhotopicLuminanceCdM2"])
         observed = math.log(l6 / l3)
+
+        support3 = support_mod.exact_max_nearest_support_distance(
+            support_coordinates=base_for_support["supportCoordinates"],
+            sun_depression_deg=3.0,
+            target_altitude_deg=alt,
+            relative_azimuth_deg=az,
+            observer_elevation_m=elev,
+            aod550_min=AOD_MIN,
+            aod550_max=AOD_MAX,
+        )
+        support6 = support_mod.exact_max_nearest_support_distance(
+            support_coordinates=base_for_support["supportCoordinates"],
+            sun_depression_deg=6.0,
+            target_altitude_deg=alt,
+            relative_azimuth_deg=az,
+            observer_elevation_m=elev,
+            aod550_min=AOD_MIN,
+            aod550_max=AOD_MAX,
+        )
+
         rec = {
             "relativeAzimuthDeg": az,
             "targetAltitudeDeg": alt,
-            "observerElevationM": float(row3["observerElevationM"]),
+            "observerElevationM": elev,
             "observedLogL6OverL3": observed,
             "observedFactorL3OverL6": l3 / l6,
             "d3CellId": row3["cellId"],
             "d6CellId": row6["cellId"],
+            "d3Support": support3,
+            "d6Support": support6,
         }
-        support3 = bool(abs3.get("support", {}).get("supportedAcrossEntireInterval"))
-        support6 = bool(abs6.get("support", {}).get("supportedAcrossEntireInterval"))
-        if not (support3 and support6):
+        if not (support3["supportedAcrossEntireInterval"] and support6["supportedAcrossEntireInterval"]):
             rec["status"] = "PAIR_UNSUPPORTED_ACROSS_FULL_AOD_INTERVAL"
             pairs.append(rec)
             continue
 
-        scenario_ranges = {}
-        all_values = []
-        for scenario in SCENARIOS:
-            values = []
-            for aod in aod_grid:
-                p3 = extrema._point_prediction(
-                    base, asiv,
-                    3.0, alt, az, float(row3["observerElevationM"]), aod,
-                )
-                p6 = extrema._point_prediction(
-                    base, asiv,
-                    6.0, alt, az, float(row6["observerElevationM"]), aod,
-                )
-                value = float(p6[scenario][0]) - float(p3[scenario][0])
-                values.append(value)
-                all_values.append(value)
-            scenario_ranges[scenario] = [min(values), max(values)]
+        values_by_scenario = {scenario: [] for scenario in SCENARIOS}
+        for aod in aod_grid:
+            p3 = extrema._point_prediction(base, asiv, 3.0, alt, az, elev, aod)
+            p6 = extrema._point_prediction(base, asiv, 6.0, alt, az, elev, aod)
+            for scenario in SCENARIOS:
+                values_by_scenario[scenario].append(float(p6[scenario][0]) - float(p3[scenario][0]))
 
-        lo = min(all_values)
-        hi = max(all_values)
+        scenario_ranges = {
+            scenario: [min(values), max(values)]
+            for scenario, values in values_by_scenario.items()
+        }
+        lo = min(bounds[0] for bounds in scenario_ranges.values())
+        hi = max(bounds[1] for bounds in scenario_ranges.values())
         miss = signed_interval_miss(observed, lo, hi)
         rec.update({
             "status": "DENSE_GRID_SAME_AOD_SCENARIO_DIAGNOSTIC_EVALUATED",

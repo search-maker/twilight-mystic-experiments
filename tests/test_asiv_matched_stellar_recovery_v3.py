@@ -7,8 +7,12 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "review/asiv-matched-stellar-transport-v1/recovery-v3/read_only_gh_api_retry_v3.py"
-EVIDENCE = ROOT / "review/asiv-matched-stellar-transport-v1/recovery-v3/RUN_32868735547_PRE_SOLVER_FAILURE.review.json"
+BASE = ROOT / "review/asiv-matched-stellar-transport-v1/recovery-v3"
+HELPER = BASE / "read_only_gh_api_retry_v3.py"
+EVIDENCE = BASE / "RUN_32868735547_PRE_SOLVER_FAILURE.review.json"
+CONTRACT = BASE / "RECOVERY_CONTROL_CONTRACT.review.json"
+SCIENCE = BASE / "science-workflow-v3.yml.review"
+AUTH_REVIEW = BASE / "authorization-review-workflow-v3.yml.review"
 
 
 def load_helper():
@@ -85,6 +89,54 @@ class RecoveryV3ReadOnlyApiTests(unittest.TestCase):
     def test_transient_status_set_is_frozen(self):
         mod = load_helper()
         self.assertEqual(mod.TRANSIENT_HTTP_STATUSES, {502, 503, 504})
+
+    def test_control_contract_preserves_science_universe_and_gates(self):
+        row = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(row["recoveryVersion"], 3)
+        self.assertEqual([x["runId"] for x in row["priorFailedRuns"]], [32848973816, 32868735547])
+        retry = row["readOnlyApiRetryPolicy"]
+        self.assertTrue(retry["readOnlyGetOnly"])
+        self.assertEqual(retry["maxAttempts"], 3)
+        self.assertEqual(retry["retryHttpStatuses"], [502, 503, 504])
+        self.assertFalse(retry["githubJobRerunPermitted"])
+        self.assertFalse(retry["solverRetryPermitted"])
+        self.assertFalse(retry["solverResumePermitted"])
+        universe = row["caseUniverse"]
+        self.assertEqual(universe["trainingSpectraTotal"], 2700)
+        self.assertEqual(universe["validationAtmosphericSpectraTotal"], 768)
+        self.assertEqual(universe["validationJohnsonVComparisonsTotal"], 2304)
+        self.assertEqual(universe["totalCaseCount"], 3468)
+        self.assertEqual(universe["totalShardCount"], 99)
+        gates = row["acceptanceGates"]
+        self.assertEqual(gates["perFamilyMaxAbsDeltaAvMag"], 0.025)
+        self.assertEqual(gates["perFamilyRmsDeltaAvMag"], 0.01)
+        self.assertTrue(gates["everyFamilyMustPassSeparately"])
+        self.assertFalse(gates["postResultThresholdRelaxationPermitted"])
+        self.assertFalse(gates["postResultKnotRetuningPermitted"])
+        self.assertFalse(gates["postResultInterpolationRetuningPermitted"])
+
+    def test_science_candidate_routes_github_api_reads_only_through_helper(self):
+        text = SCIENCE.read_text(encoding="utf-8")
+        self.assertNotIn("gh api ", text)
+        self.assertIn("read_only_gh_api_retry_v3.py", text)
+        self.assertIn("Build exact frozen 99-shard matrix", text)
+        self.assertIn("Execute exactly one frozen shard with no retry or resume", text)
+        self.assertIn("totalCaseCount']!=3468", text)
+        self.assertIn("exactly 99 unique complete Recovery v3 shard artifacts required", text)
+        self.assertIn("artifact digest mismatch", text)
+        self.assertIn("micromamba_list_parser_v2.py", text)
+        self.assertNotIn("rerun-failed-jobs", text)
+        self.assertNotIn("rerun_workflow", text)
+
+    def test_authorization_review_candidate_is_nonexecuting(self):
+        text = AUTH_REVIEW.read_text(encoding="utf-8")
+        self.assertIn("AUTHORIZATION_REVIEW_PASS_NO_DISPATCH", text)
+        self.assertIn("scientificExecutionPerformed':False", text)
+        self.assertIn("solverExecutionPerformed':False", text)
+        self.assertIn("dispatchPerformed':False", text)
+        self.assertNotIn("uvspec", text)
+        self.assertNotIn("execute_shard_strict", text)
+        self.assertNotIn("workflow_dispatch", text)
 
 
 if __name__ == "__main__":

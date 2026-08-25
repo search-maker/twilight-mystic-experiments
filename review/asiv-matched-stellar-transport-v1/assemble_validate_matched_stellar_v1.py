@@ -328,11 +328,13 @@ def band_extinction_mag(*, wavelength_nm: list[float], flux_relative: list[float
         unattenuated.append(s * r)
         attenuated.append(s * r * t)
     denominator = _trapezoid_integral(wavelength_nm, unattenuated)
+    if not denominator > 0:
+        raise ValidationRefusal("stellar spectrum x band response has zero integral")
     numerator = _trapezoid_integral(wavelength_nm, attenuated)
-    if not (denominator > 0 and numerator > 0 and numerator <= denominator * (1 + 1e-13)):
-        raise ValidationRefusal("invalid Johnson-V integrated transmission")
-    fraction = min(1.0, numerator / denominator)
-    return -2.5 * math.log10(fraction)
+    transmission_fraction = numerator / denominator
+    if not (transmission_fraction > 0 and transmission_fraction <= 1):
+        raise ValidationRefusal(f"band transmission must be in (0,1]; got {transmission_fraction}")
+    return -2.5 * math.log10(transmission_fraction)
 
 
 def validate_family_runtimes(*, manifest: dict[str, Any], runtimes: dict[str, dict[str, Any]], validation: dict[tuple[str, float, float, float], dict[str, Any]], wavelength_nm: list[float], band_response: list[float], representatives: list[dict[str, Any]]) -> dict[str, Any]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import importlib.util
 import json
 import math
@@ -29,6 +30,90 @@ def signed_interval_miss(value: float, lo: float, hi: float) -> float:
     return value - hi
 
 
+def evaluate_row(task):
+    index, row, paths = task
+    support_mod = load_module(Path(paths["supportEvaluator"]), f"frozen_exact_aod_support_{index}")
+    extrema_mod = load_module(Path(paths["extremaEvaluator"]), f"frozen_certified_aod_extrema_{index}")
+    base_for_support = support_mod.load_bound_runtime(Path(paths["baseRuntime"]))
+    base = extrema_mod.load_base_runtime(Path(paths["baseRuntime"]))
+    asiv = extrema_mod.load_asiv_runtime(Path(paths["asivRuntime"]))
+
+    kwargs = dict(
+        sun_depression_deg=float(row["sunDepressionDeg"]),
+        target_altitude_deg=float(row["targetAltitudeDeg"]),
+        relative_azimuth_deg=float(row["relativeAzimuthDeg"]),
+        observer_elevation_m=float(row["observerElevationM"]),
+        aod550_min=0.05,
+        aod550_max=0.40,
+    )
+    support = support_mod.exact_max_nearest_support_distance(
+        support_coordinates=base_for_support["supportCoordinates"],
+        **kwargs,
+    )
+    record = {
+        "cellId": row["cellId"],
+        "geometry": {
+            "sunDepressionDeg": row["sunDepressionDeg"],
+            "targetAltitudeDeg": row["targetAltitudeDeg"],
+            "relativeAzimuthDeg": row["relativeAzimuthDeg"],
+            "observerElevationM": row["observerElevationM"],
+        },
+        "observedPhotopicLuminanceCdM2": row["observedPhotopicLuminanceCdM2"],
+        "observedLogPhotopic": math.log(float(row["observedPhotopicLuminanceCdM2"])),
+        "support": support,
+    }
+    if not support["supportedAcrossEntireInterval"]:
+        record["status"] = "UNSUPPORTED_ACROSS_FULL_AOD_INTERVAL"
+        return index, record
+
+    extrema = extrema_mod.certified_extrema(
+        base,
+        asiv,
+        sun=float(row["sunDepressionDeg"]),
+        alt=float(row["targetAltitudeDeg"]),
+        raz=float(row["relativeAzimuthDeg"]),
+        elev=float(row["observerElevationM"]),
+        aod_lo=0.05,
+        aod_hi=0.40,
+        log_tolerance=1e-4,
+        max_depth=50,
+        max_nodes=250000,
+    )
+    if not extrema["certified"]:
+        record["status"] = "EXTREMA_NOT_CERTIFIED"
+        record["extrema"] = extrema
+        return index, record
+
+    scenario_results = extrema["scenarios"]
+    union_lo = min(scenario_results[scenario]["photopic"]["outerMin"] for scenario in SCENARIOS)
+    union_hi = max(scenario_results[scenario]["photopic"]["outerMax"] for scenario in SCENARIOS)
+    observed_log = record["observedLogPhotopic"]
+    miss = signed_interval_miss(observed_log, union_lo, union_hi)
+    record.update({
+        "status": "CERTIFIED_FULL_AOD_SCENARIO_ENVELOPE_EVALUATED",
+        "modelPhotopicUnionLogOuter": [union_lo, union_hi],
+        "modelPhotopicUnionCdM2Outer": [math.exp(union_lo), math.exp(union_hi)],
+        "signedSetMissLog": miss,
+        "absoluteSetMissLog": abs(miss),
+        "absoluteSetMissMagEquivalent": abs(miss) * (2.5 / math.log(10.0)),
+        "scenarioPhotopicOuter": {
+            scenario: [
+                scenario_results[scenario]["photopic"]["outerMin"],
+                scenario_results[scenario]["photopic"]["outerMax"],
+            ]
+            for scenario in SCENARIOS
+        },
+        "certification": {
+            "algorithmId": extrema["algorithmId"],
+            "logTolerance": extrema["logTolerance"],
+            "partitionBreakpoints": extrema["partitionBreakpoints"],
+            "branchNodes": extrema["branchNodes"],
+            "maximumDepth": extrema["maximumDepth"],
+        },
+    })
+    return index, record
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, required=True)
@@ -37,101 +122,36 @@ def main() -> int:
     parser.add_argument("--support-evaluator", type=Path, required=True)
     parser.add_argument("--extrema-evaluator", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
 
-    support_mod = load_module(args.support_evaluator, "frozen_exact_aod_support")
-    extrema_mod = load_module(args.extrema_evaluator, "frozen_certified_aod_extrema")
-    base_for_support = support_mod.load_bound_runtime(args.base_runtime)
-    base = extrema_mod.load_base_runtime(args.base_runtime)
-    asiv = extrema_mod.load_asiv_runtime(args.asiv_runtime)
     dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
-
     if dataset["selection"]["rowCount"] != 48 or len(dataset["rows"]) != 48:
         raise ValueError("frozen Koomen benchmark cardinality drift")
+    if args.workers < 1 or args.workers > 8:
+        raise ValueError("workers must be between 1 and 8; parallelism changes execution speed only")
 
-    rows_out = []
-    supported_count = 0
-    outside_count = 0
-    abs_misses = []
+    paths = {
+        "baseRuntime": str(args.base_runtime),
+        "asivRuntime": str(args.asiv_runtime),
+        "supportEvaluator": str(args.support_evaluator),
+        "extremaEvaluator": str(args.extrema_evaluator),
+    }
+    tasks = [(i, row, paths) for i, row in enumerate(dataset["rows"])]
+    results_by_index = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(evaluate_row, task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            index, record = future.result()
+            results_by_index[index] = record
+            print(f"completed {index + 1:02d}/48 {record['cellId']} {record['status']}", flush=True)
 
-    for row in dataset["rows"]:
-        kwargs = dict(
-            sun_depression_deg=float(row["sunDepressionDeg"]),
-            target_altitude_deg=float(row["targetAltitudeDeg"]),
-            relative_azimuth_deg=float(row["relativeAzimuthDeg"]),
-            observer_elevation_m=float(row["observerElevationM"]),
-            aod550_min=0.05,
-            aod550_max=0.40,
-        )
-        support = support_mod.exact_max_nearest_support_distance(
-            support_coordinates=base_for_support["supportCoordinates"],
-            **kwargs,
-        )
-        record = {
-            "cellId": row["cellId"],
-            "geometry": {
-                "sunDepressionDeg": row["sunDepressionDeg"],
-                "targetAltitudeDeg": row["targetAltitudeDeg"],
-                "relativeAzimuthDeg": row["relativeAzimuthDeg"],
-                "observerElevationM": row["observerElevationM"],
-            },
-            "observedPhotopicLuminanceCdM2": row["observedPhotopicLuminanceCdM2"],
-            "observedLogPhotopic": math.log(float(row["observedPhotopicLuminanceCdM2"])),
-            "support": support,
-        }
-        if not support["supportedAcrossEntireInterval"]:
-            record["status"] = "UNSUPPORTED_ACROSS_FULL_AOD_INTERVAL"
-            rows_out.append(record)
-            continue
-
-        supported_count += 1
-        extrema = extrema_mod.certified_extrema(
-            base,
-            asiv,
-            sun=float(row["sunDepressionDeg"]),
-            alt=float(row["targetAltitudeDeg"]),
-            raz=float(row["relativeAzimuthDeg"]),
-            elev=float(row["observerElevationM"]),
-            aod_lo=0.05,
-            aod_hi=0.40,
-            log_tolerance=1e-4,
-            max_depth=50,
-            max_nodes=250000,
-        )
-        if not extrema["certified"]:
-            record["status"] = "EXTREMA_NOT_CERTIFIED"
-            record["extrema"] = extrema
-            rows_out.append(record)
-            continue
-
-        union_lo = min(extrema[scenario]["photopic"]["outerMin"] for scenario in SCENARIOS)
-        union_hi = max(extrema[scenario]["photopic"]["outerMax"] for scenario in SCENARIOS)
-        observed_log = record["observedLogPhotopic"]
-        miss = signed_interval_miss(observed_log, union_lo, union_hi)
-        if miss != 0:
-            outside_count += 1
-        abs_misses.append(abs(miss))
-        record.update({
-            "status": "CERTIFIED_FULL_AOD_SCENARIO_ENVELOPE_EVALUATED",
-            "modelPhotopicUnionLogOuter": [union_lo, union_hi],
-            "modelPhotopicUnionCdM2Outer": [math.exp(union_lo), math.exp(union_hi)],
-            "signedSetMissLog": miss,
-            "absoluteSetMissLog": abs(miss),
-            "absoluteSetMissMagEquivalent": abs(miss) * (2.5 / math.log(10.0)),
-            "scenarioPhotopicOuter": {
-                scenario: [
-                    extrema[scenario]["photopic"]["outerMin"],
-                    extrema[scenario]["photopic"]["outerMax"],
-                ]
-                for scenario in SCENARIOS
-            },
-            "certification": {
-                "algorithmId": extrema["algorithmId"],
-                "logTolerance": extrema["logTolerance"],
-                "partitionBreakpoints": extrema["partitionBreakpoints"],
-            },
-        })
-        rows_out.append(record)
+    rows_out = [results_by_index[i] for i in range(48)]
+    supported_count = sum(row["status"] != "UNSUPPORTED_ACROSS_FULL_AOD_INTERVAL" for row in rows_out)
+    certified_rows = [row for row in rows_out if row["status"] == "CERTIFIED_FULL_AOD_SCENARIO_ENVELOPE_EVALUATED"]
+    uncertified_count = sum(row["status"] == "EXTREMA_NOT_CERTIFIED" for row in rows_out)
+    outside_count = sum(row["signedSetMissLog"] != 0 for row in certified_rows)
+    abs_misses = [row["absoluteSetMissLog"] for row in certified_rows]
 
     by_key = {}
     for row in dataset["rows"]:
@@ -159,10 +179,16 @@ def main() -> int:
         "scenarioSet": list(SCENARIOS),
         "rowCount": len(dataset["rows"]),
         "supportedAcrossEntireAodIntervalCount": supported_count,
+        "certifiedEnvelopeEvaluatedCount": len(certified_rows),
+        "extremaUncertifiedCount": uncertified_count,
         "certifiedEnvelopeOutsideCount": outside_count,
-        "certifiedEnvelopeInsideOrBoundaryCount": supported_count - outside_count,
+        "certifiedEnvelopeInsideOrBoundaryCount": len(certified_rows) - outside_count,
         "maximumAbsoluteSetMissLog": max(abs_misses) if abs_misses else None,
         "maximumAbsoluteSetMissMagEquivalent": (max(abs_misses) * (2.5 / math.log(10.0))) if abs_misses else None,
+        "executionParallelism": {
+            "workers": args.workers,
+            "note": "Parallelism changes execution scheduling only; every cell uses the same frozen support/extrema algorithm and tolerance."
+        },
         "rows": rows_out,
         "observedTwilightShapePairs": shape,
         "interpretationBoundary": {
@@ -178,6 +204,8 @@ def main() -> int:
         "benchmarkId",
         "rowCount",
         "supportedAcrossEntireAodIntervalCount",
+        "certifiedEnvelopeEvaluatedCount",
+        "extremaUncertifiedCount",
         "certifiedEnvelopeOutsideCount",
         "certifiedEnvelopeInsideOrBoundaryCount",
         "maximumAbsoluteSetMissLog",

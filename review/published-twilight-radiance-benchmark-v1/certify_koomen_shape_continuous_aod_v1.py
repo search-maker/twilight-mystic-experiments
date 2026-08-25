@@ -31,6 +31,81 @@ def signed_interval_miss(value: float, lo: float, hi: float) -> float:
     return value - lo if value < lo else value - hi
 
 
+def _idw_bounds_multi(extrema, rows, coord_key, target_key, fixed, x_index,
+                      selected, lo, hi, power, target_indices):
+    """Exact scalar-IDW interval arithmetic reused across target channels.
+
+    The frozen scalar evaluator recomputes geometry, weight intervals and the
+    denominator independently for every target channel. Those quantities do
+    not depend on target values. This function performs those identical
+    operations once while preserving the original selected-row order and the
+    exact outward-rounded numerator/denominator operation order for each
+    requested target index.
+    """
+    target_indices = tuple(target_indices)
+    params = []
+    singular = []
+    for index in selected:
+        row = rows[index]
+        coord = row[coord_key]
+        constant = sum((fixed[j] - coord[j]) ** 2 for j in range(len(fixed)))
+        center = coord[x_index]
+        targets = {target_index: float(row[target_key][target_index]) for target_index in target_indices}
+        params.append((index, constant, center, targets))
+        if constant == 0.0 and lo <= center <= hi:
+            singular.append((index, constant, center, targets))
+
+    if len(singular) > 1:
+        raise ArithmeticError("multiple exact-hit IDW singularities in selected set")
+
+    if singular:
+        singular_index, _, singular_center, singular_targets = singular[0]
+        u_max = max(abs(lo - singular_center), abs(hi - singular_center))
+        numerators = {
+            target_index: extrema.Interval(singular_targets[target_index], singular_targets[target_index])
+            for target_index in target_indices
+        }
+        denominator = extrema.Interval(1.0, 1.0)
+        for index, constant, center, targets in params:
+            if index == singular_index:
+                continue
+            qlo, _ = extrema._q_range(constant, center, lo, hi)
+            if qlo <= 0:
+                raise ArithmeticError("secondary singularity")
+            if power == 1:
+                ratio_hi = u_max / math.sqrt(qlo)
+            elif power == 2:
+                ratio_hi = (u_max * u_max) / qlo
+            else:
+                raise ValueError("unsupported IDW power")
+            ratio = extrema.Interval(0.0, extrema._up(ratio_hi))
+            for target_index in target_indices:
+                numerators[target_index] = numerators[target_index].add(
+                    ratio.mul_const(targets[target_index])
+                )
+            denominator = denominator.add(ratio)
+        return {
+            target_index: numerators[target_index].div_pos(denominator)
+            for target_index in target_indices
+        }
+
+    numerators = {target_index: extrema.Interval(0.0, 0.0) for target_index in target_indices}
+    denominator = extrema.Interval(0.0, 0.0)
+    for _, constant, center, targets in params:
+        weight = extrema._weight_interval(constant, center, lo, hi, power)
+        if weight is None:
+            raise ArithmeticError("unhandled singularity")
+        for target_index in target_indices:
+            numerators[target_index] = numerators[target_index].add(
+                weight.mul_const(targets[target_index])
+            )
+        denominator = denominator.add(weight)
+    return {
+        target_index: numerators[target_index].div_pos(denominator)
+        for target_index in target_indices
+    }
+
+
 def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
                  aod_lo: float, aod_hi: float, log_tolerance: float,
                  max_depth: int, max_nodes: int) -> dict:
@@ -84,13 +159,7 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
         absorb_point(x)
 
     def all_bounds(fixed, sun: float, lo: float, hi: float) -> dict:
-        """Return all scenario bounds while reusing their identical native work.
-
-        This is algebraically identical to the former per-scenario total_bound:
-        nearest-neighbor selection, native polynomial/residual intervals, OPAC
-        contrast intervals, rounding helpers, and subdivision semantics are
-        unchanged. Only scenario-independent calculations are performed once.
-        """
+        """Return all scenario bounds while reusing scenario-independent work."""
         midpoint = (lo + hi) / 2.0
         base_selected = extrema._neighbors(extrema._base_query(fixed, midpoint), base_rows, 6, "coord", "id")
         asiv_selected = extrema._neighbors(extrema._asiv_query(fixed, midpoint), asiv["training"], 8, "coord", "cellId")
@@ -98,13 +167,14 @@ def certify_pair(extrema, base, asiv, *, alt: float, az: float, elev: float,
         polynomial = extrema._primary_poly_bound(base, sun, alt, az, elev, aod_segment_lo, aod_segment_hi, 0)
         residual = extrema._idw_bound(base_rows, "coord", "target", fixed, 4, base_selected, lo, hi, 1, 0)
         native = polynomial.add(residual)
+        contrast_target_indices = tuple(index * 3 for index in range(len(CONTRASTS)))
+        contrasts = _idw_bounds_multi(
+            extrema, asiv["training"], "coord", "target", fixed[:3], 3,
+            asiv_selected, lo, hi, 2, contrast_target_indices,
+        )
         bounds = {"native": native}
         for contrast_index, scenario in enumerate(CONTRASTS):
-            contrast = extrema._idw_bound(
-                asiv["training"], "coord", "target", fixed[:3], 3, asiv_selected,
-                lo, hi, 2, contrast_index * 3,
-            )
-            bounds[scenario] = native.add(contrast)
+            bounds[scenario] = native.add(contrasts[contrast_index * 3])
         return bounds
 
     def recurse(lo: float, hi: float, depth: int) -> None:

@@ -19,7 +19,6 @@ V2_AUTH_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-authorization-re
 V2_SCIENCE_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-science-recovery-v2.yml"
 V1_AUTH_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-authorization-review-v1.yml"
 V1_SCIENCE_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-science-v1.yml"
-AUTHORIZATION = ROOT / "review/asiv-matched-stellar-transport-v1/authorization-recovery-v3.json"
 ACTIVATION_REVIEW = ROOT / ".github/workflows/asiv-matched-stellar-recovery-workflow-activation-review-v3.yml"
 
 EXPECTED_CONTROL_BLOB = "1c9ba7e3f30388835bd87d24e3e2c7d03c050126"
@@ -78,8 +77,11 @@ class RecoveryV3WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(V1_AUTH_ACTIVE), EXPECTED_V1_AUTH_BLOB)
         self.assertEqual(git_blob_sha1(V1_SCIENCE_ACTIVE), EXPECTED_V1_SCIENCE_BLOB)
 
-    def test_alignment_creates_no_authorization_or_dispatch(self):
-        self.assertFalse(AUTHORIZATION.exists())
+    def test_alignment_contract_itself_creates_no_authorization_or_dispatch(self):
+        # This test remains valid after the later, separate authorization stage.
+        # Absence of authorization during activation is enforced by the activation-review
+        # workflow itself; the durable invariant here is that the activation contract
+        # never grants authorization or dispatch authority.
         activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
         for key in (
             "scientificExecutionAuthorized", "solverExecutionAuthorized", "authorizationFileCreated",

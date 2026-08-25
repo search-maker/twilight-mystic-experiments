@@ -10,7 +10,8 @@ Scientific boundary:
 - no MYSTIC execution;
 - no protected holdout access;
 - no starsvisibility mutation;
-- no post-result retuning.
+- no post-result retuning;
+- no native MYSTIC-STATE-0081 rebuild or render path.
 """
 from __future__ import annotations
 
@@ -37,13 +38,14 @@ AOD_DOMAIN = (0.05, 0.40)
 ALTITUDE_DOMAIN_DEG = (5.0, 80.0)
 ELEVATION_DOMAIN_M = (0.0, 2500.0)
 
+NATIVE_STATE = "native-rural-ss"
 NON_NATIVE_FAMILIES = (
     "opac-continental-average",
     "opac-maritime-clean",
     "opac-desert",
     "opac-desert-spheroids",
 )
-ALL_ASIV_STATES = ("native-rural-ss", *NON_NATIVE_FAMILIES)
+ALL_ASIV_STATES = (NATIVE_STATE, *NON_NATIVE_FAMILIES)
 OPAC_SPECIES_FILE = {
     "opac-continental-average": "continental_average",
     "opac-maritime-clean": "maritime_clean",
@@ -85,13 +87,13 @@ def git_blob_sha1(path: Path) -> str:
 
 
 def validate_case(*, family: str, target_altitude_deg: float, aod550: float,
-                  observer_elevation_m: float, allow_native_render: bool = False) -> tuple[str, float, float, float]:
-    if family not in ALL_ASIV_STATES:
-        raise ValueError(f"unknown ASIV aerosol family: {family}")
-    if family == "native-rural-ss" and not allow_native_render:
+                  observer_elevation_m: float) -> tuple[str, float, float, float]:
+    if family == NATIVE_STATE:
         raise CandidateRefusal(
-            "native-rural-ss is the frozen MYSTIC-STATE-0081 comparator and is not rebuilt by this extension"
+            "native-rural-ss is the frozen MYSTIC-STATE-0081 comparator and cannot be rendered or rebuilt by this extension"
         )
+    if family not in NON_NATIVE_FAMILIES:
+        raise ValueError(f"unknown non-native ASIV aerosol family: {family}")
     altitude = finite("targetAltitudeDeg", target_altitude_deg)
     aod = finite("aod550", aod550)
     elevation = finite("observerElevationM", observer_elevation_m)
@@ -136,19 +138,15 @@ def elevated_site_grid_ascending(atmosphere_file: Path, observer_elevation_m: fl
 
 
 def aerosol_block(family: str, aod550: float) -> list[str]:
+    if family == NATIVE_STATE:
+        raise CandidateRefusal(
+            "native-rural-ss directive provenance is retained in the precontract, but native stellar rendering is forbidden"
+        )
+    if family not in OPAC_SPECIES_FILE:
+        raise ValueError(f"unknown non-native ASIV aerosol family: {family}")
     aod = finite("aod550", aod550)
     if not AOD_DOMAIN[0] <= aod <= AOD_DOMAIN[1]:
         raise ValueError(f"aod550 outside frozen domain {AOD_DOMAIN}")
-    if family == "native-rural-ss":
-        return [
-            "aerosol_default",
-            "aerosol_haze 1",
-            "aerosol_vulcan 1",
-            "aerosol_season 1",
-            f"aerosol_set_tau_at_wvl 550 {aod:.8f}",
-        ]
-    if family not in OPAC_SPECIES_FILE:
-        raise ValueError(f"unknown ASIV aerosol family: {family}")
     return [
         "aerosol_default",
         "aerosol_species_library OPAC",
@@ -159,14 +157,12 @@ def aerosol_block(family: str, aod550: float) -> list[str]:
 
 def render_uvspec_input(*, family: str, data_dir: Path, atmosphere_file: Path,
                         wavelength_grid_file: Path, target_altitude_deg: float,
-                        aod550: float, observer_elevation_m: float,
-                        allow_native_render: bool = False) -> str:
+                        aod550: float, observer_elevation_m: float) -> str:
     family, altitude, aod, elevation = validate_case(
         family=family,
         target_altitude_deg=target_altitude_deg,
         aod550=aod550,
         observer_elevation_m=observer_elevation_m,
-        allow_native_render=allow_native_render,
     )
     grid = elevated_site_grid_ascending(atmosphere_file, elevation)
     lines = [
@@ -210,7 +206,7 @@ def render_uvspec_input(*, family: str, data_dir: Path, atmosphere_file: Path,
 
 def _case_id(prefix: str, family: str, altitude: float, elevation: float, aod: float) -> str:
     def enc(value: float) -> str:
-        return (f"{value:.9f}".rstrip("0").rstrip(".").replace("-", "m").replace(".", "p"))
+        return f"{value:.9f}".rstrip("0").rstrip(".").replace("-", "m").replace(".", "p")
     return f"{prefix}__{family}__h{enc(altitude)}__z{enc(elevation)}__aod{enc(aod)}"
 
 
@@ -277,9 +273,10 @@ def build_prefrozen_manifest() -> dict:
         },
         "families": list(NON_NATIVE_FAMILIES),
         "nativeComparator": {
-            "stateId": "native-rural-ss",
+            "stateId": NATIVE_STATE,
             "representation": "MYSTIC-STATE-0081 stellar-transport-v2",
             "rebuildAuthorized": False,
+            "renderPathPresent": False,
         },
         "training": {
             "caseCount": len(training),
@@ -329,14 +326,13 @@ def main() -> int:
     manifest.add_argument("--output", type=Path)
 
     render = sub.add_parser("render")
-    render.add_argument("--family", choices=ALL_ASIV_STATES, required=True)
+    render.add_argument("--family", choices=NON_NATIVE_FAMILIES, required=True)
     render.add_argument("--target-altitude-deg", type=float, required=True)
     render.add_argument("--observer-elevation-m", type=float, required=True)
     render.add_argument("--aod550", type=float, required=True)
     render.add_argument("--data-dir", type=Path, required=True)
     render.add_argument("--atmosphere-file", type=Path, required=True)
     render.add_argument("--wavelength-grid-file", type=Path, required=True)
-    render.add_argument("--allow-native-render", action="store_true")
     render.add_argument("--output", type=Path)
 
     args = parser.parse_args()
@@ -351,7 +347,6 @@ def main() -> int:
             target_altitude_deg=args.target_altitude_deg,
             observer_elevation_m=args.observer_elevation_m,
             aod550=args.aod550,
-            allow_native_render=args.allow_native_render,
         )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

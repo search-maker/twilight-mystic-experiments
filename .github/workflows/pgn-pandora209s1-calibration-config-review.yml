@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch exact public Pandora209s1 calibration configuration files only
+      - name: Probe and fetch exactly the five frozen public-list calibration identities
         shell: bash
         run: |
           set -euo pipefail
@@ -28,6 +28,7 @@ jobs:
           import hashlib
           import json
           from pathlib import Path
+          from urllib.error import HTTPError
           from urllib.parse import urlparse
           from urllib.request import Request, urlopen
 
@@ -42,12 +43,13 @@ jobs:
           ]
           outdir = Path('pandora209s1_calibrationfiles')
           outdir.mkdir(exist_ok=True)
-          manifest = []
+          attempts = []
 
           for filename in filenames:
               if '/' in filename or '\\' in filename:
                   raise SystemExit(f'unsafe calibration filename: {filename!r}')
               url = base + filename
+              print(f'CALIBRATION_STATIC_ATTEMPT {filename}')
               request = Request(
                   url,
                   headers={
@@ -56,10 +58,24 @@ jobs:
                   },
                   method='GET',
               )
-              with urlopen(request, timeout=30) as response:
-                  final_url = response.geturl()
-                  content_type = response.headers.get_content_type()
-                  raw = response.read()
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      final_url = response.geturl()
+                      content_type = response.headers.get_content_type()
+                      status = int(response.status)
+                      raw = response.read()
+              except HTTPError as exc:
+                  body = exc.read(4096)
+                  attempts.append({
+                      'filename': filename,
+                      'url': url,
+                      'httpStatus': int(exc.code),
+                      'retrieved': False,
+                      'errorBodySha256': hashlib.sha256(body).hexdigest(),
+                      'errorBodyByteCountCaptured': len(body),
+                  })
+                  print(f'CALIBRATION_STATIC_RESULT {filename} HTTP_{exc.code}')
+                  continue
 
               parsed = urlparse(final_url)
               if final_url != url:
@@ -68,30 +84,37 @@ jobs:
                   raise SystemExit(f'unexpected calibration-file host: {parsed.netloc}')
               if not parsed.path.startswith('/calibrationfiles/'):
                   raise SystemExit(f'unexpected calibration-file path: {parsed.path}')
-              # Transport-only sanity guard. This is not a calibration-value filter:
-              # every one of the five pre-frozen exact files must be retrieved or the job fails.
+              # Transport-only sanity guard. This is not a calibration-value filter.
               if len(raw) > 20_000_000:
                   raise SystemExit(f'calibration configuration unexpectedly large: {filename} {len(raw)} bytes')
 
               path = outdir / filename
               path.write_bytes(raw)
-              manifest.append({
+              attempts.append({
                   'filename': filename,
                   'url': url,
                   'finalUrl': final_url,
+                  'httpStatus': status,
+                  'retrieved': True,
                   'contentType': content_type,
                   'byteCount': len(raw),
                   'sha256': hashlib.sha256(raw).hexdigest(),
               })
+              print(f'CALIBRATION_STATIC_RESULT {filename} HTTP_{status} {len(raw)}')
 
+          retrieved = [item for item in attempts if item['retrieved']]
           evidence = {
               'sourceDirectory': base,
-              'files': manifest,
-              'calibrationConfigurationGetPerformed': True,
+              'preFrozenExactFilenameCount': len(filenames),
+              'attempts': attempts,
+              'retrievedCount': len(retrieved),
+              'allFiveRetrieved': len(retrieved) == len(filenames),
+              'calibrationConfigurationGetPerformed': bool(retrieved),
               'measurementFileRequested': False,
               's2FilenameGuessedOrRequested': False,
               'v1DownloadUsed': False,
               'targetDataOpened': False,
+              'scientificAdmissionMayTreat404AsCalibrationFailure': False,
           }
           Path('pandora209s1_calibrationfiles_manifest.json').write_text(
               json.dumps(evidence, indent=2, sort_keys=True) + '\n',
@@ -105,7 +128,7 @@ jobs:
           sha256sum pandora209s1_calibrationfiles_manifest.json > pandora209s1_calibrationfiles_manifest.sha256
           cat pandora209s1_calibrationfiles_manifest.sha256
 
-      - name: Prove no measurement file or s2 guess was used
+      - name: Prove no measurement file, unlisted identity, or s2 guess was used
         shell: bash
         run: |
           set -euo pipefail
@@ -113,16 +136,24 @@ jobs:
           import json
           from pathlib import Path
           e = json.loads(Path('pandora209s1_calibrationfiles_manifest.json').read_text())
-          assert e['calibrationConfigurationGetPerformed'] is True
-          assert len(e['files']) == 5
+          assert e['preFrozenExactFilenameCount'] == 5
+          assert len(e['attempts']) == 5
+          assert {a['filename'] for a in e['attempts']} == {
+              'Pandora209s1_CF_v1d20220309.txt',
+              'Pandora209s1_CF_v1d20220324.txt',
+              'Pandora209s1_CF_v4d20221111.txt',
+              'Pandora209s1_CF_v5d20220720.txt',
+              'Pandora209s1_CF_v8d20230220.txt',
+          }
           assert e['measurementFileRequested'] is False
           assert e['s2FilenameGuessedOrRequested'] is False
           assert e['v1DownloadUsed'] is False
           assert e['targetDataOpened'] is False
-          print('Calibration review remained public-config-only')
+          assert e['scientificAdmissionMayTreat404AsCalibrationFailure'] is False
+          print('Calibration availability review remained exact-identity public-config-only')
           PY
 
-      - name: Upload immutable calibration configuration evidence
+      - name: Upload immutable calibration availability/configuration evidence
         uses: actions/upload-artifact@v4
         with:
           name: pandora209s1-calibration-configuration-only

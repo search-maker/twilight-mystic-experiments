@@ -1,0 +1,248 @@
+name: Published twilight radiance benchmark v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/published-twilight-radiance-benchmark-v1.yml"
+      - "review/published-twilight-radiance-benchmark-v1/**"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  koomen-published-shape-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialize exact frozen runtime and pre-value evaluators
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-inputs
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/validated-v3-primary-runtime-v1.json benchmark-inputs/validated-v3-primary-runtime-v1.json
+          cp review/published-twilight-radiance-benchmark-v1/frozen-runtime/aerosol-scenario-interpolator-runtime-v1.json benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json
+
+          git fetch --no-tags --depth=1 origin 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/exact_aod_interval_support_v1.py > benchmark-inputs/exact_aod_interval_support_v1.py
+          git show 83fa2a8fad83213e2a5ccfa45f0c80d03604c04e:review/empirical-twilight-radiance-source-admission-v1/certified_aod_scenario_extrema_v1.py > benchmark-inputs/certified_aod_scenario_extrema_v1.py
+
+          printf '%s  %s\n' "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4" benchmark-inputs/validated-v3-primary-runtime-v1.json | sha256sum -c -
+          printf '%s  %s\n' "a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060" benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json | sha256sum -c -
+          sha256sum benchmark-inputs/exact_aod_interval_support_v1.py benchmark-inputs/certified_aod_scenario_extrema_v1.py > benchmark-inputs/evaluator-sources.sha256
+
+      - name: Verify published-only frozen shape boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('review/published-twilight-radiance-benchmark-v1')
+          contract = json.loads((root/'BENCHMARK_CONTRACT.review.json').read_text())
+          shape = json.loads((root/'KOOMEN_SHAPE_GRID_PRECONTRACT.review.json').read_text())
+          data = json.loads((root/'KOOMEN_1952_MARYLAND_PHOTOPIC_48.json').read_text())
+          assert contract['source']['publishedValuesAlreadyOpen'] is True
+          assert contract['source']['untouchedHoldout'] is False
+          assert contract['holdoutProtection']['pandoraTargetRadianceMayBeOpened'] is False
+          assert contract['holdoutProtection']['pandoraLevel1DataMayBeOpened'] is False
+          assert contract['holdoutProtection']['pgnV1DownloadMayBeUsed'] is False
+          assert shape['status'] == 'FROZEN_BEFORE_SHAPE_EVALUATION_DIAGNOSTIC_ONLY_NOT_CERTIFIED'
+          assert shape['pairing']['expectedPairCount'] == 24
+          assert shape['pairing']['sameAodRequiredWithinModelPair'] is True
+          assert shape['pairing']['sameAerosolScenarioRequiredWithinModelPair'] is True
+          assert shape['aodGrid'] == {
+              'minimum': 0.05,
+              'maximum': 0.40,
+              'count': 1001,
+              'spacing': 'LINEAR_IN_AOD550_INCLUSIVE_ENDPOINTS',
+              'formula': 'AOD_i = 0.05 + (0.40-0.05)*i/1000 for i=0..1000',
+              'gridFrozenBeforeModelShapeEvaluation': True,
+              'gridMayNotBeRefinedBasedOnObservedMismatch': True,
+          }
+          assert shape['holdoutProtection']['pandoraTargetRadianceMayBeOpened'] is False
+          assert data['selection']['rowCount'] == 48 == len(data['rows'])
+          print('Published-only frozen same-AOD shape boundary verified')
+          PY
+
+      - name: Run frozen same-AOD same-scenario twilight shape grid
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/evaluate_koomen_shape_grid_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/validated-v3-primary-runtime-v1.json \
+            --asiv-runtime benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json \
+            --support-evaluator benchmark-inputs/exact_aod_interval_support_v1.py \
+            --extrema-evaluator benchmark-inputs/certified_aod_scenario_extrema_v1.py \
+            --output KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.json
+          sha256sum KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.json > KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.sha256
+          cat KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.sha256
+
+      - name: Certify and classify same-AOD same-scenario Koomen shape over continuous AOD
+        id: koomen_continuous
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          python review/published-twilight-radiance-benchmark-v1/certify_koomen_shape_continuous_aod_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/validated-v3-primary-runtime-v1.json \
+            --asiv-runtime benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json \
+            --support-evaluator benchmark-inputs/exact_aod_interval_support_v1.py \
+            --extrema-evaluator benchmark-inputs/certified_aod_scenario_extrema_v1.py \
+            --output KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "unexpected certifier execution exit code: $rc" >&2
+            exit "$rc"
+          fi
+          test -s KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json
+          python - "$rc" <<'PY'
+          import json, sys
+          rc = int(sys.argv[1])
+          data = json.load(open('KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json'))
+          if data.get('pairCount') != 24:
+              raise SystemExit('continuous diagnostic pair-count drift')
+          boundary = data.get('interpretationBoundary') or {}
+          if boundary.get('formalPassFailAuthorized') is not False:
+              raise SystemExit('continuous diagnostic unexpectedly became formal pass/fail')
+          if boundary.get('modelRetuningAuthorized') is not False or boundary.get('pandoraHoldoutOpened') is not False:
+              raise SystemExit('continuous diagnostic crossed retuning/holdout boundary')
+          failed = [p for p in data.get('pairs', []) if p.get('status') == 'CONTINUOUS_AOD_CERTIFICATION_FAILED']
+          if rc == 0 and failed:
+              raise SystemExit('certifier exited 0 while reporting failed continuous certification')
+          if rc == 2 and not failed:
+              raise SystemExit('certifier exited 2 without an explicit failed certification record')
+          for pair in failed:
+              cert = pair.get('certification') or {}
+              if cert.get('certified') is not False or not cert.get('failures'):
+                  raise SystemExit('failed certification record lacks explicit numerical failure evidence')
+          print(json.dumps({
+              'certifierExitCode': rc,
+              'certifiedEvaluatedPairCount': data.get('certifiedEvaluatedPairCount'),
+              'failedCertificationPairCount': len(failed),
+              'diagnosticClassificationAccepted': True,
+          }, indent=2, sort_keys=True))
+          PY
+          sha256sum KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json > KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.sha256
+          cat KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.sha256
+          echo "certifier_exit_code=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable shape diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-twilight-radiance-shape-v1
+          path: |
+            KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.json
+            KOOMEN_1952_SHAPE_GRID_DIAGNOSTIC.sha256
+            KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.json
+            KOOMEN_1952_SHAPE_CONTINUOUS_AOD_CERTIFIED.sha256
+            benchmark-inputs/evaluator-sources.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  volz-477-published-shape-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install exact numerical dependency
+        shell: bash
+        run: python -m pip install --disable-pip-version-check 'numpy==2.1.3'
+
+      - name: Verify Volz pre-result freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('review/published-twilight-radiance-benchmark-v1')
+          data = json.loads((root/'VOLZ_1969_GST_477_TABLE_II.json').read_text())
+          pre = json.loads((root/'VOLZ_477_SHAPE_PRECONTRACT.review.json').read_text())
+          assert data['frozenModelDomainSelection']['selectionFrozenBeforeModelEvaluation'] is True
+          assert data['frozenModelDomainSelection']['sunDepressionDeg'] == [2,3,4,5,6,7,8,9,10]
+          assert data['source']['sourceAbsoluteNormalizationResolvedForThisBenchmark'] is False
+          assert pre['status'] == 'FROZEN_BEFORE_MODEL_EVALUATION_DIAGNOSTIC_ONLY_NOT_CERTIFIED'
+          assert pre['modelBinding']['aerosolTreatment'] == 'NATIVE_ONLY_NO_ASIV_SPECTRAL_SCENARIO_APPLICATION'
+          assert pre['shapeEvaluation']['sameAodRequiredWithinEachModelPair'] is True
+          assert pre['absoluteBoundary']['absoluteRadianceComparisonAuthorized'] is False
+          assert pre['holdoutProtection']['pandoraTargetRadianceMayBeOpened'] is False
+          print('Volz 477 nm pre-result freeze verified')
+          PY
+
+      - name: Download exact validated Level-B v3 model and spectral representation artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p volz-inputs/model volz-inputs/representation
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9258264586/zip" -o /tmp/model.zip
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9208203541/zip" -o /tmp/representation.zip
+          printf '%s  %s\n' "a3a4266e95919dccc8248e73f16fc0960dae4254543cbf48677b1f780530bfc7" /tmp/model.zip | sha256sum -c -
+          printf '%s  %s\n' "2fe50ed674155f440322c92d28877f5c022f0cc5fa13e1e601596a9902482815" /tmp/representation.zip | sha256sum -c -
+          unzip -q /tmp/model.zip -d volz-inputs/model
+          unzip -q /tmp/representation.zip -d volz-inputs/representation
+          printf '%s  %s\n' "0b850664584244abdc781f87ce9e5b89cdab28b08a2999612b155378cbe42d79" volz-inputs/model/model-artifact-materialization-v1.json | sha256sum -c -
+          printf '%s  %s\n' "2491ac91ed924f2ba69b37ea20f48d63f51d41146cd9fe50e0bd63bfb315a763" volz-inputs/representation/spectral-representation-v2.npz | sha256sum -c -
+
+      - name: Run frozen native 477 nm shape diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/evaluate_volz_477_shape_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/VOLZ_1969_GST_477_TABLE_II.json \
+            --precontract review/published-twilight-radiance-benchmark-v1/VOLZ_477_SHAPE_PRECONTRACT.review.json \
+            --model-artifact volz-inputs/model/model-artifact-materialization-v1.json \
+            --representation-npz volz-inputs/representation/spectral-representation-v2.npz \
+            --output VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.json
+          sha256sum VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.json > VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.sha256
+          cat VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.sha256
+
+      - name: Verify frozen recorded Volz result direction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          calc = json.load(open('VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.json'))
+          frozen = json.load(open('review/published-twilight-radiance-benchmark-v1/VOLZ_1969_GST_477_SHAPE_RESULT.review.json'))
+          assert calc['evaluatedAdjacentPairCount'] == frozen['directionSummary']['evaluatedSupportedAdjacentPairCount'] == 4
+          assert calc['evaluatedAdjacentOutsideCount'] == frozen['directionSummary']['outsideModelGridRangeCount'] == 4
+          assert calc['evaluatedAdjacentSignedMissNegativeCount'] == frozen['directionSummary']['signedMissNegativeCount'] == 4
+          assert sorted(int(k) for k,v in calc['supportByDepth'].items() if v['supportedAcrossEntireInterval']) == [6,7,8,9,10]
+          for got, want in zip([p for p in calc['adjacentPairs'] if p['status'].endswith('EVALUATED')], frozen['supportedAdjacentPairs']):
+              assert (got['depthA'], got['depthB']) == (want['depthA'], want['depthB'])
+              assert abs(got['signedGridMissLog'] - want['signedGridMissLog']) < 1e-12
+              assert abs(got['absoluteGridMissMagEquivalent'] - want['absoluteGridMissMagEquivalent']) < 1e-12
+          print('Volz recorded result reproduced exactly')
+          PY
+
+      - name: Upload immutable Volz diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-volz-477-shape-v1
+          path: |
+            VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.json
+            VOLZ_1969_GST_477_SHAPE_GRID_DIAGNOSTIC.sha256
+          if-no-files-found: error
+          retention-days: 30

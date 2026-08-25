@@ -5,6 +5,10 @@ This module does not write authorization.json and has no execution or dispatch
 surface. Tests may build an authorization object in memory to prove that all
 already-frozen transport, batch, asset and control bindings can be validated.
 A future separate one-file authorization commit is still required.
+
+Real authorization building/validation requires the separately activated active
+workflow files to exist and to be Git-blob-identical to the frozen candidates.
+Only pre-activation review tests may opt out of that active-file requirement.
 """
 from __future__ import annotations
 
@@ -75,6 +79,28 @@ def load_batch():
     return _load(BATCH_PATH, EXPECTED_BATCH_GIT_BLOB_SHA1, "matched_stellar_control_batch")
 
 
+def validate_active_workflows(root: Path) -> dict[str, str]:
+    root = Path(root)
+    if root.resolve() != ROOT.resolve():
+        raise AuthorizationBuilderRefusal("repository root drift")
+    active_auth = root / AUTH_REVIEW_WORKFLOW_ACTIVE_PATH
+    active_science = root / SCIENCE_WORKFLOW_ACTIVE_PATH
+    if not active_auth.is_file():
+        raise AuthorizationBuilderRefusal("active authorization-review workflow is absent")
+    if not active_science.is_file():
+        raise AuthorizationBuilderRefusal("active science workflow is absent")
+    auth_blob = git_blob_sha1(active_auth)
+    science_blob = git_blob_sha1(active_science)
+    if auth_blob != EXPECTED_AUTH_REVIEW_WORKFLOW_GIT_BLOB_SHA1:
+        raise AuthorizationBuilderRefusal("active authorization-review workflow bytes differ from frozen candidate")
+    if science_blob != EXPECTED_SCIENCE_WORKFLOW_GIT_BLOB_SHA1:
+        raise AuthorizationBuilderRefusal("active science workflow bytes differ from frozen candidate")
+    return {
+        "authorizationReviewWorkflowActiveGitBlobSha1": auth_blob,
+        "scienceWorkflowActiveGitBlobSha1": science_blob,
+    }
+
+
 def current_control_binding() -> dict[str, Any]:
     if git_blob_sha1(AUTH_REVIEW_WORKFLOW_PATH) != EXPECTED_AUTH_REVIEW_WORKFLOW_GIT_BLOB_SHA1:
         raise AuthorizationBuilderRefusal("authorization-review workflow candidate byte drift")
@@ -107,6 +133,8 @@ def current_control_binding() -> dict[str, Any]:
         "scienceWorkflowCandidateGitBlobSha1": EXPECTED_SCIENCE_WORKFLOW_GIT_BLOB_SHA1,
         "authorizationReviewWorkflowActivePath": AUTH_REVIEW_WORKFLOW_ACTIVE_PATH,
         "scienceWorkflowActivePath": SCIENCE_WORKFLOW_ACTIVE_PATH,
+        "authorizationReviewWorkflowActiveGitBlobSha1Expected": EXPECTED_AUTH_REVIEW_WORKFLOW_GIT_BLOB_SHA1,
+        "scienceWorkflowActiveGitBlobSha1Expected": EXPECTED_SCIENCE_WORKFLOW_GIT_BLOB_SHA1,
         "authorizationPath": AUTHORIZATION_PATH,
         "authorizationBranch": AUTHORIZATION_BRANCH,
         "dispatchBranch": DISPATCH_BRANCH,
@@ -114,12 +142,14 @@ def current_control_binding() -> dict[str, Any]:
     }
 
 
-def build_authorization(root: Path, parent_main: str) -> dict[str, Any]:
+def build_authorization(root: Path, parent_main: str, *, require_active_workflows: bool = True) -> dict[str, Any]:
     root = Path(root)
     if root.resolve() != ROOT.resolve():
         raise AuthorizationBuilderRefusal("repository root drift")
     if SHA40.fullmatch(parent_main or "") is None:
         raise AuthorizationBuilderRefusal("parent main SHA invalid")
+    if require_active_workflows:
+        validate_active_workflows(root)
     strict = load_strict_gate()
     batch = load_batch()
     execution_contract = json.loads(EXECUTION_CONTRACT_PATH.read_text(encoding="utf-8"))
@@ -167,16 +197,19 @@ def build_authorization(root: Path, parent_main: str) -> dict[str, Any]:
         "batchBindings": batch.current_batch_binding(),
         "controlBindings": current_control_binding(),
     }
-    validate_authorization(root, auth, parent_main)
+    validate_authorization(root, auth, parent_main, require_active_workflows=require_active_workflows)
     return auth
 
 
-def validate_authorization(root: Path, document: dict[str, Any], expected_parent_main: str) -> None:
+def validate_authorization(root: Path, document: dict[str, Any], expected_parent_main: str,
+                           *, require_active_workflows: bool = True) -> None:
     root = Path(root)
     if root.resolve() != ROOT.resolve():
         raise AuthorizationBuilderRefusal("repository root drift")
     if SHA40.fullmatch(expected_parent_main or "") is None:
         raise AuthorizationBuilderRefusal("expected parent main SHA invalid")
+    if require_active_workflows:
+        validate_active_workflows(root)
     strict = load_strict_gate()
     batch = load_batch()
     strict.validate_strict_authorization(document)
@@ -212,6 +245,7 @@ def main() -> int:
         "authorizationBranch": AUTHORIZATION_BRANCH,
         "dispatchBranch": DISPATCH_BRANCH,
         "executionKey": EXECUTION_KEY,
+        "realAuthorizationRequiresExactActiveWorkflowBytes": True,
         "scientificExecutionAuthorizedByThisFile": False,
         "solverExecutionAuthorizedByThisFile": False,
         "dispatchPerformed": False,

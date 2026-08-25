@@ -122,7 +122,8 @@ class RecoveryV5HelpCorrectionTests(unittest.TestCase):
         for rid in (32848973816, 32868735547, 32874586374, 32879766880):
             self.assertIn(str(rid), text)
         for jid in (97805508810, 97870360724, 97889371107, 97906508551):
-            self.assertIn(f"actions/jobs/{jid}", text)
+            self.assertIn(str(jid), text)
+        self.assertIn('actions/jobs/${JID}', text)
         self.assertNotIn("/jobs?per_page=100", text)
         self.assertIn("gate.validate_strict_authorization(auth)", text)
         self.assertIn("batch.validate_batch_authorization(auth)", text)

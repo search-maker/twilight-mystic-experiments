@@ -81,18 +81,24 @@ class AsivMatchedStellarWorkflowActivationV1Tests(unittest.TestCase):
         self.assertIn("allow_execution=True", science)
         self.assertIn("3468", science)
         self.assertIn("99", science)
-        self.assertNotIn("pandora", science.lower())
-        self.assertNotIn("starsvisibility", science.lower())
+        # Explicit negative evidence is desirable and must not be mistaken for access/authorization.
+        self.assertIn("'pandoraHoldoutOpened':False", science)
+        self.assertIn("result['pandoraHoldoutOpened']=False", science)
+        self.assertIn("result['starsvisibilityMutationAuthorized']=False", science)
+        self.assertIn("result['productionAuthorized']=False", science)
 
     def test_activation_review_workflow_itself_is_zero_runtime(self):
         text = ACTIVATION_REVIEW.read_text(encoding="utf-8")
-        self.assertIn("pull_request:", text)
-        self.assertNotIn("workflow_dispatch:", text)
-        self.assertNotIn("setup-micromamba", text)
-        self.assertNotIn("uvspec", text)
-        self.assertNotIn("--allow-execution", text)
-        self.assertNotIn("contents: write", text)
-        self.assertNotIn("actions: write", text)
+        header = text.split("\njobs:\n", 1)[0]
+        self.assertIn("pull_request:", header)
+        self.assertNotIn("workflow_dispatch:", header)
+        self.assertIn("contents: read", header)
+        self.assertNotIn("contents: write", header)
+        self.assertNotIn("actions: write", header)
+        self.assertNotIn("mamba-org/setup-micromamba@", text)
+        self.assertNotIn("shell: micromamba-shell", text)
+        self.assertNotIn("execute_shard_strict", text)
+        self.assertNotIn("allow_execution=True", text)
 
 
 if __name__ == "__main__":

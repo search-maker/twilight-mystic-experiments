@@ -6,6 +6,7 @@ on:
       - ".github/workflows/pgn-pandora209-core-metadata-review.yml"
       - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
       - "review/empirical-twilight-radiance-source-admission-v1/PGN_LIVE_OPENAPI_CONTRACT.freeze.json"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209_OPERATION_FILE_CONTENT_PRECONTRACT.review.json"
 
 permissions:
   contents: read
@@ -110,6 +111,87 @@ jobs:
           cat pgn_core_metadata_full_lists.sha256
           cat pandora209_core_metadata_candidates.sha256
 
+      - name: Fetch exact public Pandora209 operation configuration files only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from urllib.request import Request, urlopen
+
+          base = 'https://data.hetzner.pandonia-global-network.org/operationfiles/'
+          expected_host = 'data.hetzner.pandonia-global-network.org'
+          filenames = [
+              'Pandora209_OF_v0d20210806.txt',
+              'Pandora209_OF_v1d20210806.txt',
+              'Pandora209_OF_v2d20210806.txt',
+              'Pandora209_OF_v3d20210806.txt',
+          ]
+          outdir = Path('pandora209_operationfiles')
+          outdir.mkdir(exist_ok=True)
+          manifest = []
+
+          for filename in filenames:
+              if '/' in filename or '\\' in filename:
+                  raise SystemExit(f'unsafe operation filename: {filename!r}')
+              url = base + filename
+              request = Request(
+                  url,
+                  headers={
+                      'Accept': 'text/plain,application/octet-stream;q=0.8',
+                      'User-Agent': 'starsvisibility-blind-operation-config-metadata-v1',
+                  },
+                  method='GET',
+              )
+              with urlopen(request, timeout=30) as response:
+                  final_url = response.geturl()
+                  content_type = response.headers.get_content_type()
+                  raw = response.read()
+
+              parsed = urlparse(final_url)
+              if final_url != url:
+                  raise SystemExit(f'unexpected operation-file redirect: {final_url}')
+              if parsed.scheme != 'https' or parsed.netloc != expected_host:
+                  raise SystemExit(f'unexpected operation-file host: {parsed.netloc}')
+              if not parsed.path.startswith('/operationfiles/'):
+                  raise SystemExit(f'unexpected operation-file path: {parsed.path}')
+              if len(raw) > 100_000:
+                  raise SystemExit(f'operation configuration unexpectedly large: {filename} {len(raw)} bytes')
+
+              path = outdir / filename
+              path.write_bytes(raw)
+              manifest.append({
+                  'filename': filename,
+                  'url': url,
+                  'finalUrl': final_url,
+                  'contentType': content_type,
+                  'byteCount': len(raw),
+                  'sha256': hashlib.sha256(raw).hexdigest(),
+              })
+
+          evidence = {
+              'sourceDirectory': base,
+              'files': manifest,
+              'operationConfigurationGetPerformed': True,
+              'measurementFileRequested': False,
+              'v1DownloadUsed': False,
+              'targetDataOpened': False,
+          }
+          Path('pandora209_operationfiles_manifest.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_OPERATION_CONFIG_MANIFEST_BEGIN')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_OPERATION_CONFIG_MANIFEST_END')
+          PY
+
+          sha256sum pandora209_operationfiles_manifest.json > pandora209_operationfiles_manifest.sha256
+          cat pandora209_operationfiles_manifest.sha256
+
       - name: Prove protected endpoint remains inaccessible through client
         shell: bash
         run: |
@@ -141,5 +223,8 @@ jobs:
             pgn_core_metadata_full_lists.sha256
             pandora209_core_metadata_candidates.json
             pandora209_core_metadata_candidates.sha256
+            pandora209_operationfiles/
+            pandora209_operationfiles_manifest.json
+            pandora209_operationfiles_manifest.sha256
           if-no-files-found: error
           retention-days: 30

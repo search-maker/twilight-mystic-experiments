@@ -1,0 +1,153 @@
+name: ASIV matched stellar Recovery v5 direct REST transport probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/asiv-matched-stellar-recovery-v5-http-transport-probe.yml'
+      - 'review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/**'
+      - 'tests/test_asiv_matched_stellar_recovery_v5_http_transport_probe.py'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  probe-readonly-rest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact probe head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify zero-solver probe contract and helper tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py)" = 2bc293c7db73c436ba422f80566513459df77c7e
+          test "$(git hash-object review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/PROBE_CONTRACT.review.json)" = e4dcf9652eeefdbe8efb02a1ad97d16da52d5ba0
+          test ! -e review/asiv-matched-stellar-transport-v1/authorization-recovery-v5.json
+          python -m unittest discover -s tests -p 'test_asiv_matched_stellar_recovery_v5_http_transport_probe.py' -v
+          python - <<'PY'
+          import json
+          row=json.load(open('review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/PROBE_CONTRACT.review.json'))
+          for key in ('scientificExecutionAuthorized','solverExecutionAuthorized','authorizationFileCreated','authorizationBranchCreated','dispatchBranchCreated','workflowDispatchPerformed','solverRetryPermitted','solverResumePermitted','githubJobRerunPermitted','resultOpeningAuthorized','pandoraHoldoutAccessAllowed','starsvisibilityMutationAuthorized','productionAuthorized'):
+              if row.get(key) is not False: raise SystemExit(f'probe authority drift: {key}')
+          PY
+      - name: Probe direct HTTPS GET transport on exact historical Actions metadata
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          H=review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py
+          mkdir -p transport-probe
+          for RID in 32848973816 32868735547 32874586374; do
+            python "$H" run-bundle --repository "$GITHUB_REPOSITORY" --run-id "$RID" --output "transport-probe/run-${RID}.json"
+          done
+      - name: Probe direct HTTPS GET transport on current pull request metadata
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          H=review/asiv-matched-stellar-transport-v1/recovery-v5-transport-probe/read_only_github_rest_v5.py
+          python "$H" pull-request --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" --output transport-probe/current-pr.json
+          export PR_NUMBER HEAD_SHA
+          python - <<'PY'
+          import json,os
+          row=json.load(open('transport-probe/current-pr.json'))
+          pr=row.get('pullRequest') or {}
+          if int(pr.get('number') or 0)!=int(os.environ['PR_NUMBER']): raise SystemExit('direct REST current PR number drift')
+          if pr.get('state')!='open': raise SystemExit('direct REST current PR must be open during probe')
+          if (pr.get('head') or {}).get('sha')!=os.environ['HEAD_SHA']: raise SystemExit('direct REST current PR head drift')
+          if (pr.get('base') or {}).get('ref')!='main': raise SystemExit('direct REST current PR base drift')
+          PY
+      - name: Independently verify exact historical pre-solver boundary from direct REST payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def bundle(rid): return json.load(open(f'transport-probe/run-{rid}.json'))
+          expected={
+            32848973816:{'attempt':1,'branch':'dispatch/asiv-matched-stellar-transport-v1','sha':'30b7c491f9c0f7ae331d7346f8d001c74a9cb905'},
+            32868735547:{'attempt':1,'branch':'dispatch/asiv-matched-stellar-transport-recovery-v2','sha':'ce0e0fa81d85b8867db1b09359d40c501cd68512'},
+            32874586374:{'attempt':1,'branch':'dispatch/asiv-matched-stellar-transport-recovery-v3','sha':'9f4dfae222a521cea2d85ca779d81109575448d2'},
+          }
+          rows={rid:bundle(rid) for rid in expected}
+          for rid,b in rows.items():
+              r=b.get('run') or {}; e=expected[rid]
+              checks={'id':rid,'run_attempt':e['attempt'],'status':'completed','conclusion':'failure','head_branch':e['branch'],'head_sha':e['sha']}
+              for k,v in checks.items():
+                  if r.get(k)!=v: raise SystemExit(f'direct REST historical identity drift run={rid} key={k}')
+              if (b.get('audit') or {}).get('requestMethod')!='GET' or (b.get('audit') or {}).get('writeMethodsPermitted') is not False:
+                  raise SystemExit(f'direct REST transport boundary drift run={rid}')
+              executed=[]
+              for job in b.get('jobs') or []:
+                  for step in job.get('steps') or []:
+                      if step.get('name')=='Execute exactly one frozen shard with no retry or resume' and step.get('conclusion') not in ('skipped',None):
+                          executed.append((job.get('name'),step.get('conclusion')))
+              if executed: raise SystemExit(f'historical solver execution cannot be excluded run={rid}: {executed}')
+          v1=rows[32848973816]
+          f=[j for j in v1['jobs'] if int(j.get('id') or 0)==97805508810]
+          if len(f)!=1 or f[0].get('conclusion')!='failure': raise SystemExit('v1 failed job missing in direct REST probe')
+          s={x.get('name'):x.get('conclusion') for x in f[0].get('steps') or []}
+          if s.get('Reconstruct exact OPAC overlay and verify runtime identity')!='failure' or s.get('Execute exactly one frozen shard with no retry or resume')!='skipped': raise SystemExit('v1 pre-solver boundary drift')
+          a=v1['artifacts']; pre=[x for x in a if x.get('name')=='asiv-matched-stellar-preflight-v1']; shards=[x for x in a if str(x.get('name') or '').startswith('asiv-matched-stellar-shard-v1-')]
+          if len(pre)!=1 or int(pre[0].get('id') or 0)!=9563491205 or shards: raise SystemExit('v1 artifact boundary drift')
+          v2=rows[32868735547]
+          f=[j for j in v2['jobs'] if int(j.get('id') or 0)==97870360724]
+          if len(f)!=1 or f[0].get('conclusion')!='failure': raise SystemExit('v2 failed preflight job missing')
+          s={x.get('name'):x.get('conclusion') for x in f[0].get('steps') or []}
+          if s.get('Verify one-use recovery dispatch, exact authorization and successful review')!='success': raise SystemExit('v2 authorization identity step drift')
+          if s.get('Prove v1 stopped before any stellar solver execution')!='failure' or s.get('Build exact frozen 99-shard matrix')!='skipped': raise SystemExit('v2 pre-solver boundary drift')
+          if v2['artifacts']: raise SystemExit('v2 artifacts must remain empty')
+          v3=rows[32874586374]
+          f=[j for j in v3['jobs'] if int(j.get('id') or 0)==97889371107]
+          if len(f)!=1 or f[0].get('conclusion')!='failure': raise SystemExit('v3 failed preflight job missing')
+          s={x.get('name'):x.get('conclusion') for x in f[0].get('steps') or []}
+          if s.get('Verify one-use Recovery v3 dispatch, exact authorization and successful review')!='success': raise SystemExit('v3 authorization identity step drift')
+          if s.get('Prove v1 and Recovery v2 stopped before any stellar solver execution')!='failure': raise SystemExit('v3 historical-read failure step drift')
+          for name in ('Build exact frozen 99-shard matrix','Fetch exact official OPAC archive once and verify before any solver job','Publish same-run verified Recovery v3 preflight inputs'):
+              if s.get(name)!='skipped': raise SystemExit(f'v3 crossed pre-solver boundary: {name}')
+          if v3['artifacts']: raise SystemExit('v3 artifacts must remain empty')
+          result={
+            'schemaVersion':1,
+            'stageId':'asiv-matched-stellar-recovery-v5-direct-rest-transport-probe-result',
+            'status':'DIRECT_READ_ONLY_REST_TRANSPORT_PROBE_PASS',
+            'historicalRunIds':[32848973816,32868735547,32874586374],
+            'transport':'python-urllib-direct-https-get',
+            'requestMethod':'GET',
+            'writeMethodsPermitted':False,
+            'scientificSolverExecutionObserved':False,
+            'scientificShardArtifactsObserved':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'scienceDispatched':False,
+            'pandoraOpened':False,
+            'productionAuthorized':False,
+          }
+          Path('transport-probe/PROBE_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - name: Publish zero-solver transport probe evidence only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-recovery-v5-direct-rest-transport-probe
+          path: transport-probe/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

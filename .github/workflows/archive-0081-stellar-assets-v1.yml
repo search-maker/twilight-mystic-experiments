@@ -1,0 +1,113 @@
+name: Archive exact surviving 0081 stellar assets v1
+
+on:
+  push:
+    branches:
+      - review/asiv-matched-stellar-transport-execution-v1
+    paths:
+      - '.github/workflows/archive-0081-stellar-assets-v1.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  archive-exact-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download and verify exact surviving MYSTIC-STATE-0081 capture artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_id='9277669643'
+          expected_artifact_digest='sha256:2b13842e4b277380d205eeb89258af9eab4bb9e2ba3dc5c96256fae2f38c064c'
+          expected_pickles='85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb'
+          expected_lut='21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f'
+
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}" \
+            -o /tmp/artifact-meta.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/artifact-meta.json'))
+          assert data['id'] == 9277669643
+          assert data['name'] == 'level-b-stellar-v2-capture-31996849250'
+          assert data['expired'] is False
+          assert data['digest'] == 'sha256:2b13842e4b277380d205eeb89258af9eab4bb9e2ba3dc5c96256fae2f38c064c'
+          assert data['workflow_run']['id'] == 31996849250
+          PY
+
+          curl -fsSL --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            -o /tmp/0081-capture.zip
+          printf '%s  %s\n' "${expected_artifact_digest#sha256:}" /tmp/0081-capture.zip | sha256sum -c -
+
+          rm -rf /tmp/0081-capture
+          mkdir -p /tmp/0081-capture
+          unzip -q /tmp/0081-capture.zip -d /tmp/0081-capture
+          test "$(find /tmp/0081-capture -maxdepth 1 -type f | wc -l)" -eq 4
+          printf '%s  %s\n' "${expected_pickles}" /tmp/0081-capture/pickles-sed-1nm.json | sha256sum -c -
+          printf '%s  %s\n' "${expected_lut}" /tmp/0081-capture/stellar-transport-v2-lut.json | sha256sum -c -
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('/tmp/0081-capture')
+          gate=json.loads((root/'0081-capture-gate-result.json').read_text())
+          manifest=json.loads((root/'0081-capture-manifest.json').read_text())
+          assert gate['hashes']['sedBundleSha256'] == '85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb'
+          assert gate['hashes']['johnsonVGridSha256'] == '51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a'
+          assert gate['pass'] is True
+          assert gate['caseCount'] == 576
+          assert manifest['captureRunId'] == 31996849250
+          report={
+            'schemaVersion':1,
+            'stageId':'asiv-matched-stellar-0081-capture-preservation-v1',
+            'sourceArtifactId':9277669643,
+            'sourceRunId':31996849250,
+            'sourceArtifactDigestSha256':'2b13842e4b277380d205eeb89258af9eab4bb9e2ba3dc5c96256fae2f38c064c',
+            'picklesSedBundleSha256':'85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb',
+            'stellarTransportV2LutSha256':'21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f',
+            'johnsonVGridSha256RecordedByCapture':'51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a',
+            'solverExecutionPerformed':False,
+            'scientificResidualComputedByThisArchivalStep':False,
+            'pandoraHoldoutOpened':False,
+            'productionAuthorized':False,
+          }
+          Path('/tmp/0081-capture/PRESERVATION_REPORT.review.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Commit exact capture assets to the review branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='review/asiv-matched-stellar-transport-v1/frozen-assets'
+          mkdir -p "$target"
+          cp /tmp/0081-capture/pickles-sed-1nm.json "$target/pickles-sed-1nm.json"
+          cp /tmp/0081-capture/0081-capture-manifest.json "$target/0081-capture-manifest.json"
+          cp /tmp/0081-capture/0081-capture-gate-result.json "$target/0081-capture-gate-result.json"
+          cp /tmp/0081-capture/PRESERVATION_REPORT.review.json "$target/PRESERVATION_REPORT.review.json"
+
+          printf '%s  %s\n' \
+            '85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb' \
+            "$target/pickles-sed-1nm.json" | sha256sum -c -
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then
+            echo 'Exact 0081 capture assets are already archived.'
+            exit 0
+          fi
+          git commit -m 'Archive exact surviving 0081 stellar validation assets'
+          git push origin "HEAD:${GITHUB_REF_NAME}"

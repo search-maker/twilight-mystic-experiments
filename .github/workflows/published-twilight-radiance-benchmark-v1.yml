@@ -1,0 +1,85 @@
+name: Published twilight radiance benchmark v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/published-twilight-radiance-benchmark-v1.yml"
+      - "review/published-twilight-radiance-benchmark-v1/**"
+
+permissions:
+  contents: read
+
+jobs:
+  koomen-published-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch exact frozen runtime and pre-value evaluators
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-inputs
+          curl -fsSL "https://raw.githubusercontent.com/search-maker/starsvisibility/404c255a15158ed172bb2d6a7ac97b4ea24a9f29/scientific-tools/visibility-v3/validated-v3-primary-runtime-v1.json" -o benchmark-inputs/validated-v3-primary-runtime-v1.json
+          curl -fsSL "https://raw.githubusercontent.com/search-maker/starsvisibility/404c255a15158ed172bb2d6a7ac97b4ea24a9f29/scientific-tools/visibility-v3/aerosol-scenario-interpolator-runtime-v1.json" -o benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json
+          curl -fsSL "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/83fa2a8fad83213e2a5ccfa45f0c80d03604c04e/review/empirical-twilight-radiance-source-admission-v1/exact_aod_interval_support_v1.py" -o benchmark-inputs/exact_aod_interval_support_v1.py
+          curl -fsSL "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/83fa2a8fad83213e2a5ccfa45f0c80d03604c04e/review/empirical-twilight-radiance-source-admission-v1/certified_aod_scenario_extrema_v1.py" -o benchmark-inputs/certified_aod_scenario_extrema_v1.py
+          printf '%s  %s\n' "6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4" benchmark-inputs/validated-v3-primary-runtime-v1.json | sha256sum -c -
+          printf '%s  %s\n' "a324408e87fd1ffa5f3fc386e77e54fe046eb3e749f2b39a699712ba355eb060" benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json | sha256sum -c -
+          sha256sum benchmark-inputs/exact_aod_interval_support_v1.py benchmark-inputs/certified_aod_scenario_extrema_v1.py > benchmark-inputs/evaluator-sources.sha256
+
+      - name: Verify benchmark package is published-only and Pandora-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('review/published-twilight-radiance-benchmark-v1')
+          contract = json.loads((root/'BENCHMARK_CONTRACT.review.json').read_text())
+          data = json.loads((root/'KOOMEN_1952_MARYLAND_PHOTOPIC_48.json').read_text())
+          assert contract['source']['publishedValuesAlreadyOpen'] is True
+          assert contract['source']['untouchedHoldout'] is False
+          assert contract['holdoutProtection']['pandoraTargetRadianceMayBeOpened'] is False
+          assert contract['holdoutProtection']['pandoraLevel1DataMayBeOpened'] is False
+          assert contract['holdoutProtection']['pgnV1DownloadMayBeUsed'] is False
+          assert data['selection']['rowCount'] == 48 == len(data['rows'])
+          for row in data['rows']:
+              assert row['sunDepressionDeg'] in (3, 6)
+              assert row['targetAltitudeDeg'] in (10, 30, 50, 70)
+              assert row['relativeAzimuthDeg'] in (0, 22.5, 45, 90, 135, 180)
+              assert row['observerElevationM'] == 30.0
+              assert row['sourceBrightnessCandlesPerSquareFoot'] > 0
+              assert row['observedPhotopicLuminanceCdM2'] > 0
+          print('Published-only benchmark boundary verified')
+          PY
+
+      - name: Run certified full-AOD scenario benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/published-twilight-radiance-benchmark-v1/evaluate_koomen_benchmark_v1.py \
+            --dataset review/published-twilight-radiance-benchmark-v1/KOOMEN_1952_MARYLAND_PHOTOPIC_48.json \
+            --base-runtime benchmark-inputs/validated-v3-primary-runtime-v1.json \
+            --asiv-runtime benchmark-inputs/aerosol-scenario-interpolator-runtime-v1.json \
+            --support-evaluator benchmark-inputs/exact_aod_interval_support_v1.py \
+            --extrema-evaluator benchmark-inputs/certified_aod_scenario_extrema_v1.py \
+            --output KOOMEN_1952_BENCHMARK_RESULT.json
+          sha256sum KOOMEN_1952_BENCHMARK_RESULT.json > KOOMEN_1952_BENCHMARK_RESULT.sha256
+          cat KOOMEN_1952_BENCHMARK_RESULT.sha256
+
+      - name: Upload immutable benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-twilight-radiance-benchmark-v1
+          path: |
+            KOOMEN_1952_BENCHMARK_RESULT.json
+            KOOMEN_1952_BENCHMARK_RESULT.sha256
+            benchmark-inputs/evaluator-sources.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -17,9 +17,9 @@ V3_AUTH_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-authorization-re
 V3_SCIENCE_ACTIVE = ROOT / ".github/workflows/asiv-matched-stellar-science-recovery-v3.yml"
 ACTIVATION_REVIEW = ROOT / ".github/workflows/asiv-matched-stellar-recovery-workflow-activation-review-v4.yml"
 
-EXPECTED_CONTROL_BLOB = "5351b7000a7fb282520113dfababfa173f2beb00"
-EXPECTED_ACTIVATION_BLOB = "6679becd5ec3e9294719cf7c00ceb54d14a8155d"
-EXPECTED_AUTH_BLOB = "d2c82687e558f16a5e23da5f67921e1282952eec"
+EXPECTED_CONTROL_BLOB = "775f65ee5f6ca8ec847829bc9ea73c08f0744f96"
+EXPECTED_ACTIVATION_BLOB = "d080814b874337a7e2ade96aa0d4b8d0f5efe5d0"
+EXPECTED_AUTH_BLOB = "b4d7f489be60a98c6bc6a9af48fce70dcd40d6e9"
 EXPECTED_SCIENCE_BLOB = "1d36adb676cae115b141c8c085afb9e22e2142c3"
 EXPECTED_HELPER_BLOB = "7b9a0698135f60c56cb8a212a724079cda054cc3"
 EXPECTED_EVIDENCE_BLOB = "b779f3dc46773fb4819fea6999ddd2fd68904aa1"
@@ -33,7 +33,7 @@ def git_blob_sha1(path: Path) -> str:
 
 
 class RecoveryV4WorkflowActivationTests(unittest.TestCase):
-    def test_v4_active_workflows_are_exact_candidate_bytes(self):
+    def test_v4_active_authorization_review_matches_compact_candidate_and_science_is_unchanged(self):
         self.assertEqual(git_blob_sha1(AUTH_CANDIDATE), EXPECTED_AUTH_BLOB)
         self.assertEqual(git_blob_sha1(AUTH_ACTIVE), EXPECTED_AUTH_BLOB)
         self.assertEqual(AUTH_ACTIVE.read_bytes(), AUTH_CANDIDATE.read_bytes())
@@ -41,7 +41,7 @@ class RecoveryV4WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(git_blob_sha1(SCIENCE_ACTIVE), EXPECTED_SCIENCE_BLOB)
         self.assertEqual(SCIENCE_ACTIVE.read_bytes(), SCIENCE_CANDIDATE.read_bytes())
 
-    def test_activation_contract_binds_exact_control_evidence_transport_and_strict_gates(self):
+    def test_activation_contract_binds_compact_history_control_and_exact_science(self):
         control = json.loads(CONTROL.read_text(encoding="utf-8"))
         activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
         self.assertEqual(git_blob_sha1(CONTROL), EXPECTED_CONTROL_BLOB)
@@ -54,54 +54,56 @@ class RecoveryV4WorkflowActivationTests(unittest.TestCase):
         self.assertEqual(roles["authorization-review"]["activeGitBlobSha1Required"], EXPECTED_AUTH_BLOB)
         self.assertEqual(roles["science"]["candidateGitBlobSha1"], EXPECTED_SCIENCE_BLOB)
         self.assertEqual(roles["science"]["activeGitBlobSha1Required"], EXPECTED_SCIENCE_BLOB)
-        alignment = activation["strictGateAlignment"]
-        self.assertEqual(alignment["immutableStrictGateGitBlobSha1"], "9bbe4f8fe64f7f32dd3e3e69469a15b30f658dde")
-        self.assertEqual(alignment["requiredScientificAuthorizationStageId"], "asiv-matched-stellar-transport-v1-execution-authorization")
-        self.assertEqual(alignment["recoveryControlStageId"], "asiv-matched-stellar-transport-recovery-v4-authorization")
-        self.assertTrue(alignment["authorizationReviewMustExecuteStrictGateValidation"])
-        self.assertTrue(alignment["authorizationReviewMustExecuteBatchGateValidation"])
         history = activation["historicalEvidenceAlignment"]
         self.assertEqual(history["historicalEvidenceGitBlobSha1"], EXPECTED_EVIDENCE_BLOB)
         self.assertEqual(history["priorRunIds"], [32848973816, 32868735547, 32874586374])
-        self.assertTrue(history["liveVerificationMustOccurInAuthorizationReviewBeforeDispatch"])
-        self.assertFalse(history["sciencePreflightHistoricalActionsApiReadsPermitted"])
-        transport = activation["transportHardening"]
-        self.assertEqual(transport["readOnlyApiMaxAttempts"], 8)
-        self.assertTrue(transport["sameRunPreflightUsesDownloadArtifactAction"])
-        self.assertTrue(transport["aggregateUsesPatternDownloadArtifactAction"])
-        self.assertFalse(transport["perShardManualArtifactApiCallsPermitted"])
-        self.assertFalse(transport["perArtifactAggregateZipApiCallsPermitted"])
-        self.assertEqual(control["caseUniverse"]["totalCaseCount"], 3468)
-        self.assertEqual(control["caseUniverse"]["totalShardCount"], 99)
-        self.assertEqual(control["caseUniverse"]["validationJohnsonVComparisonsTotal"], 2304)
+        self.assertFalse(history["fullHistoricalJobsEnumerationInAuthorizationReviewPermitted"])
+        self.assertEqual(history["exactFailedJobIdsForCompactLiveCheck"], [97805508810, 97870360724, 97889371107])
+        self.assertTrue(history["immutableEvidenceRemainsAuthorityForPreviouslyReviewedFullJobEnumeration"])
+        retired = activation["retiredAuthorizationReview"]
+        self.assertEqual(retired["pullRequestNumber"], 383)
+        self.assertEqual(retired["runId"], 32876439701)
+        self.assertEqual(retired["failedJobId"], 97895352566)
+        self.assertFalse(retired["receiptProduced"])
+        self.assertFalse(retired["scienceDispatchOccurred"])
+        preserved = activation["preservedScience"]
+        self.assertEqual(preserved["scienceWorkflowGitBlobSha1"], EXPECTED_SCIENCE_BLOB)
+        self.assertFalse(preserved["scienceWorkflowChangedByThisControlFix"])
+        self.assertEqual(preserved["caseCount"], 3468)
+        self.assertEqual(preserved["shardCount"], 99)
+        self.assertEqual(preserved["johnsonVComparisonCount"], 2304)
+        self.assertEqual(preserved["perFamilyMaxAbsDeltaAvMag"], 0.025)
+        self.assertEqual(preserved["perFamilyRmsDeltaAvMag"], 0.01)
 
     def test_activation_itself_grants_no_scientific_or_production_authority(self):
         activation = json.loads(ACTIVATION.read_text(encoding="utf-8"))
         for key in (
             "scientificExecutionAuthorized", "solverExecutionAuthorized", "authorizationFileCreated",
-            "authorizationBranchCreated", "dispatchBranchCreated", "workflowDispatchPerformed",
-            "resultOpeningAuthorized", "productionActivationAuthorized", "pandoraHoldoutAccessAllowed",
-            "starsvisibilityMutationAuthorized", "nativeRebuildAuthorized", "retryPermitted",
-            "resumePermitted", "githubRerunPermitted",
+            "dispatchBranchCreated", "workflowDispatchPerformed", "resultOpeningAuthorized",
+            "productionActivationAuthorized", "pandoraHoldoutAccessAllowed", "starsvisibilityMutationAuthorized",
+            "nativeRebuildAuthorized", "retryPermitted", "resumePermitted", "githubRerunPermitted",
         ):
             self.assertIs(activation[key], False, key)
         boundary = activation["activationBoundary"]
         self.assertTrue(boundary["authorizationMayNotBeCreatedByThisReview"])
         self.assertTrue(boundary["scienceMayNotBeDispatchedByThisReview"])
-        self.assertTrue(boundary["historicalEvidenceMustBeLiveVerifiedBySeparateAuthorizationReview"])
+        self.assertTrue(boundary["historicalEvidenceMustBeCompactLiveVerifiedBySeparateAuthorizationReview"])
         self.assertTrue(boundary["scienceMayConsumeOnlyVerifiedHistoricalReceipt"])
-        self.assertTrue(boundary["authorizationMustBeSeparateOneFileDraftPr"])
+        self.assertTrue(boundary["authorizationMustBeSeparateFreshOneFileDraftPr"])
 
     def test_v3_active_workflows_remain_unchanged(self):
         self.assertEqual(git_blob_sha1(V3_AUTH_ACTIVE), EXPECTED_V3_AUTH_BLOB)
         self.assertEqual(git_blob_sha1(V3_SCIENCE_ACTIVE), EXPECTED_V3_SCIENCE_BLOB)
 
-    def test_active_v4_science_semantics_and_control_plane_hardening_are_frozen(self):
+    def test_active_v4_auth_is_compact_and_active_science_semantics_are_frozen(self):
         auth = AUTH_ACTIVE.read_text(encoding="utf-8")
         science = SCIENCE_ACTIVE.read_text(encoding="utf-8")
         self.assertIn("pull_request:", auth)
         self.assertNotIn("workflow_dispatch:", auth)
-        self.assertNotIn("uvspec", auth)
+        self.assertNotIn("/jobs?per_page=100", auth)
+        self.assertNotIn("--paginate --slurp", auth)
+        for jid in (97805508810, 97870360724, 97889371107):
+            self.assertIn(f"actions/jobs/{jid}", auth)
         self.assertIn("gate.validate_strict_authorization(auth)", auth)
         self.assertIn("batch.validate_batch_authorization(auth)", auth)
         self.assertIn("HISTORICAL_PRE_SOLVER_EVIDENCE_LIVE_VERIFIED", auth)
@@ -118,7 +120,7 @@ class RecoveryV4WorkflowActivationTests(unittest.TestCase):
         self.assertIn("validationJohnsonVComparisonsTotal')!=2304", science)
         self.assertIn("exactly 99 unique complete Recovery v4 shard artifact directories required", science)
 
-    def test_activation_review_itself_is_zero_solver_and_requires_auth_absence_only_at_activation_stage(self):
+    def test_activation_review_is_zero_solver_and_fresh_authorization_is_separate(self):
         text = ACTIVATION_REVIEW.read_text(encoding="utf-8")
         header = text.split("\njobs:\n", 1)[0]
         self.assertIn("pull_request:", header)

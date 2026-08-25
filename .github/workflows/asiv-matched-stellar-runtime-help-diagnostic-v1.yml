@@ -1,0 +1,135 @@
+name: ASIV matched stellar runtime help diagnostic v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/asiv-matched-stellar-runtime-help-diagnostic-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  capture-help-identity:
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout diagnostic head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install exact frozen libRadtran package
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: matched-stellar-help-diagnostic
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: false
+          cache-downloads: true
+      - name: Capture zero-solver uvspec help identity
+        shell: micromamba-shell {0}
+        env:
+          EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+          FROZEN_UVSPEC_HELP_SHA256: 868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548
+          REPLICA: ${{ matrix.replica }}
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-help-diagnostic
+          python - <<'PY'
+          import hashlib, json, os, platform, shutil, subprocess
+          from pathlib import Path
+
+          def sha(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          uvspec=Path(shutil.which('uvspec') or '')
+          if not uvspec.is_file():
+              raise SystemExit('uvspec missing')
+          binary_sha=sha(uvspec.read_bytes())
+          if binary_sha != os.environ['EXPECTED_UVSPEC_SHA256']:
+              raise SystemExit(f'uvspec binary drift: {binary_sha}')
+
+          runs=[]
+          for flag in ('--help','-h'):
+              for ordinal in range(1,4):
+                  p=subprocess.run([str(uvspec),flag],capture_output=True,check=False)
+                  combined=p.stdout+p.stderr
+                  runs.append({
+                      'flag':flag,
+                      'ordinal':ordinal,
+                      'returncode':p.returncode,
+                      'stdoutSha256':sha(p.stdout),
+                      'stderrSha256':sha(p.stderr),
+                      'combinedSha256':sha(combined),
+                      'stdoutBytes':len(p.stdout),
+                      'stderrBytes':len(p.stderr),
+                      'combinedBytes':len(combined),
+                      'preview':combined.decode('utf-8',errors='replace').splitlines()[:20],
+                  })
+                  if p.returncode != 0:
+                      raise SystemExit(f'{flag} returned {p.returncode}')
+
+          help_hashes={r['combinedSha256'] for r in runs if r['flag']=='--help'}
+          short_hashes={r['combinedSha256'] for r in runs if r['flag']=='-h'}
+          if len(help_hashes) != 1:
+              raise SystemExit(f'--help is unstable within runner: {sorted(help_hashes)}')
+          if len(short_hashes) != 1:
+              raise SystemExit(f'-h is unstable within runner: {sorted(short_hashes)}')
+
+          meta_dir=Path(os.environ['CONDA_PREFIX'])/'conda-meta'
+          metas=sorted(meta_dir.glob('rubin-libradtran-2.0.6-*.json'))
+          package_meta=json.loads(metas[0].read_text()) if len(metas)==1 else {'metadataFileCount':len(metas)}
+          ldd=subprocess.run(['ldd',str(uvspec)],capture_output=True,text=True,check=False)
+          report={
+              'schemaVersion':1,
+              'stageId':'asiv-matched-stellar-runtime-help-diagnostic-v1',
+              'replica':os.environ['REPLICA'],
+              'status':'ZERO_SOLVER_HELP_IDENTITY_CAPTURED',
+              'scientificSolverExecuted':False,
+              'scientificInputSupplied':False,
+              'uvspecBinarySha256':binary_sha,
+              'frozenUvspecHelpSha256':os.environ['FROZEN_UVSPEC_HELP_SHA256'],
+              'observedLongHelpSha256':next(iter(help_hashes)),
+              'observedShortHelpSha256':next(iter(short_hashes)),
+              'longHelpMatchesFrozen':next(iter(help_hashes))==os.environ['FROZEN_UVSPEC_HELP_SHA256'],
+              'runs':runs,
+              'package':{
+                  'name':package_meta.get('name'),
+                  'version':package_meta.get('version'),
+                  'build':package_meta.get('build'),
+                  'buildNumber':package_meta.get('build_number'),
+                  'url':package_meta.get('url'),
+                  'sha256':package_meta.get('sha256'),
+              },
+              'runner':{
+                  'imageOS':os.environ.get('ImageOS'),
+                  'runnerArch':os.environ.get('RUNNER_ARCH'),
+                  'kernel':platform.release(),
+                  'python':platform.python_version(),
+              },
+              'lddReturnCode':ldd.returncode,
+              'lddLines':ldd.stdout.splitlines(),
+          }
+          out=Path('runtime-help-diagnostic')/f"report-{os.environ['REPLICA']}.json"
+          out.write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'replica':report['replica'],
+              'uvspecBinarySha256':binary_sha,
+              'frozenUvspecHelpSha256':report['frozenUvspecHelpSha256'],
+              'observedLongHelpSha256':report['observedLongHelpSha256'],
+              'observedShortHelpSha256':report['observedShortHelpSha256'],
+              'longHelpMatchesFrozen':report['longHelpMatchesFrozen'],
+              'longHelpPreview':runs[0]['preview'],
+              'package':report['package'],
+              'scientificSolverExecuted':False,
+          },indent=2,sort_keys=True))
+          PY
+      - name: Upload zero-solver diagnostic evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-runtime-help-diagnostic-${{ matrix.replica }}
+          path: runtime-help-diagnostic/report-${{ matrix.replica }}.json
+          if-no-files-found: error
+          retention-days: 30

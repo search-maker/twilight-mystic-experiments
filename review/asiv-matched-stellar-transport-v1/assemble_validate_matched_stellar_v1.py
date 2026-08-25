@@ -6,7 +6,7 @@ It consumes the complete future one-shot execution artifact universe frozen by
 PR #363/#364, builds one 0081-compatible optical-depth LUT per non-native OPAC
 family, and compares interpolation against all fresh off-knot reference spectra.
 
-No partial result interpretation is allowed.  Every one of the 2700 training
+No partial result interpretation is allowed. Every one of the 2700 training
 spectra and 768 validation spectra must be present exactly once before metrics
 are emitted.
 """
@@ -111,10 +111,19 @@ def select_three_pickles_representatives(bundle: dict[str, Any]) -> list[dict[st
     normal = [template for template in templates if template.get("abundance") == "normal"]
     if not normal:
         raise ValidationRefusal("no normal-abundance Pickles templates")
-    by_color = sorted(normal, key=lambda row: (float(row["bMinusVLandoltBmVc"]), int(row["libraryNumber"])))
-    minimum = by_color[0]
-    maximum = by_color[-1]
-    near = min(normal, key=lambda row: (abs(float(row["bMinusVLandoltBmVc"]) - 0.65), int(row["libraryNumber"])))
+    minimum = min(
+        normal,
+        key=lambda row: (float(row["bMinusVLandoltBmVc"]), int(row["libraryNumber"])),
+    )
+    maximum_color = max(float(row["bMinusVLandoltBmVc"]) for row in normal)
+    maximum = min(
+        (row for row in normal if float(row["bMinusVLandoltBmVc"]) == maximum_color),
+        key=lambda row: int(row["libraryNumber"]),
+    )
+    near = min(
+        normal,
+        key=lambda row: (abs(float(row["bMinusVLandoltBmVc"]) - 0.65), int(row["libraryNumber"])),
+    )
     selected = [minimum, near, maximum]
     if len({int(row["libraryNumber"]) for row in selected}) != 3:
         raise ValidationRefusal("deterministic representative rule did not yield three distinct templates")

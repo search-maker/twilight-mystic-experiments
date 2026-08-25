@@ -15,10 +15,51 @@ jobs:
   archive-exact-capture:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PRIVATE_APPLICATION_SHA: 404c255a15158ed172bb2d6a7ac97b4ea24a9f29
+      EXPECTED_JOHNSON_SHA256: 51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a
+      EXPECTED_JOHNSON_GIT_BLOB_SHA1: bbc12bf5543f373676612e00e411071cbf86acce
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Require read-only private checkout credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+
+      - name: Checkout exact private Johnson-V source commit read-only
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.PRIVATE_APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private Johnson-V bytes and sanitize private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$PRIVATE_APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+          johnson='private-app/scientific-tools/visibility-v3/generated/johnson-v-1nm.json'
+          test -f "$johnson"
+          test "$(git -C private-app hash-object scientific-tools/visibility-v3/generated/johnson-v-1nm.json)" = "$EXPECTED_JOHNSON_GIT_BLOB_SHA1"
+          test "$(sha256sum "$johnson" | awk '{print $1}')" = "$EXPECTED_JOHNSON_SHA256"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('private-app/scientific-tools/visibility-v3/generated/johnson-v-1nm.json')
+          j=json.loads(p.read_text(encoding='utf-8'))
+          assert j['wavelengthNm'] == list(range(380,781))
+          assert len(j['response']) == 411
+          assert j['response'][-10:] == [0.0]*10
+          PY
 
       - name: Download and verify exact surviving MYSTIC-STATE-0081 capture artifact
         shell: bash
@@ -78,7 +119,10 @@ jobs:
             'sourceArtifactDigestSha256':'2b13842e4b277380d205eeb89258af9eab4bb9e2ba3dc5c96256fae2f38c064c',
             'picklesSedBundleSha256':'85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb',
             'stellarTransportV2LutSha256':'21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f',
-            'johnsonVGridSha256RecordedByCapture':'51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a',
+            'johnsonVGridSha256':'51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a',
+            'johnsonVGitBlobSha1':'bbc12bf5543f373676612e00e411071cbf86acce',
+            'johnsonVSourcePrivateApplicationSha':'404c255a15158ed172bb2d6a7ac97b4ea24a9f29',
+            'exactJohnsonVBytesArchived':True,
             'solverExecutionPerformed':False,
             'scientificResidualComputedByThisArchivalStep':False,
             'pandoraHoldoutOpened':False,
@@ -87,7 +131,7 @@ jobs:
           Path('/tmp/0081-capture/PRESERVATION_REPORT.review.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
           PY
 
-      - name: Commit exact capture assets to the review branch
+      - name: Commit exact capture and Johnson-V assets to the review branch
         shell: bash
         run: |
           set -euo pipefail
@@ -97,17 +141,21 @@ jobs:
           cp /tmp/0081-capture/0081-capture-manifest.json "$target/0081-capture-manifest.json"
           cp /tmp/0081-capture/0081-capture-gate-result.json "$target/0081-capture-gate-result.json"
           cp /tmp/0081-capture/PRESERVATION_REPORT.review.json "$target/PRESERVATION_REPORT.review.json"
+          cp private-app/scientific-tools/visibility-v3/generated/johnson-v-1nm.json "$target/johnson-v-1nm.json"
 
           printf '%s  %s\n' \
             '85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb' \
             "$target/pickles-sed-1nm.json" | sha256sum -c -
+          printf '%s  %s\n' "$EXPECTED_JOHNSON_SHA256" "$target/johnson-v-1nm.json" | sha256sum -c -
+          test "$(git hash-object "$target/johnson-v-1nm.json")" = "$EXPECTED_JOHNSON_GIT_BLOB_SHA1"
 
+          rm -rf private-app
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then
-            echo 'Exact 0081 capture assets are already archived.'
+            echo 'Exact 0081 capture and Johnson-V assets are already archived.'
             exit 0
           fi
-          git commit -m 'Archive exact surviving 0081 stellar validation assets'
+          git commit -m 'Archive exact frozen 0081 Johnson-V asset'
           git push origin "HEAD:${GITHUB_REF_NAME}"

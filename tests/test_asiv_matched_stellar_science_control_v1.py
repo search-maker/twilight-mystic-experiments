@@ -52,21 +52,37 @@ class AsivMatchedStellarScienceControlV1Tests(unittest.TestCase):
         self.assertTrue(auth_control["activeAuthorizationReviewWorkflowMustBeGitBlobIdenticalToCandidate"])
         self.assertTrue(auth_control["activeScienceWorkflowMustBeGitBlobIdenticalToCandidate"])
 
-    def test_no_authorization_or_active_science_workflow_exists_in_review_package(self):
+    def test_authorization_absent_and_workflow_activation_state_is_consistent(self):
+        mod = load_builder()
         self.assertFalse(AUTHORIZATION_PATH.exists())
-        self.assertFalse(ACTIVE_AUTH_REVIEW.exists())
-        self.assertFalse(ACTIVE_SCIENCE.exists())
         self.assertTrue(AUTH_REVIEW_CANDIDATE.is_file())
         self.assertTrue(SCIENCE_CANDIDATE.is_file())
         self.assertFalse(str(AUTH_REVIEW_CANDIDATE.relative_to(ROOT)).startswith(".github/workflows/"))
         self.assertFalse(str(SCIENCE_CANDIDATE.relative_to(ROOT)).startswith(".github/workflows/"))
+        active_count = int(ACTIVE_AUTH_REVIEW.exists()) + int(ACTIVE_SCIENCE.exists())
+        self.assertIn(active_count, (0, 2), "workflow activation must be atomic: both absent or both exact")
+        if active_count == 2:
+            observed = mod.validate_active_workflows(ROOT)
+            self.assertEqual(observed["authorizationReviewWorkflowActiveGitBlobSha1"], "6ed68a90f2614dd762b5484e740a146e2cb636cc")
+            self.assertEqual(observed["scienceWorkflowActiveGitBlobSha1"], "396bb79f0f00b36888f809f7f3bff40d62646632")
 
-    def test_real_authorization_default_refuses_before_workflow_activation(self):
+    def test_real_authorization_default_tracks_activation_gate_without_writing_file(self):
         mod = load_builder()
         parent = "d" * 40
-        with self.assertRaises(mod.AuthorizationBuilderRefusal) as ctx:
-            mod.build_authorization(ROOT, parent)
-        self.assertIn("active authorization-review workflow is absent", str(ctx.exception))
+        self.assertFalse(AUTHORIZATION_PATH.exists())
+        if ACTIVE_AUTH_REVIEW.exists() and ACTIVE_SCIENCE.exists():
+            auth = mod.build_authorization(ROOT, parent)
+            self.assertEqual(auth["status"], "AUTHORIZED_ONE_SHOT_SCIENTIFIC_EXECUTION")
+            self.assertFalse(auth["dispatchAuthorized"])
+            self.assertFalse(auth["automaticDispatch"])
+            self.assertFalse(auth["consumed"])
+            self.assertFalse(AUTHORIZATION_PATH.exists())
+            mod.validate_authorization(ROOT, auth, parent)
+        else:
+            with self.assertRaises(mod.AuthorizationBuilderRefusal) as ctx:
+                mod.build_authorization(ROOT, parent)
+            self.assertIn("active authorization-review workflow is absent", str(ctx.exception))
+            self.assertFalse(AUTHORIZATION_PATH.exists())
 
     def test_builder_constructs_and_validates_only_an_in_memory_pre_activation_template(self):
         mod = load_builder()

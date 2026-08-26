@@ -1,0 +1,87 @@
+name: Starsvisibility PR111 exact-head transient validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-pr111-exact-head-v1.yml'
+      - 'review/starsvisibility-pr111-exact-head-v1/run.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - label: tishrei-2025-transient
+            date: '2025-09-23'
+          - label: tammuz-2026-transient
+            date: '2026-06-16'
+    env:
+      APPLICATION_SHA: d1c534822915c4668df9ef47ad17b7b771d56617
+      APPLICATION_REPO: search-maker/starsvisibility
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      CASE_LABEL: ${{ matrix.label }}
+      CASE_DATE: ${{ matrix.date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact PR111 application head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Full exact-head build and science-regression suite
+        working-directory: app
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+          grep -q "fieldFactor: 3.14" scientific-tools/visibility-v3/level-b-current-main-adapter.mjs
+          grep -q 'TRANSIENT_ADAPTATION_SENSITIVITY_TAU_SECONDS = Object.freeze(\[20, 30, 45, 60\])' scientific-tools/visibility-v3/transient-adaptation.mjs
+          grep -q 'DEFAULT_TRANSIENT_ADAPTATION_TAU_SECONDS = 30' scientific-tools/visibility-v3/transient-adaptation.mjs
+          grep -q 'INITIAL_CONTIGUOUS_COMMON_SKY_STELLAR_SUPPORT_ONLY_FAIL_CLOSED_AFTER_GAP_V2' scientific-tools/visibility-v3/level-b-transient-contiguous-support.mjs
+          grep -q 'legacy-application-sunset-depth-relative-shape-anchored-at-level-b-2deg-v2' scientific-tools/visibility-v3/sunset-adaptation-prehistory.mjs
+          grep -q 'sunDepressionAtSunsetDeg: hooks.sunDepressionAtSunsetDeg' dist/work-in-progress/index.html
+          grep -q 'levelBTransientApplicationSunsetSunDepressionDeg' dist/work-in-progress/index.html
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: Run exact built-app Jerusalem transient regression
+        run: |
+          set -euo pipefail
+          cp review/starsvisibility-pr111-exact-head-v1/run.mjs app/pr111-transient-regression.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/pr111-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node pr111-transient-regression.mjs
+      - name: Upload exact-head evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: starsvisibility-pr111-exact-head-${{ matrix.label }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/starsvisibility-pr111-exact-head/${{ matrix.label }}.json

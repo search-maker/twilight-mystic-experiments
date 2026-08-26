@@ -1,0 +1,1 @@
+KARB surface meteorology was acquired independently from the Iowa Environmental Mesonet ASOS archive. The two routine reports bracketing the Taylor observing interval give MSLP 1019.9 hPa at 00:53 UTC and 1020.4 hPa at 01:53 UTC, with CLR sky. The science package may interpolate these values in time; it must not infer pressure or transparency from Taylor residuals.

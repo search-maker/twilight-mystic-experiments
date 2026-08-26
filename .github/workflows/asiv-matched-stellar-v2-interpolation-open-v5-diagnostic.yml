@@ -1,0 +1,233 @@
+name: ASIV matched stellar v2 interpolation diagnostic on opened v5 set
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/asiv-matched-stellar-v2-interpolation-open-v5-diagnostic.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install numerical interpolation dependency only
+        run: python -m pip install --disable-pip-version-check 'numpy==2.1.3' 'scipy==1.14.1'
+
+      - name: Download already-open Recovery v5 final validation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: asiv-matched-stellar-final-validation-recovery-v5
+          path: /tmp/v5-final
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '32889328517'
+
+      - name: Reproduce v1 exactly and compare generic interpolation alternatives without solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v uvspec >/dev/null 2>&1; then
+            echo 'REFUSAL: uvspec unexpectedly present in zero-solver diagnostic environment' >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          import numpy as np
+          from scipy.interpolate import PchipInterpolator, CubicSpline
+
+          ROOT = Path.cwd()
+          FINAL = Path('/tmp/v5-final/matched-stellar-final-validation-recovery-v5.json')
+          PICKLES = ROOT / 'review/asiv-matched-stellar-transport-v1/frozen-assets/pickles-sed-1nm.json'
+          JOHNSON = ROOT / 'review/asiv-matched-stellar-transport-v1/frozen-assets/johnson-v-1nm.json'
+
+          result = json.loads(FINAL.read_text(encoding='utf-8'))
+          pickles = json.loads(PICKLES.read_text(encoding='utf-8'))
+          johnson = json.loads(JOHNSON.read_text(encoding='utf-8'))
+
+          wave = np.asarray(johnson['wavelengthNm'], dtype=float)
+          response = np.asarray(johnson['response'][:401], dtype=float)
+          assert wave.shape == (401,) and response.shape == (401,)
+          rep_numbers = [int(r['libraryNumber']) for r in result['representatives']]
+          templates = {int(r['libraryNumber']): r for r in pickles['templates']}
+          reps = {n: np.asarray(templates[n]['fluxRelative'], dtype=float) for n in rep_numbers}
+          assert rep_numbers == [1, 26, 45], rep_numbers
+
+          def band_av(t, flux):
+              unatten = flux * response
+              atten = unatten * t
+              den = np.trapezoid(unatten, wave)
+              num = np.trapezoid(atten, wave)
+              return -2.5 * math.log10(float(num / den))
+
+          def csc(h):
+              return 1.0 / math.sin(math.radians(float(h)))
+
+          def linear_axis(axis, values, q, axis_index):
+              axis = np.asarray(axis, dtype=float)
+              q = float(q)
+              if q < axis[0] or q > axis[-1]:
+                  raise ValueError('query outside support')
+              hi = int(np.searchsorted(axis, q, side='right'))
+              if hi == 0:
+                  hi = 1
+              if hi >= len(axis):
+                  hi = len(axis) - 1
+              lo = hi - 1
+              x0, x1 = axis[lo], axis[hi]
+              f = 0.0 if x1 == x0 else (q - x0) / (x1 - x0)
+              v0 = np.take(values, lo, axis=axis_index)
+              v1 = np.take(values, hi, axis=axis_index)
+              return v0 + (v1 - v0) * f
+
+          def pchip_axis(axis, values, q, axis_index):
+              axis = np.asarray(axis, dtype=float)
+              values = np.asarray(values, dtype=float)
+              if np.any(np.diff(axis) <= 0):
+                  order = np.argsort(axis)
+                  axis = axis[order]
+                  values = np.take(values, order, axis=axis_index)
+              return np.asarray(PchipInterpolator(axis, values, axis=axis_index, extrapolate=False)(float(q)), dtype=float)
+
+          def cubic_axis(axis, values, q, axis_index):
+              axis = np.asarray(axis, dtype=float)
+              values = np.asarray(values, dtype=float)
+              if np.any(np.diff(axis) <= 0):
+                  order = np.argsort(axis)
+                  axis = axis[order]
+                  values = np.take(values, order, axis=axis_index)
+              return np.asarray(CubicSpline(axis, values, axis=axis_index, bc_type='natural', extrapolate=False)(float(q)), dtype=float)
+
+          def predict_tau(rt, h, e, aod, method):
+              alts = np.asarray(rt['axes']['targetAltitudeDeg'], dtype=float)
+              elevs = np.asarray(rt['axes']['observerElevationM'], dtype=float)
+              aods = np.asarray(rt['axes']['aod550'], dtype=float)
+              nw = len(rt['wavelengthNm'])
+              values = np.asarray(rt['directOpticalDepth'], dtype=float).reshape(len(alts), len(elevs), len(aods), nw)
+
+              # AOD first. Baseline keeps the prefrozen linear rule. Only the explicit
+              # pchip-all candidate changes this axis.
+              if method == 'pchip-all-csc':
+                  x = pchip_axis(aods, values, aod, 2)  # alt,elev,wave
+              else:
+                  x = linear_axis(aods, values, aod, 2)
+
+              # Elevation second.
+              if method in {'pchip-elev-csc', 'pchip-alt-elev-csc', 'pchip-all-csc', 'pchip-elev-linear-alt'}:
+                  x = pchip_axis(elevs, x, e, 1)  # alt,wave
+              elif method == 'cubic-elev-csc':
+                  x = cubic_axis(elevs, x, e, 1)
+              else:
+                  x = linear_axis(elevs, x, e, 1)
+
+              # Target-altitude last.
+              if method in {'pchip-alt-csc', 'pchip-alt-elev-csc', 'pchip-all-csc'}:
+                  coords = np.asarray([csc(v) for v in alts], dtype=float)
+                  x = pchip_axis(coords, x, csc(h), 0)
+              elif method == 'pchip-elev-linear-alt':
+                  x = linear_axis(alts, x, h, 0)
+              else:
+                  coords = np.asarray([csc(v) for v in alts], dtype=float)
+                  # csc decreases as altitude rises, so sort via generic helper.
+                  if np.any(np.diff(coords) <= 0):
+                      order = np.argsort(coords)
+                      coords = coords[order]
+                      x = np.take(x, order, axis=0)
+                  x = linear_axis(coords, x, csc(h), 0)
+              return np.asarray(x, dtype=float)
+
+          methods = [
+              'baseline-v1',
+              'pchip-elev-csc',
+              'cubic-elev-csc',
+              'pchip-alt-csc',
+              'pchip-alt-elev-csc',
+              'pchip-all-csc',
+              'pchip-elev-linear-alt',
+          ]
+
+          summaries = {}
+          baseline_assertions = []
+
+          for method in methods:
+              fam_summary = {}
+              for fam, rt in result['runtimeLuts'].items():
+                  deltas = []
+                  worst = None
+                  for case in result['familyResults'][fam]['cases']:
+                      h = float(case['targetAltitudeDeg'])
+                      e = float(case['observerElevationM'])
+                      a = float(case['aod550'])
+                      tau = predict_tau(rt, h, e, a, method)
+                      if np.any(~np.isfinite(tau)) or np.any(tau < 0):
+                          raise RuntimeError(f'invalid tau for {method} {fam} {h} {e} {a}')
+                      t = np.exp(-tau)
+                      for sedrow in case['sedComparisons']:
+                          n = int(sedrow['libraryNumber'])
+                          pred = band_av(t, reps[n])
+                          ref = float(sedrow['referenceAvMag'])
+                          delta = pred - ref
+                          deltas.append(delta)
+                          item = {
+                              'absDeltaAvMag': abs(delta),
+                              'deltaAvMag': delta,
+                              'targetAltitudeDeg': h,
+                              'observerElevationM': e,
+                              'aod550': a,
+                              'libraryNumber': n,
+                              'predictedAvMag': pred,
+                              'referenceAvMag': ref,
+                          }
+                          if worst is None or item['absDeltaAvMag'] > worst['absDeltaAvMag']:
+                              worst = item
+                  max_abs = max(abs(v) for v in deltas)
+                  rms = math.sqrt(sum(v*v for v in deltas) / len(deltas))
+                  fam_summary[fam] = {
+                      'comparisonCount': len(deltas),
+                      'maxAbsDeltaAvMag': max_abs,
+                      'rmsDeltaAvMag': rms,
+                      'countAbove025': sum(abs(v) > 0.025 for v in deltas),
+                      'passedFrozenV1GatesForDevelopmentComparisonOnly': max_abs <= 0.025 and rms <= 0.010,
+                      'worst': worst,
+                  }
+                  if method == 'baseline-v1':
+                      recorded = result['familyResults'][fam]
+                      dm = abs(max_abs - float(recorded['maxAbsDeltaAvMag']))
+                      dr = abs(rms - float(recorded['rmsDeltaAvMag']))
+                      baseline_assertions.append({'family': fam, 'maxDiff': dm, 'rmsDiff': dr})
+                      if dm > 2e-12 or dr > 2e-12:
+                          raise RuntimeError(f'baseline reproduction mismatch for {fam}: max {dm} rms {dr}')
+              summaries[method] = fam_summary
+
+          compact = {
+              'status': 'OPEN_V5_DEVELOPMENT_SET_INTERPOLATION_DIAGNOSTIC_ONLY',
+              'sourceRunId': 32889328517,
+              'solverExecuted': False,
+              'newValidationClaim': False,
+              'v5SetReusableAsFutureHoldout': False,
+              'baselineReproducedWithin2e-12': True,
+              'baselineAssertions': baseline_assertions,
+              'methods': summaries,
+          }
+          out = Path('/tmp/v2-interpolation-diagnostic.json')
+          out.write_text(json.dumps(compact, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print('MATCHED_STELLAR_V2_INTERPOLATION_DIAGNOSTIC=' + json.dumps(compact, sort_keys=True))
+          PY
+
+      - name: Upload diagnostic only
+        uses: actions/upload-artifact@v4
+        with:
+          name: asiv-matched-stellar-v2-interpolation-open-v5-diagnostic
+          path: /tmp/v2-interpolation-diagnostic.json
+          if-no-files-found: error

@@ -10,6 +10,7 @@ from typing import Any
 STAGE_ID = "cross-geometry-pilot-v1"
 ADAPTER_ID = "mystic-cross-geometry-execution-v1"
 PROPOSAL_ADAPTER = Path(__file__).with_name("cross_geometry_adapter.py")
+AOD550_DIRECTIVE_PREFIX = "aerosol_set_tau_at_wvl 550 "
 
 
 class AdapterRefusal(RuntimeError):
@@ -69,7 +70,7 @@ def validate_rendered_aod550_binding(text: str, expected_aod550: Any) -> None:
         aod = float(expected_aod550)
     except (TypeError, ValueError) as exc:
         raise AdapterRefusal(f"invalid normalized AOD550: {expected_aod550}") from exc
-    expected = f"aerosol_set_tau_at_wvl 550 {aod:.6f}"
+    expected = f"{AOD550_DIRECTIVE_PREFIX}{aod:.6f}"
     directives = [line.strip() for line in text.splitlines() if line.strip().startswith("aerosol_set_tau_at_wvl")]
     if directives != [expected]:
         raise AdapterRefusal(f"rendered AOD550 binding mismatch: expected exactly {expected!r}, got {directives!r}")

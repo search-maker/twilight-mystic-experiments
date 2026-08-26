@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+# Repair-v2 is representation-only. Authorization-1 remains permanently consumed.
 BATCH_ID = "jerusalem-tishrei-three-star-direct-mystic-v1"
 EXPECTED_AOD550 = 0.22
 EXPECTED_OBSERVER_ELEVATION_M = 800.0

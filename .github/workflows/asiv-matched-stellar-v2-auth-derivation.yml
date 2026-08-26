@@ -1,0 +1,68 @@
+name: ASIV matched stellar v2 authorization derivation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/asiv-matched-stellar-v2-auth-derivation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  derive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact derivation head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+
+      - name: Derive exact v2 authorization bytes with no solver or write authority
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/asiv-matched-stellar-v2-auth-derivation.yml
+          test ! -e review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json
+          if command -v uvspec >/dev/null 2>&1; then
+            echo 'REFUSAL: uvspec unexpectedly present in authorization derivation environment' >&2
+            exit 1
+          fi
+          mkdir -p /tmp/v2-auth-derivation
+          python - <<'PY'
+          import importlib.machinery,importlib.util,json,os
+          from pathlib import Path
+          p=Path('review/asiv-matched-stellar-transport-v2/authorization_builder_v2.py.review')
+          loader=importlib.machinery.SourceFileLoader('v2builder',str(p)); spec=importlib.util.spec_from_loader(loader.name,loader); m=importlib.util.module_from_spec(spec); loader.exec_module(m)
+          document=m.build_authorization(exact_parent_commit=os.environ['BASE_SHA'])
+          out=Path('/tmp/v2-auth-derivation/authorization-fresh-validation-v2.json')
+          out.write_text(json.dumps(document,indent=2,sort_keys=True,allow_nan=False)+'\n',encoding='utf-8')
+          print('V2_AUTHORIZATION_DERIVED_NO_SOLVER')
+          print('parent='+os.environ['BASE_SHA'])
+          print('validationCaseCount='+str(document['validationCaseCount']))
+          print('trainingExecutionAuthorized='+str(document['trainingExecutionAuthorized']).lower())
+          print('dispatchAuthorized='+str(document['dispatchAuthorized']).lower())
+          PY
+
+      - name: Upload exact derived v2 authorization bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-v2-authorization-derivation
+          path: /tmp/v2-auth-derivation/authorization-fresh-validation-v2.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

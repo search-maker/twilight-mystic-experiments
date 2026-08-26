@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,15 @@ EXPECTED_EVENT_DEP = 5.2416836635666755
 EXPECTED_AOD550 = 0.22
 EXPECTED_ELEVATION_M = 800.0
 EXPECTED_FIELD_FACTOR = 3.14
+EXPECTED_ALBEDO = 0.15
+EXPECTED_ALIS_IS_NM = 405.0
 EXPECTED_APPLICATION_SHA = "e2d5b761206b6223526f6f79fcb0af5f6de3ba06"
-EXPECTED_HUMAN_THRESHOLD_SHA256 = "bb4cd0ff02159ecffe276022cec9d292c7a434a3"
-EXPECTED_DERIVED_CHANNELS_SHA256 = "ccfd04d4c21188966351f4257e92893d7ce340c7"
+EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1 = "bb4cd0ff02159ecffe276022cec9d292c7a434a3"
+EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1 = "ccfd04d4c21188966351f4257e92893d7ce340c7"
+EXPECTED_UVSPEC_SHA256 = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+EXPECTED_ATMOSPHERE_SHA256 = "dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5"
 EXPECTED_EVIDENCE_ARTIFACT_ID = 9612259358
 EXPECTED_EVIDENCE_DIGEST = "sha256:d43120ad60d2e4a502023cd187bbeffecd6364d4edc975c14c84432c3c8097c5"
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,159}$")
 
 
@@ -66,6 +70,13 @@ def raw_sha256(path: Path) -> str:
 
 def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+
+def git_blob_sha1(root: Path, rel: str) -> str:
+    try:
+        return git(root, "rev-parse", f"HEAD:{Path(rel).as_posix()}")
+    except Exception as exc:
+        raise Refusal("git-blob", f"cannot resolve Git blob for {rel}", str(exc)) from exc
 
 
 def load_module(name: str, path: Path):
@@ -128,10 +139,12 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     abs_paths = {k: require_file(root, v, k) for k, v in paths.items()}
     human_threshold = require_file(app_root, args.human_threshold, "humanThreshold")
 
-    if raw_sha256(human_threshold) != EXPECTED_HUMAN_THRESHOLD_SHA256:
-        raise Refusal("human-threshold-hash", "frozen human-threshold hash mismatch", raw_sha256(human_threshold))
-    if raw_sha256(abs_paths["derivedChannels"]) != EXPECTED_DERIVED_CHANNELS_SHA256:
-        raise Refusal("derived-channels-hash", "frozen derived-channel hash mismatch", raw_sha256(abs_paths["derivedChannels"]))
+    human_blob = git_blob_sha1(app_root, args.human_threshold)
+    derived_blob = git_blob_sha1(root, args.derived_channels)
+    if human_blob != EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1:
+        raise Refusal("human-threshold-git-blob", "frozen human-threshold Git blob mismatch", human_blob)
+    if derived_blob != EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1:
+        raise Refusal("derived-channels-git-blob", "frozen derived-channel Git blob mismatch", derived_blob)
 
     manifest = load_json(abs_paths["proposal"])
     evidence = load_json(abs_paths["evidence"])
@@ -151,6 +164,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     if not near((event.get("threeStarSemantics") or {}).get("fieldFactorBaseline"), EXPECTED_FIELD_FACTOR):
         raise Refusal("field-factor", "F=3.14 baseline changed")
 
+    runtime = manifest.get("runtime") or {}
+    if runtime.get("uvspecSha256") != EXPECTED_UVSPEC_SHA256 or runtime.get("atmosphereSha256") != EXPECTED_ATMOSPHERE_SHA256:
+        raise Refusal("runtime-identity", "frozen uvspec/AFGLUS identity changed", {"uvspecSha256": runtime.get("uvspecSha256"), "atmosphereSha256": runtime.get("atmosphereSha256")})
+
     geometries = manifest.get("geometries")
     cases = manifest.get("cases")
     limits = manifest.get("limits") or {}
@@ -158,24 +175,52 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         raise Refusal("geometry-count", "expected exactly 3 geometries")
     if not isinstance(cases, list) or len(cases) != EXPECTED_CASES:
         raise Refusal("case-count", "expected exactly 12 cases")
+    if len({c.get("caseId") for c in cases if isinstance(c, dict)}) != EXPECTED_CASES:
+        raise Refusal("case-id-uniqueness", "case IDs are not exactly unique")
     if sum(int(c.get("photonHistories", 0)) for c in cases if isinstance(c, dict)) != EXPECTED_PHOTONS:
         raise Refusal("photon-accounting", "expected exactly 240M configured photons")
     if limits.get("maximumCases") != 12 or limits.get("maximumParallel") != 6 or limits.get("maximumConfiguredMcPhotonsSum") != EXPECTED_PHOTONS or limits.get("perCaseTimeoutSeconds") != 900:
         raise Refusal("limits", "frozen limits changed", limits)
-    methods = [c.get("method") for c in cases if isinstance(c, dict)]
-    if methods.count("alis") != 6 or methods.count("reference-vroom") != 6:
-        raise Refusal("method-count", "expected six ALIS and six reference-VROOM cases", methods)
-    if sorted(c.get("block") for c in cases if isinstance(c, dict) and c.get("method") == "alis") != [1, 1, 1, 2, 2, 2]:
-        raise Refusal("alis-blocks", "expected two ALIS blocks per geometry")
+    methods = Counter(c.get("method") for c in cases if isinstance(c, dict))
+    if methods != Counter({"alis": 6, "reference-vroom": 6}):
+        raise Refusal("method-count", "expected six ALIS and six reference-VROOM cases", dict(methods))
 
     geometry_by_id = {g.get("target", {}).get("catalogId"): g for g in geometries if isinstance(g, dict)}
     if set(geometry_by_id) != {"HR 6134", "HR 6556", "HR 7796"}:
         raise Refusal("geometry-ids", "wrong frozen determining-star set", sorted(geometry_by_id))
-    for g in geometries:
-        if not near(g.get("observerElevationM", EXPECTED_ELEVATION_M), EXPECTED_ELEVATION_M):
-            raise Refusal("elevation", "observer elevation changed", g)
-        if not near(g.get("aod550", EXPECTED_AOD550), EXPECTED_AOD550):
-            raise Refusal("geometry-aod", "geometry AOD changed", g)
+
+    normalized_by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for case in cases:
+        try:
+            resolved_case, geometry = adapter.resolve_case(manifest, case["caseId"])
+            inputs = adapter.normalized_inputs(manifest, resolved_case, geometry)
+        except Exception as exc:
+            raise Refusal("normalized-inputs", "adapter could not resolve frozen case", {"caseId": case.get("caseId"), "reason": str(exc)}) from exc
+        normalized_by_group[inputs["groupId"]].append(inputs)
+        expected = {
+            "sunDepressionDeg": EXPECTED_EVENT_DEP,
+            "observerElevationM": EXPECTED_ELEVATION_M,
+            "aod550": EXPECTED_AOD550,
+            "albedo": EXPECTED_ALBEDO,
+            "alisSpectralImportanceSamplingNm": EXPECTED_ALIS_IS_NM,
+        }
+        bad_numeric = {k: (inputs.get(k), v) for k, v in expected.items() if not near(inputs.get(k), v)}
+        if bad_numeric:
+            raise Refusal("normalized-physics", "normalized physical input changed", {"caseId": inputs["caseId"], "stale": bad_numeric})
+        if inputs.get("mcSpherical") != "1D" or inputs.get("molecularAbsorption") != "crs" or inputs.get("wavelengthDomainNm") != [380, 780]:
+            raise Refusal("normalized-rt-contract", "normalized RT contract changed", {"caseId": inputs["caseId"], "mcSpherical": inputs.get("mcSpherical"), "molecularAbsorption": inputs.get("molecularAbsorption"), "wavelengthDomainNm": inputs.get("wavelengthDomainNm")})
+        if inputs.get("atmosphere") != {"root": "libRadtranData", "path": "atmmod/afglus.dat"}:
+            raise Refusal("normalized-atmosphere", "normalized atmosphere is not frozen AFGLUS", {"caseId": inputs["caseId"], "atmosphere": inputs.get("atmosphere")})
+
+    if set(normalized_by_group) != set(g.get("groupId") for g in geometries):
+        raise Refusal("group-set", "case groups do not exactly match geometry groups")
+    expected_signature = Counter({("alis", 1): 1, ("alis", 2): 1, ("reference-vroom", 1): 1, ("reference-vroom", 2): 1})
+    for group_id, group_cases in normalized_by_group.items():
+        if len(group_cases) != 4:
+            raise Refusal("group-case-count", "each geometry must have exactly four cases", {"groupId": group_id, "count": len(group_cases)})
+        signature = Counter((c["method"], c["block"]) for c in group_cases)
+        if signature != expected_signature:
+            raise Refusal("group-replicates", "each geometry must have exactly two blocks per method", {"groupId": group_id, "signature": {f"{k[0]}:{k[1]}": v for k, v in signature.items()}})
 
     source = evidence.get("source") or {}
     if source.get("artifactId") != EXPECTED_EVIDENCE_ARTIFACT_ID or source.get("artifactDigest") != EXPECTED_EVIDENCE_DIGEST:
@@ -200,15 +245,22 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
     if contract.get("analysisId") != "jerusalem-tishrei-direct-mystic-level-b-comparison-v1" or contract.get("scientificExecution") is not False:
         raise Refusal("analysis-contract", "wrong analysis contract header")
-    if ((contract.get("skyOnlyVisibilitySubstitution") or {}).get("fieldFactor") != EXPECTED_FIELD_FACTOR or
-        (contract.get("skyOnlyVisibilitySubstitution") or {}).get("branch") != "full"):
+    contract_inputs = contract.get("inputs") or {}
+    if contract_inputs.get("applicationMainSha") != EXPECTED_APPLICATION_SHA:
+        raise Refusal("analysis-app", "analysis application SHA changed")
+    if contract_inputs.get("humanThresholdGitBlobSha1") != EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1 or contract_inputs.get("derivedChannelsGitBlobSha1") != EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1:
+        raise Refusal("analysis-git-blobs", "analysis external-code Git blob binding changed", {"human": contract_inputs.get("humanThresholdGitBlobSha1"), "derived": contract_inputs.get("derivedChannelsGitBlobSha1")})
+    if ((contract.get("skyOnlyVisibilitySubstitution") or {}).get("fieldFactor") != EXPECTED_FIELD_FACTOR or (contract.get("skyOnlyVisibilitySubstitution") or {}).get("branch") != "full"):
         raise Refusal("analysis-F", "analysis F/branch changed")
     alis_role = (contract.get("methodRoles") or {}).get("alis") or {}
     grid = alis_role.get("expectedOutputGrid") or {}
     if grid != {"nodeCount": 8001, "startNm": 380.0, "stopNm": 780.0, "stepNm": 0.05}:
         raise Refusal("alis-grid", "full-spectrum ALIS grid contract changed", grid)
-    if (contract.get("claimBoundary") or {}).get("noParameterTuning") is not True:
-        raise Refusal("analysis-tuning", "analysis no-tuning boundary changed")
+    vroom_role = (contract.get("methodRoles") or {}).get("referenceVroom") or {}
+    if not str(vroom_role.get("forbiddenUse", "")).startswith("do not derive"):
+        raise Refusal("vroom-boundary", "sparse VROOM full-channel prohibition changed")
+    if (contract.get("claimBoundary") or {}).get("noParameterTuning") is not True or (contract.get("claimBoundary") or {}).get("fullSpectrumLevelBValidated") is not False:
+        raise Refusal("analysis-boundary", "analysis claim/no-tuning boundary changed")
 
     execution_adapter_text = abs_paths["executionAdapter"].read_text()
     if "aerosol_set_tau_at_wvl 550" not in execution_adapter_text:
@@ -281,7 +333,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "maximumParallel": 6,
         "perCaseTimeoutSeconds": 900,
         "applicationSha": EXPECTED_APPLICATION_SHA,
-        "humanThresholdRawSha256": EXPECTED_HUMAN_THRESHOLD_SHA256,
+        "humanThresholdGitBlobSha1": human_blob,
+        "derivedChannelsGitBlobSha1": derived_blob,
         "boundary": "one-purpose exact-event authorization verified before syntax check or solver execution; F=3.14 and no-tuning boundary preserved",
     }
 

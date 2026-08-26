@@ -18,6 +18,7 @@ RECOVERY1_RUN_ID = 33009947410
 PACKAGE = Path("experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2")
 PATHS = {
     "gate": PACKAGE / "gate.smoke-recovery2.json",
+    "gateProposal": PACKAGE / "gate_proposal.py",
     "guard": PACKAGE / "execution_guard.py",
     "workflow": Path(".github/workflows/jerusalem-tishrei-elevated-site-smoke-v2-recovery2.yml"),
     "sourceManifest": Path("experiments/jerusalem-tishrei-elevated-site-smoke-v2/manifest.smoke.json"),
@@ -182,6 +183,7 @@ def build(root: Path) -> dict[str, Any]:
         "referenceVroomRunnerRawSha256": sha256(paths["referenceVroomRunner"]),
         "referenceVroomGridRawSha256": sha256(paths["referenceVroomGrid"]),
         "duplicateRunAuditRawSha256": sha256(paths["duplicateRunAudit"]),
+        "gateProposalRawSha256": sha256(paths["gateProposal"]),
         "executionGuardRawSha256": sha256(paths["guard"]),
         "executionWorkflowRawSha256": sha256(paths["workflow"]),
         "runtimeLockRawSha256": sha256(paths["runtimeLock"]),

@@ -148,10 +148,12 @@ class MatchedStellarV2ValidationExecutionReviewTest(unittest.TestCase):
         self.assertNotIn("execute_validation_shard(", text)
         self.assertNotIn("workflow_dispatch", text)
 
-    def test_freeze_stage_has_no_active_workflow_or_authorization(self):
-        self.assertFalse(ACTIVE_SCIENCE.exists())
-        self.assertFalse(ACTIVE_AUTH.exists())
+    def test_freeze_or_activation_stage_has_no_authorization_and_atomic_workflow_state(self):
         self.assertFalse(AUTH_PATH.exists())
+        self.assertEqual(ACTIVE_SCIENCE.exists(), ACTIVE_AUTH.exists())
+        if ACTIVE_SCIENCE.exists():
+            self.assertEqual(git_blob(ACTIVE_SCIENCE), git_blob(SCIENCE))
+            self.assertEqual(git_blob(ACTIVE_AUTH), git_blob(AUTH_REVIEW))
 
 
 if __name__ == "__main__":

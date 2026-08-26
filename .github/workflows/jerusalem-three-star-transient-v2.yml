@@ -12,7 +12,7 @@ jobs:
   transient-event:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -21,12 +21,15 @@ jobs:
           - label: tishrei-transient
             civil_date: '2025-09-23'
             hebrew_label: '1 Tishrei 5786'
+            overlap_label: 'tishrei-transient-overlap'
           - label: nisan-transient
             civil_date: '2026-03-19'
             hebrew_label: '1 Nisan 5786'
+            overlap_label: ''
           - label: tammuz-transient
             civil_date: '2026-06-16'
             hebrew_label: '1 Tammuz 5786'
+            overlap_label: 'tammuz-transient-overlap'
     env:
       APPLICATION_REPO: search-maker/starsvisibility
       APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
@@ -34,6 +37,7 @@ jobs:
       CASE_LABEL: ${{ matrix.label }}
       CASE_DATE: ${{ matrix.civil_date }}
       HEBREW_LABEL: ${{ matrix.hebrew_label }}
+      OVERLAP_LABEL: ${{ matrix.overlap_label }}
       ENGINE_MODE: level-b-v3-crumey-blackwell-transient-experimental
       LATITUDE_DEG: '31.778'
       LONGITUDE_DEG: '35.235'
@@ -80,18 +84,22 @@ jobs:
         working-directory: app
         shell: bash
         run: npx playwright install --with-deps chromium
-      - name: Run frozen transient event
+      - name: Run frozen transient event and detailed overlap audit
         shell: bash
         run: |
           set -euo pipefail
           cp review/jerusalem-three-star-exact-events-v2/run.mjs app/jerusalem-event-v2.mjs
+          cp review/jerusalem-three-star-exact-events-v2/audit-transient-overlap.mjs app/transient-overlap-audit.mjs
           python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/jerusalem-transient-v2-server.log" 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
           cd app
           node jerusalem-event-v2.mjs
-      - name: Upload evidence
+          if [ -n "${OVERLAP_LABEL:-}" ]; then
+            CASE_LABEL="$OVERLAP_LABEL" node transient-overlap-audit.mjs
+          fi
+      - name: Upload event evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -99,3 +107,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           path: ${{ runner.temp }}/jerusalem-three-star-exact-events-v2/${{ matrix.label }}.json
+      - name: Upload detailed overlap evidence
+        if: always() && matrix.overlap_label != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-${{ matrix.overlap_label }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/transient-overlap-audit/${{ matrix.overlap_label }}.json

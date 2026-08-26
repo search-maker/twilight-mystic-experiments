@@ -1,0 +1,165 @@
+name: Jerusalem Tishrei smoke v2 recovery2 package validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-tishrei-smoke-v2-recovery2-validation.yml'
+      - '.github/workflows/jerusalem-tishrei-elevated-site-smoke-v2-recovery2.yml'
+      - 'experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-no-uvspec:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PACKAGE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2
+      GATE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/gate.smoke-recovery2.json
+      PROPOSAL_BUILDER: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/gate_proposal.py
+      GUARD: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/execution_guard.py
+      RECOVERY_EXECUTOR: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/smoke_executor.py
+      SOURCE_MANIFEST: experiments/jerusalem-tishrei-elevated-site-smoke-v2/manifest.smoke.json
+      SOURCE_EXECUTOR: experiments/jerusalem-tishrei-elevated-site-smoke-v2/smoke_executor.py
+      REFERENCE_RUNNER: experiments/reference-vroom-v1/runner.py
+      REFERENCE_GRID: experiments/reference-vroom-v1/wavelength-grid.dat
+      EXECUTION_KEY: jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:3
+      SMOKE_ORDINAL: '3'
+    steps:
+      - name: Check out exact PR head with ancestry
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Compile recovery2 package and verify no input mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$PROPOSAL_BUILDER" "$GUARD" "$RECOVERY_EXECUTOR"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads(Path(os.environ['SOURCE_MANIFEST']).read_text())
+          expected=[
+            {'ordinal':1,'caseId':'jtm-smoke-gamcyg-vroom-v2','method':'reference-vroom','seed':89301,'photonHistories':10000},
+            {'ordinal':2,'caseId':'jtm-smoke-gamcyg-alis-v2','method':'alis','seed':89302,'photonHistories':10000},
+          ]
+          assert m['cases']==expected
+          g=m['frozenGeometry']
+          assert g['sunDepressionDeg']==5.2416836635666755
+          assert g['targetAltitudeDeg']==65.34228371339654
+          assert g['relativeAzimuthDeg']==148.9564384037443
+          assert g['observerElevationM']==800 and g['aod550']==0.22 and g['surfaceAlbedo']==0.15
+          assert g['atmosphere']=='AFGLUS' and g['mcSpherical']=='1D' and g['molecularAbsorption']=='crs'
+          old=Path(os.environ['SOURCE_EXECUTOR']).read_text()
+          assert 'len(wavelengths) != len(EXPECTED_VROOM_GRID)' in old
+          new=Path(os.environ['RECOVERY_EXECUTOR']).read_text()
+          assert 'full-vroom-output-8001-node' in new and 'TRANSPORT_GRID_NM' in new and 'COMPARISON_NODES_NM' in new
+          assert 'derive_channels' not in new and 'evaluatePointSourceVisibility' not in new
+          ref=Path(os.environ['REFERENCE_RUNNER']).read_text()
+          assert 'def parse_spectrum(path):' in ref and 'for line in path.read_text' in ref and 'for n in NODES' in ref
+          grid=[int(x) for x in Path(os.environ['REFERENCE_GRID']).read_text().split()]
+          assert grid==[380,470,480,490,500,510,520,530,540,560,580,590,600,610,640,660,780]
+          print('RECOVERY2_SCOPE_AND_REFERENCE_EVIDENCE_PASS')
+          PY
+      - name: Synthetic full-grid structural parser test only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          p=Path('experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/smoke_executor.py')
+          spec=importlib.util.spec_from_file_location('r2',p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          grid=[380.0+0.05*i for i in range(8001)]
+          v=m.validate_grid('reference-vroom',grid,Path('/synthetic/mc.rad.spc'))
+          a=m.validate_grid('alis',grid,Path('/synthetic/mc.rad.spc'))
+          assert v['nodeCount']==8001 and v['gridMode']=='full-vroom-output-8001-node'
+          assert v['transportGridNodeCount']==17 and v['comparisonNodeCount']==15
+          assert v['transportGridNodesPresent'] is True and v['comparisonNodesPresent'] is True
+          assert a=={'nodeCount':8001,'startNm':380.0,'stopNm':780.0,'stepNm':0.05,'gridMode':'full-alis-8001-node'}
+          print('SYNTHETIC_VROOM_AND_ALIS_8001_GRID_PASS')
+          PY
+      - name: Validate disabled package proposal or enabled one-purpose gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p validation-output
+          ENABLED="$(python - <<'PY'
+          import json, os
+          print('true' if json.load(open(os.environ['GATE']))['enabled'] else 'false')
+          PY
+          )"
+          if [ "$ENABLED" = false ]; then
+            SOURCE_SHA="$(git rev-parse HEAD)"
+            python "$PROPOSAL_BUILDER" --repository-root . --output validation-output/gate-proposal.json
+            python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/gate-proposal.json'))
+          assert p['status']=='PROPOSAL_ONLY_GATE_DISABLED_IN_REPOSITORY'
+          assert p['executionEnabledByProposal'] is False
+          g=p['proposedGate']
+          assert g['enabled'] is True and g['infrastructureExecution'] is True
+          assert g['scientificExecution'] is False and g['scientificDiagnostic'] is False and g['scientificUseProhibited'] is True
+          assert g['executionKey']==os.environ['EXECUTION_KEY'] and g['smokeOrdinal']==3
+          assert g['exactGateParentCommit']==p['sourceCommit']
+          print('RECOVERY2_GATE_PROPOSAL_PASS')
+          PY
+            python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/gate-proposal.json'))
+          with open(os.environ['GATE'],'w') as f:
+              json.dump(p['proposedGate'],f,indent=2,sort_keys=True); f.write('\n')
+          PY
+            test "$(git diff --name-only)" = "$GATE"
+            git config user.name 'recovery2-package-validation'
+            git config user.email 'recovery2-package-validation@invalid.local'
+            git add "$GATE"
+            git commit -m 'LOCAL TEST ONLY - recovery2 one-purpose gate'
+            TEST_GATE_SHA="$(git rev-parse HEAD)"
+            test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+            test "$(git diff --name-only HEAD^ HEAD)" = "$GATE"
+            env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+              python "$GUARD" \
+              --repository-root . \
+              --gate-ref "$TEST_GATE_SHA" \
+              --execution-key "$EXECUTION_KEY" \
+              --smoke-ordinal "$SMOKE_ORDINAL" \
+              --output validation-output/guard-report.json
+          else
+            test "$(git diff --name-only HEAD^ HEAD)" = "$GATE"
+            env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+              python "$GUARD" \
+              --repository-root . \
+              --gate-ref "$(git rev-parse HEAD)" \
+              --execution-key "$EXECUTION_KEY" \
+              --smoke-ordinal "$SMOKE_ORDINAL" \
+              --output validation-output/guard-report.json
+            python - <<'PY'
+          import json
+          g=json.load(open('validation-output/guard-report.json'))
+          assert g['status']=='ENABLED_INFRASTRUCTURE_RECOVERY2_ONLY'
+          print('RECOVERY2_REAL_ONE_PURPOSE_GATE_PASS')
+          PY
+          fi
+      - name: Prove no uvspec or solver process/output was launched
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e smoke-output
+          test ! -e runtime-reports
+          test ! -e case-output
+          echo 'RECOVERY2_VALIDATION_ZERO_UVSPEC_ZERO_SOLVER'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-smoke-v2-recovery2-validation-${{ github.run_id }}
+          path: validation-output
+          if-no-files-found: warn
+          retention-days: 90

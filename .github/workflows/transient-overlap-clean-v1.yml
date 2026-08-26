@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/transient-overlap-clean-v1.yml'
-      - 'review/transient-overlap-clean-v1/run.mjs'
+      - 'review/transient-overlap-clean-v1/triple-transient-detail.mjs'
       - 'review/transient-overlap-clean-v1/sunset-depth-audit.mjs'
       - 'review/transient-overlap-clean-v1/ui-transformed-transient.mjs'
 
@@ -66,10 +66,10 @@ jobs:
       - name: Install Chromium
         working-directory: app
         run: npx playwright install --with-deps chromium
-      - name: Run manual overlap, transformed-UI, and sunset-depth diagnostics
+      - name: Run focused triple, transformed-UI, and sunset-depth diagnostics
         run: |
           set -euo pipefail
-          cp review/transient-overlap-clean-v1/run.mjs app/transient-overlap-audit.mjs
+          cp review/transient-overlap-clean-v1/triple-transient-detail.mjs app/triple-transient-detail.mjs
           cp review/transient-overlap-clean-v1/ui-transformed-transient.mjs app/ui-transformed-transient.mjs
           cp review/transient-overlap-clean-v1/sunset-depth-audit.mjs app/sunset-depth-audit.mjs
           python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/transient-overlap-server.log" 2>&1 &
@@ -77,7 +77,7 @@ jobs:
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
           cd app
-          node transient-overlap-audit.mjs
+          node triple-transient-detail.mjs
           node ui-transformed-transient.mjs
           node sunset-depth-audit.mjs
       - name: Enforce removal of the old prehistory rejection
@@ -89,17 +89,19 @@ jobs:
           from pathlib import Path
           label=os.environ['CASE_LABEL']
           root=Path(os.environ['RUNNER_TEMP'])
-          manual=json.loads((root/'transient-overlap-audit'/f'{label}.json').read_text())
+          triple=json.loads((root/'transient-triple-detail'/f'{label}.json').read_text())
           ui=json.loads((root/'transient-ui-transformed'/f'{label}.json').read_text())
-          for name,d in [('manual',manual['audit']),('transformed-ui',ui['payload'])]:
-              reasons=d['reasonCounts']
-              assert reasons.get('TRANSIENT_SUNSET_PREHISTORY_REJECTED',0)==0, (name,reasons)
-              assert reasons.get('APPLICATION_SUNSET_SOLAR_DEPRESSION_REQUIRED_FOR_CONTINUOUS_ADAPTATION',0)==0, (name,reasons)
-              dep=d.get('applicationSunsetSunDepressionDeg',d.get('hooksSunDepressionAtSunsetDeg'))
-              assert 0.82 < dep < 0.85, (name,dep)
-          dep=manual['audit']['applicationSunsetSunDepressionDeg']
-          for row in manual['audit']['equilibriumTripleTransient']:
-              if row.get('missing'): continue
+          reasons=triple['audit']['reasonCounts']
+          assert reasons.get('TRANSIENT_SUNSET_PREHISTORY_REJECTED',0)==0, ('triple',reasons)
+          assert reasons.get('APPLICATION_SUNSET_SOLAR_DEPRESSION_REQUIRED_FOR_CONTINUOUS_ADAPTATION',0)==0, ('triple',reasons)
+          ui_reasons=ui['payload']['reasonCounts']
+          assert ui_reasons.get('TRANSIENT_SUNSET_PREHISTORY_REJECTED',0)==0, ('transformed-ui',ui_reasons)
+          assert ui_reasons.get('APPLICATION_SUNSET_SOLAR_DEPRESSION_REQUIRED_FOR_CONTINUOUS_ADAPTATION',0)==0, ('transformed-ui',ui_reasons)
+          dep=triple['audit']['applicationSunsetSunDepressionDeg']
+          assert 0.82 < dep < 0.85, dep
+          ui_dep=ui['payload']['hooksSunDepressionAtSunsetDeg']
+          assert abs(ui_dep-dep)<1e-9, (dep,ui_dep)
+          for row in triple['audit']['detailed']:
               prov=row.get('transientAdaptationPrehistoryProvenance')
               if prov is not None:
                   assert abs(prov['applicationSunsetSunDepressionDeg']-dep)<1e-9
@@ -109,16 +111,16 @@ jobs:
           assert ui['payload']['transientResultCount'] > 1000
           assert ui['payload']['directCatalogGlobalAfterFinally']=='deleted'
           assert ui['payload']['catalogOnlyFlagAfterFinally']=='deleted'
-          print({'status':'PR111_POST_FIX_TRANSIENT_TRANSFORMED_UI_GATE_PASS','label':label,'sunsetDepressionDeg':dep,'manualReasons':manual['audit']['reasonCounts'],'uiReasons':ui['payload']['reasonCounts'],'uiThreeStar':ui['payload']['result']})
+          print({'status':'PR111_POST_FIX_TRANSIENT_TRANSFORMED_UI_GATE_PASS','label':label,'sunsetDepressionDeg':dep,'tripleReasons':reasons,'uiReasons':ui_reasons,'uiThreeStar':ui['payload']['result']})
           PY
-      - name: Upload overlap evidence
+      - name: Upload triple detail evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: transient-post-fix-${{ matrix.label }}-${{ github.run_id }}
+          name: transient-post-fix-triple-${{ matrix.label }}-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 30
-          path: ${{ runner.temp }}/transient-overlap-audit/${{ matrix.label }}.json
+          path: ${{ runner.temp }}/transient-triple-detail/${{ matrix.label }}.json
       - name: Upload transformed-UI evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -85,6 +85,7 @@ try {
       date: spec.civilDate,
       timeZone: spec.timeZone,
     }, sunsetMs);
+    if (!Number.isFinite(Number(hooks.sunDepressionAtSunsetDeg))) throw new Error('application sunset depth missing from geometry hooks');
     const engine = await import('/scientific-tools/visibility-v3/level-b-sitewide-engine.mjs');
     const evaluation = await engine.evaluateSitewideRows({
       rows,
@@ -92,6 +93,7 @@ try {
       longitudeDeg: spec.longitudeDeg,
       observerElevationM: spec.observerElevationM,
       sunsetMs,
+      sunDepressionAtSunsetDeg: hooks.sunDepressionAtSunsetDeg,
       geometryAtSunDepression: hooks.geometryAtSunDepression,
       timeAtSunDepression: hooks.timeAtSunDepression,
       engineMode: spec.engineMode,
@@ -186,12 +188,15 @@ try {
         catalogMagnitude: e.row?.magOriginal ?? e.row?.mag ?? null,
         status: r.status ?? null,
         reason: r.reason ?? null,
+        detail: r.detail ?? null,
         firstVisibleTimeMs: r.firstVisibleTimeMs ?? null,
         firstVisibleSunDepressionDeg: r.sunDepressionDeg ?? null,
         minutesAfterSunset: r.minutesAfterSunset ?? null,
         transientAdaptationPenaltyMagAtFirstVisible: r.transientAdaptationPenaltyMag ?? null,
         transientTauSeconds: r.transientTauSeconds ?? null,
         transientAdaptationValidationTier: r.transientAdaptationValidationTier ?? null,
+        transientAdaptationHistoryStartSunDepressionDeg: r.transientAdaptationHistoryStartSunDepressionDeg ?? null,
+        transientAdaptationPrehistoryProvenance: r.transientAdaptationPrehistoryProvenance ?? null,
         transientSupportAudit: r.transientSupportAudit ?? null,
         timeline: r.timeline ?? null,
         intervalsMs: e.intervalsMs,
@@ -210,6 +215,7 @@ try {
       catalogCount: catalog.length,
       evaluatedTargetCount: entries.length,
       intervalCandidateCount: intervalEntries.length,
+      applicationSunsetSunDepressionDeg: Number(hooks.sunDepressionAtSunsetDeg),
       statusCounts,
       reasonCounts,
       atmosphereResolution: evaluation.atmosphereResolution,
@@ -228,17 +234,18 @@ try {
   const outDir = path.join(process.env.RUNNER_TEMP, 'transient-overlap-audit');
   fs.mkdirSync(outDir, { recursive: true });
   const payload = {
-    schemaVersion: 1,
-    status: 'JERUSALEM_TRANSIENT_OVERLAP_DIAGNOSTIC_COMPLETE',
+    schemaVersion: 2,
+    status: 'JERUSALEM_TRANSIENT_POST_SUNSET_ANCHOR_DIAGNOSTIC_COMPLETE',
     applicationSha: process.env.APPLICATION_SHA,
     preregisteredCase: spec,
     audit,
-    claimBoundary: { diagnosticOnly: true, transientExperimental: true, noTuning: true, F314Unchanged: true, noMYSTIC: true, noPandora: true, humanFirstSeeingValidated: false },
+    claimBoundary: { diagnosticOnly: true, transientExperimental: true, noTuning: true, F314Unchanged: true, tauUnchanged: true, noMYSTIC: true, noPandora: true, humanFirstSeeingValidated: false },
     browserConsole,
   };
   fs.writeFileSync(path.join(outDir, `${label}.json`), JSON.stringify(payload, null, 2) + '\n');
   console.log('TRANSIENT_OVERLAP_AUDIT=' + JSON.stringify({
     label,
+    applicationSunsetSunDepressionDeg: audit.applicationSunsetSunDepressionDeg,
     evaluatedTargetCount: audit.evaluatedTargetCount,
     intervalCandidateCount: audit.intervalCandidateCount,
     exactEvent: audit.exactEvent,

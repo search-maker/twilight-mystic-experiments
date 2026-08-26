@@ -1,0 +1,118 @@
+name: Starsvisibility transient OOD exact-head software gate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/starsvisibility-transient-ood-exact-head.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APPLICATION_REPO: search-maker/starsvisibility
+      APPLICATION_SHA: 1f7b45611286f799accfe1eabd324b1de16a1eab
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+
+    steps:
+      - name: Checkout verification lane
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require established read-only starsvisibility credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || { echo 'Required read-only starsvisibility secret unavailable.' >&2; exit 78; }
+
+      - name: Checkout exact starsvisibility transient-fix head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify immutable application identity and scoped diff markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          git -C app remote remove origin || true
+          grep -Fq 'INITIAL_CONTIGUOUS_SUPPORTED_HISTORY_ONLY_FAIL_CLOSED_AFTER_GAP_V1' app/scientific-tools/visibility-v3/level-b-transient-contiguous-support.mjs
+          grep -Fq 'laterOodDoesNotInvalidateEarlierSupportedEvent' app/scientific-tools/visibility-v3/level-b-transient-contiguous-support.mjs
+          grep -Fq 'test-transient-contiguous-support.mjs' app/package.json
+
+      - name: Set up exact Node version
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+
+      - name: Install exact application dependencies
+        working-directory: app
+        shell: bash
+        run: npm ci
+
+      - name: Execute full parity and Pages build contract
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          npm run build:pages
+
+      - name: Re-run focused transient regression and preserve boundaries
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run prepare:level-b-stellar-v2
+          node scientific-tools/visibility-v3/tests/test-transient-contiguous-support.mjs
+          grep -Fq "fieldFactor: 3.14" scientific-tools/visibility-v3/level-b-current-main-adapter.mjs
+          grep -Fq "mode: LEVEL_B_COMPARISON_MODE.EQUILIBRIUM" scientific-tools/visibility-v3/level-b-sitewide-engine.mjs
+          test "$(git diff -- scientific-tools/visibility-v3/human-threshold.mjs scientific-tools/visibility-v3/transient-adaptation.mjs | wc -c)" -eq 0
+
+      - name: Seal public-safe verification summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/transient-ood-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = {
+              'verificationKind': 'starsvisibility-transient-ood-software-only',
+              'applicationRepo': os.environ['APPLICATION_REPO'],
+              'applicationSha': os.environ['APPLICATION_SHA'],
+              'githubRunId': int(os.environ['GITHUB_RUN_ID']),
+              'githubRunAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'scientificExecutionPerformed': False,
+              'mysticExecutionPerformed': False,
+              'productionAuthorized': False,
+              'fChanged': False,
+              'transientTauRetuned': False,
+              'claimBoundary': 'software-transient-support-fix-only',
+          }
+          p = Path(os.environ['RUNNER_TEMP'])/'transient-ood-summary'/'summary.json'
+          p.write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(out, sort_keys=True))
+          PY
+
+      - name: Upload public-safe software evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: starsvisibility-transient-ood-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/transient-ood-summary/summary.json

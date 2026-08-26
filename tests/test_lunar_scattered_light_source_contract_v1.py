@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import importlib.util
 import math
 import sys
@@ -6,6 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / 'review' / 'lunar-scattered-light-source-contract-v1'
+COEFFICIENTS_SHA256 = '5ef777288adfc05ab2426c13e2f693ff81a60eee9b1616c9f779d3685783904f'
 
 def load_model():
     name = 'rolo311g_lunar_source_contract_v1'
@@ -28,6 +30,8 @@ class LunarScatteredLightSourceContractV1Test(unittest.TestCase):
 
     def test_original_source_constants_and_rows(self):
         r = self.r
+        coefficient_path = ROOT / 'rolo311g-visible-coefficients.csv'
+        self.assertEqual(hashlib.sha256(coefficient_path.read_bytes()).hexdigest(), COEFFICIENTS_SHA256)
         rows = r.load_coefficients()
         self.assertEqual(len(rows), 19)
         self.assertEqual(rows[0]['wavelength_nm'], 350.0)

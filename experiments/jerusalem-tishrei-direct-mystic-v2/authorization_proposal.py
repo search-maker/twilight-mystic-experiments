@@ -24,6 +24,7 @@ PATHS = {
     "authorization": PACKAGE / "authorization.scientific.json",
     "lanePreregistration": PACKAGE / "lane.preregistration.json",
     "v2Guard": PACKAGE / "execution_guard.py",
+    "v2Plan": PACKAGE / "execution_plan.py",
     "v2Workflow": Path(".github/workflows/jerusalem-tishrei-direct-mystic-v2-execution.yml"),
     "sourceV1Authorization": V1_PACKAGE / "authorization.cross-geometry.json",
     "smokeRecovery2Gate": Path("experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery2/gate.smoke-recovery2.json"),
@@ -167,6 +168,7 @@ def build(repo_root: Path, application_root: Path) -> dict[str, Any]:
     v1.PATHS = dict(v1.PATHS)
     v1.PATHS["authorization"] = PATHS["authorization"]
     v1.PATHS["executionWorkflow"] = PATHS["v2Workflow"]
+    v1.PATHS["plan"] = PACKAGE / "execution_plan.py"
     v1.PATHS["authorizationProposalBuilder"] = PACKAGE / "authorization_proposal.py"
 
     report = v1.build(root, app)

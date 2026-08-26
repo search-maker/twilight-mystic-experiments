@@ -1,0 +1,196 @@
+name: Jerusalem Tishrei execution package validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-tishrei-execution-package-validation.yml'
+      - '.github/workflows/jerusalem-tishrei-direct-mystic-v1-execution.yml'
+      - 'experiments/jerusalem-tishrei-direct-mystic-v1/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
+      PACKAGE: experiments/jerusalem-tishrei-direct-mystic-v1
+      AUTHORIZATION: experiments/jerusalem-tishrei-direct-mystic-v1/authorization.cross-geometry.json
+      PROPOSAL: experiments/jerusalem-tishrei-direct-mystic-v1/manifest.proposal.json
+      EVIDENCE: experiments/jerusalem-tishrei-direct-mystic-v1/level-b-event-evidence.json
+      ANALYSIS_CONTRACT: experiments/jerusalem-tishrei-direct-mystic-v1/analysis-contract.json
+      PROPOSAL_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+      EXECUTION_ADAPTER: experiments/jerusalem-tishrei-direct-mystic-v1/execution_adapter.py
+      EXECUTION_WORKFLOW: .github/workflows/jerusalem-tishrei-direct-mystic-v1-execution.yml
+      RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+      PLAN: experiments/mystic-batch-v1/cross_geometry_execution_plan.py
+      ANALYSIS_DRIVER: experiments/jerusalem-tishrei-direct-mystic-v1/analyze_direct_sky.py
+      VISIBILITY_HELPER: experiments/jerusalem-tishrei-direct-mystic-v1/compute_sky_only_visibility.mjs
+      DERIVED_CHANNELS: experiments/aerosol-family-challenge-v2/derived_channels.py
+      HUMAN_THRESHOLD: scientific-tools/visibility-v3/human-threshold.mjs
+      EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+      AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+      AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+      AUTHORIZATION_PROPOSAL_BUILDER: experiments/jerusalem-tishrei-direct-mystic-v1/authorization_proposal.py
+    steps:
+      - name: Checkout exact PR head, not merge ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Require read-only application credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact frozen starsvisibility application
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Static syntax and frozen-boundary checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$PACKAGE/execution_guard.py" "$PACKAGE/authorization_proposal.py" "$PACKAGE/analyze_direct_sky.py" "$EXECUTION_ADAPTER"
+          echo 'PYTHON_SYNTAX_PASS'
+          node --check "$VISIBILITY_HELPER"
+          echo 'NODE_SYNTAX_PASS'
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          proposal=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          contract=json.loads(Path(os.environ['ANALYSIS_CONTRACT']).read_text())
+          evidence=json.loads(Path(os.environ['EVIDENCE']).read_text())
+          adapter_text=Path(os.environ['EXECUTION_ADAPTER']).read_text()
+          assert 'AOD550_DIRECTIVE_PREFIX = "aerosol_set_tau_at_wvl 550 "' in adapter_text
+          assert 'validate_rendered_aod550_binding' in adapter_text
+          event=proposal['preregisteredEvent']
+          assert event['threeStarSemantics']['fieldFactorBaseline']==3.14
+          assert event['sunDepressionDeg']==5.2416836635666755
+          assert event['atmosphere']['aod550']==0.22
+          assert len(proposal['geometries'])==3 and len(proposal['cases'])==12
+          assert sum(c['photonHistories'] for c in proposal['cases'])==240_000_000
+          sky=contract['skyOnlyVisibilitySubstitution']
+          assert sky['fieldFactor']==3.14 and sky['branch']=='full' and sky['noParameterTuning'] is True
+          assert contract['levelBComparison']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          assert contract['claimBoundary']['fullSpectrumLevelBValidated'] is False
+          assert contract['claimBoundary']['productionAuthorized'] is False
+          assert contract['claimBoundary']['pandoraOpened'] is False
+          assert contract['methodRoles']['alis']['expectedOutputGrid']=={'nodeCount':8001,'startNm':380.0,'stopNm':780.0,'stepNm':0.05}
+          assert contract['methodRoles']['referenceVroom']['forbiddenUse'].startswith('do not derive')
+          assert evidence['applicationMainSha']==os.environ['APPLICATION_SHA']
+          assert evidence['event']['fieldFactor']==3.14
+          assert evidence['comparisonBoundary']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          assert evidence['comparisonBoundary']['noParameterTuning'] is True
+          assert len(evidence['stars'])==3
+          print('FROZEN_JSON_BOUNDARIES_PASS')
+          PY
+          test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          echo 'APPLICATION_SHA_PASS'
+      - name: Build exact authorization proposal only
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python "$AUTHORIZATION_PROPOSAL_BUILDER" --repository-root . --application-root app --output validation-output/authorization-proposal.json
+          python - <<'PY'
+          import json
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          assert p['status']=='PROPOSAL_ONLY_NOT_AUTHORIZATION'
+          assert p['executionAuthorizedByProposal'] is False
+          assert p['proposedAuthorization']['authorized'] is True
+          assert p['proposedAuthorization']['scientificExecution'] is True
+          assert p['proposedAuthorization']['executionKey']=='jerusalem-tishrei-direct-mystic-v1:diagnostic:1'
+          assert p['proposedAuthorization']['authorizationOrdinal']==1
+          print('AUTHORIZATION_PROPOSAL_ONLY_PASS')
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --modified)"
+          test -f validation-output/authorization-proposal.json
+      - name: Simulate one-purpose authorization commit locally and validate guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python - <<'PY'
+          import json
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          with open('experiments/jerusalem-tishrei-direct-mystic-v1/authorization.cross-geometry.json','w') as f:
+              json.dump(p['proposedAuthorization'], f, indent=2, sort_keys=True)
+              f.write('\n')
+          PY
+          test "$(git diff --name-only)" = "$AUTHORIZATION"
+          git config user.name 'tishrei-package-validation'
+          git config user.email 'tishrei-package-validation@invalid.local'
+          git add "$AUTHORIZATION"
+          git commit -m 'LOCAL TEST ONLY - one-purpose authorization'
+          TEST_AUTH_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$AUTHORIZATION"
+          env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+            python "$PACKAGE/execution_guard.py" \
+            --repository-root . \
+            --application-root app \
+            --application-sha "$APPLICATION_SHA" \
+            --authorization "$AUTHORIZATION" \
+            --proposal "$PROPOSAL" \
+            --evidence "$EVIDENCE" \
+            --analysis-contract "$ANALYSIS_CONTRACT" \
+            --proposal-adapter "$PROPOSAL_ADAPTER" \
+            --execution-adapter "$EXECUTION_ADAPTER" \
+            --execution-workflow "$EXECUTION_WORKFLOW" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --plan "$PLAN" \
+            --analysis-driver "$ANALYSIS_DRIVER" \
+            --visibility-helper "$VISIBILITY_HELPER" \
+            --derived-channels "$DERIVED_CHANNELS" \
+            --human-threshold "$HUMAN_THRESHOLD" \
+            --executor "$EXECUTOR" \
+            --aggregate "$AGGREGATE" \
+            --audit "$AUDIT" \
+            --authorization-proposal-builder "$AUTHORIZATION_PROPOSAL_BUILDER" \
+            --authorization-ref "$TEST_AUTH_SHA" \
+            --execution-key 'jerusalem-tishrei-direct-mystic-v1:diagnostic:1' \
+            --authorization-ordinal 1 \
+            --output validation-output/guard-report.json
+          python "$PLAN" --proposal "$PROPOSAL" --guard-report validation-output/guard-report.json --output validation-output/plan.json
+          python - <<'PY'
+          import json
+          g=json.load(open('validation-output/guard-report.json'))
+          p=json.load(open('validation-output/plan.json'))
+          assert g['status']=='AUTHORIZED'
+          assert g['caseCount']==12 and g['configuredMcPhotonsSum']==240_000_000
+          assert p['caseCount']==12 and p['configuredMcPhotonsSum']==240_000_000 and p['maximumParallel']==6
+          assert len(p['matrix']['include'])==12
+          print(json.dumps({'status':'PACKAGE_GUARD_AND_PLAN_VALIDATED_NO_SOLVER','sourceSha':g['authorizationParentCommit'],'localTestAuthorizationSha':g['authorizationRef'],'caseCount':p['caseCount'],'photons':p['configuredMcPhotonsSum'],'syntaxChecksExecuted':0,'solverExecutions':0},sort_keys=True))
+          PY
+      - name: Prove no solver or syntax-check process was launched
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e case-output
+          test ! -e runtime-reports
+          echo 'NO_UVSPEC_SYNTAX_OR_SOLVER_EXECUTED'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-execution-package-validation-${{ github.run_id }}
+          path: validation-output
+          if-no-files-found: warn
+          retention-days: 30

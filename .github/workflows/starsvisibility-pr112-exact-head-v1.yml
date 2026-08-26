@@ -1,0 +1,68 @@
+name: Starsvisibility PR112 exact-head validation
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - '.github/workflows/starsvisibility-pr112-exact-head-v1.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: starsvisibility-pr112-exact-head-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  APPLICATION_REPO: search-maker/starsvisibility
+  APPLICATION_SHA: dad43f39ce87f7e029a1604e7ef89f76dcb55674
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact starsvisibility PR112 head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Verify exact application identity
+        working-directory: app
+        run: test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+      - name: Install pinned dependencies
+        working-directory: app
+        run: npm ci
+      - name: Syntax-check new modules and tests
+        working-directory: app
+        run: |
+          set -euo pipefail
+          node --check scientific-tools/visibility-v3/total-sky-compositor.mjs
+          node --check scientific-tools/visibility-v3/zenith-invariant-geometry.mjs
+          node --check scientific-tools/visibility-v3/tests/test-total-sky-compositor.mjs
+          node --check scientific-tools/visibility-v3/tests/test-zenith-invariant-geometry.mjs
+      - name: Run focused new regressions
+        working-directory: app
+        run: |
+          set -euo pipefail
+          node scientific-tools/visibility-v3/tests/test-total-sky-compositor.mjs
+          node scientific-tools/visibility-v3/tests/test-zenith-invariant-geometry.mjs
+      - name: Run complete Level-B parity regression chain
+        working-directory: app
+        run: npm run test:level-b-parity

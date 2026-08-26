@@ -1,0 +1,180 @@
+name: Level-B sunset adaptation final exact-head promotion
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-sunset-adaptation-final-promotion.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-sunset-adaptation-final-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  promotion:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      APPLICATION_SHA: 4114e5ea1d0763761b844654e072f8f86643e42a
+      REQUIRED_SPECTRAL_MAIN_SHA: 62cb2d983c33c058e6f548e0f1d1c671ee62085a
+      PRIOR_0078_HEAD_SHA: 1c9ec7e36812252dda340b07aa3ddddb25516acb
+      PUBLIC_ASSET_COMMIT: 4b71445139e24236f12952ab41c791bd07a9f7db
+      EXPECTED_PROTOCOL_SHA256: aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef
+      EXPECTED_SED_SHA256: 85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb
+      EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+
+    steps:
+      - name: Require read-only private checkout credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || { echo 'Required read-only secret unavailable.' >&2; exit 78; }
+          printf '%s' "$APPLICATION_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$PUBLIC_ASSET_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          echo "Exact MYSTIC-STATE-0078 private head: $APPLICATION_SHA"
+
+      - name: Checkout clean public runner source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable validated stellar assets
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/twilight-mystic-experiments
+          ref: ${{ env.PUBLIC_ASSET_COMMIT }}
+          path: public-assets
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact private 0078 head
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Verify exact reconciliation ancestry, immutable bindings, and sanitize remotes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          test "$(git -C public-assets rev-parse HEAD)" = "$PUBLIC_ASSET_COMMIT"
+          git -C private-app cat-file -p HEAD | grep -Fx "parent $PRIOR_0078_HEAD_SHA"
+          git -C private-app cat-file -p HEAD | grep -Fx "parent $REQUIRED_SPECTRAL_MAIN_SHA"
+          git -C private-app remote remove origin || true
+          git -C public-assets remote remove origin || true
+          test "$(sha256sum private-app/scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V2.md | awk '{print $1}')" = "$EXPECTED_PROTOCOL_SHA256"
+          test "$(sha256sum public-assets/generated/level-b-stellar-v2/pickles-sed-1nm.json | awk '{print $1}')" = "$EXPECTED_SED_SHA256"
+          test "$(sha256sum public-assets/generated/level-b-stellar-v2/stellar-transport-v2-lut.json | awk '{print $1}')" = "$EXPECTED_LUT_SHA256"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          b=json.loads(Path('private-app/scientific-tools/visibility-v3/stellar-v2-asset-binding.json').read_text())
+          assert b['mysticState'] == 'MYSTIC-STATE-0081'
+          assert b['publicAssetCommit'] == os.environ['PUBLIC_ASSET_COMMIT']
+          assert b['protocolSha256'] == os.environ['EXPECTED_PROTOCOL_SHA256']
+          assert b['sedBundleSha256'] == os.environ['EXPECTED_SED_SHA256']
+          assert b['spectralRuntimeSha256'] == os.environ['EXPECTED_LUT_SHA256']
+          assert b['parsedScienceMatchesOriginalPassAfterRemovingVolatileRawResponseHashes'] is True
+          PY
+          mkdir -p private-app/scientific-tools/visibility-v3/generated
+          cp public-assets/generated/level-b-stellar-v2/pickles-sed-1nm.json private-app/scientific-tools/visibility-v3/generated/pickles-sed-1nm.json
+          cp public-assets/generated/level-b-stellar-v2/stellar-transport-v2-lut.json private-app/scientific-tools/visibility-v3/generated/stellar-transport-v2-lut.json
+
+      - name: Run full parity and exact 4,800-case sunset adaptation audit
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run prepare:level-b-stellar-v2
+          npm run test:level-b-parity
+          node scientific-tools/visibility-v3/tests/audit-sunset-adaptation-prehistory-timing.mjs --output "$RUNNER_TEMP/0078-sunset-audit.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r=json.loads((Path(os.environ['RUNNER_TEMP'])/'0078-sunset-audit.json').read_text())
+          assert r['scientificAcceptanceGate'] is False
+          assert r['observationallyCalibrated'] is False
+          assert r['fixtureCount'] >= 1000
+          assert r['totalTauCaseCount'] >= 4000
+          assert r['tauSeconds'] == [20,30,45,60]
+          assert r['levelBDetectionSkyUsedBelow2Deg'] is False
+          assert all(v == 0 for v in r['invariants'].values())
+          for tau in ('20','30','45','60'):
+              assert r['byTau'][tau]['caseCount'] >= 1000
+          PY
+
+      - name: Run 1,600-case spectral diagnostic audit and full Pages build
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scientific-tools/visibility-v3/tests/audit-stellar-transport-v2-timing.mjs --output "$RUNNER_TEMP/0081-spectral-audit.json"
+          GITHUB_SHA="$APPLICATION_SHA" npm run build:pages
+          node scripts/test-level-b-stellar-v2-dist.mjs
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads((Path(os.environ['RUNNER_TEMP'])/'0081-spectral-audit.json').read_text())
+          assert a['attemptedCaseCount'] == 1600
+          assert a['commonSupportedLevelBCaseCount'] == 1600
+          assert a['supportedLegacyCompatibilityCaseCount'] == 1600
+          marker=json.loads(Path('dist/level-b-software-status.json').read_text())
+          assert marker['commitSha'] == os.environ['APPLICATION_SHA']
+          assert marker['stellarTransportState'] == 'MYSTIC-STATE-0081'
+          assert marker['stellarTransportProtocolSha256'] == os.environ['EXPECTED_PROTOCOL_SHA256']
+          assert marker['stellarTransportSedSha256'] == os.environ['EXPECTED_SED_SHA256']
+          assert marker['stellarTransportLutSha256'] == os.environ['EXPECTED_LUT_SHA256']
+          assert marker['stellarTransportPublicAssetCommit'] == os.environ['PUBLIC_ASSET_COMMIT']
+          PY
+          cp dist/level-b-software-status.json "$RUNNER_TEMP/0078-build-marker.json"
+
+      - name: Seal public-safe promotion summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/public-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          out={
+            'mysticState':'MYSTIC-STATE-0078',
+            'applicationSha':os.environ['APPLICATION_SHA'],
+            'requiredSpectralMainSha':os.environ['REQUIRED_SPECTRAL_MAIN_SHA'],
+            'prior0078HeadSha':os.environ['PRIOR_0078_HEAD_SHA'],
+            'publicAssetCommit':os.environ['PUBLIC_ASSET_COMMIT'],
+            'githubRunId':os.environ['GITHUB_RUN_ID'],
+            'githubRunAttempt':os.environ['GITHUB_RUN_ATTEMPT'],
+            'claimBoundary':'synthetic-software-timing-and-integration-only-not-empirical-natural-twilight-or-human-validation',
+          }
+          for name,key in [('0078-sunset-audit.json','sunsetAudit'),('0081-spectral-audit.json','spectralAudit'),('0078-build-marker.json','buildMarker')]:
+              p=root/name
+              if p.exists(): out[key]=json.loads(p.read_text())
+          p=root/'public-summary'/'0078-final-promotion-summary.json'
+          p.write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({k:v for k,v in out.items() if k not in ('sunsetAudit','spectralAudit')},sort_keys=True))
+          PY
+
+      - name: Upload public-safe evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-sunset-final-promotion-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/public-summary/0078-final-promotion-summary.json
+            ${{ runner.temp }}/0078-sunset-audit.json
+            ${{ runner.temp }}/0081-spectral-audit.json
+            ${{ runner.temp }}/0078-build-marker.json

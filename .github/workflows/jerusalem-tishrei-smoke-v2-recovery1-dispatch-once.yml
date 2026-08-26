@@ -1,0 +1,96 @@
+name: Dispatch Jerusalem Tishrei smoke v2 recovery1 exactly once
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/jerusalem-tishrei-smoke-v2-recovery1-dispatch-once.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'review/jerusalem-tishrei-smoke-v2-recovery1-dispatch-once'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GATE_REF: a61c888f2ef56d9e3beebacb2b1cec7a93cddf52
+      GATE_PARENT: 3f79112aa66c37e57216e74e94937fcbe8b6fc28
+      EXECUTION_KEY: jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:2
+      SMOKE_ORDINAL: '2'
+      TARGET_WORKFLOW: jerusalem-tishrei-elevated-site-smoke-v2-recovery1.yml
+      GATE_PATH: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/gate.smoke-recovery1.json
+    steps:
+      - name: Verify exact one-purpose recovery gate commit and content
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GATE_REF}" > /tmp/gate-commit.json
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github.raw+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${GATE_PATH}?ref=${GATE_REF}" > /tmp/gate.json
+          python - <<'PY'
+          import json, os
+          d=json.load(open('/tmp/gate-commit.json'))
+          assert d['sha']==os.environ['GATE_REF']
+          assert len(d['parents'])==1 and d['parents'][0]['sha']==os.environ['GATE_PARENT']
+          assert [f['filename'] for f in d['files']]==[os.environ['GATE_PATH']]
+          g=json.load(open('/tmp/gate.json'))
+          required={
+            'schemaVersion':1,
+            'stageId':'jerusalem-tishrei-elevated-site-smoke-v2-recovery1',
+            'enabled':True,
+            'infrastructureExecution':True,
+            'scientificExecution':False,
+            'scientificDiagnostic':False,
+            'scientificUseProhibited':True,
+            'successDoesNotAuthorizeScientificExecution':True,
+            'successDoesNotAuthorizeProduction':True,
+            'executionKey':os.environ['EXECUTION_KEY'],
+            'batchId':'jerusalem-tishrei-elevated-site-smoke-v2-recovery1',
+            'exactGateParentCommit':os.environ['GATE_PARENT'],
+            'exactGateCommit':None,
+            'smokeOrdinal':2,
+            'consumed':False,
+          }
+          stale={k:(g.get(k),v) for k,v in required.items() if g.get(k)!=v}
+          assert not stale, stale
+          print('ONE_PURPOSE_RECOVERY_GATE_PASS')
+          PY
+      - name: Dispatch exact recovery infrastructure smoke once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/payload.json <<JSON
+          {
+            "ref": "main",
+            "inputs": {
+              "gate_ref": "${GATE_REF}",
+              "execution_key": "${EXECUTION_KEY}",
+              "smoke_ordinal": "${SMOKE_ORDINAL}"
+            }
+          }
+          JSON
+          code="$(curl -sS -o /tmp/dispatch-response.txt -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${TARGET_WORKFLOW}/dispatches" \
+            --data-binary @/tmp/payload.json)"
+          if [ "$code" != 204 ]; then
+            cat /tmp/dispatch-response.txt >&2
+            echo "unexpected dispatch HTTP status: $code" >&2
+            exit 1
+          fi
+          echo 'RECOVERY_INFRASTRUCTURE_SMOKE_DISPATCH_ACCEPTED'

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Review-only complete-set validator for matched-stellar v2 fresh holdout.
+
+Consumes exactly 768 fresh validation spectra plus the already-open v5 final
+artifact's frozen runtimeLuts. It performs no solver or network execution.
+"""
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+import math
+from pathlib import Path
+from typing import Any, Iterable
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+INTERPOLATION_PATH = HERE / "interpolation_candidate_v2.py.review"
+EXECUTION_PATH = HERE / "validation_execution_v2.py.review"
+V1_VALIDATOR_PATH = ROOT / "review/asiv-matched-stellar-transport-v1/assemble_validate_matched_stellar_v1.py"
+
+EXPECTED_V5_FINAL_ARTIFACT_ID = 9580080568
+EXPECTED_V5_FINAL_ARTIFACT_DIGEST = "sha256:bccc9f58a649202c395842df298ace1c4f609badc0d0530e40ba10d8ddc5300f"
+MAX_ABS_ERROR_MAG_LIMIT = 0.025
+RMS_ERROR_MAG_LIMIT = 0.010
+
+
+class V2FreshValidationRefusal(RuntimeError):
+    pass
+
+
+def _load(path: Path, name: str):
+    if path.suffix == ".review":
+        loader = importlib.machinery.SourceFileLoader(name, str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+    else:
+        spec = importlib.util.spec_from_file_location(name, path)
+        loader = spec.loader if spec else None
+    if spec is None or loader is None:
+        raise V2FreshValidationRefusal(f"cannot load bound module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def load_interpolation():
+    return _load(INTERPOLATION_PATH, "matched_stellar_v2_interpolation_for_validation")
+
+
+def load_execution():
+    return _load(EXECUTION_PATH, "matched_stellar_v2_execution_for_validation")
+
+
+def load_v1_validator():
+    return _load(V1_VALIDATOR_PATH, "matched_stellar_v1_photometry_for_v2")
+
+
+def _coord_key(family: str, h: float, e: float, a: float) -> tuple[str, float, float, float]:
+    return (str(family), round(float(h), 9), round(float(e), 9), round(float(a), 9))
+
+
+def load_complete_fresh_cases(shard_roots: Iterable[Path]) -> dict[tuple[str, float, float, float], dict[str, Any]]:
+    execution = load_execution()
+    expected_batch = execution.build_validation_shards()
+    expected = {}
+    for shard in expected_batch["shards"]:
+        for case in shard["cases"]:
+            key = _coord_key(case["family"], case["targetAltitudeDeg"], case["observerElevationM"], case["aod550"])
+            expected[key] = case
+    if len(expected) != 768:
+        raise V2FreshValidationRefusal("expected fresh validation coordinate universe drift")
+
+    roots = [Path(p) for p in shard_roots]
+    if len(roots) != 24:
+        raise V2FreshValidationRefusal(f"exactly 24 complete shard roots required; got {len(roots)}")
+    actual = {}
+    seen_shards = set()
+    v1 = load_v1_validator()
+    for root in roots:
+        summary_path = root / "shard-summary.json"
+        if not summary_path.is_file():
+            raise V2FreshValidationRefusal(f"missing shard summary: {root}")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if summary.get("status") != "MATCHED_STELLAR_V2_FRESH_VALIDATION_SHARD_COMPLETE":
+            raise V2FreshValidationRefusal("fresh shard status drift")
+        sid = summary.get("shardId")
+        if sid in seen_shards:
+            raise V2FreshValidationRefusal("duplicate fresh validation shard")
+        seen_shards.add(sid)
+        if int(summary.get("caseCount", -1)) != 32 or summary.get("trainingCasesExecuted") != 0:
+            raise V2FreshValidationRefusal("fresh shard completeness/training boundary drift")
+        if summary.get("retryPerformed") is not False or summary.get("resumePerformed") is not False:
+            raise V2FreshValidationRefusal("fresh shard retry/resume evidence invalid")
+        case_files = sorted(root.glob("fresh-v2-*.json"))
+        if len(case_files) != 32:
+            raise V2FreshValidationRefusal("fresh shard must contain exactly 32 case payloads")
+        for path in case_files:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            family, h, e, a = v1.validate_executed_case(payload)
+            if payload.get("v2TrainingCase") is not False:
+                raise V2FreshValidationRefusal("training case leaked into fresh validation")
+            key = _coord_key(family, h, e, a)
+            if key not in expected:
+                raise V2FreshValidationRefusal(f"case outside frozen fresh holdout: {key}")
+            if key in actual:
+                raise V2FreshValidationRefusal(f"duplicate fresh validation case: {key}")
+            actual[key] = payload
+    if set(actual) != set(expected) or len(actual) != 768:
+        raise V2FreshValidationRefusal("partial or drifted fresh validation universe")
+    if len(seen_shards) != 24:
+        raise V2FreshValidationRefusal("fresh validation shard-id universe drift")
+    return actual
+
+
+def validate_fresh_v2(
+    *, shard_roots: Iterable[Path], v5_final_json_path: Path,
+    sed_bundle_path: Path, johnson_v_path: Path,
+) -> dict[str, Any]:
+    interpolation = load_interpolation()
+    v1 = load_v1_validator()
+    cases = load_complete_fresh_cases(shard_roots)
+
+    source = json.loads(Path(v5_final_json_path).read_text(encoding="utf-8"))
+    if source.get("trainingSpectrumCount") != 2700 or source.get("validationAtmosphericSpectrumCount") != 768:
+        raise V2FreshValidationRefusal("v5 source artifact cardinality drift")
+    runtimes = source.get("runtimeLuts")
+    if not isinstance(runtimes, dict) or set(runtimes) != set(interpolation.NON_NATIVE_FAMILIES):
+        raise V2FreshValidationRefusal("v5 runtimeLuts family universe drift")
+    for runtime in runtimes.values():
+        interpolation.validate_runtime_shape(runtime)
+
+    _, wavelength_nm, band_response, representatives = v1.load_bound_photometric_assets(
+        sed_bundle_path=Path(sed_bundle_path), johnson_v_path=Path(johnson_v_path)
+    )
+
+    manifest = interpolation.build_new_validation_manifest()
+    family_results = {}
+    for family in interpolation.NON_NATIVE_FAMILIES:
+        deltas = []
+        rows = []
+        expected_rows = [row for row in manifest["cases"] if row["family"] == family]
+        if len(expected_rows) != 192:
+            raise V2FreshValidationRefusal("per-family fresh validation count drift")
+        for row in expected_rows:
+            key = _coord_key(family, row["targetAltitudeDeg"], row["observerElevationM"], row["aod550"])
+            ref = cases[key]
+            predicted_tau = interpolation.interpolate_optical_depth_v2(
+                runtimes[family],
+                target_altitude_deg=row["targetAltitudeDeg"],
+                observer_elevation_m=row["observerElevationM"],
+                aod550=row["aod550"],
+            )
+            predicted_t = [math.exp(-value) for value in predicted_tau]
+            reference_t = [float(value) for value in ref["spectrum"]["lineOfSightDirectTransmission"]]
+            sed_rows = []
+            for sed in representatives:
+                flux = [float(value) for value in sed["fluxRelative"]]
+                runtime_av = v1.band_extinction_mag(
+                    wavelength_nm=wavelength_nm, flux_relative=flux,
+                    band_response=band_response, transmission=predicted_t,
+                )
+                reference_av = v1.band_extinction_mag(
+                    wavelength_nm=wavelength_nm, flux_relative=flux,
+                    band_response=band_response, transmission=reference_t,
+                )
+                delta = runtime_av - reference_av
+                deltas.append(delta)
+                sed_rows.append({
+                    "libraryNumber": int(sed["libraryNumber"]),
+                    "runtimeAvMag": runtime_av,
+                    "referenceAvMag": reference_av,
+                    "deltaAvMag": delta,
+                })
+            rows.append({
+                "targetAltitudeDeg": float(row["targetAltitudeDeg"]),
+                "observerElevationM": float(row["observerElevationM"]),
+                "aod550": float(row["aod550"]),
+                "sedComparisons": sed_rows,
+            })
+        if len(deltas) != 576:
+            raise V2FreshValidationRefusal("per-family Johnson-V comparison count drift")
+        max_abs = max(abs(value) for value in deltas)
+        rms = math.sqrt(sum(value * value for value in deltas) / len(deltas))
+        family_results[family] = {
+            "comparisonCount": len(deltas),
+            "maxAbsDeltaAvMag": max_abs,
+            "rmsDeltaAvMag": rms,
+            "maxAbsDeltaAvMagLimit": MAX_ABS_ERROR_MAG_LIMIT,
+            "rmsDeltaAvMagLimit": RMS_ERROR_MAG_LIMIT,
+            "passed": max_abs <= MAX_ABS_ERROR_MAG_LIMIT and rms <= RMS_ERROR_MAG_LIMIT,
+            "cases": rows,
+        }
+
+    all_pass = all(row["passed"] for row in family_results.values())
+    return {
+        "schemaVersion": 1,
+        "stageId": "asiv-matched-stellar-transport-v2-fresh-computational-validation",
+        "status": "COMPUTATIONAL_REFERENCE_VALIDATION_PASS" if all_pass else "COMPUTATIONAL_REFERENCE_VALIDATION_FAIL",
+        "methodVersion": 2,
+        "interpolation": "PCHIP-in-csc(h), linear-elevation, linear-AOD, direct-optical-depth",
+        "reusedTrainingSpectrumCount": 2700,
+        "newTrainingSolverSpectrumCount": 0,
+        "freshValidationAtmosphericSpectrumCount": 768,
+        "johnsonVComparisonCount": 2304,
+        "representatives": [
+            {
+                "libraryNumber": int(row["libraryNumber"]),
+                "spectralType": row.get("spectralType"),
+                "bMinusVLandoltBmVc": float(row["bMinusVLandoltBmVc"]),
+                "abundance": row.get("abundance"),
+            }
+            for row in representatives
+        ],
+        "familyResults": family_results,
+        "allFamiliesPassed": all_pass,
+        "gates": {
+            "perFamilyMaxAbsDeltaAvMag": MAX_ABS_ERROR_MAG_LIMIT,
+            "perFamilyRmsDeltaAvMag": RMS_ERROR_MAG_LIMIT,
+            "aggregatePassCannotHideFamilyFailure": True,
+        },
+        "sourceTrainingArtifact": {
+            "runId": 32889328517,
+            "artifactId": EXPECTED_V5_FINAL_ARTIFACT_ID,
+            "artifactDigest": EXPECTED_V5_FINAL_ARTIFACT_DIGEST,
+            "allowedField": "runtimeLuts",
+        },
+        "claimBoundary": {
+            "freshComputationalReferenceValidationOnly": True,
+            "openedV1DevelopmentSetUsedAsHoldout": False,
+            "empiricalRealSkyValidated": False,
+            "humanFirstSeeingValidated": False,
+            "fullSpectrumSkyScenarioValidated": False,
+            "productionAuthorized": False,
+            "pandoraHoldoutOpened": False,
+            "starsvisibilityMutationAuthorized": False,
+            "postResultRetuningAuthorized": False,
+        },
+    }
+
+
+if __name__ == "__main__":
+    print(json.dumps({
+        "status": "REVIEW_ONLY_V2_FRESH_VALIDATOR_NOT_EXECUTED",
+        "freshValidationSpectra": 768,
+        "johnsonVComparisons": 2304,
+        "newTrainingSolverSpectra": 0,
+    }, indent=2, sort_keys=True))

@@ -73,10 +73,11 @@ try {
     return out;
   }, spec);
 
-  const ui = await page.evaluate(async () => {
-    await eval('calculate()');
+  const ui = await page.evaluate(async (spec) => {
+    globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = spec.engineMode;
+    await eval('__levelBSitewideRunUsingLegacyScaffold(globalThis.__STAR_VISIBILITY_ENGINE_MODE__)');
     return { result: eval('threeStarResultData'), skyMap: eval('threeStarSkyMapData') };
-  });
+  }, spec);
 
   const detailed = await page.evaluate(async ({ spec, ui }) => {
     const result = ui.result;
@@ -148,7 +149,7 @@ try {
   }, { spec, ui });
 
   const output = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     status: 'EXACT_CURRENT_APPLICATION_JERUSALEM_THREE_STAR_DIAGNOSTIC',
     applicationRepo: env.APPLICATION_REPO,
     applicationSha: env.APPLICATION_SHA,

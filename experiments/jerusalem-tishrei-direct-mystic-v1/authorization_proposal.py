@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,10 @@ BATCH_ID = "jerusalem-tishrei-three-star-direct-mystic-v1"
 EXECUTION_KEY = "jerusalem-tishrei-direct-mystic-v1:diagnostic:1"
 AUTHORIZATION_ORDINAL = 1
 APPLICATION_SHA = "e2d5b761206b6223526f6f79fcb0af5f6de3ba06"
+HUMAN_THRESHOLD_GIT_BLOB_SHA1 = "bb4cd0ff02159ecffe276022cec9d292c7a434a3"
+DERIVED_CHANNELS_GIT_BLOB_SHA1 = "ccfd04d4c21188966351f4257e92893d7ce340c7"
+EVIDENCE_ARTIFACT_ID = 9612259358
+EVIDENCE_DIGEST = "sha256:d43120ad60d2e4a502023cd187bbeffecd6364d4edc975c14c84432c3c8097c5"
 PACKAGE = Path("experiments/jerusalem-tishrei-direct-mystic-v1")
 PATHS = {
     "authorization": PACKAGE / "authorization.cross-geometry.json",
@@ -55,6 +60,10 @@ def raw_sha256(path: Path) -> str:
 
 def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+
+def git_blob_sha1(root: Path, rel: Path) -> str:
+    return git(root, "rev-parse", f"HEAD:{rel.as_posix()}")
 
 
 def load_module(path: Path):
@@ -100,24 +109,58 @@ def build(repo_root: Path, application_root: Path) -> dict[str, Any]:
         raise ProposalFailure(f"missing frozen human threshold: {human}")
     if git(app, "rev-parse", "HEAD") != APPLICATION_SHA:
         raise ProposalFailure("application checkout is not exact frozen SHA")
+    if git_blob_sha1(app, HUMAN_THRESHOLD) != HUMAN_THRESHOLD_GIT_BLOB_SHA1:
+        raise ProposalFailure("frozen human-threshold Git blob drift")
+    if git_blob_sha1(root, PATHS["derivedChannels"]) != DERIVED_CHANNELS_GIT_BLOB_SHA1:
+        raise ProposalFailure("frozen derived-channels Git blob drift")
 
     auth = load_json(abs_paths["authorization"]); ensure_disabled(auth)
     manifest = load_json(abs_paths["proposal"])
     evidence = load_json(abs_paths["evidence"])
     contract = load_json(abs_paths["analysisContract"])
     adapter = load_module(abs_paths["proposalAdapter"]); adapter.validate_manifest(manifest)
+
     if manifest.get("batchId") != BATCH_ID or manifest.get("proposalOnly") is not True or manifest.get("scientificExecution") is not False:
         raise ProposalFailure("manifest boundary changed")
-    if len(manifest.get("geometries") or []) != 3 or len(manifest.get("cases") or []) != 12:
+    geometries = manifest.get("geometries") or []
+    cases = manifest.get("cases") or []
+    if len(geometries) != 3 or len(cases) != 12:
         raise ProposalFailure("manifest geometry/case count changed")
-    if sum(int(c["photonHistories"]) for c in manifest["cases"]) != 240_000_000:
+    if len({c.get("caseId") for c in cases}) != 12:
+        raise ProposalFailure("case IDs are not unique")
+    if sum(int(c["photonHistories"]) for c in cases) != 240_000_000:
         raise ProposalFailure("manifest photon accounting changed")
-    if (manifest.get("preregisteredEvent") or {}).get("threeStarSemantics", {}).get("fieldFactorBaseline") != 3.14:
+    if Counter(c.get("method") for c in cases) != Counter({"alis": 6, "reference-vroom": 6}):
+        raise ProposalFailure("manifest method counts changed")
+    event = manifest.get("preregisteredEvent") or {}
+    if event.get("threeStarSemantics", {}).get("fieldFactorBaseline") != 3.14:
         raise ProposalFailure("F=3.14 changed")
-    if evidence.get("source", {}).get("artifactId") != 9612259358:
+    if event.get("sunDepressionDeg") != 5.2416836635666755 or event.get("atmosphere", {}).get("aod550") != 0.22:
+        raise ProposalFailure("frozen event geometry/AOD changed")
+
+    source = evidence.get("source") or {}
+    if source.get("artifactId") != EVIDENCE_ARTIFACT_ID or source.get("artifactDigest") != EVIDENCE_DIGEST:
         raise ProposalFailure("event evidence source changed")
+    if evidence.get("applicationMainSha") != APPLICATION_SHA or evidence.get("event", {}).get("fieldFactor") != 3.14 or len(evidence.get("stars") or []) != 3:
+        raise ProposalFailure("event evidence boundary changed")
+
     if contract.get("analysisId") != "jerusalem-tishrei-direct-mystic-level-b-comparison-v1" or contract.get("scientificExecution") is not False:
         raise ProposalFailure("analysis contract changed")
+    inputs = contract.get("inputs") or {}
+    if inputs.get("applicationMainSha") != APPLICATION_SHA:
+        raise ProposalFailure("analysis application SHA changed")
+    if inputs.get("humanThresholdGitBlobSha1") != HUMAN_THRESHOLD_GIT_BLOB_SHA1 or inputs.get("derivedChannelsGitBlobSha1") != DERIVED_CHANNELS_GIT_BLOB_SHA1:
+        raise ProposalFailure("analysis Git-blob bindings changed")
+    sky_only = contract.get("skyOnlyVisibilitySubstitution") or {}
+    if sky_only.get("fieldFactor") != 3.14 or sky_only.get("branch") != "full" or sky_only.get("noParameterTuning") is not True:
+        raise ProposalFailure("analysis human-threshold boundary changed")
+    if contract.get("methodRoles", {}).get("alis", {}).get("expectedOutputGrid") != {"nodeCount": 8001, "startNm": 380.0, "stopNm": 780.0, "stepNm": 0.05}:
+        raise ProposalFailure("ALIS full-spectrum grid contract changed")
+    if not str(contract.get("methodRoles", {}).get("referenceVroom", {}).get("forbiddenUse", "")).startswith("do not derive"):
+        raise ProposalFailure("reference-VROOM sparse-only boundary changed")
+    boundary = contract.get("claimBoundary") or {}
+    if boundary.get("noParameterTuning") is not True or boundary.get("fullSpectrumLevelBValidated") is not False or boundary.get("productionAuthorized") is not False:
+        raise ProposalFailure("analysis claim boundary changed")
 
     source_commit = git(root, "rev-parse", "HEAD")
     proposed = {
@@ -158,6 +201,8 @@ def build(repo_root: Path, application_root: Path) -> dict[str, Any]:
         "executionAuthorizedByProposal": False,
         "sourceCommit": source_commit,
         "applicationSha": APPLICATION_SHA,
+        "humanThresholdGitBlobSha1": HUMAN_THRESHOLD_GIT_BLOB_SHA1,
+        "derivedChannelsGitBlobSha1": DERIVED_CHANNELS_GIT_BLOB_SHA1,
         "proposedAuthorization": proposed,
         "boundary": "hash proposal only; no syntax check, uvspec process, MYSTIC solver, workflow dispatch, parameter tuning, or Pandora",
     }

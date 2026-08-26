@@ -17,12 +17,27 @@ try {
     set('calculatorFeature','three-star'); set('lat',spec.latitudeDeg); set('lon',spec.longitudeDeg); set('date',spec.date); set('timezone',spec.timeZone); set('observerElevationM',spec.observerElevationM); set('visibilityEngineMode',spec.engineMode); set('threeStarCount',3); set('threeStarMagnitudeBasis','effective'); set('threeStarMagnitudeThreshold',spec.threshold);
     globalThis.__STAR_VISIBILITY_ENGINE_MODE__=spec.engineMode; globalThis.__SKY_MAP_REQUEST__=false;
     if(typeof eval('ensureBuiltInCatalogReady')==='function') await eval('ensureBuiltInCatalogReady()');
+    const rawCatalogCount=Array.isArray(globalThis.__STARS_BUILT_IN_STARS__)?globalThis.__STARS_BUILT_IN_STARS__.length:-1;
+    if(rawCatalogCount!==9090) throw new Error(`raw catalog ${rawCatalogCount}`);
+
+    // Establish the UI result, then reacquire the exact date-transformed rows that
+    // calculate() itself hands to Level-B. The raw externalized catalog is not a
+    // valid substitute because calculate() applies proper motion, magnitude-mode
+    // selection, depth filtering, planets and geometric-rise filtering first.
     await eval('__levelBSitewideRunUsingLegacyScaffold(globalThis.__STAR_VISIBILITY_ENGINE_MODE__)');
     const ui=JSON.parse(JSON.stringify(eval('threeStarResultData')));
-    const catalogAll=globalThis.__STARS_BUILT_IN_STARS__;
-    if(!Array.isArray(catalogAll)||catalogAll.length!==9090) throw new Error(`catalog ${catalogAll?.length}`);
-    const canRise=eval('canGeometricallyRise');
-    const rows=catalogAll.filter(s=>canRise(s,spec.latitudeDeg)).map(s=>({...s}));
+    let rows;
+    globalThis.__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__=true;
+    try {
+      await eval('calculate()');
+      const handoff=globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__;
+      if(!Array.isArray(handoff)||handoff.length<1000) throw new Error(`direct catalog handoff ${handoff?.length}`);
+      rows=handoff.map(r=>({...r}));
+    } finally {
+      delete globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__;
+      delete globalThis.__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__;
+    }
+
     const sunsetMs=Number(ui.sunsetTime);
     const input={latitudeDeg:spec.latitudeDeg,longitudeDeg:spec.longitudeDeg,observerElevationM:spec.observerElevationM,date:spec.date,timeZone:spec.timeZone};
     const hooks=eval('__levelBSitewideGeometryHooks')(input,sunsetMs);
@@ -31,7 +46,7 @@ try {
     if(evaluation.status!=='COMPLETE') throw new Error(`evaluation ${evaluation.status}`);
     const point=engine.createSitewidePointEvaluator({runtimeData:evaluation.runtimeData,atmosphereResolution:evaluation.atmosphereResolution,geometryAtSunDepression:hooks.geometryAtSunDepression});
     const entries=evaluation.results.filter(e=>e.target).map(e=>({row:e.row,target:e.target}));
-    const id=r=>r?.hip!=null&&r.hip!==''?`HIP ${r.hip}`:r?.hr!=null&&r.hr!==''?`HR ${r.hr}`:r?.hd!=null&&r.hd!==''?`HD ${r.hd}`:(r?.name??r?.id??'target');
+    const id=r=>r?.isPlanet?(r.planetKey?`PLANET:${r.planetKey}`:`PLANET:${r.name}`):r?.hip!=null&&r.hip!==''?`HIP ${r.hip}`:r?.hr!=null&&r.hr!==''?`HR ${r.hr}`:r?.hd!=null&&r.hd!==''?`HD ${r.hd}`:(r?.name??r?.id??'target');
     const depths=[4,5,6,7,8,9,10,10.4];
     const profiles=depths.map(depression=>{
       const list=entries.map(entry=>{
@@ -49,10 +64,10 @@ try {
       const topEffectiveByMargin=list.filter(r=>r.effective&&Number.isFinite(r.margin)).sort((a,b)=>b.margin-a.margin).slice(0,10).map(compact);
       return {sunDepressionDeg:depression,statusCounts,supportedCount:list.filter(r=>r.supported).length,visibleCount:list.filter(r=>r.visible).length,effectivePassCount:list.filter(r=>r.effective).length,qualifyingCount:list.filter(r=>r.qualifies).length,topByMargin,topEffectiveByMargin};
     });
-    return {spec,ui,rowsCount:rows.length,atmosphereResolution:evaluation.atmosphereResolution,profiles};
+    return {spec,ui,rawCatalogCount,directCatalogRowCount:rows.length,atmosphereResolution:evaluation.atmosphereResolution,profiles};
   });
   const out=path.join(process.env.RUNNER_TEMP,'nisan-support-profile');
   fs.mkdirSync(out,{recursive:true});
-  fs.writeFileSync(path.join(out,'summary.json'),JSON.stringify({schemaVersion:1,status:'NISAN_SUPPORT_PROFILE_COMPLETE',applicationSha:process.env.APPLICATION_SHA,audit,browserConsole,claimBoundary:{diagnosticOnly:true,noTuning:true,F314Unchanged:true,noMYSTIC:true,noPandora:true}},null,2)+'\n');
-  console.log('NISAN_PROFILE='+JSON.stringify(audit.profiles));
+  fs.writeFileSync(path.join(out,'summary.json'),JSON.stringify({schemaVersion:2,status:'NISAN_SUPPORT_PROFILE_COMPLETE',applicationSha:process.env.APPLICATION_SHA,audit,browserConsole,claimBoundary:{diagnosticOnly:true,noTuning:true,F314Unchanged:true,noMYSTIC:true,noPandora:true}},null,2)+'\n');
+  console.log('NISAN_PROFILE='+JSON.stringify({directCatalogRowCount:audit.directCatalogRowCount,atmosphere:audit.atmosphereResolution,profiles:audit.profiles}));
 } finally { await browser.close(); }

@@ -1,0 +1,165 @@
+name: Taylor Ann Arbor original-SQM direct MYSTIC v1
+run-name: Taylor SQM direct MYSTIC v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-ann-arbor-sqm-mystic-v1/**'
+      - '.github/workflows/taylor-ann-arbor-sqm-mystic-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: taylor-ann-arbor-sqm-mystic-v1-scientific-1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/taylor-ann-arbor-sqm-mystic-v1
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      head: ${{ steps.guard.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - id: guard
+        name: Verify frozen scientific identity and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "${GITHUB_HEAD_REF}" = "science/taylor-ann-arbor-sqm-mystic-v1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python -m json.tool "$PKG/manifest.json" >/dev/null
+          python - <<'PY'
+          import csv,json,pathlib
+          p=pathlib.Path('experiments/taylor-ann-arbor-sqm-mystic-v1')
+          m=json.loads((p/'manifest.json').read_text())
+          assert m['executionKey']=='taylor-ann-arbor-sqm-mystic-v1:scientific:1'
+          assert m['budget']['maximumSolverCalls']==11648
+          assert m['budget']['maximumConfiguredPhotonHistories']==88960000
+          assert m['rowUniverse']['primarySolarRows']==[1,25]
+          assert m['aodSensitivity550']==[0.05,0.10,0.15,0.20,0.30,0.40]
+          rows=list(csv.DictReader((p/'observations.csv').open()))
+          assert len(rows)==32 and [int(r['row']) for r in rows]==list(range(1,33))
+          assert sum(r['primary_solar_geometry']=='true' for r in rows)==25
+          seeds=[]
+          for row in range(1,33):
+            seeds += [941000000+row*1000+i for i in range(1,65)]
+            if row<=25:
+              for a in range(1,7): seeds += [942000000+a*100000+row*1000+i for i in range(1,65)]
+          assert len(seeds)==11648 and len(set(seeds))==11648
+          print('PRE-FROZEN SCIENTIFIC UNIVERSE PASS',len(seeds))
+          PY
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        row: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-sqm-mystic-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact reviewed MYSTIC runtime
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock "$RUNTIME_LOCK" --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['uvspecHelpSha256']=='868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          PY
+      - name: Execute direct MYSTIC wide-field SQM row
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/run_row.py" \
+            --row "${{ matrix.row }}" \
+            --manifest "$PKG/manifest.json" \
+            --observations "$PKG/observations.csv" \
+            --response "$PKG/sqm_response.csv" \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-dir "row-${{ matrix.row }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-sqm-mystic-v1-row-${{ matrix.row }}
+          path: |
+            row-${{ matrix.row }}
+            runtime-report.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  analysis:
+    needs: [preflight,cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install analysis-only dependencies
+        run: python -m pip install --disable-pip-version-check numpy==2.3.2 astropy==7.1.0 matplotlib==3.10.5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-sqm-mystic-v1-row-*
+          path: all-row-artifacts
+          merge-multiple: false
+      - name: Fetch pinned CALSPEC Vega reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --output alpha_lyr_stis_011.fits https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/alpha_lyr_stis_011.fits
+          echo '60aebf5c193223f69061cd176d6309730c3210051fffad0dd6ad44475199ceaa  alpha_lyr_stis_011.fits' | sha256sum -c -
+      - name: Produce untouched observed-vs-MYSTIC analysis
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze.py" --results-root all-row-artifacts --response "$PKG/sqm_response.csv" --vega alpha_lyr_stis_011.fits --output analysis-output
+          cat analysis-output/report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-sqm-mystic-v1-analysis
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90

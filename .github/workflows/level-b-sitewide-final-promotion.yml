@@ -1,0 +1,344 @@
+name: Level-B site-wide final exact-head promotion
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-sitewide-final-promotion.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-sitewide-final-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  promotion:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      APPLICATION_SHA: fbc61cde082fb168b8293e3267b527c879260f25
+      BASE_RECONCILIATION_SHA: 68feedaa8d1bbf6172a44388ebceb1c0a63725e0
+      REQUIRED_VALIDATED_MAIN_SHA: d507fdcefdcbad53095097d485aa6c0a0f3870bd
+      PRIOR_0079_HEAD_SHA: a2c821ed85257e921fa74345c79bc429cd5501f5
+      PUBLIC_ASSET_COMMIT: 4b71445139e24236f12952ab41c791bd07a9f7db
+      EXPECTED_PROTOCOL_SHA256: aae80c6c958c0d3dabe9e841be50b4fca52e1b5fb717e834d361172bfed00fef
+      EXPECTED_SED_SHA256: 85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb
+      EXPECTED_LUT_SHA256: 21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+
+    steps:
+      - name: Require read-only private checkout credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || { echo 'Required read-only secret unavailable.' >&2; exit 78; }
+          for value in "$APPLICATION_SHA" "$BASE_RECONCILIATION_SHA" "$REQUIRED_VALIDATED_MAIN_SHA" "$PRIOR_0079_HEAD_SHA" "$PUBLIC_ASSET_COMMIT"; do
+            printf '%s' "$value" | grep -Eq '^[0-9a-f]{40}$'
+          done
+          echo "Exact MYSTIC-STATE-0079 private head: $APPLICATION_SHA"
+
+      - name: Checkout clean public runner source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable validated stellar assets
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/twilight-mystic-experiments
+          ref: ${{ env.PUBLIC_ASSET_COMMIT }}
+          path: public-assets
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact private 0079 head with reconciliation history
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Verify exact ancestry and immutable science bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-app rev-parse HEAD)" = "$APPLICATION_SHA"
+          test "$(git -C public-assets rev-parse HEAD)" = "$PUBLIC_ASSET_COMMIT"
+          git -C private-app merge-base --is-ancestor "$BASE_RECONCILIATION_SHA" HEAD
+          git -C private-app merge-base --is-ancestor "$REQUIRED_VALIDATED_MAIN_SHA" HEAD
+          git -C private-app merge-base --is-ancestor "$PRIOR_0079_HEAD_SHA" HEAD
+          git -C private-app remote remove origin || true
+          git -C public-assets remote remove origin || true
+          test "$(sha256sum private-app/scientific-tools/visibility-v3/STELLAR_TRANSPORT_VALIDATION_PROTOCOL_V2.md | awk '{print $1}')" = "$EXPECTED_PROTOCOL_SHA256"
+          test "$(sha256sum public-assets/generated/level-b-stellar-v2/pickles-sed-1nm.json | awk '{print $1}')" = "$EXPECTED_SED_SHA256"
+          test "$(sha256sum public-assets/generated/level-b-stellar-v2/stellar-transport-v2-lut.json | awk '{print $1}')" = "$EXPECTED_LUT_SHA256"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          b=json.loads(Path('private-app/scientific-tools/visibility-v3/stellar-v2-asset-binding.json').read_text())
+          assert b['mysticState'] == 'MYSTIC-STATE-0081'
+          assert b['publicAssetCommit'] == os.environ['PUBLIC_ASSET_COMMIT']
+          assert b['protocolSha256'] == os.environ['EXPECTED_PROTOCOL_SHA256']
+          assert b['sedBundleSha256'] == os.environ['EXPECTED_SED_SHA256']
+          assert b['spectralRuntimeSha256'] == os.environ['EXPECTED_LUT_SHA256']
+          assert b['parsedScienceMatchesOriginalPassAfterRemovingVolatileRawResponseHashes'] is True
+          PY
+          mkdir -p private-app/scientific-tools/visibility-v3/generated
+          cp public-assets/generated/level-b-stellar-v2/pickles-sed-1nm.json private-app/scientific-tools/visibility-v3/generated/pickles-sed-1nm.json
+          cp public-assets/generated/level-b-stellar-v2/stellar-transport-v2-lut.json private-app/scientific-tools/visibility-v3/generated/stellar-transport-v2-lut.json
+
+      - name: Install exact repository test dependencies
+        working-directory: private-app
+        shell: bash
+        run: npm ci
+
+      - name: Run full parity and repeat 4,800-case sunset audit
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run prepare:level-b-stellar-v2
+          npm run test:level-b-parity
+          node scientific-tools/visibility-v3/tests/audit-sunset-adaptation-prehistory-timing.mjs --output "$RUNNER_TEMP/0078-sunset-audit.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r=json.loads((Path(os.environ['RUNNER_TEMP'])/'0078-sunset-audit.json').read_text())
+          assert r['scientificAcceptanceGate'] is False
+          assert r['observationallyCalibrated'] is False
+          assert r['fixtureCount'] == 1200
+          assert r['totalTauCaseCount'] == 4800
+          assert r['tauSeconds'] == [20,30,45,60]
+          assert r['levelBDetectionSkyUsedBelow2Deg'] is False
+          assert all(v == 0 for v in r['invariants'].values())
+          assert all(r['byTau'][str(t)]['caseCount'] == 1200 for t in (20,30,45,60))
+          PY
+
+      - name: Repeat 1,600-case spectral diagnostic audit
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scientific-tools/visibility-v3/tests/audit-stellar-transport-v2-timing.mjs --output "$RUNNER_TEMP/0081-spectral-audit.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads((Path(os.environ['RUNNER_TEMP'])/'0081-spectral-audit.json').read_text())
+          assert a['attemptedCaseCount'] == 1600
+          assert a['commonSupportedLevelBCaseCount'] == 1600
+          assert a['supportedLegacyCompatibilityCaseCount'] == 1600
+          PY
+
+      - name: Run full Pages build and all site-wide/dist tests
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          GITHUB_SHA="$APPLICATION_SHA" npm run build:pages
+          npm run test:level-b-sitewide-preview
+          node scripts/test-level-b-stellar-v2-dist.mjs
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          marker=json.loads(Path('dist/level-b-software-status.json').read_text())
+          assert marker['commitSha'] == os.environ['APPLICATION_SHA']
+          assert marker['stellarTransportState'] == 'MYSTIC-STATE-0081'
+          assert marker['stellarTransportProtocolSha256'] == os.environ['EXPECTED_PROTOCOL_SHA256']
+          assert marker['stellarTransportSedSha256'] == os.environ['EXPECTED_SED_SHA256']
+          assert marker['stellarTransportLutSha256'] == os.environ['EXPECTED_LUT_SHA256']
+          assert marker['stellarTransportPublicAssetCommit'] == os.environ['PUBLIC_ASSET_COMMIT']
+          PY
+          cp dist/level-b-software-status.json "$RUNNER_TEMP/0079-build-marker.json"
+
+      - name: Install Chromium
+        working-directory: private-app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real desktop and mobile Chromium interaction QA
+        working-directory: private-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 4173 --directory dist >"$RUNNER_TEMP/0079-http.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 40); do
+            curl --fail --silent http://127.0.0.1:4173/ >/dev/null && break
+            sleep 0.25
+          done
+          curl --fail --silent http://127.0.0.1:4173/ >/dev/null
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { writeFileSync } from 'node:fs';
+
+          const requiredModes = [
+            'legacy',
+            'level-b-v3-crumey-blackwell-equilibrium',
+            'level-b-v3-crumey-blackwell-transient-experimental',
+          ];
+          const staleTokens = [
+            'BLOCKED_MYSTIC_STATE_0077_REFERENCE_GATE',
+            'current-main-550nm-full-column-browser-approximation',
+          ];
+          const featureValue = page => page.evaluate(() => document.getElementById('calculatorFeature')?.value ?? null);
+          const browser = await chromium.launch({ headless: true });
+          const report = {
+            schemaVersion: 1,
+            mysticState: 'MYSTIC-STATE-0079',
+            applicationSha: process.env.APPLICATION_SHA,
+            baseReconciliationSha: process.env.BASE_RECONCILIATION_SHA,
+            desktop: null,
+            mobile: null,
+            claimBoundary: 'real-browser-software-interaction-QA-only-not-empirical-sky-or-human-validation',
+          };
+
+          async function activateThreeStar(page, label) {
+            const feature = page.locator('#calculatorFeature');
+            if (await feature.count() !== 1) throw new Error(`${label}: calculatorFeature state control missing`);
+            const featureMeta = await feature.evaluate(el => ({
+              tagName: el.tagName,
+              type: el.getAttribute('type'),
+              value: el.value,
+              hidden: Boolean(el.hidden),
+              optionCount: el.options?.length ?? null,
+            }));
+            const controls = page.locator('.calculator-tabs [role="tab"], .calculator-tabs button, .calculator-tabs label, .calculator-tabs a, .calculator-tabs [data-feature], .calculator-tabs [data-value], [data-calculator-feature]');
+            const diagnostics = [];
+            for (let i = 0, n = await controls.count(); i < n; i += 1) {
+              const control = controls.nth(i);
+              if (!(await control.isVisible().catch(() => false))) continue;
+              const meta = await control.evaluate(el => ({
+                tagName: el.tagName,
+                id: el.id,
+                className: String(el.className ?? ''),
+                text: String(el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
+                value: el.getAttribute('value'),
+                dataFeature: el.getAttribute('data-feature'),
+                dataValue: el.getAttribute('data-value'),
+              }));
+              diagnostics.push(meta);
+              await control.click().catch(() => {});
+              await page.waitForTimeout(40);
+              if ((await featureValue(page)) === 'three-star') {
+                const count = page.locator('#threeStarCount');
+                if (await count.count() !== 1 || !(await count.isVisible())) {
+                  throw new Error(`${label}: visible control selected three-star but #threeStarCount is not visible; control=${JSON.stringify(meta)}`);
+                }
+                return { method: 'visible-control-click', featureMeta, control: meta, selected: 'three-star' };
+              }
+            }
+            throw new Error(`${label}: no visible calculator control selected three-star; feature=${JSON.stringify(featureMeta)} controls=${JSON.stringify(diagnostics)}`);
+          }
+
+          async function inspect(viewport, label) {
+            const page = await browser.newPage({ viewport });
+            const pageErrors = [];
+            page.on('pageerror', error => pageErrors.push(String(error?.message ?? error)));
+            await page.goto('http://127.0.0.1:4173/', { waitUntil: 'domcontentloaded' });
+            const engine = page.locator('#visibilityEngineMode');
+            await engine.waitFor({ state: 'visible' });
+            const options = await engine.locator('option').evaluateAll(nodes => nodes.map(n => n.value));
+            if (JSON.stringify(options) !== JSON.stringify(requiredModes)) throw new Error(`${label}: engine options drift: ${JSON.stringify(options)}`);
+            const note = (await page.locator('#visibilityEngineModeNote').innerText()).trim();
+            if (!note.includes('MYSTIC-STATE-0081')) throw new Error(`${label}: MYSTIC-STATE-0081 disclosure missing`);
+            if (!/wavelength-resolved|מופרדת-אורך-גל/i.test(note)) throw new Error(`${label}: wavelength-resolved disclosure missing`);
+            if (!note.includes('experimental-shadow-unvalidated')) throw new Error(`${label}: transient validation-tier disclosure missing`);
+            if (!/Planetary signals still fail closed|כוכבי-לכת עדיין מסורבים/i.test(note)) throw new Error(`${label}: planet fail-closed disclosure missing`);
+            const bodyText = await page.locator('body').innerText();
+            for (const token of staleTokens) if (bodyText.includes(token)) throw new Error(`${label}: obsolete rendered claim: ${token}`);
+
+            for (const mode of requiredModes) {
+              await engine.selectOption(mode);
+              const active = await page.evaluate(() => globalThis.__STAR_VISIBILITY_ENGINE_MODE__ ?? null);
+              if (active !== mode) throw new Error(`${label}: engine global did not follow selector: ${mode}/${active}`);
+            }
+
+            const featureActivation = await activateThreeStar(page, label);
+            await engine.selectOption('level-b-v3-crumey-blackwell-equilibrium');
+            if ((await featureValue(page)) !== 'three-star') throw new Error(`${label}: equilibrium switch changed Three-Star feature`);
+            await engine.selectOption('level-b-v3-crumey-blackwell-transient-experimental');
+            if ((await featureValue(page)) !== 'three-star') throw new Error(`${label}: transient switch changed Three-Star feature`);
+
+            const fieldBox = await page.locator('#visibilityEngineModeField').boundingBox();
+            const selectBox = await engine.boundingBox();
+            if (!fieldBox || !selectBox) throw new Error(`${label}: engine controls lack layout boxes`);
+            if (fieldBox.x < -1 || selectBox.x < -1 || fieldBox.x + fieldBox.width > viewport.width + 1 || selectBox.x + selectBox.width > viewport.width + 1) {
+              throw new Error(`${label}: engine controls overflow viewport: ${JSON.stringify({fieldBox, selectBox, viewport})}`);
+            }
+            await page.waitForTimeout(100);
+            if (pageErrors.length) throw new Error(`${label}: page errors: ${pageErrors.join(' | ')}`);
+            await page.close();
+            return {
+              viewport,
+              options,
+              featureActivation,
+              finalEngineMode: 'level-b-v3-crumey-blackwell-transient-experimental',
+              noHorizontalEngineControlOverflow: true,
+              staleClaimCount: 0,
+              pageErrorCount: 0,
+            };
+          }
+
+          try {
+            report.desktop = await inspect({ width: 1440, height: 1000 }, 'desktop');
+            report.mobile = await inspect({ width: 390, height: 844 }, 'mobile-390');
+            writeFileSync(process.env.RUNNER_TEMP + '/0079-browser-qa.json', JSON.stringify(report, null, 2) + '\n');
+            console.log(JSON.stringify(report));
+          } finally {
+            await browser.close();
+          }
+          NODE
+
+      - name: Seal public-safe final site-wide promotion summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/public-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          summary={
+            'mysticState':'MYSTIC-STATE-0079',
+            'applicationSha':os.environ['APPLICATION_SHA'],
+            'baseReconciliationSha':os.environ['BASE_RECONCILIATION_SHA'],
+            'requiredValidatedMainSha':os.environ['REQUIRED_VALIDATED_MAIN_SHA'],
+            'prior0079HeadSha':os.environ['PRIOR_0079_HEAD_SHA'],
+            'publicAssetCommit':os.environ['PUBLIC_ASSET_COMMIT'],
+            'githubRunId':os.environ['GITHUB_RUN_ID'],
+            'githubRunAttempt':os.environ['GITHUB_RUN_ATTEMPT'],
+            'claimBoundary':'software/site-wide/browser-QA-only-pending-empirical-real-sky-and-human-validation',
+          }
+          for name,key in [
+              ('0078-sunset-audit.json','sunsetAudit'),
+              ('0081-spectral-audit.json','spectralAudit'),
+              ('0079-build-marker.json','buildMarker'),
+              ('0079-browser-qa.json','browserQa')]:
+              p=root/name
+              if p.exists(): summary[key]=json.loads(p.read_text())
+          out=root/'public-summary'/'0079-final-promotion-summary.json'
+          out.write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({k:v for k,v in summary.items() if k not in ('sunsetAudit','spectralAudit')},sort_keys=True))
+          PY
+
+      - name: Upload public-safe final site-wide evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-sitewide-final-promotion-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/public-summary/0079-final-promotion-summary.json
+            ${{ runner.temp }}/0078-sunset-audit.json
+            ${{ runner.temp }}/0081-spectral-audit.json
+            ${{ runner.temp }}/0079-build-marker.json
+            ${{ runner.temp }}/0079-browser-qa.json

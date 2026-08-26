@@ -1,0 +1,103 @@
+name: Dispatch Jerusalem Tishrei direct-MYSTIC v2 exactly once
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/jerusalem-tishrei-direct-mystic-v2-dispatch-once.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'review/jerusalem-tishrei-direct-mystic-v2-dispatch-once'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      AUTHORIZATION_REF: f2e6fd8dc39b93704edb57d16558f5b6fdf7f4fd
+      AUTHORIZATION_PARENT: 01c6c73b79f309dbcfaa8a0b173be45a36899dde
+      EXECUTION_KEY: jerusalem-tishrei-direct-mystic-v2:diagnostic:1
+      AUTHORIZATION_ORDINAL: '1'
+      TARGET_WORKFLOW: jerusalem-tishrei-direct-mystic-v2-execution.yml
+      AUTHORIZATION_PATH: experiments/jerusalem-tishrei-direct-mystic-v2/authorization.scientific.json
+      SMOKE_AUDIT_DIGEST: sha256:bd13fae624385476c73094e8d3a0019d403689bbfba640248c0173f1451598de
+    steps:
+      - name: Verify exact one-purpose v2 scientific authorization commit and content
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${AUTHORIZATION_REF}" > /tmp/auth-commit.json
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github.raw+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${AUTHORIZATION_PATH}?ref=${AUTHORIZATION_REF}" > /tmp/auth.json
+          python - <<'PY'
+          import json, os
+          d=json.load(open('/tmp/auth-commit.json'))
+          assert d['sha']==os.environ['AUTHORIZATION_REF']
+          assert len(d['parents'])==1 and d['parents'][0]['sha']==os.environ['AUTHORIZATION_PARENT']
+          assert [f['filename'] for f in d['files']]==[os.environ['AUTHORIZATION_PATH']]
+          a=json.load(open('/tmp/auth.json'))
+          required={
+              'schemaVersion':1,
+              'stageId':'cross-geometry-pilot-v1',
+              'scientificPurpose':'jerusalem-tishrei-direct-mystic-v2',
+              'laneId':'jerusalem-tishrei-direct-mystic-v2',
+              'authorized':True,
+              'scientificExecution':True,
+              'scientificDiagnostic':True,
+              'successDoesNotAuthorizeProduction':True,
+              'executionKey':os.environ['EXECUTION_KEY'],
+              'batchId':'jerusalem-tishrei-three-star-direct-mystic-v1',
+              'authorizationOrdinal':1,
+              'consumed':False,
+              'exactAuthorizationParentCommit':os.environ['AUTHORIZATION_PARENT'],
+              'exactAuthorizationCommit':None,
+              'requiredSmokeRunId':33011713466,
+              'requiredSmokeAuditArtifactId':9622825000,
+              'requiredSmokeAuditArtifactDigest':os.environ['SMOKE_AUDIT_DIGEST'],
+          }
+          stale={k:(a.get(k),v) for k,v in required.items() if a.get(k)!=v}
+          assert not stale, stale
+          assert a['proposalRawSha256']=='18a26876102a870aac8ddf907e4742bd8425c86b1bbead9ea8a0570ce633943a'
+          assert a['executionAdapterRawSha256']=='af9c4a71dda504814d4a10c3879712d84db2201829256f4876b197030fd8c67b'
+          assert a['executionWorkflowRawSha256']=='da4180a125beab5fcd1076a2cc96e9828177e92748b9a55470175a82db8122ab'
+          assert a['planRawSha256']=='9bfc0153ab5758bdb603a530f166ce5d377e9c39485cbf136e81e18ecbcda3b7'
+          print('ONE_PURPOSE_TISHREI_V2_SCIENTIFIC_AUTHORIZATION_PASS')
+          PY
+      - name: Dispatch exact Tishrei v2 scientific workflow once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/payload.json <<JSON
+          {
+            "ref": "main",
+            "inputs": {
+              "authorization_ref": "${AUTHORIZATION_REF}",
+              "execution_key": "${EXECUTION_KEY}",
+              "authorization_ordinal": "${AUTHORIZATION_ORDINAL}"
+            }
+          }
+          JSON
+          code="$(curl -sS -o /tmp/dispatch-response.txt -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${TARGET_WORKFLOW}/dispatches" \
+            --data-binary @/tmp/payload.json)"
+          if [ "$code" != 204 ]; then
+            cat /tmp/dispatch-response.txt >&2
+            echo "unexpected dispatch HTTP status: $code" >&2
+            exit 1
+          fi
+          echo 'TISHREI_V2_SCIENTIFIC_WORKFLOW_DISPATCH_ACCEPTED'

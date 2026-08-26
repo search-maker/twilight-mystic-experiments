@@ -36,6 +36,9 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
             source = d / 'lunar-source.dat'
             meta = m.write_lunar_source_file(source, [380.0, 553.8, 780.0], [1e-5, 2e-5, 1.5e-5])
             self.assertEqual(meta['unit'], 'mW m-2 nm-1')
+            self.assertTrue(meta['exactRequestedWavelengthCoverage'])
+            self.assertEqual(meta['startNm'], 380.0)
+            self.assertEqual(meta['stopNm'], 780.0)
             self.assertEqual(source.read_text().splitlines()[0], '380.000000 1.000000000000e-02')
             case_dir = d / 'case'
             case_dir.mkdir()
@@ -72,12 +75,17 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
         m = self.m
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            with self.assertRaises(m.LunarMysticInputError):
-                m.write_lunar_source_file(d / 'bad.dat', [380, 379], [1e-5, 1e-5])
-            with self.assertRaises(m.LunarMysticInputError):
-                m.write_lunar_source_file(d / 'bad.dat', [379], [1e-5])
-            with self.assertRaises(m.LunarMysticInputError):
-                m.write_lunar_source_file(d / 'bad.dat', [380], [-1e-5])
+            invalid_sources = [
+                ([380, 379, 780], [1e-5, 1e-5, 1e-5]),
+                ([380], [1e-5]),
+                ([379, 780], [1e-5, 1e-5]),
+                ([380, 779], [1e-5, 1e-5]),
+                ([380, 780], [-1e-5, 1e-5]),
+            ]
+            for wavelengths, irradiance in invalid_sources:
+                with self.subTest(wavelengths=wavelengths, irradiance=irradiance):
+                    with self.assertRaises(m.LunarMysticInputError):
+                        m.write_lunar_source_file(d / 'bad.dat', wavelengths, irradiance)
 
 if __name__ == '__main__':
     unittest.main()

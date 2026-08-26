@@ -12,7 +12,6 @@ from typing import Any
 PACKAGE = Path("experiments/jerusalem-tishrei-direct-mystic-v1")
 MANIFEST_REL = PACKAGE / "manifest.proposal.json"
 WRAPPER_REL = PACKAGE / "execution_adapter.py"
-GENERIC_REL = Path("experiments/mystic-batch-v1/cross_geometry_execution_adapter.py")
 PROPOSAL_ADAPTER_REL = Path("experiments/mystic-batch-v1/cross_geometry_adapter.py")
 ELEVATION_REL = Path("experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py")
 EXPECTED_CASES = 12
@@ -78,12 +77,7 @@ def validate_case(
     req(abs(float(inputs["observerElevationM"]) - EXPECTED_ELEVATION_M) <= 1e-12, f"{case_id}: elevation drift")
     req(abs(float(inputs["aod550"]) - EXPECTED_AOD550) <= 1e-12, f"{case_id}: AOD drift")
 
-    with tempfile.TemporaryDirectory(prefix="tishrei-repair-base-") as base_tmp, tempfile.TemporaryDirectory(prefix="tishrei-repair-wrapped-") as wrapped_tmp:
-        base_case_dir = Path(base_tmp) / case_id
-        base_case_dir.mkdir(parents=True)
-        base_text = proposal_adapter.render_input(inputs, data_dir, root, base_case_dir)
-        expected_text, expected_site_km, expected_grid = elevation.apply_ground_site_atm_z_grid(base_text, inputs["observerElevationM"])
-
+    with tempfile.TemporaryDirectory(prefix="tishrei-repair-wrapped-") as wrapped_tmp:
         prepared = wrapper.prepare_case(
             manifest_path,
             runtime_path,
@@ -94,6 +88,15 @@ def validate_case(
         )
         actual_path = Path(prepared["inputPath"])
         actual_text = actual_path.read_text(encoding="utf-8")
+
+        # Re-render the pre-repair baseline into the exact same case directory so
+        # path-bearing directives such as mc_basename are identical. The only
+        # allowed text change is then the reviewed elevation transformation.
+        base_text = proposal_adapter.render_input(inputs, data_dir, root, actual_path.parent)
+        expected_text, expected_site_km, expected_grid = elevation.apply_ground_site_atm_z_grid(
+            base_text,
+            inputs["observerElevationM"],
+        )
 
         req(actual_text == expected_text, f"{case_id}: wrapper output differs from reviewed elevation helper")
         req(base_text.splitlines().count("zout 0.800000") == 1, f"{case_id}: old failure representation not reproduced exactly once")

@@ -1,0 +1,93 @@
+name: Jerusalem historical atmosphere diagnostic v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-historical-atmosphere-diagnostic-v1.yml'
+      - 'review/jerusalem-historical-atmosphere-diagnostic-v1/run-atmosphere.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - label: tishrei
+            civil_date: '2025-09-23'
+            hebrew_label: '1 Tishrei 5786'
+          - label: nisan
+            civil_date: '2026-03-19'
+            hebrew_label: '1 Nisan 5786'
+          - label: tammuz
+            civil_date: '2026-06-16'
+            hebrew_label: '1 Tammuz 5786'
+    env:
+      APPLICATION_SHA: 80bb46110067567afbd92d5bb6b9316087e58e25
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      CASE_LABEL: ${{ matrix.label }}
+      CASE_DATE: ${{ matrix.civil_date }}
+      HEBREW_LABEL: ${{ matrix.hebrew_label }}
+      LATITUDE_DEG: '31.778'
+      LONGITUDE_DEG: '35.235'
+      OBSERVER_ELEVATION_M: '800'
+      TIME_ZONE: Asia/Jerusalem
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact starsvisibility main
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Build exact application
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+      - name: Install Chromium
+        working-directory: app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+      - name: Resolve exact historical atmosphere without visibility calculation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp review/jerusalem-historical-atmosphere-diagnostic-v1/run-atmosphere.mjs app/jerusalem-atmosphere-runner.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/jerusalem-atmosphere-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node jerusalem-atmosphere-runner.mjs
+      - name: Upload exact atmosphere evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-historical-atmosphere-${{ matrix.label }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/jerusalem-historical-atmosphere/${{ matrix.label }}.json

@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 
 const CASES={
   tishrei:{date:'2025-09-23',sunsetMs:1758641660932,expectedAod550:0.22,baselineEventMs:1758642904994.5},
-  nisan:{date:'2026-03-19',sunsetMs:1773935382953.0005,expectedAod550:0.43,baselineEventMs:null},
+  nisan:{date:'2026-03-19',sunsetMs:1773935382953.0005,expectedAod550:0.43,baselineEventMs:null,expectOodBeforeFieldFactor:true},
   tammuz:{date:'2026-06-16',sunsetMs:1781628380546,expectedAod550:0.18,baselineEventMs:1781629701483.5},
 };
 const caseId=process.env.CASE_ID;
@@ -30,29 +30,36 @@ try{
     const rawCount=Array.isArray(globalThis.__STARS_BUILT_IN_STARS__)?globalThis.__STARS_BUILT_IN_STARS__.length:-1;
     if(rawCount!==9090)throw new Error(`raw catalog ${rawCount}`);
 
-    let rows;
-    globalThis.__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__=true;
-    try{
-      await eval('calculate()');
-      const handoff=globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__;
-      if(!Array.isArray(handoff)||handoff.length<1000)throw new Error(`handoff ${handoff?.length}`);
-      rows=handoff.map(r=>({...r}));
-    }finally{
-      delete globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__;
-      delete globalThis.__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__;
-    }
-
     const input={latitudeDeg:spec.latitudeDeg,longitudeDeg:spec.longitudeDeg,observerElevationM:spec.observerElevationM,date:spec.date,timeZone:spec.timeZone};
     const hooks=eval('__levelBSitewideGeometryHooks')(input,Number(frozen.sunsetMs));
     const sunsetResidual=Number(eval('sunAltitude')(Number(frozen.sunsetMs),spec.latitudeDeg,spec.longitudeDeg));
     const adapter=await import('/scientific-tools/visibility-v3/level-b-current-main-adapter.mjs');
     const resolver=await import('/scientific-tools/visibility-v3/level-b-preview-atmosphere-resolver.mjs');
     const engine=await import('/scientific-tools/visibility-v3/level-b-sitewide-engine.mjs');
+    const skyModule=await import('/scientific-tools/visibility-v3/validated-v3-sky-provider.mjs');
     const runtimeData=await adapter.loadValidatedV3RuntimeData({fetchImpl:globalThis.fetch});
     const referenceTimeMs=hooks.timeAtSunDepression(6.0);
     const atmosphereResolution=await resolver.resolvePreviewLevelBAtmosphere({latitudeDeg:spec.latitudeDeg,longitudeDeg:spec.longitudeDeg,observerElevationM:spec.observerElevationM,validTimeMs:referenceTimeMs,fetchImpl:globalThis.fetch});
     if(atmosphereResolution.status!=='RESOLVED')throw new Error(`atmosphere ${atmosphereResolution.status}`);
     if(Math.abs(Number(atmosphereResolution.atmosphere?.aod550)-Number(frozen.expectedAod550))>1e-12)throw new Error(`AOD changed: ${atmosphereResolution.atmosphere?.aod550} expected ${frozen.expectedAod550}`);
+
+    if(frozen.expectOodBeforeFieldFactor){
+      const provider=skyModule.createValidatedV3SkyProvider({runtimeData});
+      const probe=provider.evaluateSky({geometry:{sunDepressionDeg:6,targetAltitudeDeg:45,relativeAzimuthDeg:90},atmosphere:atmosphereResolution.atmosphere});
+      if(probe.status!=='OOD')throw new Error(`Nisan expected OOD, got ${probe.status}`);
+      if(!Array.isArray(probe.support?.reasons)||!probe.support.reasons.includes('OUTSIDE_VALIDATED_PHYSICAL_DESIGN_BOX'))throw new Error(`Nisan OOD reason drift: ${JSON.stringify(probe.support?.reasons)}`);
+      const results=fieldFactors.map(F=>({fieldFactor:F,marginShiftMag:2.5*Math.log10(spec.baselineF/F),found:false,eventTimeMs:null,minutesAfterSunset:null,sunDepressionDeg:null,selected:[],completingKeys:[],reason:'ATMOSPHERE_OOD_BEFORE_FIELD_FACTOR'}));
+      return{caseId,spec,frozen,rawCatalogCount:rawCount,directCatalogRowCount:null,sunsetResidualDeg:sunsetResidual,atmosphereResolution,referenceTimeMs,oodProbe:probe,results,baseSampleCacheSize:0};
+    }
+
+    delete globalThis.__DIAG_LEVEL_B_DIRECT_CATALOG_ROWS__;
+    await eval('__levelBSitewideRunUsingLegacyScaffold(globalThis.__STAR_VISIBILITY_ENGINE_MODE__)');
+    const uiBaseline=JSON.parse(JSON.stringify(eval('threeStarResultData')));
+    const snapshot=globalThis.__DIAG_LEVEL_B_DIRECT_CATALOG_ROWS__;
+    if(!Array.isArray(snapshot)||snapshot.length!==7653)throw new Error(`instrumented transformed-row snapshot ${snapshot?.length}`);
+    const rows=snapshot.map(r=>({...r}));
+    if(globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__!==undefined)throw new Error('temporary direct catalog handoff should be deleted after scaffold');
+
     const point=engine.createSitewidePointEvaluator({runtimeData,atmosphereResolution,geometryAtSunDepression:hooks.geometryAtSunDepression});
     const catalogId=row=>row?.isPlanet?(row.planetKey?`PLANET:${row.planetKey}`:`PLANET:${row.name}`):row?.hip!=null&&row.hip!==''?`HIP ${row.hip}`:row?.hr!=null&&row.hr!==''?`HR ${row.hr}`:row?.hd!=null&&row.hd!==''?`HD ${row.hd}`:(row?.name??row?.id??'target');
     const candidates=rows.map(row=>({key:catalogId(row),row,target:engine.normalizeSitewideTarget(row)})).filter(e=>e.target);
@@ -89,9 +96,14 @@ try{
       results.push({fieldFactor:F,marginShiftMag,found:event.found,eventTimeMs:event.found?event.eventTimeMs:null,minutesAfterSunset:event.found?(event.eventTimeMs-Number(frozen.sunsetMs))/60000:null,sunDepressionDeg:event.found?depressionAt(event.eventTimeMs):null,selected,completingKeys:event.completingKeys??[]});
     }
     const baseline=results.find(r=>r.fieldFactor===3.14);
-    if(frozen.baselineEventMs==null){if(baseline.found)throw new Error(`baseline unexpectedly found event ${baseline.eventTimeMs}`);}else{if(!baseline.found)throw new Error('baseline expected event missing');if(Math.abs(baseline.eventTimeMs-Number(frozen.baselineEventMs))>500)throw new Error(`baseline event mismatch ${baseline.eventTimeMs} vs ${frozen.baselineEventMs}`);}
-    return{caseId,spec,frozen,rawCatalogCount:rawCount,directCatalogRowCount:rows.length,sunsetResidualDeg:sunsetResidual,atmosphereResolution,referenceTimeMs,results,baseSampleCacheSize:cache.size};
+    if(!baseline?.found)throw new Error('baseline expected event missing');
+    if(Math.abs(baseline.eventTimeMs-Number(frozen.baselineEventMs))>500)throw new Error(`baseline event mismatch ${baseline.eventTimeMs} vs ${frozen.baselineEventMs}`);
+    const uiEventMs=Number(uiBaseline?.eventTime ?? uiBaseline?.eventTimeMs);
+    if(Number.isFinite(uiEventMs)&&Math.abs(uiEventMs-Number(frozen.baselineEventMs))>500)throw new Error(`UI baseline event mismatch ${uiEventMs} vs ${frozen.baselineEventMs}`);
+    return{caseId,spec,frozen,rawCatalogCount:rawCount,directCatalogRowCount:rows.length,sunsetResidualDeg:sunsetResidual,atmosphereResolution,referenceTimeMs,uiBaseline,results,baseSampleCacheSize:cache.size};
   },{caseId,frozen,fieldFactors});
-  const out=path.join(process.env.RUNNER_TEMP,'jerusalem-field-factor-sensitivity');fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,`${caseId}.json`),JSON.stringify({schemaVersion:1,status:'JERUSALEM_FIELD_FACTOR_SENSITIVITY_COMPLETE',applicationSha:process.env.APPLICATION_SHA,audit,browserConsole,claimBoundary:{sensitivityOnly:true,productionDefaultChanged:false,baselineF314Unchanged:true,noTuning:true,noMYSTIC:true,noPandora:true}},null,2)+'\n');
+  const out=path.join(process.env.RUNNER_TEMP,'jerusalem-field-factor-sensitivity');
+  fs.mkdirSync(out,{recursive:true});
+  fs.writeFileSync(path.join(out,`${caseId}.json`),JSON.stringify({schemaVersion:2,status:'JERUSALEM_FIELD_FACTOR_SENSITIVITY_COMPLETE',applicationSha:process.env.APPLICATION_SHA,audit,browserConsole,claimBoundary:{sensitivityOnly:true,productionDefaultChanged:false,baselineF314Unchanged:true,noTuning:true,noMYSTIC:true,noPandora:true}},null,2)+'\n');
   console.log('F_SENSITIVITY='+JSON.stringify({caseId,atmosphere:audit.atmosphereResolution,results:audit.results}));
 }finally{await browser.close();}

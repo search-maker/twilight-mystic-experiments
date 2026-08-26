@@ -101,7 +101,51 @@ jobs:
           PY
           test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
           echo 'APPLICATION_SHA_PASS'
+      - name: Classify v1 authorization lifecycle
+        id: auth-state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads(Path(os.environ['AUTHORIZATION']).read_text())
+          pristine=(
+              a.get('authorized') is False and
+              a.get('scientificExecution') is False and
+              a.get('scientificDiagnostic') is False and
+              a.get('consumed') is False and
+              a.get('authorizationOrdinal')==0 and
+              a.get('executionKey') is None and
+              a.get('exactAuthorizationParentCommit') is None and
+              a.get('exactAuthorizationCommit') is None
+          )
+          consumed=(
+              a.get('authorized') is False and
+              a.get('scientificExecution') is False and
+              a.get('scientificDiagnostic') is False and
+              a.get('consumed') is True and
+              a.get('authorizationOrdinal')==1 and
+              a.get('executionKey')=='jerusalem-tishrei-direct-mystic-v1:diagnostic:1' and
+              a.get('exactAuthorizationCommit')=='64e4515ebb2fb53c93490a6fe1370ceb7e782206' and
+              a.get('exactAuthorizationParentCommit')=='4f4f1417691376fcef0ae4b32cdac9066cf1194c'
+          )
+          if pristine:
+              mode='preauth'
+          elif consumed:
+              note=str(a.get('note',''))
+              assert '33003385601' in note
+              assert 'permanently disabled' in note
+              assert 'new preregistered v2 lane and execution key' in note
+              mode='consumed'
+          else:
+              raise SystemExit(f'unsupported or unsafe v1 authorization lifecycle state: {a}')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'mode={mode}\n')
+          print('V1_AUTHORIZATION_LIFECYCLE_PASS', mode)
+          PY
       - name: Build exact authorization proposal only
+        if: steps.auth-state.outputs.mode == 'preauth'
         shell: bash
         run: |
           set -euo pipefail
@@ -124,6 +168,7 @@ jobs:
           test -z "$(git ls-files --modified)"
           test -f validation-output/authorization-proposal.json
       - name: Simulate one-purpose authorization commit locally and validate guard
+        if: steps.auth-state.outputs.mode == 'preauth'
         shell: bash
         run: |
           set -euo pipefail
@@ -180,6 +225,40 @@ jobs:
           assert len(p['matrix']['include'])==12
           print(json.dumps({'status':'PACKAGE_GUARD_AND_PLAN_VALIDATED_NO_SOLVER','sourceSha':g['authorizationParentCommit'],'localTestAuthorizationSha':g['authorizationRef'],'caseCount':p['caseCount'],'photons':p['configuredMcPhotonsSum'],'syntaxChecksExecuted':0,'solverExecutions':0},sort_keys=True))
           PY
+      - name: Validate consumed v1 archive and refuse authorization-1 reuse
+        if: steps.auth-state.outputs.mode == 'consumed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p validation-output
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          a=json.loads(Path(os.environ['AUTHORIZATION']).read_text())
+          report={
+              'schemaVersion':1,
+              'status':'V1_CONSUMED_ARCHIVE_VALIDATED_NO_REAUTHORIZATION',
+              'authorizationOrdinal':a['authorizationOrdinal'],
+              'executionKey':a['executionKey'],
+              'exactAuthorizationCommit':a['exactAuthorizationCommit'],
+              'consumed':a['consumed'],
+              'authorized':a['authorized'],
+              'scientificExecution':a['scientificExecution'],
+              'failedWorkflowRunId':33003385601,
+              'newV2LaneRequired':True,
+              'boundary':'v1 authorization is historical/consumed and must never be reused'
+          }
+          Path('validation-output/v1-consumed-archive.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,sort_keys=True))
+          PY
+          set +e
+          python "$AUTHORIZATION_PROPOSAL_BUILDER" --repository-root . --application-root app --output validation-output/forbidden-v1-reauthorization.json >validation-output/forbidden-v1-reauthorization.stdout 2>validation-output/forbidden-v1-reauthorization.stderr
+          RC=$?
+          set -e
+          test "$RC" -ne 0
+          grep -q 'active authorization is not disabled' validation-output/forbidden-v1-reauthorization.stderr
+          test ! -s validation-output/forbidden-v1-reauthorization.json
+          echo 'V1_REAUTHORIZATION_REFUSED_PASS'
       - name: Prove no solver or syntax-check process was launched
         shell: bash
         run: |

@@ -18,6 +18,20 @@ try {
       length: Array.isArray(value) ? value.length : null,
       first5: Array.isArray(value) ? value.slice(0, 5).map(r => ({ name:r?.name ?? null, hip:r?.hip ?? null, mag:r?.mag ?? null, ra:r?.raHours ?? r?.ra ?? null, dec:r?.decDeg ?? r?.dec ?? null })) : null,
     });
+    const source = (name) => safely(() => String(eval(name)));
+    const sourceSummary = (name) => {
+      const text = source(name);
+      if (typeof text !== 'string') return text;
+      return {
+        length: text.length,
+        hasDirectRuntimeMarker: text.includes('LEVEL-B-THREE-STAR-DIRECT-CATALOG-RUNTIME-V2'),
+        hasDirectHookMarker: text.includes('LEVEL-B-THREE-STAR-DIRECT-CATALOG-HOOK-V2'),
+        hasCatalogOnlyFlag: text.includes('__LEVEL_B_SITEWIDE_CATALOG_ONLY_SCAFFOLD__'),
+        hasRowsCatalogAssignment: text.includes('rows = catalog.map'),
+        hasPostprocessCall: text.includes('__levelBSitewidePostprocess'),
+        prefix: text.slice(0, 1200),
+      };
+    };
     const snap = (label) => {
       const builtIn = safely(() => eval('builtInStars'));
       const rows = safely(() => eval('rows'));
@@ -46,6 +60,11 @@ try {
     globalThis.__STAR_VISIBILITY_ENGINE_MODE__='level-b-v3-crumey-blackwell-equilibrium';
     globalThis.__SKY_MAP_REQUEST__=true;
 
+    const sourceBefore = {
+      calculate: sourceSummary('calculate'),
+      scaffold: sourceSummary('__levelBSitewideRunUsingLegacyScaffold'),
+      postprocess: sourceSummary('__levelBSitewidePostprocess'),
+    };
     const snapshots = [snap('before-catalog-ready')];
     if (typeof eval('ensureBuiltInCatalogReady') === 'function') await eval('ensureBuiltInCatalogReady()');
     snapshots.push(snap('after-catalog-ready'));
@@ -61,12 +80,13 @@ try {
 
     const result = safely(() => eval('threeStarResultData'));
     return {
+      sourceBefore,
       snapshots,
       rawCalculateError,
       scaffoldError,
       threeStarResult: result,
       sourceMarkers: {
-        hasCatalogReady: typeof safely(() => eval('ensureBuiltInCatalogReady')) === 'function',
+        hasCatalogReady: safely(() => typeof eval('ensureBuiltInCatalogReady')),
         hasScaffold: safely(() => typeof eval('__levelBSitewideRunUsingLegacyScaffold')),
         builtCatalogGlobalLength: globalThis.__STARS_BUILT_IN_STARS__?.length ?? null,
       },
@@ -74,7 +94,7 @@ try {
   });
 
   const output = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'THREE_STAR_ROW_PLUMBING_RUNTIME_AUDIT',
     applicationSha: process.env.APPLICATION_SHA,
     audit,

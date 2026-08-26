@@ -1,0 +1,249 @@
+name: Jerusalem Tishrei elevated-site infrastructure smoke v2 recovery1
+run-name: MYSTIC batch v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.gate_ref }} | ordinal=${{ inputs.smoke_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate_ref:
+        description: Exact one-purpose recovery gate commit SHA
+        required: true
+        type: string
+      execution_key:
+        description: Exact recovery smoke execution key
+        required: true
+        type: string
+      smoke_ordinal:
+        description: Exact recovery smoke ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: jerusalem-tishrei-elevated-site-smoke-v2-recovery1-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  RECOVERY_PACKAGE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1
+  GATE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/gate.smoke-recovery1.json
+  GUARD: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/execution_guard.py
+  SOURCE_MANIFEST: experiments/jerusalem-tishrei-elevated-site-smoke-v2/manifest.smoke.json
+  SOURCE_ADAPTER: experiments/jerusalem-tishrei-elevated-site-smoke-v2/adapter.py
+  SOURCE_EXECUTOR: experiments/jerusalem-tishrei-elevated-site-smoke-v2/smoke_executor.py
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      timeout_seconds: ${{ steps.matrix.outputs.timeout_seconds }}
+    steps:
+      - name: Check out exact one-purpose recovery gate with full ancestry
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.gate_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify exact infrastructure recovery gate
+        run: >-
+          python "$GUARD"
+          --repository-root .
+          --gate-ref "${{ inputs.gate_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --smoke-ordinal "${{ inputs.smoke_ordinal }}"
+          --output preflight/recovery-gate-report.json
+      - name: Refuse duplicate recovery marker before uvspec
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python experiments/mystic-batch-v1/duplicate_run_audit.py
+          --repository "${{ github.repository }}"
+          --workflow jerusalem-tishrei-elevated-site-smoke-v2-recovery1.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.gate_ref }}"
+          --authorization-ordinal "${{ inputs.smoke_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact source two-case smoke matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads(Path(os.environ['SOURCE_MANIFEST']).read_text())
+          assert m['stageId']=='jerusalem-tishrei-elevated-site-smoke-v2'
+          assert m['infrastructureOnly'] is True and m['scientificUseProhibited'] is True
+          assert len(m['cases'])==2 and sum(c['photonHistories'] for c in m['cases'])==20000
+          assert {c['method'] for c in m['cases']}=={'reference-vroom','alis'}
+          matrix={'include':[{'case_id':c['caseId'],'method':c['method'],'seed':c['seed'],'photon_histories':c['photonHistories']} for c in m['cases']]}
+          out=Path(os.environ['GITHUB_OUTPUT'])
+          with out.open('a') as f:
+              f.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
+              f.write('timeout_seconds='+str(m['limits']['perCaseTimeoutSeconds'])+'\n')
+          Path('preflight/matrix.json').write_text(json.dumps(matrix,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-smoke-v2-recovery1-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Check out exact one-purpose recovery gate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.gate_ref }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: jerusalem-tishrei-smoke-v2-recovery1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Recompute exact runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -s "$ATMOSPHERE"
+          python "$RUNTIME_PROBE" \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute exactly one recovery infrastructure-smoke case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$SOURCE_EXECUTOR" \
+            --smoke-manifest "$SOURCE_MANIFEST" \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$SOURCE_ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root smoke-output \
+            --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" \
+            --allow-infrastructure-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-smoke-v2-recovery1-case-${{ matrix.case_id }}
+          path: |
+            smoke-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact recovery gate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.gate_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerusalem-tishrei-smoke-v2-recovery1-case-*
+          path: smoke-case-artifacts
+          merge-multiple: true
+      - name: Audit exact recovery smoke structural universe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          paths=sorted(Path('smoke-case-artifacts').rglob('smoke-case-result.json'))
+          records=[json.loads(p.read_text()) for p in paths]
+          failures=[]
+          expected={'jtm-smoke-gamcyg-vroom-v2':'reference-vroom','jtm-smoke-gamcyg-alis-v2':'alis'}
+          by_id={r.get('caseId'):r for r in records}
+          if set(by_id)!=set(expected): failures.append({'code':'case-universe','actual':sorted(str(x) for x in by_id)})
+          for case_id,method in expected.items():
+              r=by_id.get(case_id,{})
+              required={
+                  'status':'INFRASTRUCTURE_SMOKE_COMPLETED',
+                  'infrastructureOnly':True,
+                  'scientificDiagnostic':False,
+                  'scientificUseProhibited':True,
+                  'successDoesNotAuthorizeScientificExecution':True,
+                  'successDoesNotAuthorizeProduction':True,
+                  'method':method,
+                  'photonHistories':10000,
+                  'syntaxCheckCount':1,
+                  'solverExecutionCount':1,
+              }
+              stale={k:(r.get(k),v) for k,v in required.items() if r.get(k)!=v}
+              if stale: failures.append({'code':'case-invariant','caseId':case_id,'stale':stale})
+              if (r.get('syntax') or {}).get('exitCode')!=0 or (r.get('syntax') or {}).get('timedOut') is not False: failures.append({'code':'syntax','caseId':case_id})
+              if (r.get('solver') or {}).get('exitCode')!=0 or (r.get('solver') or {}).get('timedOut') is not False: failures.append({'code':'solver','caseId':case_id})
+              grid=r.get('structuralOutput') or {}
+              if method=='reference-vroom' and grid.get('nodeCount')!=17: failures.append({'code':'vroom-grid','caseId':case_id,'detail':grid})
+              if method=='alis' and grid.get('nodeCount')!=8001: failures.append({'code':'alis-grid','caseId':case_id,'detail':grid})
+              for key in ('radianceOutputSha256','stdOutputSha256','inputResolvedSha256'):
+                  value=r.get(key)
+                  if not isinstance(value,str) or len(value)!=64: failures.append({'code':'hash','caseId':case_id,'field':key})
+          report={
+              'schemaVersion':1,
+              'stageId':'jerusalem-tishrei-elevated-site-smoke-v2-recovery1',
+              'status':'INFRASTRUCTURE_RECOVERY_SMOKE_PASSED' if not failures else 'INFRASTRUCTURE_RECOVERY_SMOKE_FAILED',
+              'scientificUseProhibited':True,
+              'failedSourceSmokeRunId':33007847279,
+              'caseCount':len(records),
+              'configuredPhotonHistoriesSum':sum(int(r.get('photonHistories',0)) for r in records),
+              'failures':failures,
+              'caseResultHashes':{p.parent.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},
+              'boundary':'recovery structural infrastructure audit only; no scientific statistic or validity claim is permitted'
+          }
+          Path('smoke-audit').mkdir(exist_ok=True)
+          Path('smoke-audit/recovery-smoke-audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          if failures: raise SystemExit(2)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-smoke-v2-recovery1-audit
+          path: smoke-audit
+          if-no-files-found: warn
+          retention-days: 90

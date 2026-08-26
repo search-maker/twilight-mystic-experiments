@@ -1,0 +1,151 @@
+name: Jerusalem Tishrei smoke v2 recovery1 package validation
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/**'
+      - '.github/workflows/jerusalem-tishrei-elevated-site-smoke-v2-recovery1.yml'
+      - '.github/workflows/jerusalem-tishrei-smoke-v2-recovery1-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-no-uvspec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PACKAGE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1
+      GATE: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/gate.smoke-recovery1.json
+      BUILDER: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/gate_proposal.py
+      GUARD: experiments/jerusalem-tishrei-elevated-site-smoke-v2-recovery1/execution_guard.py
+      RECOVERY_WORKFLOW: .github/workflows/jerusalem-tishrei-elevated-site-smoke-v2-recovery1.yml
+      SOURCE_MANIFEST: experiments/jerusalem-tishrei-elevated-site-smoke-v2/manifest.smoke.json
+      SOURCE_CONSUMED_GATE: experiments/jerusalem-tishrei-elevated-site-smoke-v2/authorization.smoke.json
+      DUPLICATE_AUDIT: experiments/mystic-batch-v1/duplicate_run_audit.py
+      KEY: jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:2
+      ORDINAL: '2'
+    steps:
+      - name: Check out exact PR head with full ancestry
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Compile recovery governance and validate frozen source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$BUILDER" "$GUARD"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads(Path(os.environ['SOURCE_MANIFEST']).read_text())
+          assert m['stageId']=='jerusalem-tishrei-elevated-site-smoke-v2'
+          assert m['infrastructureOnly'] is True and m['scientificUseProhibited'] is True
+          assert len(m['cases'])==2 and sum(c['photonHistories'] for c in m['cases'])==20000
+          assert {c['method'] for c in m['cases']}=={'reference-vroom','alis'}
+          a=json.loads(Path(os.environ['SOURCE_CONSUMED_GATE']).read_text())
+          assert a['consumed'] is True and a['authorized'] is False and a['infrastructureExecution'] is False
+          assert a['executionKey']=='jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:1'
+          assert a['smokeAuthorizationOrdinal']==1
+          assert a['exactAuthorizationCommit']=='3ec2a7bdacb4f00e49f5756ba339338b1e86769c'
+          assert '33007847279' in a['note'] and 'duplicate_run_audit' in a['note']
+          print('SOURCE_SMOKE_V2_CONSUMED_ARCHIVE_PASS')
+          PY
+      - name: Prove workflow run-name exactly matches shared duplicate-audit title contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          p=Path(os.environ['DUPLICATE_AUDIT'])
+          spec=importlib.util.spec_from_file_location('dup',p)
+          d=importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
+          expected=d.expected_title(os.environ['KEY'],'AUTHREF',int(os.environ['ORDINAL']))
+          workflow=Path(os.environ['RECOVERY_WORKFLOW']).read_text()
+          run_line=[line for line in workflow.splitlines() if line.startswith('run-name: ')]
+          dollar=chr(36)
+          token_key=dollar+'{{ inputs.execution_key }}'
+          token_ref=dollar+'{{ inputs.gate_ref }}'
+          token_ordinal=dollar+'{{ inputs.smoke_ordinal }}'
+          expected_line=f'run-name: MYSTIC batch v1 | key={token_key} | auth={token_ref} | ordinal={token_ordinal}'
+          assert run_line==[expected_line],(run_line,expected_line)
+          rendered=run_line[0][len('run-name: '):]
+          rendered=rendered.replace(token_key,os.environ['KEY']).replace(token_ref,'AUTHREF').replace(token_ordinal,os.environ['ORDINAL'])
+          assert rendered==expected,(rendered,expected)
+          print('DUPLICATE_AUDIT_RUN_NAME_CONTRACT_PASS',rendered)
+          PY
+      - name: Build recovery gate proposal only
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          mkdir -p validation-output
+          python "$BUILDER" --repository-root . --output validation-output/gate-proposal.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/gate-proposal.json'))
+          assert p['status']=='PROPOSAL_ONLY_GATE_DISABLED_IN_REPOSITORY'
+          assert p['executionEnabledByProposal'] is False
+          g=p['proposedGate']
+          assert g['enabled'] is True and g['infrastructureExecution'] is True
+          assert g['scientificExecution'] is False and g['scientificUseProhibited'] is True
+          assert g['executionKey']==os.environ['KEY'] and g['smokeOrdinal']==2 and g['consumed'] is False
+          print('RECOVERY_GATE_PROPOSAL_ONLY_PASS')
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git diff --name-only)"
+      - name: Simulate one-purpose recovery gate locally and validate exact guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/gate-proposal.json'))
+          with open(os.environ['GATE'],'w') as f:
+            json.dump(p['proposedGate'],f,indent=2,sort_keys=True); f.write('\n')
+          PY
+          test "$(git diff --name-only)" = "$GATE"
+          git config user.name 'tishrei-smoke-recovery-validation'
+          git config user.email 'tishrei-smoke-recovery-validation@invalid.local'
+          git add "$GATE"
+          git commit -m 'LOCAL TEST ONLY - recovery smoke gate'
+          TEST_GATE_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$GATE"
+          env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+            python "$GUARD" \
+            --repository-root . \
+            --gate-ref "$TEST_GATE_SHA" \
+            --execution-key "$KEY" \
+            --smoke-ordinal "$ORDINAL" \
+            --output validation-output/guard-report.json
+          python - <<'PY'
+          import json
+          g=json.load(open('validation-output/guard-report.json'))
+          assert g['status']=='ENABLED_INFRASTRUCTURE_RECOVERY_ONLY'
+          assert g['caseCount']==2 and g['configuredPhotonHistoriesSum']==20000
+          assert g['failedSourceSmokeRunId']==33007847279
+          assert g['scientificUseProhibited'] is True
+          print('RECOVERY_GATE_GUARD_PASS_NO_EXECUTION')
+          PY
+      - name: Prove validation launched no uvspec or solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e smoke-output
+          test ! -e runtime-reports
+          echo 'NO_UVSPEC_NO_SOLVER_NO_SCIENTIFIC_EXECUTION'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-smoke-v2-recovery1-package-validation-${{ github.run_id }}
+          path: validation-output
+          if-no-files-found: warn
+          retention-days: 90

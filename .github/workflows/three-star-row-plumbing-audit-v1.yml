@@ -1,0 +1,72 @@
+name: Three-Star row plumbing audit v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/three-star-row-plumbing-audit-v1.yml'
+      - 'review/three-star-row-plumbing-audit-v1/run-row-audit.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APPLICATION_SHA: a77cd3a7b39991185d6b2865775dfe4df9ab0358
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact starsvisibility main
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Build exact application
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+      - name: Install Chromium
+        working-directory: app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+      - name: Audit exact runtime rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp review/three-star-row-plumbing-audit-v1/run-row-audit.mjs app/row-audit.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/row-audit-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node row-audit.mjs
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: three-star-row-plumbing-audit-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/three-star-row-plumbing-audit/summary.json

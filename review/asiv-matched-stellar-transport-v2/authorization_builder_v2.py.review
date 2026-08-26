@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Review-only deterministic builder for a future one-file v2 authorization.
+
+No solver, network, dispatch or write surface. The builder becomes usable only
+after the separately reviewed active v2 workflows exist byte-identically to the
+frozen candidates. It preserves the existing v1 strict transport/science
+contract and adds only validation-only v2 control metadata.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+STRICT_GATE = ROOT / "review/asiv-matched-stellar-transport-v1/execution_authorization_gate_review.py"
+V1_EXECUTION_CONTRACT = ROOT / "review/asiv-matched-stellar-transport-v1/EXECUTION_TRANSPORT_CONTRACT.review.json"
+V2_EXECUTION = HERE / "validation_execution_v2.py.review"
+V2_CONTROL = HERE / "VALIDATION_EXECUTION_CONTRACT.review.json"
+
+AUTH_PATH = "review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json"
+AUTH_BRANCH = "authorization/asiv-matched-stellar-transport-v2-fresh-validation"
+DISPATCH_BRANCH = "dispatch/asiv-matched-stellar-transport-v2-fresh-validation"
+ACTIVE_SCIENCE = ".github/workflows/asiv-matched-stellar-v2-fresh-validation.yml"
+ACTIVE_AUTH_REVIEW = ".github/workflows/asiv-matched-stellar-v2-authorization-review.yml"
+SCIENCE_CANDIDATE = "review/asiv-matched-stellar-transport-v2/science-workflow-v2.yml.review"
+AUTH_REVIEW_CANDIDATE = "review/asiv-matched-stellar-transport-v2/authorization-review-workflow-v2.yml.review"
+
+
+class V2AuthorizationBuilderRefusal(RuntimeError):
+    pass
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise V2AuthorizationBuilderRefusal(f"cannot load module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git_blob(path: str | Path) -> str:
+    p = Path(path)
+    if not p.is_file():
+        raise V2AuthorizationBuilderRefusal(f"required bound file missing: {p}")
+    return subprocess.check_output(["git", "hash-object", str(p)], text=True).strip()
+
+
+def require_active_workflow_identity() -> None:
+    pairs = ((ACTIVE_SCIENCE, SCIENCE_CANDIDATE), (ACTIVE_AUTH_REVIEW, AUTH_REVIEW_CANDIDATE))
+    for active, candidate in pairs:
+        if git_blob(active) != git_blob(candidate):
+            raise V2AuthorizationBuilderRefusal(f"active workflow does not equal frozen candidate: {active}")
+
+
+def build_authorization(*, exact_parent_commit: str) -> dict[str, Any]:
+    parent = str(exact_parent_commit).strip()
+    if len(parent) != 40 or any(ch not in "0123456789abcdef" for ch in parent):
+        raise V2AuthorizationBuilderRefusal("exact parent commit must be a lowercase 40-hex Git SHA")
+    require_active_workflow_identity()
+
+    gate = _load(STRICT_GATE, "matched_stellar_v1_strict_gate_for_v2_builder")
+    strict_contract = json.loads(V1_EXECUTION_CONTRACT.read_text(encoding="utf-8"))
+    control = json.loads(V2_CONTROL.read_text(encoding="utf-8"))
+    if control.get("status") != "FROZEN_REVIEW_ONLY_NO_AUTHORIZATION_NO_DISPATCH":
+        raise V2AuthorizationBuilderRefusal("v2 validation execution contract state drift")
+
+    document: dict[str, Any] = {
+        "schemaVersion": 1,
+        "stageId": "asiv-matched-stellar-transport-v1-execution-authorization",
+        "status": "AUTHORIZED_ONE_SHOT_SCIENTIFIC_EXECUTION",
+        "scientificExecutionAuthorized": True,
+        "solverExecutionAuthorized": True,
+        "resultOpeningAuthorized": False,
+        "productionActivationAuthorized": False,
+        "pandoraHoldoutAccessAllowed": False,
+        "starsvisibilityMutationAuthorized": False,
+        "nativeRebuildAuthorized": False,
+        "retryPermitted": False,
+        "resumePermitted": False,
+        "githubRerunPermitted": False,
+        "families": list(control["freshValidationUniverse"]["families"]),
+        "nativeState": "native-rural-ss",
+        "nativeRenderable": False,
+        "sourceBindings": gate.current_authorization_binding(),
+        "runtimeIdentity": strict_contract["runtimeIdentity"],
+        "photometricValidationAssets": strict_contract["photometricValidationAssets"],
+        "validationAcceptance": strict_contract["acceptance"],
+        "caseUniverse": strict_contract["caseUniverse"],
+
+        "controlStageId": control["controlIdentity"]["controlStageId"],
+        "executionKey": control["controlIdentity"]["executionKey"],
+        "authorizationBranch": AUTH_BRANCH,
+        "dispatchBranch": DISPATCH_BRANCH,
+        "authorizationChangedPath": AUTH_PATH,
+        "authorizationReviewWorkflowPath": ACTIVE_AUTH_REVIEW,
+        "scienceWorkflowPath": ACTIVE_SCIENCE,
+        "exactAuthorizationParentCommit": parent,
+        "authorizationCommitMustChangeExactlyOneFile": True,
+        "authorizationParentMustEqualLiveMainAtDispatch": True,
+        "authorizationPrMustRemainDraftOpenUnmerged": True,
+        "authorizationReviewSuccessRequiredBeforeDispatch": True,
+        "dispatchBranchMustEqualAuthorizationHead": True,
+        "dispatchAuthorized": False,
+        "automaticDispatch": False,
+        "consumed": False,
+        "workflowRunNumberRequired": 1,
+        "workflowRunAttemptRequired": 1,
+
+        "validationOnlyExecutionAuthorized": True,
+        "trainingExecutionAuthorized": False,
+        "validationCaseCount": 768,
+        "validationShardCount": 24,
+        "validationCasesPerShard": 32,
+        "freshValidationResultOpeningAuthorized": True,
+        "solverRetryPermitted": False,
+        "solverResumePermitted": False,
+        "freshValidationGates": {
+            "perFamilyMaxAbsDeltaAvMag": 0.025,
+            "perFamilyRmsDeltaAvMag": 0.010,
+            "everyFamilyMustPassSeparately": True,
+        },
+        "reusedTraining": {
+            "sourceRunId": 32889328517,
+            "artifactId": 9580080568,
+            "artifactName": "asiv-matched-stellar-final-validation-recovery-v5",
+            "artifactDigest": "sha256:bccc9f58a649202c395842df298ace1c4f609badc0d0530e40ba10d8ddc5300f",
+            "spectrumCount": 2700,
+            "newTrainingSolverSpectrumCount": 0,
+            "allowedField": "runtimeLuts",
+            "openedV1ValidationCasesReusableAsFreshHoldout": False,
+        },
+        "freshValidation": {
+            "atmosphericSpectrumCount": 768,
+            "johnsonVComparisonCount": 2304,
+            "johnsonVComparisonsPerFamily": 576,
+            "holdoutSelectionFraction": 0.375,
+            "holdoutWasFrozenBeforeExecution": True,
+        },
+        "v2ControlBindings": {
+            "scienceWorkflowActiveGitBlobSha1": git_blob(ACTIVE_SCIENCE),
+            "authorizationReviewWorkflowActiveGitBlobSha1": git_blob(ACTIVE_AUTH_REVIEW),
+            "methodContractGitBlobSha1": git_blob(HERE / "METHOD_AND_FRESH_VALIDATION_CONTRACT.review.json"),
+            "interpolationCandidateGitBlobSha1": git_blob(HERE / "interpolation_candidate_v2.py.review"),
+            "validationExecutionGitBlobSha1": git_blob(HERE / "validation_execution_v2.py.review"),
+            "freshValidatorGitBlobSha1": git_blob(HERE / "validate_fresh_v2.py.review"),
+            "validationExecutionContractGitBlobSha1": git_blob(V2_CONTROL),
+        },
+        "claimBoundary": {
+            "freshComputationalReferenceValidationOnly": True,
+            "empiricalRealSkyValidated": False,
+            "humanFirstSeeingValidated": False,
+            "fullSpectrumSkyScenarioValidated": False,
+            "pandoraHoldoutOpened": False,
+            "starsvisibilityMutationAuthorized": False,
+            "productionAuthorized": False,
+            "postResultRetuningAuthorized": False,
+        },
+    }
+    execution = _load(V2_EXECUTION, "matched_stellar_v2_execution_for_builder")
+    execution.validate_v2_authorization(document)
+    return document
+
+
+if __name__ == "__main__":
+    print(json.dumps({
+        "status": "REVIEW_ONLY_V2_AUTHORIZATION_BUILDER_NO_AUTHORIZATION_CREATED",
+        "requiresActiveWorkflowIdentity": True,
+        "authorizationPath": AUTH_PATH,
+    }, indent=2, sort_keys=True))

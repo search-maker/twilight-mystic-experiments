@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -18,7 +19,6 @@ PURPOSE = "jerusalem-tishrei-direct-mystic-v1"
 BATCH_ID = "jerusalem-tishrei-three-star-direct-mystic-v1"
 EXPECTED_CASES = 12
 EXPECTED_PHOTONS = 240_000_000
-EXPECTED_GEOMETRIES = 3
 EXPECTED_EVENT_DEP = 5.2416836635666755
 EXPECTED_AOD550 = 0.22
 EXPECTED_ELEVATION_M = 800.0
@@ -28,10 +28,20 @@ EXPECTED_ALIS_IS_NM = 405.0
 EXPECTED_APPLICATION_SHA = "e2d5b761206b6223526f6f79fcb0af5f6de3ba06"
 EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1 = "bb4cd0ff02159ecffe276022cec9d292c7a434a3"
 EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1 = "ccfd04d4c21188966351f4257e92893d7ce340c7"
-EXPECTED_UVSPEC_SHA256 = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
-EXPECTED_ATMOSPHERE_SHA256 = "dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5"
 EXPECTED_EVIDENCE_ARTIFACT_ID = 9612259358
 EXPECTED_EVIDENCE_DIGEST = "sha256:d43120ad60d2e4a502023cd187bbeffecd6364d4edc975c14c84432c3c8097c5"
+EXPECTED_RUNTIME = {
+    "uvspecSha256": "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3",
+    "uvspecHelpSha256": "868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548",
+    "libRadtranDataTreeSha256": "ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7",
+    "atmosphereSha256": "dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5",
+    "runtimeLockRawSha256": "3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5",
+}
+EXPECTED_GEOMETRIES = {
+    "tishrei-antares-hr6134": "HR 6134",
+    "tishrei-rasalhague-hr6556": "HR 6556",
+    "tishrei-gamma-cyg-hr7796": "HR 7796",
+}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,159}$")
 
 
@@ -99,20 +109,28 @@ def require_file(root: Path, rel: str, name: str) -> Path:
 
 
 def near(actual: Any, expected: float, tol: float = 1e-12) -> bool:
-    return isinstance(actual, (int, float)) and not isinstance(actual, bool) and abs(float(actual) - expected) <= tol
+    return isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isfinite(float(actual)) and abs(float(actual) - expected) <= tol
+
+
+def require_exact_path(value: Any, root: str, path: str, code: str, case_id: str) -> None:
+    if value != {"root": root, "path": path}:
+        raise Refusal(code, "normalized data path changed", {"caseId": case_id, "actual": value, "expected": {"root": root, "path": path}})
 
 
 def validate(args: argparse.Namespace) -> dict[str, Any]:
     root = args.repository_root.resolve()
     app_root = args.application_root.resolve()
-    expected_context = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1"}
+
+    expected_context = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_RUN_ATTEMPT": "1",
+    }
     stale_context = {k: (os.getenv(k), v) for k, v in expected_context.items() if os.getenv(k) != v}
     if stale_context:
         raise Refusal("github-context", "not exact first-attempt workflow_dispatch context", stale_context)
-    if args.application_sha != EXPECTED_APPLICATION_SHA:
-        raise Refusal("application-sha", "wrong application SHA", args.application_sha)
-    if git(app_root, "rev-parse", "HEAD") != EXPECTED_APPLICATION_SHA:
-        raise Refusal("application-checkout", "application checkout is not exact frozen SHA")
+    if args.application_sha != EXPECTED_APPLICATION_SHA or git(app_root, "rev-parse", "HEAD") != EXPECTED_APPLICATION_SHA:
+        raise Refusal("application-sha", "application checkout is not exact frozen SHA")
     if not ID_RE.fullmatch(args.execution_key):
         raise Refusal("execution-key", "invalid execution key", args.execution_key)
     if args.authorization_ordinal < 1:
@@ -159,35 +177,62 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("stageId") != STAGE_ID or manifest.get("batchId") != BATCH_ID or manifest.get("proposalOnly") is not True or manifest.get("scientificExecution") is not False:
         raise Refusal("manifest-header", "wrong manifest execution boundary")
     event = manifest.get("preregisteredEvent") or {}
-    if not near(event.get("sunDepressionDeg"), EXPECTED_EVENT_DEP) or not near((event.get("atmosphere") or {}).get("aod550"), EXPECTED_AOD550):
+    event_atmosphere = event.get("atmosphere") or {}
+    event_semantics = event.get("threeStarSemantics") or {}
+    if not near(event.get("sunDepressionDeg"), EXPECTED_EVENT_DEP) or not near(event_atmosphere.get("aod550"), EXPECTED_AOD550):
         raise Refusal("event", "frozen event depression/AOD changed", event)
-    if not near((event.get("threeStarSemantics") or {}).get("fieldFactorBaseline"), EXPECTED_FIELD_FACTOR):
+    if not near(event_semantics.get("fieldFactorBaseline"), EXPECTED_FIELD_FACTOR):
         raise Refusal("field-factor", "F=3.14 baseline changed")
+    if event_semantics.get("requiredCount") != 3 or event_semantics.get("stabilitySeconds") != 60 or event_semantics.get("magnitudeBasis") != "effective" or not near(event_semantics.get("magnitudeThreshold"), 1.7):
+        raise Refusal("three-star-semantics", "frozen Three-Star semantics changed", event_semantics)
 
     runtime = manifest.get("runtime") or {}
-    if runtime.get("uvspecSha256") != EXPECTED_UVSPEC_SHA256 or runtime.get("atmosphereSha256") != EXPECTED_ATMOSPHERE_SHA256:
-        raise Refusal("runtime-identity", "frozen uvspec/AFGLUS identity changed", {"uvspecSha256": runtime.get("uvspecSha256"), "atmosphereSha256": runtime.get("atmosphereSha256")})
+    runtime_stale = {k: (runtime.get(k), v) for k, v in EXPECTED_RUNTIME.items() if runtime.get(k) != v}
+    if runtime_stale:
+        raise Refusal("runtime-identity", "frozen runtime identity changed", runtime_stale)
+
+    frozen = manifest.get("frozenInputs") or {}
+    if frozen.get("wavelengthDomainNm") != [380, 780] or frozen.get("molecularAbsorption") != "crs" or frozen.get("mcSpherical") != "1D":
+        raise Refusal("frozen-rt-contract", "frozen RT contract changed", frozen)
+    if not near(frozen.get("alisSpectralImportanceSamplingNm"), EXPECTED_ALIS_IS_NM) or not near(frozen.get("albedo"), EXPECTED_ALBEDO):
+        raise Refusal("frozen-numerics", "frozen ALIS/albedo inputs changed", frozen)
+    data_paths = frozen.get("dataPaths") or {}
+    if data_paths.get("solarFlux") != {"root": "libRadtranData", "path": "solar_flux/atlas_plus_modtran"} or data_paths.get("wavelengthGrid") != {"root": "repository", "path": "experiments/reference-vroom-v1/wavelength-grid.dat"} or data_paths.get("atmosphere") != {"root": "libRadtranData", "path": "atmmod/afglus.dat"}:
+        raise Refusal("frozen-data-paths", "frozen data paths changed", data_paths)
 
     geometries = manifest.get("geometries")
     cases = manifest.get("cases")
     limits = manifest.get("limits") or {}
-    if not isinstance(geometries, list) or len(geometries) != EXPECTED_GEOMETRIES:
+    if not isinstance(geometries, list) or len(geometries) != 3:
         raise Refusal("geometry-count", "expected exactly 3 geometries")
     if not isinstance(cases, list) or len(cases) != EXPECTED_CASES:
         raise Refusal("case-count", "expected exactly 12 cases")
-    if len({c.get("caseId") for c in cases if isinstance(c, dict)}) != EXPECTED_CASES:
-        raise Refusal("case-id-uniqueness", "case IDs are not exactly unique")
-    if sum(int(c.get("photonHistories", 0)) for c in cases if isinstance(c, dict)) != EXPECTED_PHOTONS:
-        raise Refusal("photon-accounting", "expected exactly 240M configured photons")
-    if limits.get("maximumCases") != 12 or limits.get("maximumParallel") != 6 or limits.get("maximumConfiguredMcPhotonsSum") != EXPECTED_PHOTONS or limits.get("perCaseTimeoutSeconds") != 900:
-        raise Refusal("limits", "frozen limits changed", limits)
-    methods = Counter(c.get("method") for c in cases if isinstance(c, dict))
-    if methods != Counter({"alis": 6, "reference-vroom": 6}):
-        raise Refusal("method-count", "expected six ALIS and six reference-VROOM cases", dict(methods))
+    geometry_by_id = {g.get("geometryId"): g for g in geometries if isinstance(g, dict)}
+    if set(geometry_by_id) != set(EXPECTED_GEOMETRIES):
+        raise Refusal("geometry-ids", "wrong frozen geometry set", sorted(geometry_by_id))
+    geometry_by_catalog: dict[str, dict[str, Any]] = {}
+    for geometry_id, catalog_id in EXPECTED_GEOMETRIES.items():
+        g = geometry_by_id[geometry_id]
+        if (g.get("target") or {}).get("catalogId") != catalog_id:
+            raise Refusal("geometry-target", "geometry target identity changed", {"geometryId": geometry_id, "target": g.get("target")})
+        if not near(g.get("sunDepressionDeg"), EXPECTED_EVENT_DEP) or not near(g.get("observerElevationM"), EXPECTED_ELEVATION_M) or not near(g.get("aod550"), EXPECTED_AOD550):
+            raise Refusal("geometry-physics", "frozen geometry physics changed", geometry_id)
+        geometry_by_catalog[catalog_id] = g
 
-    geometry_by_id = {g.get("target", {}).get("catalogId"): g for g in geometries if isinstance(g, dict)}
-    if set(geometry_by_id) != {"HR 6134", "HR 6556", "HR 7796"}:
-        raise Refusal("geometry-ids", "wrong frozen determining-star set", sorted(geometry_by_id))
+    if limits != {"maximumCases": 12, "maximumParallel": 6, "maximumConfiguredMcPhotonsSum": EXPECTED_PHOTONS, "perCaseTimeoutSeconds": 900}:
+        raise Refusal("limits", "frozen limits changed", limits)
+    if [c.get("ordinal") for c in cases if isinstance(c, dict)] != list(range(1, 13)):
+        raise Refusal("case-ordinals", "case ordinals must be exactly 1..12")
+    case_ids = [c.get("caseId") for c in cases if isinstance(c, dict)]
+    seeds = [c.get("seed") for c in cases if isinstance(c, dict)]
+    if len(set(case_ids)) != 12 or len(set(seeds)) != 12:
+        raise Refusal("case-identity", "case IDs and seeds must be globally unique")
+    if any(c.get("photonHistories") != 20_000_000 for c in cases if isinstance(c, dict)) or sum(c.get("photonHistories", 0) for c in cases if isinstance(c, dict)) != EXPECTED_PHOTONS:
+        raise Refusal("photon-accounting", "expected exactly 20M photons per case and 240M total")
+    if Counter(c.get("method") for c in cases if isinstance(c, dict)) != Counter({"alis": 6, "reference-vroom": 6}):
+        raise Refusal("method-count", "expected six ALIS and six reference-VROOM cases")
+    if any(c.get("groupId") not in geometry_by_id for c in cases if isinstance(c, dict)):
+        raise Refusal("case-group", "a case references a non-frozen geometry")
 
     normalized_by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for case in cases:
@@ -196,74 +241,102 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
             inputs = adapter.normalized_inputs(manifest, resolved_case, geometry)
         except Exception as exc:
             raise Refusal("normalized-inputs", "adapter could not resolve frozen case", {"caseId": case.get("caseId"), "reason": str(exc)}) from exc
+        case_id = inputs["caseId"]
         normalized_by_group[inputs["groupId"]].append(inputs)
-        expected = {
+        expected_numeric = {
             "sunDepressionDeg": EXPECTED_EVENT_DEP,
             "observerElevationM": EXPECTED_ELEVATION_M,
             "aod550": EXPECTED_AOD550,
             "albedo": EXPECTED_ALBEDO,
             "alisSpectralImportanceSamplingNm": EXPECTED_ALIS_IS_NM,
         }
-        bad_numeric = {k: (inputs.get(k), v) for k, v in expected.items() if not near(inputs.get(k), v)}
-        if bad_numeric:
-            raise Refusal("normalized-physics", "normalized physical input changed", {"caseId": inputs["caseId"], "stale": bad_numeric})
+        stale_numeric = {k: (inputs.get(k), v) for k, v in expected_numeric.items() if not near(inputs.get(k), v)}
+        if stale_numeric:
+            raise Refusal("normalized-physics", "normalized physical input changed", {"caseId": case_id, "stale": stale_numeric})
         if inputs.get("mcSpherical") != "1D" or inputs.get("molecularAbsorption") != "crs" or inputs.get("wavelengthDomainNm") != [380, 780]:
-            raise Refusal("normalized-rt-contract", "normalized RT contract changed", {"caseId": inputs["caseId"], "mcSpherical": inputs.get("mcSpherical"), "molecularAbsorption": inputs.get("molecularAbsorption"), "wavelengthDomainNm": inputs.get("wavelengthDomainNm")})
-        if inputs.get("atmosphere") != {"root": "libRadtranData", "path": "atmmod/afglus.dat"}:
-            raise Refusal("normalized-atmosphere", "normalized atmosphere is not frozen AFGLUS", {"caseId": inputs["caseId"], "atmosphere": inputs.get("atmosphere")})
+            raise Refusal("normalized-rt-contract", "normalized RT contract changed", {"caseId": case_id})
+        require_exact_path(inputs.get("atmosphere"), "libRadtranData", "atmmod/afglus.dat", "normalized-atmosphere", case_id)
+        require_exact_path(inputs.get("solarFlux"), "libRadtranData", "solar_flux/atlas_plus_modtran", "normalized-solar-flux", case_id)
+        require_exact_path(inputs.get("wavelengthGrid"), "repository", "experiments/reference-vroom-v1/wavelength-grid.dat", "normalized-wavelength-grid", case_id)
 
-    if set(normalized_by_group) != set(g.get("groupId") for g in geometries):
-        raise Refusal("group-set", "case groups do not exactly match geometry groups")
+    if set(normalized_by_group) != set(geometry_by_id):
+        raise Refusal("group-set", "case groups do not exactly match geometry IDs", {"cases": sorted(normalized_by_group), "geometries": sorted(geometry_by_id)})
     expected_signature = Counter({("alis", 1): 1, ("alis", 2): 1, ("reference-vroom", 1): 1, ("reference-vroom", 2): 1})
     for group_id, group_cases in normalized_by_group.items():
-        if len(group_cases) != 4:
-            raise Refusal("group-case-count", "each geometry must have exactly four cases", {"groupId": group_id, "count": len(group_cases)})
         signature = Counter((c["method"], c["block"]) for c in group_cases)
-        if signature != expected_signature:
-            raise Refusal("group-replicates", "each geometry must have exactly two blocks per method", {"groupId": group_id, "signature": {f"{k[0]}:{k[1]}": v for k, v in signature.items()}})
+        if len(group_cases) != 4 or signature != expected_signature:
+            raise Refusal("group-replicates", "each geometry must have one block 1 and one block 2 per method", {"groupId": group_id, "count": len(group_cases), "signature": {f"{k[0]}:{k[1]}": v for k, v in signature.items()}})
 
     source = evidence.get("source") or {}
     if source.get("artifactId") != EXPECTED_EVIDENCE_ARTIFACT_ID or source.get("artifactDigest") != EXPECTED_EVIDENCE_DIGEST:
         raise Refusal("evidence-source", "event evidence provenance changed", source)
-    if evidence.get("applicationMainSha") != EXPECTED_APPLICATION_SHA or len(evidence.get("stars") or []) != 3:
-        raise Refusal("evidence", "event evidence application/star count changed")
-    for star in evidence["stars"]:
-        catalog_id = star.get("catalogId")
-        g = geometry_by_id.get(catalog_id)
-        if not g:
-            raise Refusal("evidence-star", "evidence star absent from manifest", catalog_id)
+    ev = evidence.get("event") or {}
+    if evidence.get("applicationMainSha") != EXPECTED_APPLICATION_SHA or not near(ev.get("sunDepressionDeg"), EXPECTED_EVENT_DEP) or not near(ev.get("observerElevationM"), EXPECTED_ELEVATION_M) or not near(ev.get("aod550"), EXPECTED_AOD550) or not near(ev.get("fieldFactor"), EXPECTED_FIELD_FACTOR):
+        raise Refusal("evidence-event", "event evidence boundary changed", ev)
+    if ev.get("requiredCount") != 3 or ev.get("stabilitySeconds") != 60 or ev.get("magnitudeBasis") != "effective" or not near(ev.get("magnitudeThreshold"), 1.7):
+        raise Refusal("evidence-semantics", "event evidence Three-Star semantics changed", ev)
+    stars = evidence.get("stars")
+    if not isinstance(stars, list) or {s.get("catalogId") for s in stars if isinstance(s, dict)} != set(geometry_by_catalog):
+        raise Refusal("evidence-stars", "event evidence star set changed")
+    for star in stars:
+        catalog_id = star["catalogId"]
+        g = geometry_by_catalog[catalog_id]
         eg = star.get("eventGeometry") or {}
         if not near(eg.get("targetAltitudeDeg"), float(g["targetAltitudeDeg"])) or not near(eg.get("relativeAzimuthDeg"), float(g["relativeAzimuthDeg"])):
             raise Refusal("evidence-geometry", "evidence/manifest geometry mismatch", catalog_id)
+        if not near((star.get("stellar") or {}).get("apparentVMagAtEye"), float(g["levelBEventSample"]["apparentVMagAtEye"])) or not near((star.get("visibility") or {}).get("limitingVMagnitude"), float(g["levelBEventSample"]["limitingVMagnitude"])) or not near((star.get("visibility") or {}).get("visibilityMarginMag"), float(g["levelBEventSample"]["visibilityMarginMag"])):
+            raise Refusal("evidence-level-b-sample", "evidence/manifest Level-B sample mismatch", catalog_id)
         channels = star.get("skyChannels") or {}
         for key in ("photopic", "scotopic", "johnsonV"):
-            if (channels.get(key) or {}).get("available") is not True:
-                raise Refusal("evidence-channel", f"missing frozen {key} channel", catalog_id)
+            channel = channels.get(key) or {}
+            if channel.get("available") is not True or not isinstance(channel.get("value"), (int, float)) or not math.isfinite(float(channel["value"])) or float(channel["value"]) <= 0:
+                raise Refusal("evidence-channel", f"missing or invalid frozen {key} channel", catalog_id)
         spectral = channels.get("spectral") or {}
         if spectral.get("available") is not False or spectral.get("reason") != "VALIDATED_V3_PRIMARY_PROVIDER_SPECTRAL_RUNTIME_NOT_IMPLEMENTED":
             raise Refusal("evidence-spectral-boundary", "Level-B spectral boundary changed", catalog_id)
+    comparison_boundary = evidence.get("comparisonBoundary") or {}
+    if comparison_boundary.get("fullSpectrumLevelBValidationClaimAllowed") is not False or comparison_boundary.get("noParameterTuning") is not True or comparison_boundary.get("productionAuthorized") is not False:
+        raise Refusal("evidence-claim-boundary", "event evidence claim boundary changed", comparison_boundary)
 
     if contract.get("analysisId") != "jerusalem-tishrei-direct-mystic-level-b-comparison-v1" or contract.get("scientificExecution") is not False:
         raise Refusal("analysis-contract", "wrong analysis contract header")
     contract_inputs = contract.get("inputs") or {}
-    if contract_inputs.get("applicationMainSha") != EXPECTED_APPLICATION_SHA:
-        raise Refusal("analysis-app", "analysis application SHA changed")
-    if contract_inputs.get("humanThresholdGitBlobSha1") != EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1 or contract_inputs.get("derivedChannelsGitBlobSha1") != EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1:
-        raise Refusal("analysis-git-blobs", "analysis external-code Git blob binding changed", {"human": contract_inputs.get("humanThresholdGitBlobSha1"), "derived": contract_inputs.get("derivedChannelsGitBlobSha1")})
-    if ((contract.get("skyOnlyVisibilitySubstitution") or {}).get("fieldFactor") != EXPECTED_FIELD_FACTOR or (contract.get("skyOnlyVisibilitySubstitution") or {}).get("branch") != "full"):
-        raise Refusal("analysis-F", "analysis F/branch changed")
+    if contract_inputs.get("applicationMainSha") != EXPECTED_APPLICATION_SHA or contract_inputs.get("humanThresholdGitBlobSha1") != EXPECTED_HUMAN_THRESHOLD_GIT_BLOB_SHA1 or contract_inputs.get("derivedChannelsGitBlobSha1") != EXPECTED_DERIVED_CHANNELS_GIT_BLOB_SHA1:
+        raise Refusal("analysis-bindings", "analysis code/application bindings changed", contract_inputs)
+    sky_only = contract.get("skyOnlyVisibilitySubstitution") or {}
+    if sky_only.get("fieldFactor") != EXPECTED_FIELD_FACTOR or sky_only.get("branch") != "full" or sky_only.get("noParameterTuning") is not True:
+        raise Refusal("analysis-F", "analysis F/branch/no-tuning boundary changed", sky_only)
     alis_role = (contract.get("methodRoles") or {}).get("alis") or {}
-    grid = alis_role.get("expectedOutputGrid") or {}
-    if grid != {"nodeCount": 8001, "startNm": 380.0, "stopNm": 780.0, "stepNm": 0.05}:
-        raise Refusal("alis-grid", "full-spectrum ALIS grid contract changed", grid)
+    if alis_role.get("expectedOutputGrid") != {"nodeCount": 8001, "startNm": 380.0, "stopNm": 780.0, "stepNm": 0.05}:
+        raise Refusal("alis-grid", "full-spectrum ALIS grid contract changed", alis_role.get("expectedOutputGrid"))
     vroom_role = (contract.get("methodRoles") or {}).get("referenceVroom") or {}
     if not str(vroom_role.get("forbiddenUse", "")).startswith("do not derive"):
         raise Refusal("vroom-boundary", "sparse VROOM full-channel prohibition changed")
-    if (contract.get("claimBoundary") or {}).get("noParameterTuning") is not True or (contract.get("claimBoundary") or {}).get("fullSpectrumLevelBValidated") is not False:
-        raise Refusal("analysis-boundary", "analysis claim/no-tuning boundary changed")
+    structural = contract.get("structuralRequirements") or {}
+    expected_structural = {
+        "all12CasesExactlyOnce": True,
+        "syntaxCheckExactlyOncePerCase": True,
+        "solverExecutionExactlyOncePerCase": True,
+        "retryAllowed": False,
+        "resumeAllowed": False,
+        "rerunAllowed": False,
+        "runtimeIdentityMustMatchFrozenLock": True,
+        "aodMustRemainAt550nm": True,
+        "aod550": EXPECTED_AOD550,
+        "observerElevationM": 800,
+        "surfaceAlbedo": EXPECTED_ALBEDO,
+        "mcSpherical": "1D",
+        "atmosphere": "AFGLUS",
+        "scalarRadianceBoundary": True,
+    }
+    structural_stale = {k: (structural.get(k), v) for k, v in expected_structural.items() if structural.get(k) != v}
+    if structural_stale:
+        raise Refusal("analysis-structural", "analysis structural requirements changed", structural_stale)
+    claim = contract.get("claimBoundary") or {}
+    if claim.get("noParameterTuning") is not True or claim.get("fullSpectrumLevelBValidated") is not False or claim.get("productionAuthorized") is not False or claim.get("measuredRealSkyValidated") is not False or claim.get("humanFirstSeeingValidated") is not False or claim.get("pandoraOpened") is not False:
+        raise Refusal("analysis-boundary", "analysis claim boundary changed", claim)
 
-    execution_adapter_text = abs_paths["executionAdapter"].read_text()
-    if "aerosol_set_tau_at_wvl 550" not in execution_adapter_text:
+    if "aerosol_set_tau_at_wvl 550" not in abs_paths["executionAdapter"].read_text():
         raise Refusal("aod-wavelength", "execution adapter no longer binds aerosol tau at 550 nm")
 
     required_auth = {
@@ -297,9 +370,9 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "consumed": False,
         "exactAuthorizationCommit": None,
     }
-    stale = {k: (authorization.get(k), v) for k, v in required_auth.items() if authorization.get(k) != v}
-    if stale:
-        raise Refusal("authorization-stale", "authorization disabled, missing, or hash-stale", stale)
+    stale_auth = {k: (authorization.get(k), v) for k, v in required_auth.items() if authorization.get(k) != v}
+    if stale_auth:
+        raise Refusal("authorization-stale", "authorization disabled, missing, or hash-stale", stale_auth)
 
     head = git(root, "rev-parse", "HEAD")
     parent = git(root, "rev-parse", "HEAD^")

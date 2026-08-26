@@ -61,17 +61,50 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: app/.node-version
-      - name: Static syntax and no-execution boundary checks
+      - name: Static syntax and frozen-boundary checks
         shell: bash
         run: |
           set -euo pipefail
           python -m py_compile "$PACKAGE/execution_guard.py" "$PACKAGE/authorization_proposal.py" "$PACKAGE/analyze_direct_sky.py"
+          echo 'PYTHON_SYNTAX_PASS'
           node --check "$VISIBILITY_HELPER"
-          grep -q 'aerosol_set_tau_at_wvl 550' "$EXECUTION_ADAPTER"
-          grep -q 'fieldFactorBaseline.*3.14' "$PROPOSAL"
-          grep -q '"fieldFactor": 3.14' "$ANALYSIS_CONTRACT"
-          grep -q 'fullSpectrumLevelBValidationClaimAllowed.*false' "$ANALYSIS_CONTRACT"
+          echo 'NODE_SYNTAX_PASS'
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          proposal = json.loads(Path(os.environ['PROPOSAL']).read_text())
+          contract = json.loads(Path(os.environ['ANALYSIS_CONTRACT']).read_text())
+          evidence = json.loads(Path(os.environ['EVIDENCE']).read_text())
+          adapter_text = Path(os.environ['EXECUTION_ADAPTER']).read_text()
+
+          assert 'aerosol_set_tau_at_wvl 550' in adapter_text
+          event = proposal['preregisteredEvent']
+          assert event['threeStarSemantics']['fieldFactorBaseline'] == 3.14
+          assert event['sunDepressionDeg'] == 5.2416836635666755
+          assert event['atmosphere']['aod550'] == 0.22
+          assert len(proposal['geometries']) == 3
+          assert len(proposal['cases']) == 12
+          assert sum(c['photonHistories'] for c in proposal['cases']) == 240_000_000
+
+          sky = contract['skyOnlyVisibilitySubstitution']
+          assert sky['fieldFactor'] == 3.14 and sky['branch'] == 'full' and sky['noParameterTuning'] is True
+          assert contract['levelBComparison']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          assert contract['claimBoundary']['fullSpectrumLevelBValidated'] is False
+          assert contract['claimBoundary']['productionAuthorized'] is False
+          assert contract['claimBoundary']['pandoraOpened'] is False
+          assert contract['methodRoles']['alis']['expectedOutputGrid'] == {'nodeCount': 8001, 'startNm': 380.0, 'stopNm': 780.0, 'stepNm': 0.05}
+          assert contract['methodRoles']['referenceVroom']['forbiddenUse'].startswith('do not derive')
+
+          assert evidence['applicationMainSha'] == os.environ['APPLICATION_SHA']
+          assert evidence['event']['fieldFactor'] == 3.14
+          assert evidence['comparisonBoundary']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          assert evidence['comparisonBoundary']['noParameterTuning'] is True
+          assert len(evidence['stars']) == 3
+          print('FROZEN_JSON_BOUNDARIES_PASS')
+          PY
           test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          echo 'APPLICATION_SHA_PASS'
       - name: Build exact authorization proposal only
         shell: bash
         run: |
@@ -87,6 +120,7 @@ jobs:
           assert p['proposedAuthorization']['scientificExecution'] is True
           assert p['proposedAuthorization']['executionKey']=='jerusalem-tishrei-direct-mystic-v1:diagnostic:1'
           assert p['proposedAuthorization']['authorizationOrdinal']==1
+          print('AUTHORIZATION_PROPOSAL_ONLY_PASS')
           PY
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain)"

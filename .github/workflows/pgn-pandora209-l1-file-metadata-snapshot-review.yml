@@ -1,0 +1,223 @@
+name: PGN Pandora209 L1 file metadata snapshot review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-pandora209-l1-file-metadata-snapshot-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209_L1_FILE_LISTING_PRECONTRACT.review.json"
+
+permissions:
+  contents: read
+
+jobs:
+  l1-file-metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Enumerate frozen L1 file metadata snapshot only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          from urllib.error import HTTPError
+
+          module_path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_l1_file_metadata_snapshot', module_path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          openapi = module.fetch_openapi(timeout_s=20.0)
+
+          allowed_fields = {
+              'filename',
+              'created_time',
+              'modified_time',
+              'metadata_code',
+              'metadata_blickp_version',
+              'metadata_spectrometer',
+              'metadata_date',
+              'metadata_cf_version',
+              'metadata_cf_date',
+              'size',
+          }
+          query = {
+              'start': '2000-01-01T00:00:00',
+              'end': '2026-08-24T23:59:59',
+          }
+          full = {}
+          api_dispositions = {}
+          for spectrometer in (1, 2):
+              try:
+                  records = module.request_metadata(
+                      openapi,
+                      '/v1/files/{location}/{instrument}/{spectrometer}/{level}',
+                      query,
+                      path_params={
+                          'location': 'Izana',
+                          'instrument': 209,
+                          'spectrometer': spectrometer,
+                          'level': 'L1',
+                      },
+                      timeout_s=60.0,
+                  )
+              except HTTPError as exc:
+                  body = exc.read().decode('utf-8', errors='replace')
+                  error_evidence = {
+                      'spectrometer': spectrometer,
+                      'status': exc.code,
+                      'reason': str(exc.reason),
+                      'url': exc.geturl(),
+                      'body': body,
+                      'frozenQueryUnchanged': True,
+                  }
+                  api_dispositions[str(spectrometer)] = {
+                      'status': 'HTTP_ERROR_NO_FILE_METADATA_RETURNED',
+                      'error': error_evidence,
+                      'mustNotBeInterpretedAsEmptyFileList': True,
+                  }
+                  full[str(spectrometer)] = None
+                  print('PGN_L1_LISTING_HTTP_ERROR_BEGIN')
+                  print(json.dumps(error_evidence, indent=2, sort_keys=True))
+                  print('PGN_L1_LISTING_HTTP_ERROR_END')
+                  continue
+
+              if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
+                  print(f'spectrometer-{spectrometer}-response=', json.dumps(records, indent=2, sort_keys=True))
+                  raise SystemExit('L1 file listing did not return the frozen metadata-object array shape')
+              for item in records:
+                  unexpected = sorted(set(item) - allowed_fields)
+                  if unexpected:
+                      print('unexpected-record=', json.dumps(item, indent=2, sort_keys=True))
+                      raise SystemExit(f'Unexpected L1 file metadata fields: {unexpected}')
+                  if not isinstance(item.get('filename'), str) or not item['filename']:
+                      raise SystemExit('L1 file metadata record lacks immutable filename')
+              full[str(spectrometer)] = records
+              api_dispositions[str(spectrometer)] = {
+                  'status': 'METADATA_LIST_RETURNED',
+                  'count': len(records),
+              }
+
+          full_evidence = {
+              'snapshotQuery': {
+                  'location': 'Izana',
+                  'instrument': 209,
+                  'level': 'L1',
+                  'spectrometers': [1, 2],
+                  'startModificationTime': query['start'],
+                  'endModificationTime': query['end'],
+                  'codeFilter': None,
+              },
+              'recordsBySpectrometer': full,
+              'apiDispositions': api_dispositions,
+              'targetPayloadOpened': False,
+              'metadataHeaderOpened': False,
+              'downloadPerformed': False,
+          }
+          full_path = Path('pandora209_l1_file_metadata_snapshot.json')
+          full_bytes = (json.dumps(full_evidence, indent=2, sort_keys=True) + '\n').encode('utf-8')
+          full_path.write_bytes(full_bytes)
+          full_sha = hashlib.sha256(full_bytes).hexdigest()
+
+          def unique(records, key):
+              return sorted({item.get(key) for item in records}, key=lambda value: (value is None, str(value)))
+
+          def nonnull_dates(records):
+              return sorted(str(item['metadata_date']) for item in records if item.get('metadata_date') is not None)
+
+          summary = {
+              'snapshotQuery': full_evidence['snapshotQuery'],
+              'fullSnapshotSha256': full_sha,
+              'spectrometers': {},
+              'targetPayloadOpened': False,
+              'metadataHeaderOpened': False,
+              'downloadPerformed': False,
+          }
+          for spectrometer in (1, 2):
+              records = full[str(spectrometer)]
+              if records is None:
+                  summary['spectrometers'][str(spectrometer)] = {
+                      'metadataListAvailable': False,
+                      'apiDisposition': api_dispositions[str(spectrometer)],
+                      'count': None,
+                  }
+                  continue
+              dates = nonnull_dates(records)
+              filenames = sorted(item['filename'] for item in records)
+              summary['spectrometers'][str(spectrometer)] = {
+                  'metadataListAvailable': True,
+                  'count': len(records),
+                  'metadataCodes': unique(records, 'metadata_code'),
+                  'metadataBlickpVersions': unique(records, 'metadata_blickp_version'),
+                  'metadataSpectrometers': unique(records, 'metadata_spectrometer'),
+                  'metadataCfVersions': unique(records, 'metadata_cf_version'),
+                  'metadataCfDates': unique(records, 'metadata_cf_date'),
+                  'metadataDateMinimum': dates[0] if dates else None,
+                  'metadataDateMaximum': dates[-1] if dates else None,
+                  'filenameMinimum': filenames[0] if filenames else None,
+                  'filenameMaximum': filenames[-1] if filenames else None,
+              }
+
+          summary['completeTwoSpectrometerSnapshotAvailable'] = all(
+              summary['spectrometers'][str(s)].get('metadataListAvailable') is True
+              for s in (1, 2)
+          )
+          summary['terminalMetadataDisposition'] = (
+              'COMPLETE_TWO_SPECTROMETER_METADATA_SNAPSHOT'
+              if summary['completeTwoSpectrometerSnapshotAvailable']
+              else 'PARTIAL_METADATA_ONLY_API_LIMITATION_REMAINS'
+          )
+
+          summary_path = Path('pandora209_l1_file_metadata_summary.json')
+          summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print('PGN_PANDORA209_L1_METADATA_SUMMARY_BEGIN')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_L1_METADATA_SUMMARY_END')
+          PY
+
+          sha256sum pandora209_l1_file_metadata_snapshot.json > pandora209_l1_file_metadata_snapshot.sha256
+          sha256sum pandora209_l1_file_metadata_summary.json > pandora209_l1_file_metadata_summary.sha256
+          cat pandora209_l1_file_metadata_snapshot.sha256
+          cat pandora209_l1_file_metadata_summary.sha256
+
+      - name: Prove snapshot remained metadata-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path('pandora209_l1_file_metadata_summary.json').read_text())
+          assert summary['targetPayloadOpened'] is False
+          assert summary['metadataHeaderOpened'] is False
+          assert summary['downloadPerformed'] is False
+          spec2 = summary['spectrometers']['2']
+          if spec2.get('metadataListAvailable') is False:
+              assert spec2['count'] is None
+              assert spec2['apiDisposition']['mustNotBeInterpretedAsEmptyFileList'] is True
+          print('L1 snapshot remained metadata-only and API errors are not reclassified as empty lists')
+          PY
+
+      - name: Upload immutable L1 metadata snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandora209-l1-file-metadata-snapshot
+          path: |
+            pandora209_l1_file_metadata_snapshot.json
+            pandora209_l1_file_metadata_snapshot.sha256
+            pandora209_l1_file_metadata_summary.json
+            pandora209_l1_file_metadata_summary.sha256
+          if-no-files-found: error
+          retention-days: 30

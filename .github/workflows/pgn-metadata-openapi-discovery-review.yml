@@ -1,0 +1,137 @@
+name: PGN metadata OpenAPI discovery review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-metadata-openapi-discovery-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_METADATA_ONLY_API_CLIENT.review.json"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209S2_L0_METADATA_HEADER_PRECONTRACT.review.json"
+      - "tests/test_pgn_metadata_only_client_v1.py"
+      - "tests/test_pgn_live_openapi_metadata_contract_v1.py"
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-openapi-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove no protected PGN data endpoint is used
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+          path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_metadata_boundary_workflow', path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          try:
+              module.assert_metadata_only_path('/v1/download')
+          except module.MetadataOnlyViolation:
+              print('download endpoint remains explicitly forbidden')
+          else:
+              raise SystemExit('download endpoint was not blocked')
+          PY
+
+      - name: Fetch live PGN OpenAPI metadata contract only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py --describe > pgn_metadata_endpoint_contract.json
+          python -m json.tool pgn_metadata_endpoint_contract.json >/dev/null
+          sha256sum pgn_metadata_endpoint_contract.json > pgn_metadata_endpoint_contract.sha256
+          cat pgn_metadata_endpoint_contract.sha256
+          cat pgn_metadata_endpoint_contract.json
+
+      - name: Capture raw metadata-only OpenAPI schemas and BlickP controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_openapi_raw_core', path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          openapi = module.fetch_openapi(timeout_s=20.0)
+          paths = openapi.get('paths', {})
+          components = openapi.get('components', {}).get('schemas', {})
+          metadata_components = {
+              name: schema
+              for name, schema in components.items()
+              if any(token in name.casefold() for token in ('v1_files', 'v1_metadata', 'filemetadata', 'metadataresponse'))
+          }
+
+          blickp_mentions = []
+          def scan(value, pointer='$'):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      child = f'{pointer}.{key}'
+                      if 'blickp' in str(key).casefold():
+                          blickp_mentions.append({'pointer': child, 'value': item})
+                      scan(item, child)
+              elif isinstance(value, list):
+                  for index, item in enumerate(value):
+                      scan(item, f'{pointer}[{index}]')
+              elif isinstance(value, str) and 'blickp' in value.casefold():
+                  blickp_mentions.append({'pointer': pointer, 'value': value})
+          scan(openapi)
+
+          raw = {
+              'routes': {
+                  '/v1/calibrationfiles/': paths.get('/v1/calibrationfiles/'),
+                  '/v1/operationfiles/': paths.get('/v1/operationfiles/'),
+                  '/v1/files/{location}/{instrument}/{spectrometer}/{level}': paths.get('/v1/files/{location}/{instrument}/{spectrometer}/{level}'),
+                  '/v1/metadata/{filename}': paths.get('/v1/metadata/{filename}'),
+              },
+              'responseSchemas': {
+                  'calibrationFileMetadata': components.get('public_api__routers__v1_calibrationfiles__FileMetadata'),
+                  'operationFileMetadata': components.get('public_api__routers__v1_operationfiles__FileMetadata'),
+                  'metadataRelatedComponents': metadata_components,
+              },
+              'blickpMentionsAcrossCompleteOpenapi': blickp_mentions,
+          }
+          Path('pgn_core_openapi_raw.json').write_text(
+              json.dumps(raw, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_BLICKP_OPENAPI_MENTIONS_BEGIN')
+          print(json.dumps(blickp_mentions, indent=2, sort_keys=True))
+          print('PGN_BLICKP_OPENAPI_MENTIONS_END')
+          print('PGN_CORE_OPENAPI_RAW_BEGIN')
+          print(json.dumps(raw, indent=2, sort_keys=True))
+          print('PGN_CORE_OPENAPI_RAW_END')
+          PY
+          sha256sum pgn_core_openapi_raw.json > pgn_core_openapi_raw.sha256
+          cat pgn_core_openapi_raw.sha256
+
+      - name: Upload immutable review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgn-metadata-openapi-contract
+          path: |
+            pgn_metadata_endpoint_contract.json
+            pgn_metadata_endpoint_contract.sha256
+            pgn_core_openapi_raw.json
+            pgn_core_openapi_raw.sha256
+          if-no-files-found: error
+          retention-days: 30

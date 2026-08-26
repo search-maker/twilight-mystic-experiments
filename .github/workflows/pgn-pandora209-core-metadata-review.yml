@@ -1,0 +1,230 @@
+name: PGN Pandora209 core metadata review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-pandora209-core-metadata-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_LIVE_OPENAPI_CONTRACT.freeze.json"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209_OPERATION_FILE_CONTENT_PRECONTRACT.review.json"
+
+permissions:
+  contents: read
+
+jobs:
+  pandora209-core-metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: List calibration and operation file metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          module_path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_core_metadata_review', module_path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          openapi = module.fetch_openapi(timeout_s=20.0)
+
+          # These are list endpoints whose frozen OpenAPI response schemas contain
+          # calibration/operation FILE METADATA only. No /v1/files target universe,
+          # /v1/metadata target header, /v1/download, LEVEL1.DATA or radiance is read.
+          calibration_files = module.request_metadata(
+              openapi,
+              '/v1/calibrationfiles/',
+              {},
+              timeout_s=20.0,
+          )
+          operation_files = module.request_metadata(
+              openapi,
+              '/v1/operationfiles/',
+              {},
+              timeout_s=20.0,
+          )
+          if not isinstance(calibration_files, list) or not isinstance(operation_files, list):
+              raise SystemExit('PGN core metadata endpoints did not return the frozen array response shape')
+
+          # Preserve the complete metadata-list evidence before any local filtering.
+          full = {
+              'calibrationFiles': calibration_files,
+              'operationFiles': operation_files,
+          }
+          Path('pgn_core_metadata_full_lists.json').write_text(
+              json.dumps(full, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          def filename(record):
+              return str(record.get('filename', '')) if isinstance(record, dict) else ''
+
+          s1_cf = re.compile(r'^Pandora209s1_CF_')
+          s2_cf = re.compile(r'^Pandora209s2_CF_')
+          operation = re.compile(r'^Pandora209_[Oo][Ff]_')
+
+          s1_candidates = [item for item in calibration_files if s1_cf.match(filename(item))]
+          s2_candidates = [item for item in calibration_files if s2_cf.match(filename(item))]
+          operation_candidates = [item for item in operation_files if operation.match(filename(item))]
+
+          candidates = {
+              'pandora209s1CalibrationCandidates': s1_candidates,
+              'pandora209s2CalibrationCandidates': s2_candidates,
+              'pandora209OperationCandidates': operation_candidates,
+              'pandora209s1CalibrationCount': len(s1_candidates),
+              'pandora209s2CalibrationCount': len(s2_candidates),
+              'pandora209OperationCount': len(operation_candidates),
+              'totalCalibrationFileCount': len(calibration_files),
+              'totalOperationFileCount': len(operation_files),
+              'candidateRules': {
+                  's1Calibration': r'^Pandora209s1_CF_',
+                  's2Calibration': r'^Pandora209s2_CF_',
+                  'operation': r'^Pandora209_[Oo][Ff]_',
+              },
+              'selectionUsesTargetValues': False,
+          }
+          Path('pandora209_core_metadata_candidates.json').write_text(
+              json.dumps(candidates, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_CORE_METADATA_CANDIDATES_BEGIN')
+          print(json.dumps(candidates, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_CORE_METADATA_CANDIDATES_END')
+          PY
+
+          sha256sum pgn_core_metadata_full_lists.json > pgn_core_metadata_full_lists.sha256
+          sha256sum pandora209_core_metadata_candidates.json > pandora209_core_metadata_candidates.sha256
+          cat pgn_core_metadata_full_lists.sha256
+          cat pandora209_core_metadata_candidates.sha256
+
+      - name: Fetch exact public Pandora209 operation configuration files only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from urllib.request import Request, urlopen
+
+          base = 'https://data.hetzner.pandonia-global-network.org/operationfiles/'
+          expected_host = 'data.hetzner.pandonia-global-network.org'
+          filenames = [
+              'Pandora209_OF_v0d20210806.txt',
+              'Pandora209_OF_v1d20210806.txt',
+              'Pandora209_OF_v2d20210806.txt',
+              'Pandora209_OF_v3d20210806.txt',
+          ]
+          outdir = Path('pandora209_operationfiles')
+          outdir.mkdir(exist_ok=True)
+          manifest = []
+
+          for filename in filenames:
+              if '/' in filename or '\\' in filename:
+                  raise SystemExit(f'unsafe operation filename: {filename!r}')
+              url = base + filename
+              request = Request(
+                  url,
+                  headers={
+                      'Accept': 'text/plain,application/octet-stream;q=0.8',
+                      'User-Agent': 'starsvisibility-blind-operation-config-metadata-v1',
+                  },
+                  method='GET',
+              )
+              with urlopen(request, timeout=30) as response:
+                  final_url = response.geturl()
+                  content_type = response.headers.get_content_type()
+                  raw = response.read()
+
+              parsed = urlparse(final_url)
+              if final_url != url:
+                  raise SystemExit(f'unexpected operation-file redirect: {final_url}')
+              if parsed.scheme != 'https' or parsed.netloc != expected_host:
+                  raise SystemExit(f'unexpected operation-file host: {parsed.netloc}')
+              if not parsed.path.startswith('/operationfiles/'):
+                  raise SystemExit(f'unexpected operation-file path: {parsed.path}')
+              if len(raw) > 100_000:
+                  raise SystemExit(f'operation configuration unexpectedly large: {filename} {len(raw)} bytes')
+
+              path = outdir / filename
+              path.write_bytes(raw)
+              manifest.append({
+                  'filename': filename,
+                  'url': url,
+                  'finalUrl': final_url,
+                  'contentType': content_type,
+                  'byteCount': len(raw),
+                  'sha256': hashlib.sha256(raw).hexdigest(),
+              })
+
+          evidence = {
+              'sourceDirectory': base,
+              'files': manifest,
+              'operationConfigurationGetPerformed': True,
+              'measurementFileRequested': False,
+              'v1DownloadUsed': False,
+              'targetDataOpened': False,
+          }
+          Path('pandora209_operationfiles_manifest.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print('PGN_PANDORA209_OPERATION_CONFIG_MANIFEST_BEGIN')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          print('PGN_PANDORA209_OPERATION_CONFIG_MANIFEST_END')
+          PY
+
+          sha256sum pandora209_operationfiles_manifest.json > pandora209_operationfiles_manifest.sha256
+          cat pandora209_operationfiles_manifest.sha256
+
+      - name: Prove protected endpoint remains inaccessible through client
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+          path = Path('review/empirical-twilight-radiance-source-admission-v1/pgn_metadata_only_client_v1.py')
+          spec = importlib.util.spec_from_file_location('pgn_boundary_after_query', path)
+          assert spec and spec.loader
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          try:
+              module.assert_metadata_only_path('/v1/download')
+          except module.MetadataOnlyViolation:
+              print('protected PGN download endpoint remains blocked')
+          else:
+              raise SystemExit('protected PGN download endpoint unexpectedly allowed')
+          PY
+
+      - name: Upload immutable core metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandora209-core-metadata-only
+          path: |
+            pgn_core_metadata_full_lists.json
+            pgn_core_metadata_full_lists.sha256
+            pandora209_core_metadata_candidates.json
+            pandora209_core_metadata_candidates.sha256
+            pandora209_operationfiles/
+            pandora209_operationfiles_manifest.json
+            pandora209_operationfiles_manifest.sha256
+          if-no-files-found: error
+          retention-days: 30

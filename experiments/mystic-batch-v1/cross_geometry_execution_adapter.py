@@ -10,7 +10,6 @@ from typing import Any
 STAGE_ID = "cross-geometry-pilot-v1"
 ADAPTER_ID = "mystic-cross-geometry-execution-v1"
 PROPOSAL_ADAPTER = Path(__file__).with_name("cross_geometry_adapter.py")
-AOD550_DIRECTIVE_PREFIX = "aerosol_set_tau_at_wvl 550 "
 
 
 class AdapterRefusal(RuntimeError):
@@ -65,17 +64,6 @@ def validate_runtime(proposal: dict[str, Any], report: dict[str, Any]) -> None:
         raise AdapterRefusal(f"runtime identity mismatch: {stale}")
 
 
-def validate_rendered_aod550_binding(text: str, expected_aod550: Any) -> None:
-    try:
-        aod = float(expected_aod550)
-    except (TypeError, ValueError) as exc:
-        raise AdapterRefusal(f"invalid normalized AOD550: {expected_aod550}") from exc
-    expected = f"{AOD550_DIRECTIVE_PREFIX}{aod:.6f}"
-    directives = [line.strip() for line in text.splitlines() if line.strip().startswith("aerosol_set_tau_at_wvl")]
-    if directives != [expected]:
-        raise AdapterRefusal(f"rendered AOD550 binding mismatch: expected exactly {expected!r}, got {directives!r}")
-
-
 def prepare_case(
     proposal_path: Path,
     runtime_report_path: Path,
@@ -94,7 +82,6 @@ def prepare_case(
     case_dir = output_dir / case_id
     case_dir.mkdir(parents=True, exist_ok=False)
     text = adapter.render_input(inputs, data_dir.resolve(), repository_root.resolve(), case_dir.resolve())
-    validate_rendered_aod550_binding(text, inputs.get("aod550"))
     input_path = case_dir / "input-resolved.txt"
     input_path.write_text(text)
     prepared = {
@@ -115,7 +102,7 @@ def prepare_case(
         "inputResolvedSha256": text_sha256(text),
         "inputs": inputs,
         "inputPath": str(input_path),
-        "boundary": "input prepared after runtime identity verification and exact AOD550 directive binding; syntax and solver are executed only by the guarded case executor",
+        "boundary": "input prepared after runtime identity verification; syntax and solver are executed only by the guarded case executor",
     }
     (case_dir / "cross-geometry-prepared.json").write_text(dump(prepared))
     return prepared

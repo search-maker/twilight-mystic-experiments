@@ -1,0 +1,88 @@
+name: Level-B zenith three-channel analysis v3
+run-name: Zenith full-channel analysis | ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - 'recovery/level-b-zenith-channels-v1'
+    paths:
+      - 'review/level-b-zenith-three-channel-analysis-v3/dispatch.json'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify analysis-only one-file dispatch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git diff --name-only HEAD^ HEAD)" = "review/level-b-zenith-three-channel-analysis-v3/dispatch.json"
+          python - <<'PY'
+          import json
+          d=json.load(open('review/level-b-zenith-three-channel-analysis-v3/dispatch.json'))
+          assert d=={
+            'schemaVersion':1,
+            'sourceRunId':33021339197,
+            'sourceDispatchSha':'366be0cfd0f506ed57646ad4c66631194f3fc6a0',
+            'analysisId':'level-b-zenith-expansion-three-channel-representation-analysis-v3',
+            'scientificSolverExecutionAuthorized':False,
+            'holdoutExecutionAuthorized':False,
+            'supportExpansionAuthorized':False,
+            'productionAuthorized':False
+          }
+          PY
+          if command -v uvspec >/dev/null 2>&1; then echo 'uvspec unexpectedly present; refusing analysis-only workflow'; exit 1; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 33021339197
+          name: level-b-zenith-expansion-v1-frozen-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 33021339197
+          pattern: level-b-zenith-v1-case-*
+          path: all-case-artifacts
+          merge-multiple: false
+      - name: Compute frozen Level-B channels from full spectra
+        run: |
+          set -euo pipefail
+          python experiments/level-b-zenith-expansion-acquisition-v1/analyze_channels_v3.py \
+            --repo-root . \
+            --results-root all-case-artifacts \
+            --manifest frozen/manifest.json \
+            --output channel-analysis-output
+          python - <<'PY'
+          import json
+          p='channel-analysis-output/three-channel-training-representation-v3.json'
+          s=json.load(open(p))
+          assert s['schemaVersion']==3
+          assert s['caseCount']==72 and s['geometryCount']==18 and s['trainingGeometryCount']==16
+          assert s['scientificSolverExecutionPerformedByThisAnalysis'] is False
+          assert s['holdoutExecutionAuthorized'] is False
+          assert s['supportExpansionAuthorized'] is False
+          assert s['productionAuthorized'] is False
+          assert all(x['allThreeChannelsPass'] for x in s['extensionReadinessThreeChannelZenithInvarianceDiagnostics'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-zenith-three-channel-analysis-v3
+          path: channel-analysis-output
+          if-no-files-found: error
+          retention-days: 90

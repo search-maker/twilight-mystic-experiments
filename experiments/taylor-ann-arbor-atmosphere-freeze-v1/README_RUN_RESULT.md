@@ -1,0 +1,1 @@
+Blind atmosphere freeze completed successfully in GitHub Actions run 33014181859. The primary scientific atmosphere is CAMS Global with midpoint AOD550=0.32; no qualifying AERONET V3 Level-2 records were returned for Windsor_B or Windsor_M. See atmosphere.freeze.json and cams_aod_per_observation.json. This result predates all Taylor-vs-MYSTIC solver residuals.

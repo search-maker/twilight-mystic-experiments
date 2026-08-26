@@ -28,7 +28,7 @@ PATHS = {
     "evidence": PACKAGE / "level-b-event-evidence.json",
     "analysisContract": PACKAGE / "analysis-contract.json",
     "proposalAdapter": Path("experiments/mystic-batch-v1/cross_geometry_adapter.py"),
-    "executionAdapter": Path("experiments/mystic-batch-v1/cross_geometry_execution_adapter.py"),
+    "executionAdapter": PACKAGE / "execution_adapter.py",
     "executionWorkflow": Path(".github/workflows/jerusalem-tishrei-direct-mystic-v1-execution.yml"),
     "runtimeLock": Path("experiments/mystic-batch-v1/runtime-lock.micromamba.json"),
     "plan": Path("experiments/mystic-batch-v1/cross_geometry_execution_plan.py"),

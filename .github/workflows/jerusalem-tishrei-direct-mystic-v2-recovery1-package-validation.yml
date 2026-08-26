@@ -72,7 +72,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: app/.node-version
-      - name: Compile recovery governance and verify frozen source boundary
+
+      - name: Verify recovery boundary and full-ancestry workflow without execution
         shell: bash
         run: |
           set -euo pipefail
@@ -93,26 +94,35 @@ jobs:
           assert lane['futureAuthorization']['authorizationOrdinal']==2
           assert lane['recoveryCorrection']['category']=='workflow-checkout-ancestry-only'
           assert 'fetch-depth 0' in lane['recoveryCorrection']['requiredChange']
-          assert lane['sourceScientificPayload']['caseCount']==12
-          assert lane['sourceScientificPayload']['configuredPhotonHistoriesSum']==240_000_000
-          assert lane['sourceScientificPayload']['fieldFactorBaseline']==3.14
-          assert lane['sourceScientificPayload']['aod550']==0.22
-          assert lane['sourceScientificPayload']['observerElevationM']==800
+          frozen=lane['sourceScientificPayload']
+          assert frozen['caseCount']==12 and frozen['configuredPhotonHistoriesSum']==240_000_000
+          assert frozen['fieldFactorBaseline']==3.14 and frozen['aod550']==0.22 and frozen['observerElevationM']==800
           assert source['consumed'] is True and source['authorized'] is False
-          assert source['executionKey']=='jerusalem-tishrei-direct-mystic-v2:diagnostic:1' and source['authorizationOrdinal']==1
+          assert source['executionKey']=='jerusalem-tishrei-direct-mystic-v2:diagnostic:1'
+          assert source['authorizationOrdinal']==1
           assert source['exactAuthorizationCommit']=='f2e6fd8dc39b93704edb57d16558f5b6fdf7f4fd'
           note=source['note'].lower()
-          assert '33014861225' in note and 'zero syntax checks' in note and 'zero mystic solvers' in note
-          assert proposal['preregisteredEvent']['threeStarSemantics']['fieldFactorBaseline']==3.14
-          assert proposal['preregisteredEvent']['atmosphere']['aod550']==0.22
-          assert len(proposal['cases'])==12 and sum(c['photonHistories'] for c in proposal['cases'])==240_000_000
+          assert '33014861225' in note
+          assert 'before duplicate-run audit, plan construction, syntax checks' in note
+          assert 'mystic solver execution' in note
+          assert 'zero scientific cases and zero configured photons executed' in note
+          event=proposal['preregisteredEvent']
+          assert event['threeStarSemantics']['fieldFactorBaseline']==3.14
+          assert event['atmosphere']['aod550']==0.22
+          assert len(proposal['cases'])==12
+          assert sum(c['photonHistories'] for c in proposal['cases'])==240_000_000
           marker='- name: Check out exact one-purpose recovery1 scientific authorization commit'
           assert marker in workflow
-          block=workflow.split(marker,1)[1].split('- name:',1)[0]
-          assert 'fetch-depth: 0' in block
-          assert 'run-name: MYSTIC batch v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}' in workflow
-          print('RECOVERY1_FROZEN_BOUNDARY_AND_FULL_ANCESTRY_PASS')
+          preflight_block=workflow.split(marker,1)[1].split('- name:',1)[0]
+          assert 'fetch-depth: 0' in preflight_block
+          run_line=next(line for line in workflow.splitlines() if line.startswith('run-name: '))
+          assert run_line.startswith('run-name: MYSTIC batch v1 | key=')
+          assert 'inputs.execution_key' in run_line
+          assert 'inputs.authorization_ref' in run_line
+          assert 'inputs.authorization_ordinal' in run_line
+          print('RECOVERY1_BOUNDARY_AND_FULL_ANCESTRY_PASS')
           PY
+
       - name: Classify recovery1 authorization lifecycle
         id: auth-state
         shell: bash
@@ -133,7 +143,8 @@ jobs:
           Path('validation-output/authorization-state.json').write_text(json.dumps({'mode':mode,'authorization':a},indent=2,sort_keys=True)+'\n')
           print('RECOVERY1_AUTHORIZATION_LIFECYCLE_PASS',mode)
           PY
-      - name: Build exact recovery1 authorization proposal only
+
+      - name: Build recovery1 authorization proposal only
         if: steps.auth-state.outputs.mode == 'preauth'
         run: |
           set -euo pipefail
@@ -153,6 +164,7 @@ jobs:
           PY
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git diff --name-only)"
+
       - name: Simulate one-purpose recovery1 authorization and validate guard plus exact plan
         if: steps.auth-state.outputs.mode == 'preauth'
         shell: bash
@@ -168,12 +180,14 @@ jobs:
           test "$(git diff --name-only)" = "$AUTHORIZATION"
           git config user.name 'tishrei-recovery1-validation'
           git config user.email 'tishrei-recovery1-validation@invalid.local'
-          git add "$AUTHORIZATION" && git commit -m 'LOCAL TEST ONLY - recovery1 authorization'
+          git add "$AUTHORIZATION"
+          git commit -m 'LOCAL TEST ONLY - recovery1 authorization'
           TEST_AUTH_SHA="$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
           test "$(git diff --name-only HEAD^ HEAD)" = "$AUTHORIZATION"
           env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
-            python "$PACKAGE/execution_guard.py" --repository-root . --application-root app --application-sha "$APPLICATION_SHA" \
+            python "$PACKAGE/execution_guard.py" \
+            --repository-root . --application-root app --application-sha "$APPLICATION_SHA" \
             --authorization "$AUTHORIZATION" --proposal "$PROPOSAL" --evidence "$EVIDENCE" --analysis-contract "$ANALYSIS_CONTRACT" \
             --proposal-adapter "$PROPOSAL_ADAPTER" --execution-adapter "$EXECUTION_ADAPTER" --execution-workflow "$EXECUTION_WORKFLOW" \
             --runtime-lock "$RUNTIME_LOCK" --plan "$PLAN" --analysis-driver "$ANALYSIS_DRIVER" --visibility-helper "$VISIBILITY_HELPER" \
@@ -190,6 +204,7 @@ jobs:
           assert p['caseCount']==12 and p['configuredMcPhotonsSum']==240_000_000 and len(p['matrix']['include'])==12
           print('RECOVERY1_GUARD_AND_PLAN_PASS_NO_SOLVER')
           PY
+
       - name: Validate real enabled recovery1 one-purpose authorization without execution
         if: steps.auth-state.outputs.mode == 'enabled'
         shell: bash
@@ -198,7 +213,8 @@ jobs:
           TEST_AUTH_SHA="$(git rev-parse HEAD)"
           test "$(git diff --name-only HEAD^ HEAD)" = "$AUTHORIZATION"
           env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
-            python "$PACKAGE/execution_guard.py" --repository-root . --application-root app --application-sha "$APPLICATION_SHA" \
+            python "$PACKAGE/execution_guard.py" \
+            --repository-root . --application-root app --application-sha "$APPLICATION_SHA" \
             --authorization "$AUTHORIZATION" --proposal "$PROPOSAL" --evidence "$EVIDENCE" --analysis-contract "$ANALYSIS_CONTRACT" \
             --proposal-adapter "$PROPOSAL_ADAPTER" --execution-adapter "$EXECUTION_ADAPTER" --execution-workflow "$EXECUTION_WORKFLOW" \
             --runtime-lock "$RUNTIME_LOCK" --plan "$PLAN" --analysis-driver "$ANALYSIS_DRIVER" --visibility-helper "$VISIBILITY_HELPER" \
@@ -213,6 +229,7 @@ jobs:
           assert p['caseCount']==12 and p['configuredMcPhotonsSum']==240_000_000
           print('REAL_RECOVERY1_ONE_PURPOSE_AUTHORIZATION_PASS_NO_EXECUTION')
           PY
+
       - name: Validate consumed recovery1 archive and refuse reuse
         if: steps.auth-state.outputs.mode == 'consumed'
         run: |
@@ -231,6 +248,7 @@ jobs:
           set -e
           test "$RC" -ne 0
           echo 'RECOVERY1_REAUTHORIZATION_REFUSED_PASS'
+
       - name: Prove no uvspec or scientific solver was launched
         run: |
           set -euo pipefail
@@ -240,6 +258,7 @@ jobs:
           test ! -e audit-output
           test ! -e analysis-output
           echo 'NO_UVSPEC_NO_SYNTAX_NO_SCIENTIFIC_SOLVER_EXECUTED'
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

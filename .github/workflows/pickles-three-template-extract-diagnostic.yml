@@ -1,0 +1,96 @@
+name: Pickles O5V G2V M6V extraction diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pickles-three-template-extract-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out same repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify frozen Pickles bytes and extract three templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, pathlib
+
+          path = pathlib.Path('generated/level-b-stellar-v2/pickles-sed-1nm.json')
+          raw = path.read_bytes()
+          expected = '85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb'
+          actual = hashlib.sha256(raw).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'Pickles SHA mismatch: {actual} != {expected}')
+
+          data = json.loads(raw)
+          if data.get('schemaVersion') != 1 or data.get('quantity') != 'relative-stellar-f-lambda-shape':
+              raise SystemExit('unexpected Pickles schema')
+          wl = data.get('wavelengthNm')
+          if wl != list(range(380, 781)):
+              raise SystemExit('unexpected Pickles wavelength grid')
+
+          wanted = {1: 'O5V', 26: 'G2V', 45: 'M6V'}
+          selected = {}
+          for row in data.get('templates', []):
+              n = row.get('libraryNumber')
+              if n in wanted:
+                  flux = row.get('fluxRelative')
+                  if not isinstance(flux, list) or len(flux) != 401:
+                      raise SystemExit(f'bad fluxRelative for library {n}')
+                  selected[str(n)] = {
+                      'expectedRepresentative': wanted[n],
+                      'templateId': row.get('templateId'),
+                      'libraryNumber': n,
+                      'spectralType': row.get('spectralType'),
+                      'colorCalibrationSpectralType': row.get('colorCalibrationSpectralType'),
+                      'bMinusVLandoltBmVc': row.get('bMinusVLandoltBmVc'),
+                      'effectiveTemperatureK': row.get('effectiveTemperatureK'),
+                      'fluxRelative': flux,
+                  }
+          if set(selected) != {'1','26','45'}:
+              raise SystemExit(f'missing representatives: {sorted(selected)}')
+
+          out = {
+              'status': 'ZERO_SOLVER_EXTRACTION_ONLY',
+              'sourcePath': str(path),
+              'sourceGitBlob': '3a2bdcd1f9449bd0cdb330d57d5882c9f9a958ca',
+              'sourceSha256': actual,
+              'wavelengthNm': wl,
+              'templates': selected,
+              'solverExecutionPerformed': False,
+              'pandoraOpened': False,
+              'scientificValidationPerformed': False,
+              'productionMutationPerformed': False,
+          }
+          pathlib.Path('pickles-o5v-g2v-m6v.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps({
+              'sourceSha256': actual,
+              'selected': {k: {'spectralType': v['spectralType'], 'bMinusV': v['bMinusVLandoltBmVc']} for k,v in selected.items()},
+          }, sort_keys=True))
+          PY
+
+      - name: Upload small extraction artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pickles-o5v-g2v-m6v-extraction
+          path: pickles-o5v-g2v-m6v.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Record safety boundary
+        run: |
+          printf '%s\n' \
+            'solverExecution=false' \
+            'pandoraOpened=false' \
+            'validationPerformed=false' \
+            'productionMutation=false'

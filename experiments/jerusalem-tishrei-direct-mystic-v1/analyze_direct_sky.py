@@ -113,7 +113,7 @@ def analyze(manifest_path: Path, evidence_path: Path, contract_path: Path, cases
     if contract.get("analysisId") != "jerusalem-tishrei-direct-mystic-level-b-comparison-v1":
         raise ValueError("wrong analysis contract")
 
-    geometry_by_group = {g["groupId"]: g for g in manifest["geometries"]}
+    geometry_by_group = {g["geometryId"]: g for g in manifest["geometries"]}
     evidence_by_catalog = {s["catalogId"]: s for s in evidence["stars"]}
     results = []
     for group_id, geometry in geometry_by_group.items():

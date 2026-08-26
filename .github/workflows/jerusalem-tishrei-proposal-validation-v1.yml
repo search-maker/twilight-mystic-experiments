@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      PROPOSAL_SHA: e0a2b9587e37d060388b1acedd20a86824fad63d
+      PROPOSAL_SHA: fac76c2be890b8c208bdfe76a52f36d283162102
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,19 +28,22 @@ jobs:
           path: proposal
           persist-credentials: false
           fetch-depth: 1
-      - name: Validate manifest with frozen adapter only
+      - name: Validate manifest and frozen event evidence only
         shell: bash
         run: |
           set -euo pipefail
           cd proposal
+          test "$(git rev-parse HEAD)" = "$PROPOSAL_SHA"
           python3 - <<'PY'
           import importlib.util, json
           from pathlib import Path
           adapter_path=Path('experiments/mystic-batch-v1/cross_geometry_adapter.py')
           manifest_path=Path('experiments/jerusalem-tishrei-direct-mystic-v1/manifest.proposal.json')
+          evidence_path=Path('experiments/jerusalem-tishrei-direct-mystic-v1/level-b-event-evidence.json')
           spec=importlib.util.spec_from_file_location('adapter',adapter_path)
           adapter=importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
           m=json.loads(manifest_path.read_text())
+          e=json.loads(evidence_path.read_text())
           adapter.validate_manifest(m)
           assert len(m['geometries'])==3
           assert len(m['cases'])==12
@@ -49,6 +52,7 @@ jobs:
           assert m['preregisteredEvent']['sunDepressionDeg']==5.2416836635666755
           assert m['preregisteredEvent']['atmosphere']['aod550']==0.22
           ids=set()
+          geometry_by_id={g['target']['catalogId']:g for g in m['geometries']}
           for case in m['cases']:
               c,g=adapter.resolve_case(m,case['caseId'])
               inputs=adapter.normalized_inputs(m,c,g)
@@ -59,7 +63,25 @@ jobs:
           assert ids=={'tishrei-antares-hr6134','tishrei-rasalhague-hr6556','tishrei-gamma-cyg-hr7796'}
           assert m['preregisteredEvent']['claimBoundary']['noParameterTuning'] is True
           assert m['scientificExecution'] is False and m['proposalOnly'] is True
-          print(json.dumps({'status':'VALIDATED_PROPOSAL_ONLY','caseCount':12,'geometryCount':3,'photonHistories':240_000_000,'solverExecuted':False,'syntaxExecuted':False},sort_keys=True))
+          assert e['source']['workflowRunId']==32982830256
+          assert e['source']['artifactId']==9612259358
+          assert e['source']['artifactDigest']=='sha256:d43120ad60d2e4a502023cd187bbeffecd6364d4edc975c14c84432c3c8097c5'
+          assert e['event']['sunDepressionDeg']==m['preregisteredEvent']['sunDepressionDeg']
+          assert e['event']['aod550']==m['preregisteredEvent']['atmosphere']['aod550']
+          assert e['event']['fieldFactor']==3.14
+          assert len(e['stars'])==3
+          for star in e['stars']:
+              g=geometry_by_id[star['catalogId']]
+              assert star['eventGeometry']['targetAltitudeDeg']==g['targetAltitudeDeg']
+              assert star['eventGeometry']['relativeAzimuthDeg']==g['relativeAzimuthDeg']
+              assert star['skyChannels']['photopic']['available'] is True
+              assert star['skyChannels']['scotopic']['available'] is True
+              assert star['skyChannels']['johnsonV']['available'] is True
+              assert star['skyChannels']['spectral']['available'] is False
+              assert star['skyChannels']['spectral']['reason']=='VALIDATED_V3_PRIMARY_PROVIDER_SPECTRAL_RUNTIME_NOT_IMPLEMENTED'
+          assert e['comparisonBoundary']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          assert e['comparisonBoundary']['noParameterTuning'] is True
+          print(json.dumps({'status':'VALIDATED_PROPOSAL_AND_EVENT_EVIDENCE_ONLY','proposalSha':'fac76c2be890b8c208bdfe76a52f36d283162102','caseCount':12,'geometryCount':3,'photonHistories':240_000_000,'solverExecuted':False,'syntaxExecuted':False},sort_keys=True))
           PY
 
-# retrigger-only: 2026-08-26; no proposal, physics, or execution change
+# validation only; no syntax check, uvspec process, MYSTIC solver, or authorization

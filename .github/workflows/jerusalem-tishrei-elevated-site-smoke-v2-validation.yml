@@ -1,0 +1,178 @@
+name: Jerusalem Tishrei elevated-site smoke v2 package validation
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/jerusalem-tishrei-elevated-site-smoke-v2/**'
+      - '.github/workflows/jerusalem-tishrei-elevated-site-smoke-v2.yml'
+      - '.github/workflows/jerusalem-tishrei-elevated-site-smoke-v2-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-no-uvspec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PACKAGE: experiments/jerusalem-tishrei-elevated-site-smoke-v2
+      AUTHORIZATION: experiments/jerusalem-tishrei-elevated-site-smoke-v2/authorization.smoke.json
+      MANIFEST: experiments/jerusalem-tishrei-elevated-site-smoke-v2/manifest.smoke.json
+      ADAPTER: experiments/jerusalem-tishrei-elevated-site-smoke-v2/adapter.py
+      EXECUTOR: experiments/jerusalem-tishrei-elevated-site-smoke-v2/smoke_executor.py
+      GUARD: experiments/jerusalem-tishrei-elevated-site-smoke-v2/execution_guard.py
+      AUTH_BUILDER: experiments/jerusalem-tishrei-elevated-site-smoke-v2/authorization_proposal.py
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: jerusalem-tishrei-smoke-v2-validation
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Compile package and validate frozen smoke manifest/provenance
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python -m py_compile "$ADAPTER" "$EXECUTOR" "$GUARD" "$AUTH_BUILDER"
+          python - <<'PY'
+          import importlib.util, json, os
+          from pathlib import Path
+          p=Path(os.environ['ADAPTER'])
+          spec=importlib.util.spec_from_file_location('smoke_validation_adapter',p)
+          m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          smoke=json.loads(Path(os.environ['MANIFEST']).read_text())
+          m.validate_smoke_manifest(smoke)
+          source,auth=m.validate_consumed_v1(Path('.').resolve(),smoke)
+          assert source['preregisteredEvent']['threeStarSemantics']['fieldFactorBaseline']==3.14
+          assert auth['consumed'] is True and auth['authorized'] is False
+          assert smoke['sourceScientificPackage']['repairMergedMainSha']=='13fe2e18a7754b893eba31328f90b179fc018499'
+          assert len(smoke['cases'])==2 and sum(c['photonHistories'] for c in smoke['cases'])==20000
+          print('SMOKE_MANIFEST_AND_PROVENANCE_PASS')
+          PY
+      - name: Render both smoke inputs using installed data, without uvspec
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, os, tempfile
+          from pathlib import Path
+          root=Path('.').resolve()
+          p=Path(os.environ['ADAPTER'])
+          spec=importlib.util.spec_from_file_location('smoke_render_adapter',p)
+          a=importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+          smoke_path=Path(os.environ['MANIFEST'])
+          smoke=json.loads(smoke_path.read_text())
+          source=json.loads((root/a.SOURCE_MANIFEST).read_text())
+          runtime=source['runtime']
+          report={
+            'schemaVersion':1,
+            'stageId':'mystic-batch-v1',
+            'uvspecSha256':runtime['uvspecSha256'],
+            'uvspecHelpSha256':runtime['uvspecHelpSha256'],
+            'libRadtranDataTreeSha256':runtime['libRadtranDataTreeSha256'],
+            'atmosphereSha256':runtime['atmosphereSha256'],
+            'runtimeLockRawSha256':runtime['runtimeLockRawSha256'],
+            'syntaxCheckExecuted':False,
+            'scientificSolverExecuted':False,
+          }
+          data_dir=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'
+          assert (data_dir/'atmmod/afglus.dat').is_file()
+          Path('validation-output').mkdir(exist_ok=True)
+          with tempfile.TemporaryDirectory(prefix='smoke-v2-render-') as tmp:
+            runtime_path=Path(tmp)/'runtime.json'; runtime_path.write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+            out=Path(tmp)/'cases'
+            prepared=[]
+            for case in smoke['cases']:
+              r=a.prepare_case(smoke_path,runtime_path,case['caseId'],data_dir,root,out)
+              text=Path(r['inputPath']).read_text()
+              assert r['scientificUseProhibited'] is True
+              assert r['photonHistories']==10000
+              assert r['siteAltitudeKm']==0.8 and r['zoutKmAboveLocalSurface']==0.0
+              assert text.count('atm_z_grid ')==1 and text.count('zout 0.000000')==1
+              assert 'zout 0.800000' not in text
+              assert text.count('aerosol_set_tau_at_wvl 550 0.220000')==1
+              assert 'altitude ' not in text and 'mc_elevation_file' not in text
+              prepared.append({k:r[k] for k in ('caseId','method','seed','photonHistories','inputResolvedSha256','siteAltitudeKm','zoutKmAboveLocalSurface','atmosphereGridLevelCount')})
+          Path('validation-output/render-validation.json').write_text(json.dumps({'status':'BOTH_SMOKE_INPUTS_RENDERED_NO_UVSPEC','cases':prepared,'syntaxChecksExecuted':0,'solverExecutions':0},indent=2,sort_keys=True)+'\n')
+          print(json.dumps(prepared,indent=2,sort_keys=True))
+          PY
+      - name: Build exact infrastructure-smoke authorization proposal only
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python "$AUTH_BUILDER" --repository-root . --output validation-output/authorization-proposal.json
+          python - <<'PY'
+          import json
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          assert p['status']=='PROPOSAL_ONLY_NOT_AUTHORIZATION'
+          assert p['executionAuthorizedByProposal'] is False
+          a=p['proposedAuthorization']
+          assert a['authorized'] is True and a['infrastructureExecution'] is True
+          assert a['scientificExecution'] is False and a['scientificUseProhibited'] is True
+          assert a['executionKey']=='jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:1'
+          assert a['smokeAuthorizationOrdinal']==1 and a['consumed'] is False
+          print('SMOKE_AUTHORIZATION_PROPOSAL_ONLY_PASS')
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git diff --name-only)"
+      - name: Simulate one-purpose smoke authorization locally and validate guard
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          with open(os.environ['AUTHORIZATION'],'w') as f:
+            json.dump(p['proposedAuthorization'],f,indent=2,sort_keys=True); f.write('\n')
+          PY
+          test "$(git diff --name-only)" = "$AUTHORIZATION"
+          git config user.name 'tishrei-smoke-v2-package-validation'
+          git config user.email 'tishrei-smoke-v2-package-validation@invalid.local'
+          git add "$AUTHORIZATION"
+          git commit -m 'LOCAL TEST ONLY - infrastructure smoke authorization'
+          TEST_AUTH_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$AUTHORIZATION"
+          env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+            python "$GUARD" \
+            --repository-root . \
+            --authorization-ref "$TEST_AUTH_SHA" \
+            --execution-key 'jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:1' \
+            --smoke-authorization-ordinal 1 \
+            --output validation-output/guard-report.json
+          python - <<'PY'
+          import json
+          g=json.load(open('validation-output/guard-report.json'))
+          assert g['status']=='AUTHORIZED_INFRASTRUCTURE_SMOKE_ONLY'
+          assert g['caseCount']==2 and g['configuredPhotonHistoriesSum']==20000
+          assert g['scientificUseProhibited'] is True
+          print('SMOKE_GUARD_PASS_NO_EXECUTION')
+          PY
+      - name: Prove validation launched no uvspec or solver
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          test ! -e smoke-output
+          test ! -e runtime-reports
+          echo 'NO_UVSPEC_NO_SMOKE_SOLVER_NO_SCIENTIFIC_EXECUTION'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tishrei-elevated-site-smoke-v2-package-validation-${{ github.run_id }}
+          path: validation-output
+          if-no-files-found: warn
+          retention-days: 90

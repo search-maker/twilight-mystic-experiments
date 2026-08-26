@@ -67,7 +67,7 @@ def build():
     assert total==2_040_000_000
     manifest={
       'schemaVersion':1,'manifestId':'level-b-zenith-expansion-acquisition-v1','manifestSha256':None,
-      'status':'FROZEN_ONE_SHOT_ACQUISITION_PR_OPENING_AUTHORIZED_BY_USER_DIRECTIVE',
+      'status':'FROZEN_ONE_SHOT_ACQUISITION_PACKAGE_NO_EXECUTION_WITHOUT_SEPARATE_DISPATCH_PR',
       'executionKey':'level-b-zenith-expansion-acquisition-v1:scientific:1',
       'trainingOnly':True,'scientificExecution':True,'successDoesNotAuthorizeProduction':True,
       'successDoesNotAuthorizeSupportExpansion':True,'sourceModelCanonicalSha256':'c4902eb3c2ba67b12dc4ef2b9cefb67c5963a6abc104708a73b2aab5dd0163b9',

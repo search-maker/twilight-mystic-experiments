@@ -1,0 +1,185 @@
+name: AOPS v2 OPAC build-route inspection
+run-name: Inspect OPAC examples and generator assets without solver execution
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/aops-v2-opac-build-route-inspection.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-build-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aops-v2-opac-build-route
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Inspect OPAC example inputs, output metadata, and generator candidates only
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          LR="$CONDA_PREFIX/share/libRadtran"
+          BIN="$CONDA_PREFIX/bin"
+          test -d "$LR"
+          export LR BIN
+          mkdir -p opac-build-route-inspection/example-snapshot
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, os, re, shutil
+          from pathlib import Path
+
+          lr = Path(os.environ['LR']).resolve()
+          bindir = Path(os.environ['BIN']).resolve()
+          out = Path('opac-build-route-inspection')
+          snapshot = out / 'example-snapshot'
+          examples = lr / 'examples'
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          all_files = [p for p in lr.rglob('*') if p.is_file()]
+          text_hits = []
+          needle = re.compile(r'(aerosol_species_file|aerosol_species_library|size_distr\.cfg|refractive_indices|AER_OPAC|OPAC)', re.I)
+          for p in all_files:
+              if p.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = p.read_text(errors='strict')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              matched = [line.rstrip() for line in text.splitlines() if needle.search(line)]
+              if matched:
+                  text_hits.append({
+                      'path': p.relative_to(lr).as_posix(),
+                      'sha256': sha256(p),
+                      'matchingLines': matched[:200],
+                  })
+
+          opac_inputs = sorted(
+              p for p in examples.rglob('*')
+              if p.is_file() and 'OPAC' in p.name.upper() and p.suffix.lower() in ('.inp', '.in')
+          )
+          opac_outputs = sorted(
+              p for p in examples.rglob('*')
+              if p.is_file() and re.fullmatch(r'UVSPEC_OPTICAL_PROPERTIES_AER_OPAC[0-9]+\.OUT\.nc', p.name, re.I)
+          )
+
+          copied = []
+          for p in [*opac_inputs, *opac_outputs]:
+              rel = p.relative_to(lr)
+              dst = snapshot / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(p, dst)
+              if sha256(dst) != sha256(p):
+                  raise SystemExit(f'example snapshot hash mismatch: {rel}')
+              copied.append({
+                  'path': rel.as_posix(),
+                  'sizeBytes': p.stat().st_size,
+                  'sha256': sha256(p),
+              })
+
+          nc_meta = []
+          try:
+              import netCDF4
+          except Exception as exc:
+              netCDF4 = None
+              import_error = repr(exc)
+          else:
+              import_error = None
+          if netCDF4 is not None:
+              for p in opac_outputs:
+                  with netCDF4.Dataset(p, 'r') as ds:
+                      nc_meta.append({
+                          'path': p.relative_to(lr).as_posix(),
+                          'sha256': sha256(p),
+                          'dimensions': {name: len(dim) for name, dim in ds.dimensions.items()},
+                          'variables': {
+                              name: {
+                                  'dimensions': list(var.dimensions),
+                                  'shape': list(var.shape),
+                                  'dtype': str(var.dtype),
+                              }
+                              for name, var in ds.variables.items()
+                          },
+                          'globalAttributes': {name: str(ds.getncattr(name)) for name in ds.ncattrs()},
+                      })
+
+          candidates = []
+          for root in (lr, bindir):
+              if not root.exists():
+                  continue
+              for p in root.rglob('*'):
+                  if not p.is_file():
+                      continue
+                  low = p.name.lower()
+                  if any(token in low for token in ('opac', 'mie', 'aerosol')):
+                      try:
+                          rel = p.relative_to(lr).as_posix() if lr in p.parents else p.relative_to(bindir).as_posix()
+                      except ValueError:
+                          rel = str(p)
+                      candidates.append({
+                          'root': 'share-libRadtran' if lr in p.parents else 'bin',
+                          'path': rel,
+                          'sizeBytes': p.stat().st_size,
+                          'sha256': sha256(p),
+                      })
+
+          mie = bindir / 'mie'
+          result = {
+              'schemaVersion': 1,
+              'stageId': 'aops-v2-opac-build-route-inspection',
+              'status': 'OPAC_EXAMPLE_OUTPUTS_AND_INPUT_SEARCH_COMPLETED',
+              'runtimePackageSpec': 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'opacExampleInputCount': len(opac_inputs),
+              'opacExampleInputPaths': [p.relative_to(lr).as_posix() for p in opac_inputs],
+              'opacExampleOutputCount': len(opac_outputs),
+              'opacExampleOutputPaths': [p.relative_to(lr).as_posix() for p in opac_outputs],
+              'exampleSnapshotFiles': copied,
+              'netcdfMetadata': nc_meta,
+              'netcdfPythonImportError': import_error,
+              'textSearchHits': text_hits,
+              'generatorOrOpticsCandidateFiles': sorted(candidates, key=lambda x: (x['root'], x['path'])),
+              'mieExecutablePresent': mie.is_file(),
+              'mieExecutableSha256': sha256(mie) if mie.is_file() else None,
+              'scientificExecutionPerformed': False,
+              'solverExecutionPerformed': False,
+              'uvspecInvoked': False,
+              'mieInvoked': False,
+              'scientificOrdinalAllocated': False,
+              'scientificSeedAllocated': False,
+          }
+          (out / 'opac-build-route-inspection.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          print(json.dumps({
+              'status': result['status'],
+              'inputs': len(opac_inputs),
+              'outputs': len(opac_outputs),
+              'textHitFiles': len(text_hits),
+              'candidateFiles': len(candidates),
+              'mieExecutablePresent': result['mieExecutablePresent'],
+              'netcdfMetadataCount': len(nc_meta),
+          }, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aops-v2-opac-build-route-inspection
+          path: opac-build-route-inspection
+          if-no-files-found: error
+          retention-days: 90

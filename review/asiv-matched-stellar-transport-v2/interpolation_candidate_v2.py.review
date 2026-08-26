@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Review-only matched-stellar v2 interpolation candidate.
+
+This module performs NO solver execution and has NO subprocess/network surface.
+It reuses the already-computed 27 x 5 x 5 optical-depth training LUT per
+non-native aerosol family and changes exactly one numerical rule from v1:
+
+- v1: piecewise linear interpolation in csc(target altitude)
+- v2: shape-preserving PCHIP interpolation in csc(target altitude)
+
+Observer elevation and AOD550 remain piecewise linear, and direct optical depth
+remains the interpolated spectral quantity. The PCHIP implementation below is
+explicit Fritsch-Butland weighted-harmonic interior slopes plus the standard
+one-sided endpoint limiter used by scipy.interpolate.PchipInterpolator.
+"""
+from __future__ import annotations
+
+import math
+from typing import Any
+
+NON_NATIVE_FAMILIES = (
+    "opac-continental-average",
+    "opac-maritime-clean",
+    "opac-desert",
+    "opac-desert-spheroids",
+)
+
+ALTITUDE_KNOTS = (
+    5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    17.5, 20, 22.5, 25, 27.5, 30,
+    35, 40, 45, 50, 55, 60, 65, 70, 75, 80,
+)
+ELEVATION_KNOTS_M = (0, 500, 1250, 2000, 2500)
+AOD_KNOTS = (0.05, 0.10, 0.20, 0.30, 0.40)
+EXPECTED_WAVELENGTH_NM = tuple(range(380, 781))
+
+# New holdout positions are fixed before any v2 validation solver run.
+# They reuse the broad interval coverage of v1 but place every point at the
+# exact 3/8 fraction of its selected training interval. This is a generic,
+# deterministic rule and none of these coordinates appeared in v1 validation.
+VALIDATION_ALTITUDE_INTERVAL_INDICES = (0, 2, 4, 7, 9, 11, 13, 15, 17, 19, 21, 24)
+VALIDATION_FRACTION = 3.0 / 8.0
+VALIDATION_ALTITUDE_DEG = tuple(
+    float(ALTITUDE_KNOTS[i]) + VALIDATION_FRACTION * (float(ALTITUDE_KNOTS[i + 1]) - float(ALTITUDE_KNOTS[i]))
+    for i in VALIDATION_ALTITUDE_INTERVAL_INDICES
+)
+VALIDATION_ELEVATION_M = tuple(
+    float(ELEVATION_KNOTS_M[i]) + VALIDATION_FRACTION * (float(ELEVATION_KNOTS_M[i + 1]) - float(ELEVATION_KNOTS_M[i]))
+    for i in range(len(ELEVATION_KNOTS_M) - 1)
+)
+VALIDATION_AOD550 = tuple(
+    float(AOD_KNOTS[i]) + VALIDATION_FRACTION * (float(AOD_KNOTS[i + 1]) - float(AOD_KNOTS[i]))
+    for i in range(len(AOD_KNOTS) - 1)
+)
+
+OLD_V1_VALIDATION_ALTITUDE_DEG = (
+    5.666667, 7.666667, 9.666667, 12.666667, 14.666667, 19.166667,
+    24.166667, 29.166667, 38.333333, 48.333333, 58.333333, 73.333333,
+)
+OLD_V1_VALIDATION_ELEVATION_M = (333.333333, 875, 1625, 2291.666667)
+OLD_V1_VALIDATION_AOD550 = (0.083333333, 0.166666667, 0.266666667, 0.366666667)
+
+
+class V2InterpolationRefusal(RuntimeError):
+    pass
+
+
+def _finite(name: str, value: object) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise V2InterpolationRefusal(f"{name} must be finite")
+    return number
+
+
+def csc_altitude(altitude_deg: float) -> float:
+    altitude = _finite("targetAltitudeDeg", altitude_deg)
+    mu = math.sin(math.radians(altitude))
+    if not mu > 0:
+        raise V2InterpolationRefusal("target altitude must be above horizon")
+    return 1.0 / mu
+
+
+def _bracket(axis: tuple[float, ...] | list[float], value: float) -> tuple[int, int, float]:
+    values = [float(v) for v in axis]
+    q = _finite("interpolation coordinate", value)
+    if q < values[0] or q > values[-1]:
+        raise V2InterpolationRefusal("interpolation coordinate outside LUT support")
+    if q == values[-1]:
+        return len(values) - 2, len(values) - 1, 1.0
+    lo, hi = 0, len(values) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if values[mid] <= q:
+            lo = mid
+        else:
+            hi = mid
+    span = values[hi] - values[lo]
+    return lo, hi, 0.0 if span == 0 else (q - values[lo]) / span
+
+
+def _runtime_case_index(n_elevation: int, n_aod: int, ai: int, ei: int, oi: int) -> int:
+    return ((ai * n_elevation) + ei) * n_aod + oi
+
+
+def _sign(value: float) -> int:
+    return 1 if value > 0 else (-1 if value < 0 else 0)
+
+
+def _pchip_edge_slope(h0: float, h1: float, d0: float, d1: float) -> float:
+    slope = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+    if _sign(slope) != _sign(d0):
+        return 0.0
+    if _sign(d0) != _sign(d1) and abs(slope) > 3.0 * abs(d0):
+        return 3.0 * d0
+    return slope
+
+
+def pchip_slopes(x: list[float], y: list[float]) -> list[float]:
+    """Return shape-preserving PCHIP first derivatives at every knot."""
+    if len(x) != len(y) or len(x) < 2:
+        raise V2InterpolationRefusal("PCHIP requires equal x/y arrays with at least two knots")
+    if any(not math.isfinite(float(v)) for v in (*x, *y)):
+        raise V2InterpolationRefusal("PCHIP input must be finite")
+    if any(float(x[i + 1]) <= float(x[i]) for i in range(len(x) - 1)):
+        raise V2InterpolationRefusal("PCHIP x coordinates must be strictly increasing")
+
+    h = [float(x[i + 1]) - float(x[i]) for i in range(len(x) - 1)]
+    delta = [(float(y[i + 1]) - float(y[i])) / h[i] for i in range(len(h))]
+    if len(x) == 2:
+        return [delta[0], delta[0]]
+
+    slopes = [0.0] * len(x)
+    slopes[0] = _pchip_edge_slope(h[0], h[1], delta[0], delta[1])
+    slopes[-1] = _pchip_edge_slope(h[-1], h[-2], delta[-1], delta[-2])
+
+    for k in range(1, len(x) - 1):
+        d0, d1 = delta[k - 1], delta[k]
+        if d0 == 0.0 or d1 == 0.0 or _sign(d0) != _sign(d1):
+            slopes[k] = 0.0
+            continue
+        w1 = 2.0 * h[k] + h[k - 1]
+        w2 = h[k] + 2.0 * h[k - 1]
+        slopes[k] = (w1 + w2) / (w1 / d0 + w2 / d1)
+    return slopes
+
+
+def pchip_interpolate(x: list[float], y: list[float], query: float) -> float:
+    q = _finite("PCHIP query", query)
+    if q < x[0] or q > x[-1]:
+        raise V2InterpolationRefusal("PCHIP query outside support")
+    if q == x[-1]:
+        return float(y[-1])
+    lo, hi, t = _bracket(x, q)
+    slopes = pchip_slopes(x, y)
+    h = float(x[hi]) - float(x[lo])
+    t2, t3 = t * t, t * t * t
+    h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+    h10 = t3 - 2.0 * t2 + t
+    h01 = -2.0 * t3 + 3.0 * t2
+    h11 = t3 - t2
+    return (
+        h00 * float(y[lo])
+        + h10 * h * slopes[lo]
+        + h01 * float(y[hi])
+        + h11 * h * slopes[hi]
+    )
+
+
+def validate_runtime_shape(runtime: dict[str, Any]) -> None:
+    axes = runtime.get("axes") or {}
+    if tuple(float(v) for v in axes.get("targetAltitudeDeg", ())) != tuple(float(v) for v in ALTITUDE_KNOTS):
+        raise V2InterpolationRefusal("target-altitude training axis drift")
+    if tuple(float(v) for v in axes.get("observerElevationM", ())) != tuple(float(v) for v in ELEVATION_KNOTS_M):
+        raise V2InterpolationRefusal("observer-elevation training axis drift")
+    if tuple(float(v) for v in axes.get("aod550", ())) != tuple(float(v) for v in AOD_KNOTS):
+        raise V2InterpolationRefusal("AOD training axis drift")
+    if tuple(int(v) for v in runtime.get("wavelengthNm", ())) != EXPECTED_WAVELENGTH_NM:
+        raise V2InterpolationRefusal("wavelength grid drift")
+    spectra = runtime.get("directOpticalDepth")
+    if not isinstance(spectra, list) or len(spectra) != len(ALTITUDE_KNOTS) * len(ELEVATION_KNOTS_M) * len(AOD_KNOTS):
+        raise V2InterpolationRefusal("training LUT cardinality drift")
+    if any(not isinstance(row, list) or len(row) != 401 for row in spectra):
+        raise V2InterpolationRefusal("training LUT spectral shape drift")
+
+
+def interpolate_optical_depth_v2(
+    runtime: dict[str, Any], *, target_altitude_deg: float, observer_elevation_m: float, aod550: float
+) -> list[float]:
+    """Linear AOD + linear elevation + PCHIP in csc(h), all in optical depth."""
+    validate_runtime_shape(runtime)
+    hq = _finite("targetAltitudeDeg", target_altitude_deg)
+    eq = _finite("observerElevationM", observer_elevation_m)
+    oq = _finite("aod550", aod550)
+    if not ALTITUDE_KNOTS[0] <= hq <= ALTITUDE_KNOTS[-1]:
+        raise V2InterpolationRefusal("target altitude outside support")
+
+    eb = _bracket(list(ELEVATION_KNOTS_M), eq)
+    ob = _bracket(list(AOD_KNOTS), oq)
+    spectra = runtime["directOpticalDepth"]
+    n_e, n_o = len(ELEVATION_KNOTS_M), len(AOD_KNOTS)
+
+    # csc(h) decreases with altitude; sort into increasing PCHIP x order once.
+    x_desc = [csc_altitude(h) for h in ALTITUDE_KNOTS]
+    order = sorted(range(len(x_desc)), key=lambda i: x_desc[i])
+    x = [x_desc[i] for i in order]
+    qx = csc_altitude(hq)
+
+    result: list[float] = []
+    for w in range(401):
+        altitude_values: list[float] = []
+        for ai in range(len(ALTITUDE_KNOTS)):
+            def c(ei: int, oi: int) -> float:
+                idx = _runtime_case_index(n_e, n_o, ai, ei, oi)
+                return float(spectra[idx][w])
+
+            c00 = c(eb[0], ob[0])
+            c01 = c(eb[0], ob[1])
+            c10 = c(eb[1], ob[0])
+            c11 = c(eb[1], ob[1])
+            lower_e = c00 + (c01 - c00) * ob[2]
+            upper_e = c10 + (c11 - c10) * ob[2]
+            altitude_values.append(lower_e + (upper_e - lower_e) * eb[2])
+
+        y = [altitude_values[i] for i in order]
+        value = pchip_interpolate(x, y, qx)
+        if not math.isfinite(value) or value < 0:
+            raise V2InterpolationRefusal("v2 interpolated optical depth is invalid")
+        result.append(value)
+    return result
+
+
+def build_new_validation_manifest() -> dict[str, Any]:
+    cases = []
+    for family in NON_NATIVE_FAMILIES:
+        for altitude in VALIDATION_ALTITUDE_DEG:
+            for elevation in VALIDATION_ELEVATION_M:
+                for aod in VALIDATION_AOD550:
+                    cases.append({
+                        "family": family,
+                        "targetAltitudeDeg": altitude,
+                        "observerElevationM": elevation,
+                        "aod550": aod,
+                        "solverExecutionAuthorized": False,
+                    })
+    if len(cases) != 768:
+        raise V2InterpolationRefusal(f"new validation universe must contain 768 cases; got {len(cases)}")
+    return {
+        "schemaVersion": 1,
+        "stageId": "asiv-matched-stellar-transport-v2-fresh-validation-manifest",
+        "status": "FROZEN_UNEXECUTED_NEW_VALIDATION_HOLDOUT",
+        "selectionRule": "selected-v1-training-intervals-at-exact-three-eighths-fraction",
+        "families": list(NON_NATIVE_FAMILIES),
+        "targetAltitudeDeg": list(VALIDATION_ALTITUDE_DEG),
+        "observerElevationM": list(VALIDATION_ELEVATION_M),
+        "aod550": list(VALIDATION_AOD550),
+        "caseCount": len(cases),
+        "cases": cases,
+        "solverExecutionAuthorized": False,
+        "resultOpeningAuthorized": False,
+        "pandoraHoldoutAccessAllowed": False,
+    }
+
+
+if __name__ == "__main__":
+    # Review-only metadata; never a solver path.
+    manifest = build_new_validation_manifest()
+    print({
+        "status": "REVIEW_ONLY_V2_INTERPOLATION_NOT_EXECUTED",
+        "validationCaseCount": manifest["caseCount"],
+        "trainingSolverCasesRequired": 0,
+    })

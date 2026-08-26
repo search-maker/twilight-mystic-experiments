@@ -1,0 +1,171 @@
+name: ASIV matched stellar v2 authorization review
+
+on:
+  pull_request:
+    paths:
+      - 'review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  review-authorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact authorization proposal head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+
+      - name: Verify exact one-file Draft v2 authorization and frozen control gates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          AUTH=review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json
+          HELPER=review/asiv-matched-stellar-transport-v1/recovery-v4/read_only_gh_api_retry_v4.py
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_DRAFT" = true
+          test "$PR_BASE_REF" = main
+          test "$PR_HEAD_REF" = authorization/asiv-matched-stellar-transport-v2-fresh-validation
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$AUTH"
+          test -f "$AUTH"
+
+          python - <<'PY'
+          import importlib.machinery,importlib.util,json,subprocess
+          from pathlib import Path
+          auth=json.load(open('review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json'))
+          p=Path('review/asiv-matched-stellar-transport-v2/validation_execution_v2.py.review')
+          loader=importlib.machinery.SourceFileLoader('v2exec',str(p)); spec=importlib.util.spec_from_loader(loader.name,loader); m=importlib.util.module_from_spec(spec); loader.exec_module(m)
+          m.validate_v2_authorization(auth)
+          if auth.get('authorizationBranch')!='authorization/asiv-matched-stellar-transport-v2-fresh-validation': raise SystemExit('v2 authorization branch drift')
+          if auth.get('dispatchBranch')!='dispatch/asiv-matched-stellar-transport-v2-fresh-validation': raise SystemExit('v2 dispatch branch drift')
+          if auth.get('exactAuthorizationParentCommit')!=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip(): raise SystemExit('v2 authorization parent drift')
+          if auth.get('consumed') is not False or auth.get('dispatchAuthorized') is not False or auth.get('automaticDispatch') is not False: raise SystemExit('v2 one-shot control state drift')
+          bindings=auth.get('v2ControlBindings') or {}
+          paths={
+              'scienceWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-v2-fresh-validation.yml',
+              'authorizationReviewWorkflowActiveGitBlobSha1':'.github/workflows/asiv-matched-stellar-v2-authorization-review.yml',
+              'methodContractGitBlobSha1':'review/asiv-matched-stellar-transport-v2/METHOD_AND_FRESH_VALIDATION_CONTRACT.review.json',
+              'interpolationCandidateGitBlobSha1':'review/asiv-matched-stellar-transport-v2/interpolation_candidate_v2.py.review',
+              'validationExecutionGitBlobSha1':'review/asiv-matched-stellar-transport-v2/validation_execution_v2.py.review',
+              'freshValidatorGitBlobSha1':'review/asiv-matched-stellar-transport-v2/validate_fresh_v2.py.review',
+              'validationExecutionContractGitBlobSha1':'review/asiv-matched-stellar-transport-v2/VALIDATION_EXECUTION_CONTRACT.review.json',
+          }
+          for key,path in paths.items():
+              observed=subprocess.check_output(['git','hash-object',path],text=True).strip()
+              if bindings.get(key)!=observed: raise SystemExit(f'v2 authorization control binding drift: {key}')
+          candidate_pairs={
+              '.github/workflows/asiv-matched-stellar-v2-fresh-validation.yml':'review/asiv-matched-stellar-transport-v2/science-workflow-v2.yml.review',
+              '.github/workflows/asiv-matched-stellar-v2-authorization-review.yml':'review/asiv-matched-stellar-transport-v2/authorization-review-workflow-v2.yml.review',
+          }
+          for active,candidate in candidate_pairs.items():
+              a=subprocess.check_output(['git','hash-object',active],text=True).strip()
+              c=subprocess.check_output(['git','hash-object',candidate],text=True).strip()
+              if a!=c: raise SystemExit(f'active/candidate v2 workflow byte drift: {active}')
+          contract=json.load(open('review/asiv-matched-stellar-transport-v2/METHOD_AND_FRESH_VALIDATION_CONTRACT.review.json'))
+          if contract['freshValidation']['atmosphericCaseCount']!=768 or contract['freshValidation']['johnsonVComparisonCount']!=2304: raise SystemExit('v2 frozen fresh validation universe drift')
+          gates=contract['acceptanceGates']
+          if gates['perFamilyMaxAbsDeltaAvMag']!=0.025 or gates['perFamilyRmsDeltaAvMag']!=0.010 or gates['everyFamilyMustPassSeparately'] is not True: raise SystemExit('v2 frozen gate drift')
+          if contract['trainingReuse']['newTrainingSolverExecutionRequired'] is not False or contract['trainingReuse']['trainingSpectrumCount']!=2700: raise SystemExit('v2 training reuse boundary drift')
+          PY
+
+          python "$HELPER" --output training-artifact.json -- "repos/${GITHUB_REPOSITORY}/actions/artifacts/9580080568"
+          python - <<'PY'
+          import json
+          a=json.load(open('training-artifact.json'))
+          if int(a.get('id') or 0)!=9580080568: raise SystemExit('old training artifact id drift')
+          if a.get('name')!='asiv-matched-stellar-final-validation-recovery-v5': raise SystemExit('old training artifact name drift')
+          if a.get('digest')!='sha256:bccc9f58a649202c395842df298ace1c4f609badc0d0530e40ba10d8ddc5300f': raise SystemExit('old training artifact digest drift')
+          run=a.get('workflow_run') or {}
+          if int(run.get('id') or 0)!=32889328517 or run.get('head_sha')!='9329c34428438c8796c3aaa652b4ce96d0997f8f': raise SystemExit('old training source run/head drift')
+          if a.get('expired') is not False: raise SystemExit('old training artifact expired')
+          PY
+
+      - name: Construct v2 authorization review receipt without solver or dispatch
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p authorization-review-v2
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          auth_path=Path('review/asiv-matched-stellar-transport-v2/authorization-fresh-validation-v2.json')
+          raw=auth_path.read_bytes(); auth=json.loads(raw)
+          def git_blob(data): return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          def blob(path): return subprocess.check_output(['git','hash-object',path],text=True).strip()
+          receipt={
+              'schemaVersion':1,
+              'status':'V2_AUTHORIZATION_REVIEW_PASS_NO_DISPATCH',
+              'authorizationHeadSha':os.environ['PR_HEAD_SHA'],
+              'authorizationParentSha':subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip(),
+              'authorizationBranch':'authorization/asiv-matched-stellar-transport-v2-fresh-validation',
+              'prNumber':int(os.environ['PR_NUMBER']),
+              'authorizationRawSha256':hashlib.sha256(raw).hexdigest(),
+              'authorizationGitBlobSha1':git_blob(raw),
+              'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+              'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'methodVersion':2,
+              'validationCaseCount':768,
+              'validationShardCount':24,
+              'reusedTrainingSpectrumCount':2700,
+              'newTrainingSolverSpectrumCount':0,
+              'freshValidationJohnsonVComparisonCount':2304,
+              'perFamilyMaxAbsDeltaAvMagGate':0.025,
+              'perFamilyRmsDeltaAvMagGate':0.010,
+              'strictTransportGateVerified':True,
+              'freshV2ControlGateVerified':True,
+              'oldTrainingArtifactVerified':True,
+              'oldTrainingArtifactId':9580080568,
+              'oldTrainingArtifactDigest':'sha256:bccc9f58a649202c395842df298ace1c4f609badc0d0530e40ba10d8ddc5300f',
+              'oldTrainingSourceRunId':32889328517,
+              'scienceWorkflowGitBlobSha1':blob('.github/workflows/asiv-matched-stellar-v2-fresh-validation.yml'),
+              'authorizationReviewWorkflowGitBlobSha1':blob('.github/workflows/asiv-matched-stellar-v2-authorization-review.yml'),
+              'validationExecutionGitBlobSha1':blob('review/asiv-matched-stellar-transport-v2/validation_execution_v2.py.review'),
+              'freshValidatorGitBlobSha1':blob('review/asiv-matched-stellar-transport-v2/validate_fresh_v2.py.review'),
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'dispatchPerformed':False,
+              'pandoraHoldoutOpened':False,
+              'starsvisibilityMutationAuthorized':False,
+              'productionAuthorized':False,
+          }
+          Path('authorization-review-v2/authorization-review-v2.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          PY
+
+      - name: Upload v2 authorization review receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: asiv-matched-stellar-v2-authorization-review
+          path: authorization-review-v2/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

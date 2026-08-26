@@ -28,6 +28,11 @@ EXPECTED_REPAIR_MERGED_MAIN = "13fe2e18a7754b893eba31328f90b179fc018499"
 EXPECTED_REPAIR_VALIDATION_RUN = 33005827752
 EXPECTED_REPAIR_VALIDATION_ARTIFACT = 9620490500
 EXPECTED_REPAIR_VALIDATION_DIGEST = "sha256:6703cdd7854923948dd4d30fd270b655b8bc4acdb8168c73742f5b69d2c46654"
+EXPECTED_DATA_PATHS = {
+    "solarFlux": {"root": "libRadtranData", "path": "solar_flux/atlas_plus_modtran"},
+    "wavelengthGrid": {"root": "repository", "path": "experiments/reference-vroom-v1/wavelength-grid.dat"},
+    "atmosphere": {"root": "libRadtranData", "path": "atmmod/afglus.dat"},
+}
 
 
 class SmokeAdapterError(RuntimeError):
@@ -150,6 +155,9 @@ def validate_consumed_v1(root: Path, smoke: dict[str, Any]) -> tuple[dict[str, A
         raise SmokeAdapterError("source AOD550 changed")
     if (event.get("threeStarSemantics") or {}).get("fieldFactorBaseline") != 3.14:
         raise SmokeAdapterError("source F=3.14 changed")
+    frozen = source.get("frozenInputs") or {}
+    if frozen.get("dataPaths") != EXPECTED_DATA_PATHS:
+        raise SmokeAdapterError(f"source frozen data paths changed: {frozen.get('dataPaths')}")
     expected_auth = {
         "authorized": False,
         "scientificExecution": False,
@@ -182,7 +190,9 @@ def physical_projection(inputs: dict[str, Any]) -> dict[str, Any]:
             "mcSpherical",
             "alisSpectralImportanceSamplingNm",
             "albedo",
-            "dataPaths",
+            "solarFlux",
+            "wavelengthGrid",
+            "atmosphere",
             "method",
         )
     }

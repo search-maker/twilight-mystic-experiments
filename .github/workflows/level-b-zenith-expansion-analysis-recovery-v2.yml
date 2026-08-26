@@ -1,0 +1,85 @@
+name: Level-B zenith acquisition analysis recovery v2
+run-name: Zenith acquisition empirical-SE recovery | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    paths:
+      - 'review/level-b-zenith-expansion-analysis-recovery-v2/dispatch.json'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-analysis:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify analysis-only dispatch
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only HEAD^ HEAD)" = "review/level-b-zenith-expansion-analysis-recovery-v2/dispatch.json"
+          python - <<'PY'
+          import json
+          d=json.load(open('review/level-b-zenith-expansion-analysis-recovery-v2/dispatch.json'))
+          assert d=={
+            'schemaVersion':2,
+            'sourceRunId':33021339197,
+            'sourceDispatchSha':'366be0cfd0f506ed57646ad4c66631194f3fc6a0',
+            'analysisMethod':'INDEPENDENT_BLOCK_EMPIRICAL_SE_V2',
+            'scientificSolverExecutionAuthorized':False,
+            'holdoutExecutionAuthorized':False,
+            'supportExpansionAuthorized':False,
+            'productionAuthorized':False
+          }
+          PY
+          if command -v uvspec >/dev/null 2>&1; then echo 'uvspec unexpectedly present; refusing analysis-only recovery'; exit 1; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 33021339197
+          name: level-b-zenith-expansion-v1-frozen-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 33021339197
+          pattern: level-b-zenith-v1-case-*
+          path: all-case-artifacts
+          merge-multiple: false
+      - name: Recompute acquisition analysis from immutable artifacts only
+        run: |
+          set -euo pipefail
+          python experiments/level-b-zenith-expansion-acquisition-v1/analyze.py \
+            --results-root all-case-artifacts \
+            --manifest frozen/manifest.json \
+            --output recovery-output
+          python - <<'PY'
+          import json
+          s=json.load(open('recovery-output/summary.json'))
+          assert s['schemaVersion']==2
+          assert s['analysisMethod']=='INDEPENDENT_BLOCK_EMPIRICAL_SE_V2'
+          assert s['caseCount']==72 and s['geometryCount']==18
+          assert s['status']=='ACQUISITION_COMPLETE'
+          assert all(x['pass'] for x in s['zenithAzimuthInvarianceChecks'])
+          assert s['holdoutExecutionAuthorized'] is False
+          assert s['supportExpansionAuthorized'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-zenith-expansion-analysis-recovery-v2
+          path: recovery-output
+          if-no-files-found: error
+          retention-days: 90

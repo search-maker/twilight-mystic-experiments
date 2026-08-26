@@ -5,11 +5,13 @@ import { chromium } from 'playwright';
 const CASES = {
   'tishrei-transient-overlap': {
     civilDate: '2025-09-23',
+    sunsetMs: 1758641660932,
     equilibriumEventTimeMs: 1758642904994.5,
     equilibriumKeys: ['HR 6134', 'HR 6556', 'HR 7796'],
   },
   'tammuz-transient-overlap': {
     civilDate: '2026-06-16',
+    sunsetMs: 1781628380546,
     equilibriumEventTimeMs: 1781629701483.5,
     equilibriumKeys: ['HR 5191', 'HR 4905', 'HR 3982'],
   },
@@ -21,6 +23,7 @@ if (!frozen) throw new Error(`unknown CASE_LABEL ${label}`);
 const spec = Object.freeze({
   label,
   civilDate: frozen.civilDate,
+  sunsetMs: frozen.sunsetMs,
   engineMode: 'level-b-v3-crumey-blackwell-transient-experimental',
   latitudeDeg: 31.778,
   longitudeDeg: 35.235,
@@ -62,6 +65,7 @@ try {
     if (typeof eval('ensureBuiltInCatalogReady') === 'function') await eval('ensureBuiltInCatalogReady()');
 
     const catalog = globalThis.__STARS_BUILT_IN_STARS__;
+    if (!Array.isArray(catalog) || catalog.length !== 9090) throw new Error(`catalog count ${catalog?.length}`);
     const canRise = eval('canGeometricallyRise');
     const rows = catalog.filter(s => canRise(s, spec.latitudeDeg)).map(s => ({ ...s }));
     const catalogId = row => {
@@ -72,8 +76,8 @@ try {
       return row?.name ?? row?.id ?? 'target';
     };
 
-    const sunsetMs = Number(eval('getSunsetTimeForDate')(spec.civilDate, spec.latitudeDeg, spec.longitudeDeg));
-    if (!Number.isFinite(sunsetMs)) throw new Error(`invalid sunset ${sunsetMs}`);
+    const sunsetMs = Number(spec.sunsetMs);
+    if (!Number.isFinite(sunsetMs)) throw new Error(`invalid frozen sunset ${sunsetMs}`);
     const hooks = eval('__levelBSitewideGeometryHooks')({
       latitudeDeg: spec.latitudeDeg,
       longitudeDeg: spec.longitudeDeg,

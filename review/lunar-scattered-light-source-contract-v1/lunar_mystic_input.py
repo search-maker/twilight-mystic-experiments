@@ -29,12 +29,12 @@ def _elevation_helper():
 def write_lunar_source_file(path: Path, wavelengths_nm: Iterable[float], lunar_toa_w_m2_nm: Iterable[float]) -> dict:
     wl = [float(x) for x in wavelengths_nm]
     ir = [float(x) for x in lunar_toa_w_m2_nm]
-    if not wl or len(wl) != len(ir):
-        raise LunarMysticInputError('lunar source arrays must have same nonzero length')
+    if len(wl) < 2 or len(wl) != len(ir):
+        raise LunarMysticInputError('lunar source arrays must have same length with at least two nodes')
     if wl != sorted(wl) or len(set(wl)) != len(wl):
         raise LunarMysticInputError('lunar source wavelength grid must be strictly increasing')
-    if wl[0] < 380.0 or wl[-1] > 780.0:
-        raise LunarMysticInputError('lunar MYSTIC source must stay inside 380..780 nm')
+    if wl[0] != 380.0 or wl[-1] != 780.0:
+        raise LunarMysticInputError('lunar MYSTIC source must explicitly cover exact 380 and 780 nm endpoints')
     if any(not math.isfinite(x) or x < 0 for x in ir):
         raise LunarMysticInputError('lunar source irradiance must be finite and nonnegative')
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +47,7 @@ def write_lunar_source_file(path: Path, wavelengths_nm: Iterable[float], lunar_t
         'nodeCount': len(wl),
         'startNm': wl[0],
         'stopNm': wl[-1],
+        'exactRequestedWavelengthCoverage': True,
         'dayOfYearDistanceScalingApplied': False,
     }
 

@@ -124,7 +124,14 @@ def validate_recovery(root: Path, paths: dict[str, Path]) -> None:
     }
     stale_consumed = {k: (consumed.get(k), v) for k, v in required_consumed.items() if consumed.get(k) != v}
     note = str(consumed.get("note", ""))
-    if stale_consumed or str(SOURCE_FAILED_RUN_ID) not in note or "zero syntax" not in note.lower() or "zero mystic" not in note.lower():
+    note_lower = note.lower()
+    if (
+        stale_consumed
+        or str(SOURCE_FAILED_RUN_ID) not in note
+        or "before duplicate-run audit, plan construction, syntax checks" not in note_lower
+        or "mystic solver execution" not in note_lower
+        or "zero scientific cases and zero configured photons executed" not in note_lower
+    ):
         raise ProposalError(f"scientific authorization-1 is not exact consumed pre-solver archive: {stale_consumed}")
 
     smoke = load(paths["smokeRecovery2Gate"])

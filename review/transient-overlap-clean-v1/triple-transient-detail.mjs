@@ -39,6 +39,7 @@ try {
   await page.waitForSelector('#visibilityEngineMode', { timeout: 120000 });
 
   const audit = await page.evaluate(async spec => {
+    if (typeof eval('ensureBuiltInCatalogReady') === 'function') await eval('ensureBuiltInCatalogReady()');
     const catalog = globalThis.__STARS_BUILT_IN_STARS__;
     if (!Array.isArray(catalog) || catalog.length !== 9090) throw new Error(`catalog count ${catalog?.length}`);
     const catalogId = row => {

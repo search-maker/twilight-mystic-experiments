@@ -6,6 +6,7 @@ on:
       - '.github/workflows/transient-overlap-clean-v1.yml'
       - 'review/transient-overlap-clean-v1/run.mjs'
       - 'review/transient-overlap-clean-v1/sunset-depth-audit.mjs'
+      - 'review/transient-overlap-clean-v1/ui-transformed-transient.mjs'
 
 permissions:
   contents: read
@@ -65,10 +66,11 @@ jobs:
       - name: Install Chromium
         working-directory: app
         run: npx playwright install --with-deps chromium
-      - name: Run post-fix transient overlap and sunset-depth diagnostics
+      - name: Run manual overlap, transformed-UI, and sunset-depth diagnostics
         run: |
           set -euo pipefail
           cp review/transient-overlap-clean-v1/run.mjs app/transient-overlap-audit.mjs
+          cp review/transient-overlap-clean-v1/ui-transformed-transient.mjs app/ui-transformed-transient.mjs
           cp review/transient-overlap-clean-v1/sunset-depth-audit.mjs app/sunset-depth-audit.mjs
           python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/transient-overlap-server.log" 2>&1 &
           SERVER_PID=$!
@@ -76,6 +78,7 @@ jobs:
           for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
           cd app
           node transient-overlap-audit.mjs
+          node ui-transformed-transient.mjs
           node sunset-depth-audit.mjs
       - name: Enforce removal of the old prehistory rejection
         shell: bash
@@ -85,21 +88,28 @@ jobs:
           import json, os
           from pathlib import Path
           label=os.environ['CASE_LABEL']
-          p=Path(os.environ['RUNNER_TEMP'])/'transient-overlap-audit'/f'{label}.json'
-          d=json.loads(p.read_text())
-          reasons=d['audit']['reasonCounts']
-          assert reasons.get('TRANSIENT_SUNSET_PREHISTORY_REJECTED',0)==0, reasons
-          assert reasons.get('APPLICATION_SUNSET_SOLAR_DEPRESSION_REQUIRED_FOR_CONTINUOUS_ADAPTATION',0)==0, reasons
-          dep=d['audit']['applicationSunsetSunDepressionDeg']
-          assert 0.82 < dep < 0.85, dep
-          for row in d['audit']['equilibriumTripleTransient']:
+          root=Path(os.environ['RUNNER_TEMP'])
+          manual=json.loads((root/'transient-overlap-audit'/f'{label}.json').read_text())
+          ui=json.loads((root/'transient-ui-transformed'/f'{label}.json').read_text())
+          for name,d in [('manual',manual['audit']),('transformed-ui',ui['payload'])]:
+              reasons=d['reasonCounts']
+              assert reasons.get('TRANSIENT_SUNSET_PREHISTORY_REJECTED',0)==0, (name,reasons)
+              assert reasons.get('APPLICATION_SUNSET_SOLAR_DEPRESSION_REQUIRED_FOR_CONTINUOUS_ADAPTATION',0)==0, (name,reasons)
+              dep=d.get('applicationSunsetSunDepressionDeg',d.get('hooksSunDepressionAtSunsetDeg'))
+              assert 0.82 < dep < 0.85, (name,dep)
+          dep=manual['audit']['applicationSunsetSunDepressionDeg']
+          for row in manual['audit']['equilibriumTripleTransient']:
               if row.get('missing'): continue
               prov=row.get('transientAdaptationPrehistoryProvenance')
               if prov is not None:
                   assert abs(prov['applicationSunsetSunDepressionDeg']-dep)<1e-9
                   assert prov['levelBSkyEvaluatedBelowSupport'] is False
                   assert prov['mysticV3ExtrapolatedBelowSupport'] is False
-          print({'status':'PR111_POST_FIX_TRANSIENT_PREHISTORY_GATE_PASS','label':label,'sunsetDepressionDeg':dep,'reasonCounts':reasons})
+          assert ui['payload']['localRowCount'] < 9090, ui['payload']['localRowCount']
+          assert ui['payload']['transientResultCount'] > 1000
+          assert ui['payload']['directCatalogGlobalAfterFinally']=='deleted'
+          assert ui['payload']['catalogOnlyFlagAfterFinally']=='deleted'
+          print({'status':'PR111_POST_FIX_TRANSIENT_TRANSFORMED_UI_GATE_PASS','label':label,'sunsetDepressionDeg':dep,'manualReasons':manual['audit']['reasonCounts'],'uiReasons':ui['payload']['reasonCounts'],'uiThreeStar':ui['payload']['result']})
           PY
       - name: Upload overlap evidence
         if: always()
@@ -109,6 +119,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           path: ${{ runner.temp }}/transient-overlap-audit/${{ matrix.label }}.json
+      - name: Upload transformed-UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transient-post-fix-ui-${{ matrix.label }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/transient-ui-transformed/${{ matrix.label }}.json
       - name: Upload sunset-depth evidence
         if: always()
         uses: actions/upload-artifact@v4

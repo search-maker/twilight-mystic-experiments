@@ -119,7 +119,14 @@ def validate_prerequisites(args: argparse.Namespace) -> dict[str, Any]:
     }
     stale_consumed = {k:(consumed.get(k),v) for k,v in required_consumed.items() if consumed.get(k)!=v}
     note = str(consumed.get("note", ""))
-    if stale_consumed or str(SOURCE_FAILED_RUN_ID) not in note or "zero syntax" not in note.lower() or "zero mystic" not in note.lower():
+    note_lower = note.lower()
+    if (
+        stale_consumed
+        or str(SOURCE_FAILED_RUN_ID) not in note
+        or "before duplicate-run audit, plan construction, syntax checks" not in note_lower
+        or "mystic solver execution" not in note_lower
+        or "zero scientific cases and zero configured photons executed" not in note_lower
+    ):
         raise RecoveryRefusal("source-consumed", "authorization-1 is not exact consumed pre-solver archive", stale_consumed)
 
     if smoke.get("consumed") is not True or smoke.get("enabled") is not False or smoke.get("executionKey") != "jerusalem-tishrei-elevated-site-smoke-v2:infrastructure:3" or smoke.get("smokeOrdinal") != 3:

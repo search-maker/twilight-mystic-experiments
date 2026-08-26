@@ -1,17 +1,24 @@
 from __future__ import annotations
 import importlib.util
 import math
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / 'review' / 'lunar-scattered-light-source-contract-v1'
 
 def load_model():
-    spec = importlib.util.spec_from_file_location('rolo311g_lunar_source_contract_v1', ROOT / 'rolo311g.py')
+    name = 'rolo311g_lunar_source_contract_v1'
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'rolo311g.py')
     if spec is None or spec.loader is None:
         raise RuntimeError('cannot load ROLO source contract')
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 class LunarScatteredLightSourceContractV1Test(unittest.TestCase):

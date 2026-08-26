@@ -1,0 +1,193 @@
+name: Level-B zenith expansion acquisition v1
+run-name: Level-B zenith 80-90 acquisition v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/level-b-zenith-expansion-acquisition-v1/dispatch.json'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: level-b-zenith-expansion-acquisition-v1-scientific-1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/level-b-zenith-expansion-acquisition-v1
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      head: ${{ steps.guard.outputs.head }}
+      matrix: ${{ steps.guard.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - id: guard
+        name: Verify one-shot frozen acquisition identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "dispatch/level-b-zenith-expansion-acquisition-v1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$PKG/dispatch.json"
+          python - <<'PY'
+          import json
+          d=json.load(open('experiments/level-b-zenith-expansion-acquisition-v1/dispatch.json'))
+          assert d=={
+            'schemaVersion':1,
+            'executionKey':'level-b-zenith-expansion-acquisition-v1:scientific:1',
+            'authorized':True,
+            'attempt':1,
+            'manifestSha256':'21999d34b9c4e781ea8def7497f3195033dd06b66ddf670d811ebd73a466542e',
+            'holdoutDesignSha256':'2a4853910c4b3eac09bccb0995c92bb2427cae5eee1291663e47469517ffa05a',
+            'holdoutExecutionAuthorized':False,
+            'supportExpansionAuthorized':False,
+            'productionAuthorized':False
+          }
+          PY
+          python -m py_compile "$PKG/build_manifest.py" "$PKG/adapter.py" "$PKG/run_case.py" "$PKG/analyze.py" "$PKG/test_contract.py"
+          python "$PKG/build_manifest.py"
+          python "$PKG/test_contract.py"
+          python - <<'PY'
+          import json,os
+          p='experiments/level-b-zenith-expansion-acquisition-v1/manifest.json'
+          m=json.load(open(p))
+          assert m['executionKey']=='level-b-zenith-expansion-acquisition-v1:scientific:1'
+          assert m['geometryCount']==18 and m['caseCount']==72
+          assert m['configuredPhotonHistories']==2040000000
+          assert [c['seed'] for c in m['cases']]==list(range(2230000001,2230000073))
+          assert len({c['caseId'] for c in m['cases']})==72
+          assert m['closedBoundaries']['holdoutExecutionAuthorized'] is False
+          assert m['closedBoundaries']['supportExpansionAuthorizedByThisRun'] is False
+          matrix={'include':[{'case_id':c['caseId']} for c in m['cases']]}
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
+          PY
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: level-b-zenith-expansion-v1-frozen-manifest
+          path: |
+            ${{ env.PKG }}/manifest.json
+            ${{ env.PKG }}/holdout-design.review.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: level-b-zenith-expansion-v1-frozen-manifest
+          path: frozen
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: level-b-zenith-expansion-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact reviewed MYSTIC runtime
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock "$RUNTIME_LOCK" --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['uvspecHelpSha256']=='868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          assert r['runtimeLockRawSha256']=='3b5fbec964642b04c73a6423b3355dbcc4ba5e84f9614f6d74420491bacc20c5'
+          PY
+      - name: Execute exactly one zenith-acquisition MYSTIC case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/run_case.py" \
+            --manifest frozen/manifest.json \
+            --runtime-report runtime-report.json \
+            --adapter "$PKG/adapter.py" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$(command -v uvspec)" \
+            --output-root case-output \
+            --timeout-seconds 1800
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: level-b-zenith-v1-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-report.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  analysis:
+    needs: [preflight,cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          name: level-b-zenith-expansion-v1-frozen-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: level-b-zenith-v1-case-*
+          path: all-case-artifacts
+          merge-multiple: false
+      - name: Audit exact case universe and zenith azimuth invariance
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze.py" --results-root all-case-artifacts --manifest frozen/manifest.json --output analysis-output
+          cat analysis-output/summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: level-b-zenith-expansion-acquisition-v1-analysis
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90

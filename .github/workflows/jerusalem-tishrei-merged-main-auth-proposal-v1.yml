@@ -1,0 +1,92 @@
+name: Jerusalem Tishrei merged-main authorization proposal
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-tishrei-merged-main-auth-proposal-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proposal-only:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SCIENCE_MAIN_SHA: 4f4f1417691376fcef0ae4b32cdac9066cf1194c
+      APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
+    steps:
+      - name: Checkout temporary runner head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact merged scientific main read-only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SCIENCE_MAIN_SHA }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Checkout exact frozen starsvisibility application read-only
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Build hash-bound merged-main proposal only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SCIENCE_MAIN_SHA"
+          test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          test "$(python - <<'PY'
+          import json
+          print(str(json.load(open('source/experiments/jerusalem-tishrei-direct-mystic-v1/authorization.cross-geometry.json'))['authorized']).lower())
+          PY
+          )" = false
+          SOURCE_STATUS_BEFORE="$(git -C source status --porcelain)"
+          test -z "$SOURCE_STATUS_BEFORE"
+          python source/experiments/jerusalem-tishrei-direct-mystic-v1/authorization_proposal.py \
+            --repository-root source \
+            --application-root app \
+            --output proposal-output/authorization-proposal.json
+          test -z "$(git -C source status --porcelain)"
+          test -z "$(git -C app status --porcelain)"
+          python - <<'PY'
+          import json, os
+          p=json.load(open('proposal-output/authorization-proposal.json'))
+          a=p['proposedAuthorization']
+          assert p['status']=='PROPOSAL_ONLY_NOT_AUTHORIZATION'
+          assert p['executionAuthorizedByProposal'] is False
+          assert p['sourceCommit']==os.environ['SCIENCE_MAIN_SHA']
+          assert a['exactAuthorizationParentCommit']==os.environ['SCIENCE_MAIN_SHA']
+          assert a['exactAuthorizationCommit'] is None
+          assert a['authorized'] is True
+          assert a['scientificExecution'] is True
+          assert a['scientificDiagnostic'] is True
+          assert a['executionKey']=='jerusalem-tishrei-direct-mystic-v1:diagnostic:1'
+          assert a['authorizationOrdinal']==1
+          assert a['consumed'] is False
+          print('MERGED_MAIN_AUTHORIZATION_PROPOSAL_ONLY_PASS')
+          PY
+          echo '{"syntaxChecksExecuted":0,"uvspecProcesses":0,"mysticSolverExecutions":0,"workflowDispatches":0}' > proposal-output/no-execution.json
+      - name: Upload proposal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-tishrei-merged-main-auth-proposal-${{ github.run_id }}
+          path: proposal-output
+          if-no-files-found: error
+          retention-days: 30

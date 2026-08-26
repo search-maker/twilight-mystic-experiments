@@ -1,0 +1,153 @@
+name: Jerusalem Three-Star exact events v1b
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-three-star-exact-events-v1b.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-event:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - label: tishrei-equilibrium
+            civil_date: '2025-09-23'
+            hebrew_label: '1 Tishrei 5786'
+          - label: nisan-equilibrium
+            civil_date: '2026-03-19'
+            hebrew_label: '1 Nisan 5786'
+          - label: tammuz-equilibrium
+            civil_date: '2026-06-16'
+            hebrew_label: '1 Tammuz 5786'
+    env:
+      APPLICATION_REPO: search-maker/starsvisibility
+      APPLICATION_SHA: 80bb46110067567afbd92d5bb6b9316087e58e25
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      CASE_LABEL: ${{ matrix.label }}
+      CASE_DATE: ${{ matrix.civil_date }}
+      HEBREW_LABEL: ${{ matrix.hebrew_label }}
+      ENGINE_MODE: level-b-v3-crumey-blackwell-equilibrium
+      LATITUDE_DEG: '31.778'
+      LONGITUDE_DEG: '35.235'
+      OBSERVER_ELEVATION_M: '800'
+      TIME_ZONE: Asia/Jerusalem
+      MAGNITUDE_BASIS: effective
+      MAGNITUDE_THRESHOLD: '1.7'
+      REQUIRED_COUNT: '3'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact starsvisibility main
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Build exact application
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+      - name: Install Chromium
+        working-directory: app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+      - name: Run frozen exact event
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/jerusalem-three-star-exact-events"
+          mkdir -p "$OUT"
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory dist > "$RUNNER_TEMP/jerusalem-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { chromium } from 'playwright';
+          const env = process.env;
+          const spec = Object.freeze({
+            label:env.CASE_LABEL,civilDate:env.CASE_DATE,hebrewLabel:env.HEBREW_LABEL,
+            engineMode:env.ENGINE_MODE,latitudeDeg:Number(env.LATITUDE_DEG),longitudeDeg:Number(env.LONGITUDE_DEG),
+            observerElevationM:Number(env.OBSERVER_ELEVATION_M),timeZone:env.TIME_ZONE,
+            magnitudeBasis:env.MAGNITUDE_BASIS,magnitudeThreshold:Number(env.MAGNITUDE_THRESHOLD),requiredCount:Number(env.REQUIRED_COUNT),
+          });
+          const browser = await chromium.launch({headless:true});
+          const page = await browser.newPage();
+          const browserConsole=[];
+          page.on('console',m=>browserConsole.push(`[${m.type()}] ${m.text()}`));
+          page.on('pageerror',e=>browserConsole.push(`[pageerror] ${e.stack||e.message}`));
+          await page.goto('http://127.0.0.1:4173/work-in-progress/',{waitUntil:'domcontentloaded',timeout:120000});
+          await page.waitForSelector('#visibilityEngineMode',{timeout:120000});
+          const controls=await page.evaluate(async spec=>{
+            const set=(id,value)=>{const el=document.getElementById(id);if(!el)throw new Error(`missing #${id}`);el.value=String(value);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return el.value;};
+            const select=(id,value)=>{const el=document.getElementById(id);if(!el)throw new Error(`missing #${id}`);const opts=Array.from(el.options||[]).map(o=>o.value);if(opts.length&&!opts.includes(String(value)))throw new Error(`#${id} has no ${value}; options=${opts.join(',')}`);return set(id,value);};
+            try{localStorage.clear();}catch(_){ }
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__=spec.engineMode;
+            globalThis.__SKY_MAP_REQUEST__=true;
+            if(document.getElementById('calculatorFeature'))set('calculatorFeature','three-star');
+            set('lat',spec.latitudeDeg);set('lon',spec.longitudeDeg);set('date',spec.civilDate);
+            if(document.getElementById('timezone'))set('timezone',spec.timeZone);
+            set('observerElevationM',spec.observerElevationM);
+            select('visibilityEngineMode',spec.engineMode);select('threeStarCount',spec.requiredCount);select('threeStarMagnitudeBasis',spec.magnitudeBasis);set('threeStarMagnitudeThreshold',spec.magnitudeThreshold);
+            if(typeof eval('ensureBuiltInCatalogReady')==='function')await eval('ensureBuiltInCatalogReady()');
+            const out={calculatorFeature:document.getElementById('calculatorFeature')?.value??null,latitudeDeg:Number(document.getElementById('lat')?.value),longitudeDeg:Number(document.getElementById('lon')?.value),civilDate:document.getElementById('date')?.value??null,timeZone:document.getElementById('timezone')?.value??null,observerElevationM:Number(document.getElementById('observerElevationM')?.value),visibilityEngineMode:document.getElementById('visibilityEngineMode')?.value??globalThis.__STAR_VISIBILITY_ENGINE_MODE__,threeStarCount:Number(document.getElementById('threeStarCount')?.value),magnitudeBasis:document.getElementById('threeStarMagnitudeBasis')?.value??null,magnitudeThreshold:Number(document.getElementById('threeStarMagnitudeThreshold')?.value),catalogCount:globalThis.__STARS_BUILT_IN_STARS__?.length??null};
+            if(out.catalogCount!==9090)throw new Error(`catalog count ${out.catalogCount}`);
+            return out;
+          },spec);
+          const ui=await page.evaluate(async()=>{await eval('calculate()');return {result:eval('threeStarResultData'),skyMap:eval('threeStarSkyMapData')};});
+          const detailed=await page.evaluate(async({spec,ui})=>{
+            const result=ui.result;if(!result||typeof result!=='object')throw new Error('no threeStarResultData');if(!result.found)return {found:false,reason:result.reason??null,result};
+            const catalog=globalThis.__STARS_BUILT_IN_STARS__;
+            const catalogId=row=>{if(row?.isPlanet)return row.planetKey?`PLANET:${row.planetKey}`:`PLANET:${row.name}`;if(row?.hip!=null&&row.hip!=='')return `HIP ${row.hip}`;if(row?.hr!=null&&row.hr!=='')return `HR ${row.hr}`;if(row?.hd!=null&&row.hd!=='')return `HD ${row.hd}`;return row?.name??row?.id??'target';};
+            const rows=result.stars.map(star=>{const row=catalog.find(r=>catalogId(r)===star.catalogId)||catalog.find(r=>r.name===star.name);if(!row)throw new Error(`row missing ${star.catalogId}/${star.name}`);return row;});
+            const sunsetMs=Number(result.sunsetTime);if(!Number.isFinite(sunsetMs))throw new Error(`sunsetTime invalid ${result.sunsetTime}`);
+            const hooks=eval('__levelBSitewideGeometryHooks')({latitudeDeg:spec.latitudeDeg,longitudeDeg:spec.longitudeDeg,observerElevationM:spec.observerElevationM,date:spec.civilDate,timeZone:spec.timeZone},sunsetMs);
+            const engine=await import('/scientific-tools/visibility-v3/level-b-sitewide-engine.mjs');
+            const ev=await engine.evaluateSitewideRows({rows,latitudeDeg:spec.latitudeDeg,longitudeDeg:spec.longitudeDeg,observerElevationM:spec.observerElevationM,sunsetMs,geometryAtSunDepression:hooks.geometryAtSunDepression,timeAtSunDepression:hooks.timeAtSunDepression,engineMode:spec.engineMode,fetchImpl:globalThis.fetch});
+            if(ev.status!=='COMPLETE')return {found:true,result,detailedEvaluationStatus:ev.status,atmosphereResolution:ev.atmosphereResolution,rows};
+            const eventTimeMs=Number(result.eventTime??result.time);const sunDepressionDeg=-Number(eval('sunAltitude')(eventTimeMs,spec.latitudeDeg,spec.longitudeDeg));
+            const point=engine.createSitewidePointEvaluator({runtimeData:ev.runtimeData,atmosphereResolution:ev.atmosphereResolution,geometryAtSunDepression:hooks.geometryAtSunDepression});
+            const byId=new Map(ev.results.map(x=>[catalogId(x.row),x]));
+            const stars=result.stars.map(star=>{const x=byId.get(star.catalogId);if(!x)throw new Error(`detail missing ${star.catalogId}`);return {uiStar:star,row:x.row,normalizedTarget:x.target,intervalsMs:x.intervalsMs,timelineResult:x.result,eventGeometry:hooks.geometryAtSunDepression(sunDepressionDeg,x.target),eventSample:point(x.target,sunDepressionDeg)};});
+            return {found:true,result,sunsetMs,eventTimeMs,sunDepressionDeg,atmosphereResolution:ev.atmosphereResolution,stars};
+          },{spec,ui});
+          const output={schemaVersion:2,status:'EXACT_CURRENT_APPLICATION_JERUSALEM_THREE_STAR_DIAGNOSTIC',applicationRepo:env.APPLICATION_REPO,applicationSha:env.APPLICATION_SHA,preregisteredCase:spec,exactUiControls:controls,uiThreeStarResult:ui.result,uiSkyMapResult:ui.skyMap,detailed,claimBoundary:{computationalDiagnosticOnly:true,f314ConfiguredCriterionUnchanged:true,measuredRealSkyValidated:false,humanFirstSeeingValidated:false,productionAuthorized:false,pandoraOpened:false,noTuning:true},browserConsole};
+          const outPath=path.join(env.RUNNER_TEMP,'jerusalem-three-star-exact-events',`${spec.label}.json`);fs.writeFileSync(outPath,JSON.stringify(output,null,2)+'\n');
+          console.log('JERUSALEM_EXACT_EVENT_SUMMARY='+JSON.stringify({label:spec.label,controls,found:ui.result?.found??null,reason:ui.result?.reason??null,eventTime:ui.result?.eventTime??ui.result?.time??null,sunsetTime:ui.result?.sunsetTime??null,minutesAfterSunset:ui.result?.minutesAfterSunset??null,sunAltitude:ui.result?.sunAltitude??null,detailedSunDepression:detailed?.sunDepressionDeg??null,atmosphere:detailed?.atmosphereResolution??null,stars:ui.result?.stars??[],detailStars:detailed?.stars?.map(s=>({name:s.uiStar?.name,catalogId:s.uiStar?.catalogId,intervalsMs:s.intervalsMs,eventGeometry:s.eventGeometry,eventSample:s.eventSample}))??[] }));
+          await browser.close();
+          NODE
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-three-star-exact-event-v1b-${{ matrix.label }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/jerusalem-three-star-exact-events/${{ matrix.label }}.json

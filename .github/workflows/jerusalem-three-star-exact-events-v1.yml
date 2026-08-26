@@ -1,0 +1,308 @@
+name: Jerusalem Three-Star exact events v1
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/jerusalem-three-star-exact-events-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-event:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - label: tishrei-equilibrium
+            civil_date: '2025-09-23'
+            hebrew_label: '1 Tishrei 5786'
+            engine_mode: 'level-b-v3-crumey-blackwell-equilibrium'
+          - label: nisan-equilibrium
+            civil_date: '2026-03-19'
+            hebrew_label: '1 Nisan 5786'
+            engine_mode: 'level-b-v3-crumey-blackwell-equilibrium'
+          - label: tammuz-equilibrium
+            civil_date: '2026-06-16'
+            hebrew_label: '1 Tammuz 5786'
+            engine_mode: 'level-b-v3-crumey-blackwell-equilibrium'
+    env:
+      APPLICATION_REPO: search-maker/starsvisibility
+      APPLICATION_SHA: 80bb46110067567afbd92d5bb6b9316087e58e25
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      CASE_LABEL: ${{ matrix.label }}
+      CASE_DATE: ${{ matrix.civil_date }}
+      HEBREW_LABEL: ${{ matrix.hebrew_label }}
+      ENGINE_MODE: ${{ matrix.engine_mode }}
+      LATITUDE_DEG: '31.778'
+      LONGITUDE_DEG: '35.235'
+      OBSERVER_ELEVATION_M: '800'
+      TIME_ZONE: 'Asia/Jerusalem'
+      MAGNITUDE_BASIS: 'effective'
+      MAGNITUDE_THRESHOLD: '1.7'
+      REQUIRED_COUNT: '3'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact starsvisibility main
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Build exact application and validated runtime assets
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+      - name: Install exact Playwright Chromium runtime
+        working-directory: app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+      - name: Execute frozen Jerusalem event through exact built application
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/jerusalem-three-star-exact-events"
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory dist > "$RUNNER_TEMP/jerusalem-three-star-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null; then break; fi
+            sleep 0.2
+          done
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { chromium } from 'playwright';
+
+          const env = process.env;
+          const caseSpec = Object.freeze({
+            label: env.CASE_LABEL,
+            civilDate: env.CASE_DATE,
+            hebrewLabel: env.HEBREW_LABEL,
+            engineMode: env.ENGINE_MODE,
+            latitudeDeg: Number(env.LATITUDE_DEG),
+            longitudeDeg: Number(env.LONGITUDE_DEG),
+            observerElevationM: Number(env.OBSERVER_ELEVATION_M),
+            timeZone: env.TIME_ZONE,
+            magnitudeBasis: env.MAGNITUDE_BASIS,
+            magnitudeThreshold: Number(env.MAGNITUDE_THRESHOLD),
+            requiredCount: Number(env.REQUIRED_COUNT),
+          });
+
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          const consoleLines = [];
+          page.on('console', msg => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
+          page.on('pageerror', error => consoleLines.push(`[pageerror] ${error.stack || error.message}`));
+          await page.goto('http://127.0.0.1:4173/work-in-progress/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+          await page.waitForFunction(() => typeof globalThis.calculate === 'function' || typeof eval('calculate') === 'function', null, { timeout: 120000 });
+          await page.waitForSelector('#visibilityEngineMode', { timeout: 120000 });
+
+          const preflight = await page.evaluate(async spec => {
+            const setValue = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) throw new Error(`missing control #${id}`);
+              el.value = String(value);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return el.value;
+            };
+            const selectValue = (id, value) => {
+              const el = document.getElementById(id);
+              if (!el) throw new Error(`missing select #${id}`);
+              if (![...el.options].some(option => option.value === String(value))) {
+                throw new Error(`#${id} has no option ${value}; options=${[...el.options].map(o=>o.value).join(',')}`);
+              }
+              el.value = String(value);
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return el.value;
+            };
+
+            try { localStorage.clear(); } catch (_) {}
+            globalThis.__STAR_VISIBILITY_ENGINE_MODE__ = spec.engineMode;
+            globalThis.__SKY_MAP_REQUEST__ = true;
+            if (document.getElementById('calculatorFeature')) selectValue('calculatorFeature', 'three-star');
+            setValue('lat', spec.latitudeDeg);
+            setValue('lon', spec.longitudeDeg);
+            setValue('date', spec.civilDate);
+            if (document.getElementById('timezone')) setValue('timezone', spec.timeZone);
+            setValue('observerElevationM', spec.observerElevationM);
+            selectValue('visibilityEngineMode', spec.engineMode);
+            selectValue('threeStarCount', spec.requiredCount);
+            selectValue('threeStarMagnitudeBasis', spec.magnitudeBasis);
+            setValue('threeStarMagnitudeThreshold', spec.magnitudeThreshold);
+            if (typeof eval('ensureBuiltInCatalogReady') === 'function') await eval('ensureBuiltInCatalogReady()');
+            const exactControls = {
+              calculatorFeature: document.getElementById('calculatorFeature')?.value ?? null,
+              latitudeDeg: Number(document.getElementById('lat')?.value),
+              longitudeDeg: Number(document.getElementById('lon')?.value),
+              civilDate: document.getElementById('date')?.value ?? null,
+              timeZone: document.getElementById('timezone')?.value ?? null,
+              observerElevationM: Number(document.getElementById('observerElevationM')?.value),
+              visibilityEngineMode: document.getElementById('visibilityEngineMode')?.value ?? globalThis.__STAR_VISIBILITY_ENGINE_MODE__,
+              threeStarCount: Number(document.getElementById('threeStarCount')?.value),
+              magnitudeBasis: document.getElementById('threeStarMagnitudeBasis')?.value ?? null,
+              magnitudeThreshold: Number(document.getElementById('threeStarMagnitudeThreshold')?.value),
+              catalogCount: globalThis.__STARS_BUILT_IN_STARS__?.length ?? null,
+            };
+            if (exactControls.catalogCount !== 9090) throw new Error(`exact catalog incomplete: ${exactControls.catalogCount}`);
+            return exactControls;
+          }, caseSpec);
+
+          const uiResult = await page.evaluate(async () => {
+            await eval('calculate()');
+            const result = eval('threeStarResultData');
+            const skyMap = eval('threeStarSkyMapData');
+            return { result, skyMap };
+          });
+
+          const detailed = await page.evaluate(async ({ spec, uiResult }) => {
+            const result = uiResult.result;
+            if (!result || typeof result !== 'object') throw new Error('threeStarResultData unavailable after calculate');
+            if (!result.found) return { found:false, reason:result.reason ?? null, result };
+
+            const catalog = globalThis.__STARS_BUILT_IN_STARS__;
+            const catalogId = row => {
+              if (row?.isPlanet) return row.planetKey ? `PLANET:${row.planetKey}` : `PLANET:${row.name}`;
+              if (row?.hip != null && row.hip !== '') return `HIP ${row.hip}`;
+              if (row?.hr != null && row.hr !== '') return `HR ${row.hr}`;
+              if (row?.hd != null && row.hd !== '') return `HD ${row.hd}`;
+              return row?.name ?? row?.id ?? 'target';
+            };
+            const selectedRows = result.stars.map(star => {
+              const exact = catalog.find(row => catalogId(row) === star.catalogId) ?? catalog.find(row => row.name === star.name);
+              if (!exact) throw new Error(`selected row not found: ${star.catalogId} / ${star.name}`);
+              return exact;
+            });
+
+            const input = {
+              latitudeDeg: spec.latitudeDeg,
+              longitudeDeg: spec.longitudeDeg,
+              observerElevationM: spec.observerElevationM,
+              date: spec.civilDate,
+              timeZone: spec.timeZone,
+            };
+            const sunsetMs = Number(result.sunsetTime);
+            if (!Number.isFinite(sunsetMs)) throw new Error('UI result lacks finite sunsetTime');
+            const hooks = eval('__levelBSitewideGeometryHooks')(input, sunsetMs);
+            const engine = await import('/scientific-tools/visibility-v3/level-b-sitewide-engine.mjs');
+            const evaluation = await engine.evaluateSitewideRows({
+              rows: selectedRows,
+              latitudeDeg: spec.latitudeDeg,
+              longitudeDeg: spec.longitudeDeg,
+              observerElevationM: spec.observerElevationM,
+              sunsetMs,
+              geometryAtSunDepression: hooks.geometryAtSunDepression,
+              timeAtSunDepression: hooks.timeAtSunDepression,
+              engineMode: spec.engineMode,
+              fetchImpl: globalThis.fetch,
+            });
+            if (evaluation.status !== 'COMPLETE') {
+              return { found:true, result, selectedRows, detailedEvaluationStatus:evaluation.status, atmosphereResolution:evaluation.atmosphereResolution };
+            }
+            const eventTimeMs = Number(result.eventTime ?? result.time);
+            const sunAlt = Number(eval('sunAltitude')(eventTimeMs, spec.latitudeDeg, spec.longitudeDeg));
+            const sunDepressionDeg = -sunAlt;
+            const pointEvaluator = engine.createSitewidePointEvaluator({
+              runtimeData: evaluation.runtimeData,
+              atmosphereResolution: evaluation.atmosphereResolution,
+              geometryAtSunDepression: hooks.geometryAtSunDepression,
+            });
+            const byCatalogId = new Map(evaluation.results.map(entry => [catalogId(entry.row), entry]));
+            const stars = result.stars.map(star => {
+              const entry = byCatalogId.get(star.catalogId);
+              if (!entry) throw new Error(`detailed result missing ${star.catalogId}`);
+              const sample = pointEvaluator(entry.target, sunDepressionDeg);
+              const geometry = hooks.geometryAtSunDepression(sunDepressionDeg, entry.target);
+              return {
+                uiStar: star,
+                row: entry.row,
+                normalizedTarget: entry.target,
+                intervalsMs: entry.intervalsMs,
+                timelineResult: entry.result,
+                eventGeometry: geometry,
+                eventSample: sample,
+                laterExitsFrozenStellarAltitudeSupport: Array.isArray(entry.result?.timeline?.visibilityIntervals) ? null : null,
+              };
+            });
+            return {
+              found: true,
+              result,
+              sunsetMs,
+              eventTimeMs,
+              sunDepressionDeg,
+              atmosphereResolution: evaluation.atmosphereResolution,
+              stars,
+            };
+          }, { spec: caseSpec, uiResult });
+
+          const output = {
+            schemaVersion: 1,
+            status: 'EXACT_CURRENT_APPLICATION_JERUSALEM_THREE_STAR_DIAGNOSTIC',
+            applicationRepo: env.APPLICATION_REPO,
+            applicationSha: env.APPLICATION_SHA,
+            preregisteredCase: caseSpec,
+            exactUiControls: preflight,
+            uiThreeStarResult: uiResult.result,
+            uiSkyMapResult: uiResult.skyMap,
+            detailed,
+            claimBoundary: {
+              computationalDiagnosticOnly: true,
+              f314ConfiguredCriterionUnchanged: true,
+              measuredRealSkyValidated: false,
+              humanFirstSeeingValidated: false,
+              productionAuthorized: false,
+              pandoraOpened: false,
+              noTuning: true,
+            },
+            browserConsole: consoleLines,
+          };
+          const outDir = path.join(env.RUNNER_TEMP, 'jerusalem-three-star-exact-events');
+          const outPath = path.join(outDir, `${caseSpec.label}.json`);
+          fs.writeFileSync(outPath, JSON.stringify(output, null, 2) + '\n');
+          console.log(JSON.stringify({
+            label: caseSpec.label,
+            status: output.status,
+            found: output.uiThreeStarResult?.found ?? null,
+            reason: output.uiThreeStarResult?.reason ?? null,
+            eventTime: output.uiThreeStarResult?.eventTime ?? null,
+            minutesAfterSunset: output.uiThreeStarResult?.minutesAfterSunset ?? null,
+            sunAltitude: output.uiThreeStarResult?.sunAltitude ?? null,
+            stars: output.uiThreeStarResult?.stars?.map(s => ({name:s.name,catalogId:s.catalogId,catalogMagnitude:s.catalogMagnitude,effectiveMagnitude:s.effectiveMagnitude,alt:s.apparentAltitude,az:s.azimuth,completing:s.completing})) ?? [],
+            atmosphereStatus: output.detailed?.atmosphereResolution?.status ?? output.detailed?.detailedEvaluationStatus ?? null,
+            aod550: output.detailed?.atmosphereResolution?.atmosphere?.aod550 ?? null,
+            provider: output.detailed?.atmosphereResolution?.selectedProviderId ?? null,
+          }, null, 2));
+          await browser.close();
+          NODE
+      - name: Upload exact-event evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-three-star-exact-event-${{ matrix.label }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/jerusalem-three-star-exact-events/${{ matrix.label }}.json

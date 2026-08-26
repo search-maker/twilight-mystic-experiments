@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Review-only shard execution surface for matched-stellar v2 fresh validation.
+
+This file defines the exact 24 x 32 fresh validation batching and a future
+one-shot execution function. It has no CLI and cannot authorize itself.
+It reuses the already-frozen v1 direct-transport engine; training execution is
+explicitly forbidden. A future separately reviewed authorization/workflow must
+supply allow_execution=True, the exact one-file authorization and a verified
+runtime report.
+"""
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+INTERPOLATION_PATH = HERE / "interpolation_candidate_v2.py.review"
+TRANSPORT_PATH = ROOT / "review/asiv-matched-stellar-transport-v1/execution_transport_review.py"
+
+SHARD_SIZE = 32
+SHARD_COUNT = 24
+VALIDATION_CASE_COUNT = 768
+CONTROL_STAGE_ID = "asiv-matched-stellar-transport-v2-fresh-validation-authorization"
+EXECUTION_KEY = "asiv-matched-stellar-transport-v2-fresh-validation-one-shot"
+
+
+class V2ValidationExecutionRefusal(RuntimeError):
+    pass
+
+
+def _load_source(path: Path, name: str):
+    if path.suffix == ".review":
+        loader = importlib.machinery.SourceFileLoader(name, str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+    else:
+        spec = importlib.util.spec_from_file_location(name, path)
+        loader = spec.loader if spec else None
+    if spec is None or loader is None:
+        raise V2ValidationExecutionRefusal(f"cannot load bound module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def load_interpolation_candidate():
+    return _load_source(INTERPOLATION_PATH, "matched_stellar_v2_interpolation")
+
+
+def load_transport():
+    return _load_source(TRANSPORT_PATH, "matched_stellar_v1_transport_for_v2_validation")
+
+
+def build_validation_shards() -> dict[str, Any]:
+    candidate = load_interpolation_candidate()
+    manifest = candidate.build_new_validation_manifest()
+    cases = list(manifest["cases"])
+    if len(cases) != VALIDATION_CASE_COUNT:
+        raise V2ValidationExecutionRefusal("fresh validation case-count drift")
+    shards = []
+    for start in range(0, len(cases), SHARD_SIZE):
+        ordinal = start // SHARD_SIZE
+        rows = []
+        for offset, case in enumerate(cases[start:start + SHARD_SIZE]):
+            index = start + offset
+            row = dict(case)
+            row["caseIndex"] = index
+            row["caseId"] = f"fresh-v2-{index:04d}"
+            rows.append(row)
+        shards.append({
+            "shardId": f"validation-v2-{ordinal:03d}",
+            "firstCaseIndex": start,
+            "lastCaseIndex": start + len(rows) - 1,
+            "caseCount": len(rows),
+            "cases": rows,
+        })
+    if len(shards) != SHARD_COUNT or any(row["caseCount"] != SHARD_SIZE for row in shards):
+        raise V2ValidationExecutionRefusal("fresh validation shard universe drift")
+    return {
+        "schemaVersion": 1,
+        "stageId": "asiv-matched-stellar-transport-v2-fresh-validation-shards",
+        "status": "FROZEN_UNEXECUTED_VALIDATION_ONLY_SHARDS",
+        "caseCount": VALIDATION_CASE_COUNT,
+        "shardCount": SHARD_COUNT,
+        "shardSize": SHARD_SIZE,
+        "trainingCaseCount": 0,
+        "shards": shards,
+    }
+
+
+def validate_v2_authorization(document: dict[str, Any]) -> None:
+    transport = load_transport()
+    transport.validate_authorization_document(document)
+    expected = {
+        "controlStageId": CONTROL_STAGE_ID,
+        "executionKey": EXECUTION_KEY,
+        "validationOnlyExecutionAuthorized": True,
+        "trainingExecutionAuthorized": False,
+        "validationCaseCount": VALIDATION_CASE_COUNT,
+        "validationShardCount": SHARD_COUNT,
+        "validationCasesPerShard": SHARD_SIZE,
+        "freshValidationResultOpeningAuthorized": True,
+        "pandoraHoldoutAccessAllowed": False,
+        "starsvisibilityMutationAuthorized": False,
+        "productionActivationAuthorized": False,
+        "githubRerunPermitted": False,
+        "solverRetryPermitted": False,
+        "solverResumePermitted": False,
+    }
+    for key, value in expected.items():
+        if document.get(key) != value:
+            raise V2ValidationExecutionRefusal(f"v2 authorization mismatch: {key}")
+    gates = document.get("freshValidationGates") or {}
+    if gates != {
+        "perFamilyMaxAbsDeltaAvMag": 0.025,
+        "perFamilyRmsDeltaAvMag": 0.010,
+        "everyFamilyMustPassSeparately": True,
+    }:
+        raise V2ValidationExecutionRefusal("v2 validation gate drift")
+
+
+def execute_validation_shard(
+    *, shard_id: str, authorization: dict[str, Any], runtime_report: dict[str, Any],
+    output_root: Path, allow_execution: bool = False,
+) -> dict[str, Any]:
+    if allow_execution is not True:
+        raise V2ValidationExecutionRefusal("fresh validation execution requires separate positive workflow authorization")
+    validate_v2_authorization(authorization)
+    transport = load_transport()
+    transport.validate_runtime_report(runtime_report)
+    batch = build_validation_shards()
+    matches = [row for row in batch["shards"] if row["shardId"] == shard_id]
+    if len(matches) != 1:
+        raise V2ValidationExecutionRefusal("unknown or ambiguous fresh validation shard")
+    shard = matches[0]
+    output_root = Path(output_root)
+    if output_root.exists() and any(output_root.iterdir()):
+        raise V2ValidationExecutionRefusal("resume/overwrite forbidden: shard output directory is not empty")
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    completed = []
+    for case in shard["cases"]:
+        # Exactly one process invocation per fresh holdout case. No catch/retry loop.
+        payload = transport.execute_one_case(
+            authorization=authorization,
+            runtime_report=runtime_report,
+            family=case["family"],
+            target_altitude_deg=case["targetAltitudeDeg"],
+            observer_elevation_m=case["observerElevationM"],
+            aod550=case["aod550"],
+        )
+        payload["v2FreshValidationCaseIndex"] = case["caseIndex"]
+        payload["v2FreshValidationCaseId"] = case["caseId"]
+        payload["v2TrainingCase"] = False
+        path = output_root / f"{case['caseId']}.json"
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        completed.append(case["caseId"])
+
+    if len(completed) != SHARD_SIZE:
+        raise V2ValidationExecutionRefusal("partial fresh validation shard forbidden")
+    summary = {
+        "schemaVersion": 1,
+        "status": "MATCHED_STELLAR_V2_FRESH_VALIDATION_SHARD_COMPLETE",
+        "shardId": shard_id,
+        "caseCount": len(completed),
+        "caseIds": completed,
+        "trainingCasesExecuted": 0,
+        "retryPerformed": False,
+        "resumePerformed": False,
+    }
+    (output_root / "shard-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return summary
+
+
+if __name__ == "__main__":
+    print(json.dumps({
+        "status": "REVIEW_ONLY_V2_VALIDATION_EXECUTION_NOT_AUTHORIZED",
+        "validationCaseCount": VALIDATION_CASE_COUNT,
+        "shardCount": SHARD_COUNT,
+        "trainingCaseCount": 0,
+    }, indent=2, sort_keys=True))

@@ -1,0 +1,266 @@
+name: Taylor broadband photon scaling 200k v1
+run-name: Taylor broadband 200k scaling v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-broadband-photon-scaling-200k-v1/**'
+      - '.github/workflows/taylor-broadband-photon-scaling-200k-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: taylor-broadband-photon-scaling-200k-v1-scientific-1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/taylor-broadband-photon-scaling-200k-v1
+  REVIEW_PARENT: c327d14129ab094abf5207070d0a0e091ab93a80
+  BROADBAND_REVIEW_SOURCE: 75035d9ea316af574b2fac50f52c43c633b2bdbc
+  TAYLOR_SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  REFERENCE_50K_ARTIFACT_ID: '9634873751'
+  REFERENCE_50K_ARTIFACT_SHA256: f6e36e4310ef5d3c8eb16cd56e0063ad01185e4ebd498ef0789c31609d443a57
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    if: github.head_ref == 'science/taylor-broadband-photon-scaling-200k-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      head: ${{ steps.identity.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - id: identity
+        name: Verify one-shot science identity and reviewed parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "science/taylor-broadband-photon-scaling-200k-v1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git rev-parse HEAD^)" = "$REVIEW_PARENT"
+          git fetch --no-tags --depth=1 origin "$REVIEW_PARENT"
+          git diff --exit-code "$REVIEW_PARENT" HEAD -- \
+            "$PKG" \
+            tests/test_taylor_broadband_photon_scaling_200k_v1_review.py \
+            .github/workflows/taylor-broadband-photon-scaling-200k-v1-review.yml
+          python - <<'PY'
+          import ast,pathlib
+          p=pathlib.Path('experiments/taylor-broadband-photon-scaling-200k-v1/run_default_replicate.py')
+          t=ast.parse(p.read_text()); vals={}
+          for n in t.body:
+              if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name):
+                  name=n.targets[0].id
+                  if name in {'ROWS','REPLICATES','PHOTONS','SEED_BASE'}: vals[name]=ast.literal_eval(n.value)
+          assert vals['ROWS']==[23,24,25]
+          assert vals['REPLICATES']==[1,2,3,4,5,6]
+          assert vals['PHOTONS']==200000
+          assert vals['SEED_BASE']=={1:961000000,2:962000000,3:963000000,4:964000000,5:965000000,6:966000000}
+          seeds=[vals['SEED_BASE'][rep]+row*1000+ray for rep in vals['REPLICATES'] for row in vals['ROWS'] for ray in range(1,65)]
+          old=[base+row*1000+ray for base in (955000000,956000000,957000000,958000000,959000000,960000000) for row in vals['ROWS'] for ray in range(1,65)]
+          assert len(seeds)==1152 and len(set(seeds))==1152 and set(seeds).isdisjoint(old)
+          assert 1152*200000==230400000
+          print('FROZEN_200K_UNIVERSE_PASS',len(seeds),'solver calls / 230.4M histories')
+          PY
+          python -m py_compile "$PKG"/*.py
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize exact reviewed broadband and Taylor-v1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p frozen-broadband frozen-source
+          git fetch --no-tags --depth=1 origin "$BROADBAND_REVIEW_SOURCE"
+          git show "$BROADBAND_REVIEW_SOURCE:experiments/taylor-hrrr-broadband-vertical-shape-v1/run_row_replicate.py" > frozen-broadband/run_row_replicate.py
+          git fetch --no-tags --depth=1 origin "$TAYLOR_SOURCE_SHA"
+          git show "$TAYLOR_SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$TAYLOR_SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/observations.csv" > frozen-source/observations.csv
+          git show "$TAYLOR_SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+          test "$(git rev-parse "$TAYLOR_SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py")" = "34e6229ccbd0976032a292171b4f64c66854029d"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-broadband-200k-preflight-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify exact reviewed MYSTIC runtime without solver execution
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock "$RUNTIME_LOCK" --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['uvspecHelpSha256']=='868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          PY
+
+      - name: Execute exact dry 200k default input audit
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/preflight.py" \
+            --baseline-runner frozen-source/run_row.py \
+            --observations frozen-source/observations.csv \
+            --response frozen-source/sqm_response.csv \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output dry-preflight
+          python - <<'PY'
+          import json
+          x=json.load(open('dry-preflight/preflight.json'))
+          assert x['status']=='DRY_INPUT_IDENTITY_PASS'
+          assert x['auditCount']==1152 and x['uniqueSeedCount']==1152
+          assert x['configuredPhotonHistoriesIfAuthorized']==230400000
+          print('DRY_200K_PREFLIGHT_PASS',x['auditCount'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-broadband-photon-scaling-200k-v1-preflight
+          path: |
+            frozen-broadband
+            frozen-source
+            dry-preflight
+            runtime-report.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 18
+      matrix:
+        row: [23,24,25]
+        replicate: [1,2,3,4,5,6]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: taylor-broadband-photon-scaling-200k-v1-preflight
+          path: preflight-artifact
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-broadband-200k-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact reviewed MYSTIC runtime
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$RUNTIME_PROBE" \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          PY
+      - name: Execute one frozen default-only 200k replicate
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/run_default_replicate.py" \
+            --row "${{ matrix.row }}" \
+            --replicate "${{ matrix.replicate }}" \
+            --frozen-broadband-runner preflight-artifact/frozen-broadband/run_row_replicate.py \
+            --baseline-runner preflight-artifact/frozen-source/run_row.py \
+            --observations preflight-artifact/frozen-source/observations.csv \
+            --response preflight-artifact/frozen-source/sqm_response.csv \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-dir "row-${{ matrix.row }}-rep-${{ matrix.replicate }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-broadband-photon-scaling-200k-v1-row-${{ matrix.row }}-rep-${{ matrix.replicate }}
+          path: |
+            row-${{ matrix.row }}-rep-${{ matrix.replicate }}
+            runtime-report.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  analysis:
+    needs: [preflight,cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-broadband-photon-scaling-200k-v1-row-*-rep-*
+          path: results-200k
+          merge-multiple: false
+      - name: Download and verify immutable 50k empirical reference
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p reference-50k
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/$REFERENCE_50K_ARTIFACT_ID/zip" \
+            -o reference-50k.zip
+          echo "$REFERENCE_50K_ARTIFACT_SHA256  reference-50k.zip" | sha256sum -c -
+          unzip -q reference-50k.zip -d reference-50k
+          test -s reference-50k/metrics.json
+          test -s reference-50k/ray-summary.csv
+      - name: Analyze 4x photon scaling only
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze_scaling.py" \
+            --reference-50k-root reference-50k \
+            --results-200k-root results-200k \
+            --output analysis-output
+          cat analysis-output/report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-broadband-photon-scaling-200k-v1-analysis
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

@@ -1,0 +1,183 @@
+name: Aerosol vertical-profile v1 authorization materializer
+
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths:
+      - '.github/workflows/aerosol-vertical-profile-authorization-materializer-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact helper head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Prove one-file zero-runtime helper identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.action }}" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.head.repo.full_name }}" = "$GITHUB_REPOSITORY"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          git fetch origin main
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/aerosol-vertical-profile-authorization-materializer-v1.yml
+          test -z "$(command -v uvspec || true)"
+          echo "parent=$PARENT" >> "$GITHUB_OUTPUT"
+          mkdir -p preauth-artifact materialized-authorization
+
+      - name: Resolve exact successful attempt-1 parent-main preauthorization
+        id: preauth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json'))
+          runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1:
+              raise SystemExit(f'exact parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          RID="$(python -c 'import json;print(json.load(open("preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100" > preauth-artifacts.json
+          python - <<'PY' > preauth.env
+          import json,re
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='vertical-profile-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1:
+              raise SystemExit(f'expected one AVPS preauthorization artifact, got {len(good)}')
+          a=good[0]
+          digest=str(a.get('digest') or '')
+          if re.fullmatch(r'sha256:[0-9a-f]{64}',digest) is None:
+              raise SystemExit('preauthorization artifact digest malformed')
+          print(f'PREAUTH_RUN_ID={int(json.load(open("preauth-selected.json"))["id"])}')
+          print(f'PREAUTH_ARTIFACT_ID={int(a["id"])}')
+          print(f'PREAUTH_ARTIFACT_DIGEST={digest}')
+          PY
+          source preauth.env
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT_ID}/zip" > preauth.zip
+          ACTUAL="sha256:$(sha256sum preauth.zip | awk '{print $1}')"
+          test "$ACTUAL" = "$PREAUTH_ARTIFACT_DIGEST"
+          unzip -q preauth.zip -d preauth-artifact
+          echo "run_id=$PREAUTH_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "artifact_id=$PREAUTH_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          echo "artifact_digest=$PREAUTH_ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Verify fresh preauthorization and derive candidate ordinal
+        id: ordinal
+        shell: bash
+        env:
+          PARENT: ${{ steps.identity.outputs.parent }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > ordinal.env
+          import hashlib,json,os
+          p=json.load(open('preauth-artifact/preauthorization.json'))
+          q=dict(p); expected=q.pop('reportSha256',None)
+          actual=hashlib.sha256(json.dumps(q,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          if actual != expected: raise SystemExit('preauthorization report self-hash drift')
+          if p.get('exactMainSha') != os.environ['PARENT']: raise SystemExit('preauthorization parent drift')
+          if p.get('status') != 'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('preauthorization status drift')
+          if p.get('scientificOrdinalAllocated') is not False: raise SystemExit('ordinal already allocated')
+          if p.get('candidateSeedsAppliedToCases') is not False: raise SystemExit('candidate seeds already applied')
+          ordinal=p.get('nextAvailableScientificOrdinal')
+          if isinstance(ordinal,bool) or not isinstance(ordinal,int) or ordinal <= 0: raise SystemExit('candidate ordinal invalid')
+          proof=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          if proof.get('auditedMainHead') != os.environ['PARENT']: raise SystemExit('seed proof parent drift')
+          if proof.get('status') != 'PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED': raise SystemExit('seed proof status drift')
+          if hashlib.sha256(open('preauth-artifact/seed-authorization-proof.json','rb').read()).hexdigest() != p.get('seedAuthorizationProofRawSha256'):
+              raise SystemExit('seed proof raw hash drift')
+          print(f'ORDINAL={ordinal}')
+          PY
+          source ordinal.env
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize exact authorization candidate with merged builder
+        shell: bash
+        env:
+          PARENT: ${{ steps.identity.outputs.parent }}
+          ORDINAL: ${{ steps.ordinal.outputs.ordinal }}
+          PREAUTH_ARTIFACT_ID: ${{ steps.preauth.outputs.artifact_id }}
+          PREAUTH_ARTIFACT_DIGEST: ${{ steps.preauth.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py \
+            --repository-root . \
+            --parent-main "$PARENT" \
+            --scientific-ordinal "$ORDINAL" \
+            --preauthorization-report preauth-artifact/preauthorization.json \
+            --seed-authorization-proof preauth-artifact/seed-authorization-proof.json \
+            --preauthorization-artifact-id "$PREAUTH_ARTIFACT_ID" \
+            --preauthorization-artifact-digest "$PREAUTH_ARTIFACT_DIGEST" \
+            --output materialized-authorization/authorization.json
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          a=json.load(open('materialized-authorization/authorization.json'))
+          if a.get('status')!='AUTHORIZED_PENDING_SEPARATE_DISPATCH': raise SystemExit('authorization status drift')
+          if a.get('scientificOrdinal')!=int(os.environ['ORDINAL']): raise SystemExit('ordinal drift')
+          if a.get('exactAuthorizationParentCommit')!=os.environ['PARENT']: raise SystemExit('parent drift')
+          if a.get('dispatchAuthorized') is not False or a.get('resultOpeningAuthorized') is not False: raise SystemExit('materializer crossed dispatch/result boundary')
+          if a.get('automaticDispatch') is not False or a.get('productionAuthorized') is not False: raise SystemExit('materializer crossed automatic/production boundary')
+          if a.get('disabledExecutionPackageCanonicalSha256')!='ecf7052454e47a9e047cb944f22b031473c0986e9d8b9cec1aa010d425b39cc1': raise SystemExit('disabled package binding drift')
+          raw=Path('materialized-authorization/authorization.json').read_bytes()
+          Path('materialized-authorization/materializer-evidence.json').write_text(json.dumps({
+              'schemaVersion':1,
+              'status':'AUTHORIZATION_CANDIDATE_MATERIALIZED_ZERO_RUNTIME_NOT_ALLOCATED',
+              'parentMain':os.environ['PARENT'],
+              'scientificOrdinal':int(os.environ['ORDINAL']),
+              'authorizationJsonSha256':hashlib.sha256(raw).hexdigest(),
+              'scientificOrdinalAllocated':False,
+              'authorizationBranchCreated':False,
+              'dispatchCreated':False,
+              'scientificRuntimeSetupPerformed':False,
+              'solverExecutionPerformed':False,
+              'resultOpeningPerformed':False,
+          },indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload exact authorization candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: vertical-profile-v1-authorization-candidate
+          path: materialized-authorization/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Claim boundary
+        run: |
+          echo 'Materialization only. The candidate document is an artifact, not an allocated authorization.'
+          echo 'No authorization branch, no dispatch, no runtime setup, no uvspec/MYSTIC, no results, no production change.'

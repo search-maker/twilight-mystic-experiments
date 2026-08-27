@@ -138,7 +138,7 @@ class AerosolVerticalProfileFailedAuthorizationRecoveryV1Tests(unittest.TestCase
     def test_authorization_review_waits_for_sibling_actions_stability_without_weakening_audit(self) -> None:
         text = AUTH_WORKFLOW.read_text()
         self.assertIn("Stabilize authorization-head Actions metadata before global scan", text)
-        self.assertIn("actions/runs?head_sha=${head}", text)
+        self.assertIn("actions/runs?head_sha={head}", text)
         self.assertIn("stable_polls >= 6", text)
         self.assertIn("quietWindowSeconds':30", text)
         self.assertIn("repository_global_seed_scan.py", text)

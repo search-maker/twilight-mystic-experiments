@@ -68,16 +68,22 @@ class AvpsPostConsumptionPublisherRecovery(unittest.TestCase):
         self.assertIn("if r.get('name')!=expected_name", TEXT)
 
     def test_original_publisher_must_have_consumed_then_failed_before_science(self):
-        for name in (
+        required_success = (
             "Bind request, authorization, preauthorization and zero-runtime review",
             "Prove dispatch eligible before creating ref",
-            "Perform actual git push that consumes dispatch identity",
-        ):
+            "Actual git push consumes dispatch identity",
+        )
+        for name in required_success:
             self.assertIn(name, TEXT)
-        self.assertIn("Mark consumed once and prove post-dispatch state", TEXT)
-        self.assertIn("Stage immutable successful publisher evidence", TEXT)
-        self.assertIn("Persist immutable publisher evidence before science trigger", TEXT)
-        self.assertIn("Explicitly dispatch attempt-1 science on pushed ref", TEXT)
+        self.assertNotIn("Perform actual git push that consumes dispatch identity", TEXT)
+        required_after_push = (
+            "Mark consumed once and prove post-dispatch state",
+            "Stage immutable successful publisher evidence",
+            "Persist immutable publisher evidence before science trigger",
+            "Explicitly dispatch attempt-1 science on pushed ref",
+        )
+        for name in required_after_push:
+            self.assertIn(name, TEXT)
         self.assertIn("GlobalOrdinalRefusal: ordinal ${ORDINAL} already has consumed marker", TEXT)
         self.assertIn("original publisher crossed recovery boundary", TEXT)
 

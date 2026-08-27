@@ -1,0 +1,119 @@
+name: Aerosol vertical-profile v1 execution control review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/adapter.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/analysis.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/level_b_analysis.mjs'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/level_b_runner.mjs'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/executor.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/aggregate_results.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/open_results.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/dispatch_guard.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json'
+      - 'tests/test_aerosol_vertical_profile_execution_control_v1.py'
+      - 'tests/test_aerosol_vertical_profile_level_b_analysis_v1.mjs'
+      - '.github/workflows/aerosol-vertical-profile-execution-control-review.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact review head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Require zero-runtime review boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          test ! -e experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+
+      - name: Compile new Python controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            experiments/aerosol-vertical-profile-sensitivity-v1/adapter.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/analysis.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/executor.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/aggregate_results.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/open_results.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/dispatch_guard.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py
+
+      - name: Run AVPS Python execution-control tests
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_aerosol_vertical_profile_execution_control_v1.py' -v
+
+      - name: Run AVPS Level-B contract tests
+        shell: bash
+        run: node --test tests/test_aerosol_vertical_profile_level_b_analysis_v1.mjs
+
+      - name: Verify frozen execution-contract source blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('.')
+          c=json.load(open('experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json'))
+          if c.get('status')!='FROZEN_REVIEW_ONLY_EXECUTION_TRANSPORT_NOT_AUTHORIZED': raise SystemExit('contract status drift')
+          if any(c.get(k) is not False for k in ('candidateSeedsAllocated','scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized')): raise SystemExit('contract crossed authorization boundary')
+          if (c.get('expectedCaseCount'),c.get('expectedGroupCount'),c.get('expectedAnalysisCellCount'),c.get('expectedStatesPerGroup'),c.get('expectedPrimaryContrastCount')) != (360,72,24,5,4): raise SystemExit('contract cardinality drift')
+          if c.get('fieldFactor')!=3.14 or c.get('photonHistoriesPerCase')!=20_000_000: raise SystemExit('F/photon drift')
+          b=c['sourceBindings']
+          pairs=[(k[:-4]+'Path',k) for k in b if k.endswith('GitBlobSha1') and k[:-11]+'Path' in b]
+          # Explicit pairs avoid accidental key-name derivation ambiguity.
+          pairs=[
+            ('protocolPath','protocolGitBlobSha1'),('executionCandidatePath','executionCandidateGitBlobSha1'),
+            ('executionPackagePath','executionPackageGitBlobSha1'),('adapterPath','adapterGitBlobSha1'),
+            ('analysisPath','analysisGitBlobSha1'),('levelBAnalysisPath','levelBAnalysisGitBlobSha1'),
+            ('levelBRunnerPath','levelBRunnerGitBlobSha1'),('executorPath','executorGitBlobSha1'),
+            ('aggregatorPath','aggregatorGitBlobSha1'),('openResultsPath','openResultsGitBlobSha1'),
+            ('dispatchGuardPath','dispatchGuardGitBlobSha1'),('scienceGuardPath','scienceGuardGitBlobSha1'),
+            ('runtimeOverlayPath','runtimeOverlayGitBlobSha1'),('processGroupRunnerPath','processGroupRunnerGitBlobSha1'),
+            ('r8DerivedChannelsPath','r8DerivedChannelsGitBlobSha1'),('r8AnalysisPath','r8AnalysisGitBlobSha1'),
+            ('wavelengthGridPath','wavelengthGridGitBlobSha1'),
+          ]
+          def blob(path):
+              data=path.read_bytes(); return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          for pkey,hkey in pairs:
+              p=root/b[pkey]
+              if blob(p)!=b[hkey]: raise SystemExit(f'contract source blob drift: {p}')
+          PY
+
+      - name: Prove no active execution trigger introduced by review workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-vertical-profile-execution-control-review.yml').read_text()
+          for forbidden in ('setup-micromamba','rubin-libradtran','workflow_dispatch:','repository_dispatch:','schedule:','git push '):
+              if forbidden in text: raise SystemExit(f'review workflow exposed runtime/dispatch behavior: {forbidden}')
+          PY
+
+      - name: Claim boundary
+        run: |
+          echo 'Review-only AVPS execution/control validation.'
+          echo 'No ordinal allocation, no authorization, no dispatch, no uvspec/MYSTIC, no result opening.'

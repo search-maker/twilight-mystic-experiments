@@ -127,8 +127,8 @@ Independent literature constraints now admitted:
 
 Structural runtime gap already identified:
 
-- The project currently changes the definition of adaptation field across the twilight path: broad/hemispheric prehistory proxy in one regime versus target-direction luminance later. This is not a defensible single physiological variable.
-- Detection background and adaptation field must remain separate: detection background is local around the target; adaptation state should be local-dominant with an angularly weighted surround/history term.
+- In current `starsvisibility` main, the Level-B adaptation history from 2 deg onward sets both adaptation-field luminance and local detection background to the target-direction photopic sky luminance. The application-sunset -> 2 deg prehistory instead uses the existing Legacy 0-6 deg twilight **relative shape**, scaled so that it joins continuously to that same target-direction Level-B photopic value at 2 deg. Thus current code is not a whole-hemisphere adaptation model; rather, it splices an unmeasured scalar Legacy prehistory shape onto a target-direction local photopic history. That construction is computationally explicit and continuous, but it is not a physiologically validated definition of the observer's adaptation field.
+- Detection background and adaptation field must remain conceptually separate: detection background is local around the target; adaptation state is expected from the external literature to be local-dominant with some surrounding-field/history contribution. The current equality `adaptationField = targetDirectionPhotopic` after 2 deg is therefore an experimental simplification, not an empirically established open-sky kernel.
 
 What can still be completed **without project observations**:
 

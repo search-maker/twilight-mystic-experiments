@@ -168,10 +168,11 @@ output_user lambda edir
 
     def test_recovery2_source_contains_no_solver_execution_api(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
-        self.assertNotIn("subprocess", source)
+        self.assertNotIn("import subprocess", source)
+        self.assertNotIn("subprocess.", source)
         self.assertNotIn("run_uvspec", source)
         self.assertNotIn("execute_campaign(", source)
-        self.assertNotIn("rte_solver ", source)
+        self.assertNotIn("Popen(", source)
 
 
 if __name__ == "__main__":

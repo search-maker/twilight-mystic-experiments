@@ -1,177 +1,223 @@
-name: Taylor CAMS direct extinction retrieval v1
+name: Taylor CAMS direct extinction recovery v1
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [synchronize]
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  retrieve:
+  recover:
     if: github.head_ref == 'review/taylor-cams-direct-extinction-retrieval-v1'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
-      CDSAPI_KEY: ${{ secrets.CDSAPI_KEY }}
-      CDS_API_KEY: ${{ secrets.CDS_API_KEY }}
-      ECMWF_ADS_KEY: ${{ secrets.ECMWF_ADS_KEY }}
-      ECMWF_API_KEY: ${{ secrets.ECMWF_API_KEY }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Install retrieval and GRIB tools
-        run: |
-          python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes requests
-      - name: Probe ADS and retrieve frozen Ann Arbor profile
+
+      - name: Download already-successful CAMS GRIB artifact
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p cams-output
+          mkdir -p source cams-output
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/9633131426/zip" \
+            -o source/artifact.zip
+          echo "e3341e1391de71ea85591ec92caf9552b2729b924425523abedc98608077bb84  source/artifact.zip" | sha256sum -c -
+          unzip -q source/artifact.zip -d source/unpacked
+          test -s source/unpacked/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib
+          sha256sum source/unpacked/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib > cams-output/GRIB_SHA256.txt
+          cp source/unpacked/request.json cams-output/request.json
+          cp source/unpacked/credential_status.json cams-output/credential_status.json
+
+      - name: Install GRIB tools
+        run: python -m pip install --disable-pip-version-check eccodes
+
+      - name: Extract 137-level Ann Arbor extinction profile
+        shell: bash
+        run: |
+          set -euo pipefail
           python - <<'PY'
-          import json, os, pathlib, sys, time, requests
+          import csv, json, math, pathlib
+          from collections import defaultdict
+          from eccodes import (
+              codes_grib_new_from_file, codes_get, codes_get_array, codes_is_defined, codes_release
+          )
+
+          src=pathlib.Path('source/unpacked/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib')
           out=pathlib.Path('cams-output')
-          dataset='cams-global-atmospheric-composition-forecasts'
-          request={
-              'variable':['aerosol_extinction_coefficient_532nm','geopotential'],
-              'model_level':[str(i) for i in range(1,138)],
-              'date':['2025-08-08/2025-08-08'],
-              'time':['00:00'],
-              'leadtime_hour':['0','3'],
-              'type':['forecast'],
-              'data_format':'grib',
-              'area':[42.4,-84.0,42.0,-83.6],
-          }
-          (out/'request.json').write_text(json.dumps({'dataset':dataset,'request':request},indent=2,sort_keys=True)+'\n')
-          base='https://ads.atmosphere.copernicus.eu/api'
-          probe={}
-          for u in [f'{base}/catalogue/v1/collections/{dataset}',f'{base}/retrieve/v1/processes/{dataset}']:
-              try:
-                  r=requests.get(u,timeout=30)
-                  probe[u]={'status':r.status_code,'content_type':r.headers.get('content-type'),'body_prefix':r.text[:1000]}
-              except Exception as e:
-                  probe[u]={'error':type(e).__name__+': '+str(e)}
-          (out/'public_probe.json').write_text(json.dumps(probe,indent=2,sort_keys=True)+'\n')
+          target_lat=42.256
+          target_lon=-83.709
+          g0=9.80665
 
-          # First test whether this open-data process permits anonymous execution.
-          exec_url=f'{base}/retrieve/v1/processes/{dataset}/execution'
-          try:
-              r=requests.post(exec_url,json={'inputs':request},timeout=60)
-              anon={'status':r.status_code,'body_prefix':r.text[:4000]}
-          except Exception as e:
-              r=None; anon={'error':type(e).__name__+': '+str(e)}
-          (out/'anonymous_execution_probe.json').write_text(json.dumps(anon,indent=2,sort_keys=True)+'\n')
-
-          target=out/'cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib'
-          if r is not None and r.status_code in (200,201,202):
+          def safe_get(gid,key,default=None):
               try:
-                  j=r.json(); job_id=j.get('jobID') or j.get('job_id') or j.get('id')
+                  if codes_is_defined(gid,key):
+                      return codes_get(gid,key)
               except Exception:
-                  job_id=None
-              if job_id:
-                  (out/'anonymous_job_id.txt').write_text(str(job_id)+'\n')
-                  for _ in range(240):
-                      s=requests.get(f'{base}/retrieve/v1/jobs/{job_id}',timeout=30)
-                      sj=s.json() if 'json' in s.headers.get('content-type','') else {'raw':s.text}
-                      (out/'anonymous_job_status.json').write_text(json.dumps(sj,indent=2,sort_keys=True)+'\n')
-                      state=str(sj.get('status') or sj.get('state') or '').lower()
-                      if state in ('successful','completed','succeeded'):
-                          rr=requests.get(f'{base}/retrieve/v1/jobs/{job_id}/results',timeout=60)
-                          rr.raise_for_status(); rj=rr.json()
-                          (out/'anonymous_results.json').write_text(json.dumps(rj,indent=2,sort_keys=True)+'\n')
-                          href=None
-                          if isinstance(rj,dict):
-                              for v in rj.values():
-                                  if isinstance(v,dict) and isinstance(v.get('href'),str): href=v['href']; break
-                                  if isinstance(v,list):
-                                      for q in v:
-                                          if isinstance(q,dict) and isinstance(q.get('href'),str): href=q['href']; break
-                          if href:
-                              with requests.get(href,stream=True,timeout=120) as dl:
-                                  dl.raise_for_status()
-                                  with target.open('wb') as f:
-                                      for chunk in dl.iter_content(1<<20):
-                                          if chunk: f.write(chunk)
-                              print('ANONYMOUS_CAMS_RETRIEVAL_COMPLETE',target,target.stat().st_size)
-                              break
-                      if state in ('failed','dismissed','cancelled','canceled'):
-                          break
-                      time.sleep(15)
+                  pass
+              return default
 
-          if target.is_file() and target.stat().st_size:
-              sys.exit(0)
-
-          key=''; key_name=''
-          for name in ['ADS_API_KEY','CDSAPI_KEY','CDS_API_KEY','ECMWF_ADS_KEY','ECMWF_API_KEY']:
-              v=os.environ.get(name,'').strip()
-              if v:
-                  key=v; key_name=name; break
-          status={'credential_present':bool(key),'credential_name':key_name if key else None}
-          (out/'credential_status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
-          if not key:
-              print('NO_ADS_CREDENTIAL_PRESENT')
-              sys.exit(0)
-
-          import cdsapi
-          client=cdsapi.Client(url=base,key=key,quiet=False,debug=False)
-          client.retrieve(dataset,request,str(target)).download()
-          print('AUTHENTICATED_CAMS_RETRIEVAL_COMPLETE',target,target.stat().st_size)
-          PY
-      - name: Extract point profile if GRIB was retrieved
-        shell: bash
-        run: |
-          set -euo pipefail
-          f='cams-output/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib'
-          if [ ! -s "$f" ]; then
-            echo 'No GRIB retrieved; leaving probe artifact only.'
-            exit 0
-          fi
-          python - <<'PY'
-          import csv, json, pathlib
-          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_release
-          src=pathlib.Path('cams-output/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib')
-          rows=[]
+          records=[]
           with src.open('rb') as fh:
               while True:
                   gid=codes_grib_new_from_file(fh)
-                  if gid is None: break
+                  if gid is None:
+                      break
                   try:
-                      short=str(codes_get(gid,'shortName')); level=int(codes_get(gid,'level'))
-                      dataDate=int(codes_get(gid,'dataDate')); dataTime=int(codes_get(gid,'dataTime')); step=int(codes_get(gid,'step'))
-                      lats=codes_get_array(gid,'latitudes'); lons=codes_get_array(gid,'longitudes'); vals=codes_get_array(gid,'values')
+                      short=str(safe_get(gid,'shortName',''))
+                      name=str(safe_get(gid,'name',''))
+                      units=str(safe_get(gid,'units',''))
+                      level=int(safe_get(gid,'level',-1))
+                      step=int(safe_get(gid,'step',-1))
+                      dataDate=int(safe_get(gid,'dataDate',0))
+                      dataTime=int(safe_get(gid,'dataTime',0))
+                      paramId=int(safe_get(gid,'paramId',-1))
+                      typeOfLevel=str(safe_get(gid,'typeOfLevel',''))
+                      lats=codes_get_array(gid,'latitudes')
+                      lons=codes_get_array(gid,'longitudes')
+                      vals=codes_get_array(gid,'values')
                       pts=[]
                       for la,lo,v in zip(lats,lons,vals):
-                          if lo>180: lo-=360
-                          pts.append((round(float(la),6),round(float(lo),6),float(v)))
-                      target_lat=42.256; target_lon=-83.709; by={(la,lo):v for la,lo,v in pts}
-                      lat0,lat1=42.0,42.4; lon0,lon1=-84.0,-83.6
-                      needed=[(lat0,lon0),(lat0,lon1),(lat1,lon0),(lat1,lon1)]
-                      if all(k in by for k in needed):
-                          fy=(target_lat-lat0)/(lat1-lat0); fx=(target_lon-lon0)/(lon1-lon0)
-                          v=(1-fy)*((1-fx)*by[(lat0,lon0)]+fx*by[(lat0,lon1)])+fy*((1-fx)*by[(lat1,lon0)]+fx*by[(lat1,lon1)])
-                          interpolation='bilinear_four_native_nodes'
+                          lo=float(lo)
+                          if lo > 180:
+                              lo -= 360
+                          pts.append((round(float(la),6),round(lo,6),float(v)))
+                      by={(la,lo):v for la,lo,v in pts}
+                      ulats=sorted(set(la for la,_,_ in pts))
+                      ulons=sorted(set(lo for _,lo,_ in pts))
+                      lo_lats=[x for x in ulats if x <= target_lat]
+                      hi_lats=[x for x in ulats if x >= target_lat]
+                      lo_lons=[x for x in ulons if x <= target_lon]
+                      hi_lons=[x for x in ulons if x >= target_lon]
+                      interpolation='nearest'
+                      if lo_lats and hi_lats and lo_lons and hi_lons:
+                          lat0=max(lo_lats); lat1=min(hi_lats)
+                          lon0=max(lo_lons); lon1=min(hi_lons)
+                          needed=[(lat0,lon0),(lat0,lon1),(lat1,lon0),(lat1,lon1)]
+                          if all(k in by for k in needed):
+                              fy=0.0 if lat1==lat0 else (target_lat-lat0)/(lat1-lat0)
+                              fx=0.0 if lon1==lon0 else (target_lon-lon0)/(lon1-lon0)
+                              value=(1-fy)*((1-fx)*by[(lat0,lon0)]+fx*by[(lat0,lon1)]) + fy*((1-fx)*by[(lat1,lon0)]+fx*by[(lat1,lon1)])
+                              interpolation='bilinear_native_nodes' if lat1!=lat0 and lon1!=lon0 else 'native_or_linear'
+                          else:
+                              la,lo,value=min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2)
                       else:
-                          la,lo,v=min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2); interpolation='nearest_fallback'
-                      rows.append({'shortName':short,'modelLevel':level,'baseDate':dataDate,'baseTime':dataTime,'leadHour':step,'valueAnnArbor':v,'interpolation':interpolation})
+                          la,lo,value=min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2)
+                      records.append({
+                          'baseDate':dataDate,'baseTime':dataTime,'leadHour':step,'modelLevel':level,
+                          'shortName':short,'name':name,'paramId':paramId,'units':units,'typeOfLevel':typeOfLevel,
+                          'valueAnnArbor':value,'interpolation':interpolation,
+                          'gridLatitudes':';'.join(map(str,ulats)),'gridLongitudes':';'.join(map(str,ulons)),
+                      })
                   finally:
                       codes_release(gid)
-          rows.sort(key=lambda r:(r['leadHour'],r['shortName'],r['modelLevel']))
-          with open('cams-output/ann_arbor_profile.csv','w',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)
-          summary={'records':len(rows),'shortNames':sorted(set(r['shortName'] for r in rows)),'levels':sorted(set(r['modelLevel'] for r in rows)),'leadHours':sorted(set(r['leadHour'] for r in rows))}
-          pathlib.Path('cams-output/profile_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
-          print(json.dumps(summary,sort_keys=True))
+
+          records.sort(key=lambda r:(r['leadHour'],r['shortName'],r['modelLevel']))
+          with (out/'ann_arbor_all_fields.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(records[0].keys()))
+              w.writeheader(); w.writerows(records)
+
+          bykey={(r['leadHour'],r['modelLevel'],r['shortName']):r for r in records}
+          shortnames=sorted(set(r['shortName'] for r in records))
+          names={s:sorted(set(r['name'] for r in records if r['shortName']==s)) for s in shortnames}
+          units={s:sorted(set(r['units'] for r in records if r['shortName']==s)) for s in shortnames}
+          # Identify fields by semantic name so this does not depend on ECMWF shortName spelling.
+          ext_records=[r for r in records if 'extinction' in r['name'].lower() and '532' in r['name']]
+          z_records=[r for r in records if r['shortName']=='z' or r['name'].lower()=='geopotential']
+          ext_map={(r['leadHour'],r['modelLevel']):r for r in ext_records}
+          z_map={(r['leadHour'],r['modelLevel']):r for r in z_records}
+          leads=sorted(set(r['leadHour'] for r in records))
+          profile=[]
+          summaries=[]
+
+          def trap_integral(points):
+              # points sorted as (height_m, beta_m-1)
+              total=0.0
+              for (z0,b0),(z1,b1) in zip(points[:-1],points[1:]):
+                  if math.isfinite(z0) and math.isfinite(z1) and math.isfinite(b0) and math.isfinite(b1) and z1>z0:
+                      total += 0.5*(max(b0,0.0)+max(b1,0.0))*(z1-z0)
+              return total
+
+          def integrate_to(points,cut):
+              total=0.0
+              for (z0,b0),(z1,b1) in zip(points[:-1],points[1:]):
+                  if z0>=cut: break
+                  if z1<=z0: continue
+                  upper=min(z1,cut)
+                  frac=(upper-z0)/(z1-z0)
+                  bupper=b0+frac*(b1-b0)
+                  total += 0.5*(max(b0,0.0)+max(bupper,0.0))*(upper-z0)
+                  if z1>=cut: break
+              return total
+
+          for lead in leads:
+              levels=sorted(set(level for (ld,level) in ext_map if ld==lead) & set(level for (ld,level) in z_map if ld==lead))
+              native=[]
+              for lev in levels:
+                  er=ext_map[(lead,lev)]; zr=z_map[(lead,lev)]
+                  beta=float(er['valueAnnArbor'])
+                  geop=float(zr['valueAnnArbor'])
+                  h=geop/g0
+                  native.append((lev,h,beta,er['units'],er['shortName']))
+              native.sort(key=lambda x:x[1])
+              if not native:
+                  continue
+              bottom_h=native[0][1]
+              pts=[]
+              for lev,h,beta,u,sn in native:
+                  agl=h-bottom_h
+                  anchored=262.0+agl
+                  pts.append((agl,beta))
+                  profile.append({
+                      'validHourUTC':lead,'modelLevel':lev,'extinctionShortName':sn,'extinctionUnits':u,
+                      'extinction532':beta,'nativeGeopotentialHeight_m':h,'heightAboveModelBottom_m':agl,
+                      'siteAnchoredAltitude_m':anchored,
+                  })
+              tau=trap_integral(pts)
+              peak=max(native,key=lambda x:x[2])
+              peak_agl=peak[1]-bottom_h
+              s={'validHourUTC':lead,'levelsPaired':len(native),'modelBottomNativeHeight_m':bottom_h,
+                 'integratedTau532_trapezoid':tau,'peakExtinction532':peak[2],'peakModelLevel':peak[0],
+                 'peakHeightAGL_m':peak_agl}
+              for km in [1,2,3,5,10]:
+                  part=integrate_to(pts,km*1000.0)
+                  s[f'tauFractionBelow{km}km']=part/tau if tau>0 else None
+              summaries.append(s)
+
+          if not profile:
+              raise SystemExit(f'Could not pair extinction/geopotential fields. shortNames={shortnames} names={names}')
+          with (out/'ann_arbor_cams_extinction532_profile.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(profile[0].keys()))
+              w.writeheader(); w.writerows(profile)
+          with (out/'ann_arbor_cams_extinction532_summary.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(summaries[0].keys()))
+              w.writeheader(); w.writerows(summaries)
+          summary={
+              'sourceArtifactId':9633131426,
+              'sourceArtifactDigest':'sha256:e3341e1391de71ea85591ec92caf9552b2729b924425523abedc98608077bb84',
+              'records':len(records),'shortNames':shortnames,'names':names,'units':units,
+              'leadHours':leads,'extinctionRecords':len(ext_records),'geopotentialRecords':len(z_records),
+              'profileRows':len(profile),'perLead':summaries,
+              'target':{'lat':target_lat,'lon':target_lon,'siteElevation_m':262.0},
+              'heightMapping':'native geopotential height divided by g0; AGL referenced to lowest paired CAMS model level; siteAnchoredAltitude=262m+AGL',
+          }
+          (out/'profile_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
           PY
           sha256sum cams-output/* > cams-output/SHA256SUMS.txt
-      - name: Upload retrieval evidence
-        if: always()
+
+      - name: Upload recovered profile
         uses: actions/upload-artifact@v4
         with:
-          name: taylor-cams-direct-extinction-retrieval-v1
+          name: taylor-cams-direct-extinction-profile-v1
           path: cams-output
           if-no-files-found: error
           retention-days: 90

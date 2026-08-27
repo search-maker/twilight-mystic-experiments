@@ -1,0 +1,205 @@
+name: Taylor CAMS 00Z analysis / 03Z forecast profile v1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+
+jobs:
+  retrieve:
+    if: github.head_ref == 'review/taylor-cams-analysis00-profile-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install ADS and GRIB tools
+        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes numpy
+
+      - name: Retrieve frozen analysis-00Z and forecast-03Z endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cams-profile
+          python - <<'PY'
+          import cdsapi, json, os, pathlib
+          out=pathlib.Path('cams-profile')
+          key=os.environ.get('ADS_API_KEY','').strip()
+          if not key:
+              raise SystemExit('ADS_API_KEY missing')
+          dataset='cams-global-atmospheric-composition-forecasts'
+          client=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False)
+          base={
+              'date':['2025-08-08/2025-08-08'],
+              'time':['00:00'],
+              'data_format':'grib',
+              'area':[42.4,-84.0,42.0,-83.6],
+          }
+          endpoints={
+              'analysis00':{'type':['analysis'],'leadtime_hour':['0']},
+              'forecast03':{'type':['forecast'],'leadtime_hour':['3']},
+          }
+          manifest={'dataset':dataset,'endpoints':{}}
+          for name,extra in endpoints.items():
+              ml={**base,**extra,
+                  'variable':['aerosol_extinction_coefficient_532nm','temperature','specific_humidity','geopotential','logarithm_of_surface_pressure'],
+                  'model_level':[str(i) for i in range(1,138)]}
+              aod={**base,**extra,
+                   'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm']}
+              mlfile=out/f'{name}_ext532_t_q_z_lnsp_ml1-137.grib'
+              aodfile=out/f'{name}_aod532_aod550.grib'
+              client.retrieve(dataset,ml,str(mlfile))
+              client.retrieve(dataset,aod,str(aodfile))
+              if not mlfile.is_file() or mlfile.stat().st_size==0:
+                  raise SystemExit(f'{name} model-level retrieval missing')
+              if not aodfile.is_file() or aodfile.stat().st_size==0:
+                  raise SystemExit(f'{name} AOD retrieval missing')
+              manifest['endpoints'][name]={'modelLevelRequest':ml,'aodRequest':aod,'modelLevelBytes':mlfile.stat().st_size,'aodBytes':aodfile.stat().st_size}
+              print(name,'ML_BYTES',mlfile.stat().st_size,'AOD_BYTES',aodfile.stat().st_size)
+          (out/'requests.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Reconstruct 137-level heights and extinction diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json, math, pathlib
+          import numpy as np
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_is_defined,codes_release
+
+          LAT=42.256; LON=-83.709; SITE_M=262.0; R_D=287.06; G=9.80665
+          out=pathlib.Path('cams-profile')
+
+          def safe(g,k,d=None):
+              try:
+                  if codes_is_defined(g,k): return codes_get(g,k)
+              except Exception: pass
+              return d
+
+          def point(g):
+              lats=codes_get_array(g,'latitudes'); lons=codes_get_array(g,'longitudes'); vals=codes_get_array(g,'values')
+              pts=[]
+              for y,x,v in zip(lats,lons,vals):
+                  x=float(x); x=x-360 if x>180 else x
+                  pts.append((round(float(y),6),round(x,6),float(v)))
+              by={(y,x):v for y,x,v in pts}; ys=sorted({p[0] for p in pts}); xs=sorted({p[1] for p in pts})
+              yl=[y for y in ys if y<=LAT]; yh=[y for y in ys if y>=LAT]; xl=[x for x in xs if x<=LON]; xh=[x for x in xs if x>=LON]
+              if yl and yh and xl and xh:
+                  y0=max(yl); y1=min(yh); x0=max(xl); x1=min(xh); need=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
+                  if all(k in by for k in need):
+                      fy=0 if y1==y0 else (LAT-y0)/(y1-y0); fx=0 if x1==x0 else (LON-x0)/(x1-x0)
+                      return (1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+              return min(pts,key=lambda p:(p[0]-LAT)**2+(p[1]-LON)**2)[2]
+
+          def read(path):
+              rows=[]; pv=None
+              with path.open('rb') as f:
+                  while True:
+                      g=codes_grib_new_from_file(f)
+                      if g is None: break
+                      try:
+                          rows.append({'short':str(safe(g,'shortName','')),'name':str(safe(g,'name','')),
+                                       'step':int(safe(g,'step',-1)),'level':int(safe(g,'level',-1)),
+                                       'units':str(safe(g,'units','')),'value':point(g)})
+                          if pv is None:
+                              try:
+                                  arr=codes_get_array(g,'pv')
+                                  if len(arr): pv=np.asarray(arr,float)
+                              except Exception: pass
+                      finally: codes_release(g)
+              return rows,pv
+
+          def trap(points):
+              return sum(.5*(max(b0,0)+max(b1,0))*(h1-h0) for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]) if h1>h0)
+
+          def part(points,cut):
+              ans=0.0
+              for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]):
+                  if h0>=cut: break
+                  if h1<=h0: continue
+                  hu=min(h1,cut); f=(hu-h0)/(h1-h0); bu=b0+f*(b1-b0)
+                  ans += .5*(max(b0,0)+max(bu,0))*(hu-h0)
+                  if h1>=cut: break
+              return ans
+
+          all_profiles=[]; summaries=[]
+          for endpoint in ['analysis00','forecast03']:
+              ml,pv=read(out/f'{endpoint}_ext532_t_q_z_lnsp_ml1-137.grib')
+              aod,_=read(out/f'{endpoint}_aod532_aod550.grib')
+              if pv is None: raise SystemExit(f'{endpoint}: hybrid pv missing')
+              n=len(pv)//2-1
+              if n!=137: raise SystemExit(f'{endpoint}: expected 137 levels, got {n}')
+              A=pv[:n+1]; B=pv[n+1:]
+              t={(r['step'],r['level']):r['value'] for r in ml if r['short']=='t' or r['name'].lower()=='temperature'}
+              q={(r['step'],r['level']):r['value'] for r in ml if r['short']=='q' or r['name'].lower()=='specific humidity'}
+              ext={(r['step'],r['level']):r['value'] for r in ml if 'extinction' in r['name'].lower() and '532' in r['name']}
+              z={(r['step'],r['level']):r['value'] for r in ml if r['short']=='z' or r['name'].lower()=='geopotential'}
+              lnsp={(r['step'],r['level']):r['value'] for r in ml if r['short']=='lnsp' or 'logarithm of surface pressure' in r['name'].lower()}
+              a532={r['step']:r['value'] for r in aod if r['short']=='aod532' or ('aerosol optical depth' in r['name'].lower() and '532' in r['name'])}
+              a550={r['step']:r['value'] for r in aod if r['short']=='aod550' or ('aerosol optical depth' in r['name'].lower() and '550' in r['name'])}
+              steps=sorted({s for s,l in ext})
+              if len(steps)!=1: raise SystemExit(f'{endpoint}: expected one step, got {steps}')
+              step=steps[0]
+              if any((step,l) not in t or (step,l) not in q or (step,l) not in ext for l in range(1,138)):
+                  raise SystemExit(f'{endpoint}: missing T/Q/ext levels')
+              if (step,1) not in z or (step,1) not in lnsp:
+                  raise SystemExit(f'{endpoint}: missing surface z/lnsp carrier')
+              if step not in a532 or step not in a550:
+                  raise SystemExit(f'{endpoint}: missing direct AOD')
+
+              sp=math.exp(lnsp[(step,1)]); surface_z=z[(step,1)]; surface_h=surface_z/G; zh=surface_z; comp={}
+              for lev in range(137,0,-1):
+                  tv=t[(step,lev)]*(1+0.609133*q[(step,lev)])
+                  ptop=A[lev-1]+B[lev-1]*sp; pbot=A[lev]+B[lev]*sp
+                  if lev==1: dlog=math.log(pbot/0.1); alpha=math.log(2.0)
+                  else: dlog=math.log(pbot/ptop); alpha=1-(ptop/(pbot-ptop))*dlog
+                  trd=tv*R_D; zf=zh+trd*alpha; zh=zh+trd*dlog
+                  comp[lev]=(zf/G,ptop,pbot)
+
+              pts=[(0.0,ext[(step,137)])]
+              for lev in range(137,0,-1):
+                  h,pt,pb=comp[lev]; agl=h-surface_h; beta=ext[(step,lev)]
+                  all_profiles.append({'endpoint':endpoint,'leadHour':step,'modelLevel':lev,'extinction532_m-1':beta,
+                                       'heightAGL_m':agl,'siteAnchoredAltitude_m':SITE_M+agl,'geopotentialHeight_m':h,
+                                       'fullLevelPressureApprox_Pa':.5*(pt+pb),'temperature_K':t[(step,lev)],'specificHumidity_kgkg':q[(step,lev)]})
+                  pts.append((agl,beta))
+              pts.sort(); ti=trap(pts); pk=max((ext[(step,l)],l,comp[l][0]-surface_h) for l in range(1,138))
+              s={'endpoint':endpoint,'leadHour':step,'surfacePressure_Pa':sp,'nativeSurfaceHeight_m':surface_h,
+                 'integratedExtinctionTau532':ti,'directCamsAOD532':a532[step],'directCamsAOD550':a550[step],
+                 'integrationToDirectAOD532Ratio':ti/a532[step] if a532[step]>0 else None,
+                 'peakExtinction532_m-1':pk[0],'peakModelLevel':pk[1],'peakHeightAGL_m':pk[2],
+                 'nonzeroLevelCount':sum(ext[(step,l)]>0 for l in range(1,138))}
+              for km in [.5,1,2,3,5,10]:
+                  k=str(km).replace('.','p'); s[f'tauFractionBelow{k}km']=part(pts,km*1000)/ti if ti>0 else None
+              summaries.append(s)
+
+          all_profiles.sort(key=lambda r:(r['endpoint'],r['heightAGL_m']))
+          with (out/'ann_arbor_cams_analysis00_forecast03_extinction532_profiles.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(all_profiles[0])); w.writeheader(); w.writerows(all_profiles)
+          with (out/'ann_arbor_cams_analysis00_forecast03_summary.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(summaries[0])); w.writeheader(); w.writerows(summaries)
+          meta={'schemaVersion':1,'status':'RETRIEVAL_ONLY_NO_TAYLOR_RESIDUALS_NO_MYSTIC',
+                'method':'ECMWF 137-model-level hydrostatic geopotential reconstruction using T/q/lnsp/surface-z and GRIB hybrid coefficients',
+                'site':{'lat':LAT,'lon':LON,'elevation_m':SITE_M},'endpoints':summaries,
+                'futureUseBoundary':'Only normalized vertical-shape interpolation may be considered later; Taylor-v1 row AOD remains frozen.'}
+          (out/'summary.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(meta,indent=2,sort_keys=True))
+          PY
+          sha256sum cams-profile/* > cams-profile/SHA256SUMS.txt
+
+      - name: Upload endpoint profiles
+        uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-analysis00-forecast03-profile-v1
+          path: cams-profile
+          if-no-files-found: error
+          retention-days: 90

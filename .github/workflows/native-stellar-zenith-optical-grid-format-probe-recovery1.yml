@@ -1,0 +1,158 @@
+name: Native stellar optical-grid format probe recovery1
+run-name: Native stellar optical-grid format probe recovery1 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - dispatch/native-stellar-zenith-optical-grid-format-probe-recovery1
+
+permissions:
+  contents: read
+
+env:
+  STAGE_DIR: review/native-stellar-zenith-v3
+  DISPATCH_PATH: review/native-stellar-zenith-v3/optical-grid-format-probe-recovery1-dispatch.json
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  UVSPEC_HELP_SHA256: 868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+  PRIOR_FAILED_RUN_ID: '33037957904'
+
+concurrency:
+  group: native-stellar-zenith-optical-grid-format-probe-recovery1
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact recovery dispatch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify single-use format-recovery boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = dispatch/native-stellar-zenith-optical-grid-format-probe-recovery1
+          git fetch origin main
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$DISPATCH_PATH"
+          python - <<'PY'
+          import json, os, subprocess
+          d=json.load(open(os.environ['DISPATCH_PATH'],encoding='utf-8'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          expected={
+            'schemaVersion':1,
+            'stageId':'native-stellar-zenith-optical-grid-format-probe-recovery1',
+            'status':'AUTHORIZED_ONE_SHOT_FORMAT_DISCOVERY_RECOVERY',
+            'baseMainSha':parent,
+            'recoveryOfRunId':33037957904,
+            'priorFailureReason':'WRITE_OPTICAL_PROPERTIES_REQUIRES_EXPLICIT_SOLAR_SOURCE_FILENAME',
+            'recoveryChangeScope':'solar-source-filename-only',
+            'scientificMethodChanged':False,
+            'scientificInputsChanged':False,
+            'observerElevationM':500.0,
+            'aod550':0.10,
+            'szaDeg':0.0,
+            'requestedWavelengthStartNm':380,
+            'requestedWavelengthEndNm':780,
+            'requestedWavelengthCount':401,
+            'protectedHoldoutOpeningAuthorized':False,
+            'modelFitAuthorized':False,
+            'stellarAcceptanceGateEvaluationAuthorized':False,
+            'productionAuthorized':False,
+            'githubRerunPermitted':False,
+          }
+          for k,v in expected.items():
+            if d.get(k)!=v: raise SystemExit(f'format-recovery dispatch mismatch {k}: {d.get(k)!r} != {v!r}')
+          PY
+
+      - name: Set up exact libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: native-stellar-optical-grid-format-probe-recovery1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify exact runtime and corrected renderer
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          UVHELP_SHA="$(python - <<'PY'
+          import hashlib, subprocess, shutil
+          u=shutil.which('uvspec'); r=subprocess.run([u,'-h'],capture_output=True,check=True)
+          print(hashlib.sha256(r.stdout+r.stderr).hexdigest())
+          PY
+          )"
+          test "$UVHELP_SHA" = "$UVSPEC_HELP_SHA256"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          test -d "$DATA_DIR"
+          test -f "$DATA_DIR/solar_flux/atlas_plus_modtran"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+          python - <<'PY'
+          import netCDF4
+          print('netCDF4', netCDF4.__version__)
+          PY
+          python "$STAGE_DIR/probe_vertical_optical_grid_format_recovery1.py"
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+
+      - name: Execute corrected one-shot full-grid format probe
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          GRID="$(pwd)/experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat"
+          test ! -e optical-format-probe-output
+          python "$STAGE_DIR/probe_vertical_optical_grid_format_recovery1.py" \
+            --execute --allow-execution \
+            --uvspec "$UVSPEC" \
+            --data-dir "$LIBRADTRAN_DATA" \
+            --atmosphere-file "$LIBRADTRAN_DATA/atmmod/afglus.dat" \
+            --wavelength-grid-file "$GRID" \
+            --output-dir optical-format-probe-output
+
+      - name: Preserve complete recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-stellar-zenith-optical-grid-format-probe-recovery1-${{ github.run_id }}
+          path: optical-format-probe-output/
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+
+      - name: Require only successful format discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          d=json.load(open('optical-format-probe-output/format-probe-summary.json'))
+          if d.get('stageId')!='native-stellar-zenith-optical-grid-format-probe-recovery1': raise SystemExit('recovery stage drift')
+          if d.get('status')!='FORMAT_PROBE_COMPLETED': raise SystemExit('format discovery did not complete')
+          if d.get('recoveryOfRunId')!=33037957904: raise SystemExit('recovery run binding drift')
+          if d.get('recoveryChangeScope')!='solar-source-filename-only': raise SystemExit('recovery scope drift')
+          if d.get('scientificMethodChanged') is not False or d.get('scientificInputsChanged') is not False: raise SystemExit('scientific-boundary drift')
+          if d.get('requestedWavelengthCount')!=401: raise SystemExit('wavelength count drift')
+          if 'output_dtauc' not in d.get('netcdf',{}).get('variables',{}): raise SystemExit('output_dtauc missing')
+          c=d.get('claimBoundary',{})
+          for key in ('protectedHoldoutOpened','modelFitPerformed','stellarAcceptanceGateEvaluated','productionAuthorized'):
+            if c.get(key) is not False: raise SystemExit(f'claim boundary drift: {key}')
+          print(json.dumps({
+            'status':d['status'],
+            'dimensions':d['netcdf']['dimensions'],
+            'outputDtauc':d['netcdf']['outputDtauc'],
+            'wavelengthSizedDimensions':d['netcdf']['wavelengthSizedDimensions'],
+            'hasUnique401Dimension':d['netcdf']['hasUnique401Dimension'],
+          },sort_keys=True))
+          PY

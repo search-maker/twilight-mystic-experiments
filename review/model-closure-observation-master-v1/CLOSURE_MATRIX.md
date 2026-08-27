@@ -2,20 +2,20 @@
 
 Status: **review-only master closure record**.
 
-Updated: **2026-08-27 after PRs #114, #118, #119 and Operational Atmosphere State v2 design PR #120**.
+Updated: **2026-08-27 after Operational Atmosphere State v2 merge and vertical-profile transport foundation merge**.
 
-This file does not change runtime, thresholds, `F`, `tau`, atmosphere values, Level-B support, production routing, or any empirical/human validation flag.
+This file does not change runtime, thresholds, `F`, `tau`, atmosphere values, Level-B support, production routing, or empirical/human validation flags.
 
-Its purpose is to keep one current source of truth separating:
+Purpose: keep one current source of truth separating:
 
 1. computationally strong/closed work;
-2. work that can still advance from independent external data;
-3. work requiring new empirical human/open-sky evidence;
-4. operational atmosphere acquisition/representation/mapping work that must not be confused with parameter fitting.
+2. already-completed aerosol science that must not be duplicated;
+3. remaining atmosphere acquisition/vertical-structure/fast-mapping work;
+4. work requiring new empirical real-sky or human evidence.
 
 ---
 
-## 0. Global governance
+## 0. Global governance — hard rules
 
 Do not choose or tune any of the following to move Jerusalem, Tishrei, Tammuz, or Taylor toward a desired result:
 
@@ -27,13 +27,11 @@ Do not choose or tune any of the following to move Jerusalem, Tishrei, Tammuz, o
 - SSA;
 - phase function / asymmetry parameter;
 - provider or model cycle;
-- sky offset;
+- sky/magnitude offset;
 - clock/minute offset;
 - threshold coefficients;
 - interpolation/support rule;
 - stop rule.
-
-External atmosphere or psychophysical evidence may select/freeze a candidate **before** target-event scoring.
 
 Additional hard rules:
 
@@ -50,6 +48,8 @@ Additional hard rules:
 - Pandora/Izaña remain unopened unless separately authorized.
 - matched-stellar v1 is obsolete.
 
+External atmosphere or psychophysical evidence may select/freeze a candidate **before** target-event scoring. Target residuals may not select the environmental state used to validate those same targets.
+
 ---
 
 # 1. Current GitHub status
@@ -58,8 +58,7 @@ Additional hard rules:
 
 `Route validated Level-B sky + stellar support through exact zenith`
 
-- merged into `main`;
-- exact physical 90 deg sky/stellar support is now routed through current main;
+- exact physical 90 deg sky/stellar support is routed through current main;
 - old <=80 deg behavior remains preserved;
 - exact-head broad verification passed;
 - production/real-sky/human validation claims remain closed.
@@ -70,111 +69,148 @@ Additional hard rules:
 
 `Make Level-B current-main test runnable from clean checkout`
 
-- merged into `main`;
-- fixes test/build lifecycle only;
-- no scientific/runtime behavior change.
+Software/test lifecycle only; no scientific/runtime behavior change.
 
 ## starsvisibility #119 — MERGED
 
 `Freeze Crumey Eq.34 transient equivalent-background transition diagnostic`
 
-Diagnostic-only baseline now frozen in `main`:
+Frozen diagnostic baseline:
 
 - local threshold maximum near `B = 0.021567318651 cd/m^2`;
 - local threshold minimum near `B = 0.047052552759 cd/m^2`;
 - threshold drop about `2.600936%`;
-- maximum formal local negative adaptation penalty about `-0.028613 mag`;
-- existing fail-closed negative-penalty behavior remains the current semantic baseline.
+- maximum formal local negative adaptation penalty about `-0.028613 mag`.
 
-This merge intentionally did **not** authorize a replacement transient mapping.
+No replacement transient mapping was authorized.
 
 ## starsvisibility #116 — OPEN / DO NOT MERGE YET
 
 `Fix transient negative-penalty topology artifact`
 
-The branch proposes replacing the negative-penalty fail-closed condition with an equilibrium/monotone floor and exposing raw/floored diagnostics.
+The branch proposes an equilibrium/monotone floor when the raw equivalent-background mapping produces a formal negative penalty. That semantic change is not yet scientifically closed.
 
-That proposal predates the merged #119 baseline and is not currently merge-ready.
-
-Before any merge, #116 must be reconciled with current `main`, #119 and issue #117. In particular:
+Before merge:
 
 1. characterize actual real Level-B `(physical B, adaptation debt, effective B)` trajectories;
-2. complete the #117 scientific decision about the equivalent-background mapping;
-3. justify any branch/state/threshold-space replacement from independent psychophysical evidence;
-4. preregister the shadow-only acceptance test before changing semantics;
-5. rerun the correct full post-decision timing audit;
-6. rerun exact-head parity/build on current main.
+2. complete issue #117's scientific decision about the equivalent-background mapping;
+3. justify any state/threshold-space replacement from independent psychophysical evidence;
+4. preregister the shadow-only acceptance test;
+5. rerun the correct post-decision timing audit and exact-head build.
 
-Until then, retain the current fail-closed guard. Do not merge #116 merely because its older parity/timing tests passed.
+Until then, do not merge #116 merely because its older tests passed.
 
-## starsvisibility #48 — OLD DRAFT; FOUNDATION PARTLY ALREADY IN MAIN
+## starsvisibility #48 — OLD DRAFT / DO NOT REPLAY WHOLE STACK
 
-`Add Level-B runtime integration foundation`
-
-Do **not** re-import or merge this old stack wholesale to obtain atmosphere acquisition.
-
-Current `main` already contains exact PR #48 byte identities for important v1 atmosphere/runtime foundation files, including:
+Important v1 foundation files originating in #48 are already in current `main`, including:
 
 - `atmosphere-state.mjs`;
 - `atmosphere-resolver.mjs`;
 - `aeronet-atmosphere.mjs`;
 - `open-meteo-cams-atmosphere.mjs`;
-- associated acquisition tests and Level-B foundation paths.
+- associated acquisition/runtime tests.
 
-The current site-wide regression explicitly hash-binds these PR #48-origin files.
+Current site-wide regression hash-binds these authoritative files. Re-importing #48 wholesale would duplicate/stack stale work.
 
-Therefore the remaining atmosphere work is **not** to recreate v1. It is to extend the authoritative current-main foundation into a richer reviewed v2 contract.
-
-## starsvisibility #120 — NEW DRAFT DESIGN
+## starsvisibility #120 — MERGED
 
 `Design Operational Atmosphere State v2`
 
-Review-only design based on current `main`.
+Merge commit: `0ef878a78f792edc7a484de8ace8a196be1543cb`.
 
-It separates:
+This is the accepted Gate-A design contract. It separates atmosphere acquisition, representation/QC, fast-model consumption, and validation.
 
-- atmosphere acquisition;
-- atmosphere representation/provenance;
-- physical quality control;
-- Level-B consumption/mapping;
-- validation of that fast mapping.
+## starsvisibility #121 — MERGED
 
-No runtime or production behavior is changed by #120.
+`Add Operational Atmosphere State v2 foundation`
+
+Reviewed exact application head: `de44958a62704c3236ff24294c0639b3868803aa`.
+
+Independent broad exact-head verifier:
+
+- repository: `twilight-mystic-experiments`;
+- dispatch PR #548, closed unmerged after evidence capture;
+- run `33094168008`, attempt 1, SUCCESS;
+- job `98594593383`, SUCCESS;
+- exact private application SHA hard-gated;
+- `uvspec` absent;
+- clean-checkout current-main PASS;
+- complete `test:level-b-parity` PASS, including `operational atmosphere state v2: PASS`;
+- full Pages/sitewide build PASS;
+- packaged stellar-v3.2 identity PASS;
+- final deployment marker bound to exact application SHA.
+
+Merge commit: `e0da52eb0a2d5bac333da6572f51df52ea7e676e`.
+
+**Important boundary:** v2 can now represent richer atmosphere components, but current Level-B does not yet consume vertical-profile/SSA/phase fields merely because they are present in the state.
+
+## twilight-mystic-experiments #549 — MERGED
+
+`Add reusable aerosol vertical-profile transport foundation`
+
+Merge commit: `76e232523f29cfc64d3c50c0b3e922aa59d1dfe7`.
+
+Dedicated solver-free CI:
+
+- run `33094636459`, SUCCESS;
+- job `98596212828`, SUCCESS.
+
+This foundation:
+
+- accepts an independently supplied nonnegative vertical aerosol shape;
+- remaps it onto explicit target atmosphere layer edges;
+- requires explicit outside-support behavior (`reject`, `zero`, or `edge`);
+- normalizes only the transported/above-observer layer distribution;
+- renders libRadtran lower-bound `aerosol_file tau` convention;
+- keeps total column AOD completely separate;
+- records deterministic source identity.
+
+It does **not** select a physical profile or change Level-B.
+
+## twilight-mystic-experiments #550 — OPEN CAPABILITY GATE
+
+`Check OPAC plus custom vertical tau exact-runtime compatibility`
+
+Review/parser-only question:
+
+Can the exact locked libRadtran/OPAC runtime accept one input that keeps a coherent OPAC spectral/phase aerosol family fixed while supplying a custom normalized `aerosol_file tau` vertical profile and separately normalizing AOD550?
+
+Only `uvspec -c` is authorized. No MYSTIC/scientific solver, seed, ordinal, profile selection, Taylor/Jerusalem scoring, or production change.
+
+Do not freeze a new vertical-profile MYSTIC campaign until this capability question is terminal.
 
 ---
 
-# 2. Solar twilight / MYSTIC / Level-B
+# 2. Solar twilight / direct MYSTIC / Level-B
 
 ## Status
 
-**Direct MYSTIC twilight physics: computationally strong; real-sky validation partial.**
+**Direct MYSTIC twilight physics: computationally strong; empirical real-sky validation still partial.**
 
-The present evidence does not support a simple large defect in spherical MYSTIC twilight physics as the explanation for the broad timing concern.
+Existing evidence does not support a simple large universal defect in spherical MYSTIC twilight physics.
 
 Exact-event Level-B vs direct-MYSTIC comparisons do not have one universal sign:
 
-- Tishrei direct MYSTIC was darker than Level-B at the determining directions;
+- Tishrei direct MYSTIC was darker than Level-B at determining directions;
 - Tammuz had mixed spatial sign.
 
-Therefore do not add a universal Level-B sky magnitude correction.
+Therefore do not add a universal Level-B sky correction.
 
-Taylor Ann Arbor is one valuable independent real-SQM consistency case for **direct MYSTIC**, not a direct validation of Level-B or human first-seeing.
+Taylor Ann Arbor is a valuable independent real-SQM consistency case for **direct MYSTIC**, not a direct validation of Level-B or human first-seeing.
 
 ---
 
-# 3. Taylor — authoritative current interpretation
+# 3. Taylor — authoritative interpretation
 
-The current conclusion is **not**:
-
-> We know the exact Taylor atmosphere.
+The current conclusion is not that the exact Taylor atmosphere is known.
 
 The current conclusion is:
 
 > Direct MYSTIC is broadly consistent with Taylor, and independently constrained aerosol vertical structure removed much of the former onset-region discrepancy.
 
-## Vertical-profile result — #508
+## Vertical-profile finding — #508
 
-In the original-SQM 380–780 nm calculation, total AOD, geometry, pressure, calibration and the other frozen inputs were retained while the normalized aerosol vertical extinction shape was replaced by the independently obtained CAMS shape.
+In the original-SQM 380–780 nm calculation, total AOD, geometry, pressure, calibration and other frozen inputs were retained while the normalized aerosol vertical extinction shape was replaced by independently obtained CAMS shape information.
 
 Important onset-region changes:
 
@@ -183,15 +219,15 @@ Important onset-region changes:
 
 No SQM offset or AOD was fitted to Taylor.
 
-This strongly supports a material role for aerosol vertical distribution. It does **not** prove that the exact Taylor atmosphere is known.
+This proves vertical aerosol distribution can be materially important. It does not prove the exact Taylor atmosphere.
 
-## Monte-Carlo numerical uncertainty — #535
+## Numerical uncertainty — #535 / #529
 
-Do not use the old broadband `mc.rad.std.spc` as a calibrated between-seed uncertainty estimator.
+Do not use old broadband `mc.rad.std.spc` as a calibrated between-seed uncertainty estimator.
 
-Empirical single-run scatter from the dedicated multi-seed screen is approximately:
+Empirical single-run scatter grows late:
 
-- row1 `0.00264 mag`;
+- row1 about `0.00264 mag`;
 - row5 `0.00517`;
 - row9 `0.00709`;
 - row13 `0.00801`;
@@ -200,68 +236,114 @@ Empirical single-run scatter from the dedicated multi-seed screen is approximate
 - row24 `0.0704`;
 - row25 `0.0906`.
 
-Taylor repeatability remains about `0.06215 mag`.
-
-Thus numerical uncertainty is small through much of the early/middle primary interval and becomes material late. No blanket high-photon rerun of the entire dataset is justified.
-
-## Late residuals / AOD derivative — #529
-
-Six-seed 200k central residuals for rows 23–25 are approximately:
+Six-seed 200k central residuals rows 23–25 are approximately:
 
 - `+0.08544`;
 - `+0.17350`;
 - `+0.17696 mag`.
 
-Those late rows are not compelling standalone inconsistencies after the proper partial uncertainty treatment.
+The reconverged AOD finite-difference derivative remains unresolved. Do not reuse the former large late-row derivative as precise physical sensitivity. Do not blanket-rerun all Taylor rows at high photons.
 
-The reconverged AOD finite-difference derivative remains **unresolved**. Do not reuse the former large late-row AOD derivative as a precise physical sensitivity.
+## CAMS provenance boundary — #536
 
-## CAMS provenance — #536
-
-Same-cycle CAMS spectral column optics were physically sensible around Taylor, approximately:
+Same-cycle CAMS column/spectral optics near Taylor were plausible, approximately:
 
 - AOD550 `0.31–0.32`;
 - SSA550 about `0.95`;
 - `g550` about `0.71`;
 - Angstrom alpha about `1.28`.
 
-But direct forecast00 vertical extinction returned 137 exact zero coefficients at 355/532/1064 nm despite nonzero column AOD. Forecast03 profiles were valid and integrated consistently with column AOD.
+But forecast00 direct vertical extinction returned 137 exact zero coefficients despite nonzero column AOD. Forecast03 profiles were valid and integrated consistently with column AOD.
 
 Therefore:
 
-- valid column information does not automatically validate a vertical product;
-- forecast00 must not be interpreted as a real aerosol-free profile;
-- prior-cycle and same-cycle vertical information are not interchangeable without explicit provenance;
-- applying column SSA/g uniformly with altitude would be a new approximation and must be labeled as such;
-- do not label another run “direct same-cycle full CAMS atmosphere” unless the missing vertical information is genuinely resolved.
+- valid column information does not validate a vertical component automatically;
+- all-zero forecast00 vertical extinction must not be interpreted as real aerosol-free air;
+- prior-cycle and same-cycle profiles are not interchangeable without explicit provenance;
+- column SSA/g applied uniformly with altitude is a new approximation and must be labeled;
+- another run must not be called “direct same-cycle full CAMS atmosphere” unless the vertical information is genuinely resolved.
 
-## Taylor atmosphere search
+## Independent Taylor atmosphere search
 
-Independent atmosphere searches (EarthCARE/ATLID, lidar/ceilometer, AERONET and other independent archives) are a separate lane.
+EarthCARE/ATLID, ground lidar/ceilometer, AERONET and other genuinely independent archives remain valuable.
 
-If new evidence is found:
+Before scoring any new Taylor result:
 
-1. freeze source/product/cycle/time/distance/quality rules first;
+1. freeze source/product/cycle/time/distance/quality rules;
 2. archive exact provenance;
 3. determine source independence;
-4. decide scientifically how the quantity may enter MYSTIC;
-5. only then score Taylor residuals.
+4. decide scientifically how the quantity enters MYSTIC;
+5. only then inspect residuals.
 
-Never select the source/cycle/profile because it fits Taylor better.
+Never choose a source/cycle/profile because it fits Taylor better.
 
 ---
 
-# 4. Operational Atmosphere State v2 — major current workstream
+# 4. Aerosol optical-property / family science — ALREADY COMPLETED, DO NOT DUPLICATE
 
-Taylor demonstrated operationally that total AOD alone is not enough for maximum-accuracy twilight work.
+The older handoff incorrectly left SSA/phase/family sensitivity as generic future work. That is stale.
 
-The project now requires a location/time-dependent physical atmosphere state for requested:
+## AOPS v1 — ordinal 37 — CLOSED FOR CONTROLLED SSA/g SENSITIVITY
 
-`location + elevation + date + time`.
+At fixed AOD, controlled SSA and scalar-g sensitivity was executed over the frozen geometry/AOD design.
 
-Draft design lives in `starsvisibility #120`.
+Key interpretation:
 
-## v2 should be able to represent, when available
+- increased SSA brightened the twilight sky in all tested cells and made Level-B visibility less favorable;
+- scalar-g effects were geometry/context dependent;
+- interactions were not universal.
+
+This is a controlled sensitivity result, not a climatological aerosol prior.
+
+Do not rerun a generic constant-SSA/constant-g screen.
+
+## AFPF v1 — ordinal 38 — CLOSED FOR FULL OPAC PHASE/FAMILY SENSITIVITY
+
+Realistic wavelength-dependent OPAC aerosol-family/full-phase-function challenge was completed.
+
+Key interpretation:
+
+- family/phase effects are materially geometry dependent;
+- full phase-function behavior cannot be reduced to one universal scalar `g` correction;
+- OPAC states are physical scenario states, not probabilities for a location.
+
+Do not reopen a generic phase-function/family campaign.
+
+## ASIV v1 — ordinal 39 — CLOSED FOR CURRENT SCALAR/DERIVED LEVEL-B SCENARIO TRANSPORT
+
+Fresh holdout interpolation validation passed the frozen scalar and derived Level-B gates.
+
+Representative Level-B error metrics:
+
+- mean absolute error about `0.03635 mag`;
+- median about `0.03132 mag`;
+- worst about `0.14838 mag`.
+
+Full-spectrum aerosol interpolation was **not** validated by ordinal 39 and remains outside the claim.
+
+## starsvisibility PR #100 — MERGED SHADOW-ONLY SCENARIO ENVELOPE
+
+The five-state Tier-0 aerosol scenario envelope is already implemented and exact-head verified in shadow-only form.
+
+It preserves:
+
+- native baseline;
+- exact five-state scenario enumeration;
+- no aerosol-family probabilities;
+- no single-family selection from AOD alone;
+- fail-closed OOD behavior;
+- Level-B recomputation from scenario photopic background;
+- production/UI activation false.
+
+Therefore the remaining aerosol problem is **not** “how do we model SSA/phase/family at all?”
+
+The primary new physical gap is **vertical aerosol structure**, together with richer real-atmosphere acquisition and a validated fast mapping that can consume it.
+
+---
+
+# 5. Operational Atmosphere State v2 — CURRENT FOUNDATION
+
+The merged v2 state can represent, when available:
 
 ### Column aerosol
 
@@ -271,383 +353,250 @@ Draft design lives in `starsvisibility #120`.
 
 ### Vertical aerosol
 
-- extinction profile vs altitude and wavelength;
-- backscatter/profile quantities when scientifically useful;
-- normalized vertical optical-depth distribution only when legitimately derivable;
-- vertical resolution/reference and quality flags.
+- extinction/backscatter/profile quantities;
+- altitude/reference/resolution;
+- quality and provenance;
+- normalized optical-depth shape only when legitimately derivable.
 
 ### Optical properties
 
 - SSA spectrum;
-- phase function / asymmetry representation;
-- aerosol type/classification provenance;
-- vertical applicability of any column optical property.
+- phase-function/asymmetry representation;
+- aerosol classification;
+- vertical applicability of column properties.
 
-### Molecular atmosphere
+### Molecular/surface/cloud state
 
-- pressure/profile identity;
-- temperature profile where justified;
-- Rayleigh/molecular-column identity;
-- ozone, water vapor and other admitted absorbers.
+- pressure/temperature/profile identity;
+- ozone/water vapor/other admitted absorbers;
+- surface elevation/albedo;
+- explicit cloud status and provenance.
 
-### Surface
+### Provenance/QC
 
-- ground/source elevation;
-- relevant spectral/band albedo information.
+Every material component may retain service provider, underlying scientific source, product/version, source type, valid time, cycle/lead, source location/elevation, space/time mismatch, resolution, wavelength coverage, interpolation, quality flags, uncertainty, fallback/rejection history and reproducible identity.
 
-### Clouds
-
-- explicit clear/contaminated/unknown status;
-- cloud height/optical properties only where separately admissible;
-- clear-sky calculations remain fail-closed when cloud contamination is material.
-
-### Provenance / quality
-
-Every material component should retain:
-
-- service provider;
-- underlying scientific source;
-- product/version/processing level;
-- measured/model/forecast/reanalysis/satellite/climatology status;
-- valid time;
-- model/retrieval cycle and forecast lead;
-- source location/elevation;
-- spatial/temporal mismatch;
-- horizontal/vertical resolution;
-- wavelength coverage;
-- interpolation;
-- native/project quality flags;
-- uncertainty;
-- fallback/rejection history;
-- reproducible artifact/request identity.
-
-Service provider and underlying scientific source must remain distinct. Two APIs republishing CAMS do not create two independent atmosphere constraints.
-
-## Incomplete state is allowed
-
-A state with good AOD but no valid vertical profile is an incomplete state, not an excuse to fabricate a profile.
-
-Downstream consumers must decide whether the available components support the requested claim tier.
-
-## Physical QC is mandatory
-
-Examples:
-
-- negative AOD/extinction -> reject;
-- nonzero column AOD + all-zero vertical extinction -> reject vertical component;
-- integrated vertical extinction grossly inconsistent with column AOD -> reject or preserve an explicit conflict;
-- missing/invalid altitude coordinate -> reject affected component;
-- excessive station/grid elevation mismatch -> reject under frozen policy;
-- excessive time/space mismatch -> reject under frozen policy;
-- stale data -> reject where freshness is required;
-- SSA outside `[0,1]` -> reject;
-- AOD-only aerosol-family inference -> forbidden;
-- column SSA/g used at all heights -> mark as approximation;
-- cloud contamination for a trusted clear-sky calculation -> fail closed.
+A partially known atmosphere is a valid **incomplete** state. It is not permission to fabricate missing components.
 
 ---
 
-# 5. Four separate atmosphere problems — do not collapse them
+# 6. Four atmosphere problems — keep separate
 
-The project must keep these distinct:
+## A. Acquire the atmosphere
 
-## A. Acquire the actual atmosphere
-
-Find admissible measured/satellite/model/reanalysis/climatological components for the requested location/time.
+Find the best admissible measured/satellite/model/reanalysis/climatological components for requested location/elevation/date/time.
 
 ## B. Represent it faithfully
 
-Store the components, missingness, conflicts, uncertainties, source lineage and space/time mismatch without fabrication.
+Store provenance, uncertainty, missingness and conflicts without fabrication.
 
-## C. Feed it into the fast model
+## C. Map it into the fast model
 
-Current Level-B is not an arbitrary-profile radiative-transfer engine. A richer atmosphere state does not automatically mean the fast model uses all of it.
+Current Level-B is not an arbitrary-profile radiative-transfer engine. A rich v2 state does not automatically mean all fields affect the prediction.
 
-A separately validated mapping is needed. Candidate architectures may include:
+## D. Validate that fast mapping
 
-- parameterized vertical-profile corrections;
-- expanded surrogate dimensions;
-- a small physically selected aerosol/profile basis;
-- hybrid precomputed/direct radiative-transfer tables;
-- separate treatment of column optics and normalized profile shape.
+Any richer mapper must be checked against direct MYSTIC on held-out atmosphere states and later against independent real-sky evidence.
 
-No architecture is selected merely by the v2 schema.
-
-## D. Validate the fast mapping
-
-Any new fast atmosphere mapping must be checked against direct MYSTIC on held-out atmosphere states and later against independent real-sky evidence.
-
-This is separate from provider acquisition success.
+Do not call provider acquisition success a Level-B physical validation.
 
 ---
 
-# 6. Environment sensitivity program
+# 7. Remaining vertical-profile program — PRIMARY CURRENT PHYSICS GAP
 
-Before adding new runtime dimensions, use externally defined/preregistered ranges and quantify effects on:
+Taylor established that vertical aerosol shape can matter materially. The project now has generic, tested transport mechanics (#549), but not yet a generalized independently preregistered vertical-profile MYSTIC sensitivity campaign.
 
-- sky radiance;
-- limiting magnitude;
-- event timing;
-- support/OOD behavior;
-- runtime dimensional cost.
+The next sequence is:
 
-Priority dimensions:
+1. close #550 exact-runtime capability for fixed OPAC optics + custom `aerosol_file tau`;
+2. select a deliberately small vertical-profile universe from independent published/standard physical profiles — **not Taylor/Jerusalem residuals**;
+3. freeze geometry/AOD/profile states, spectrum, observer elevation, CRN groups, photon budget, endpoints and acceptance/reporting rules before opening results;
+4. execute direct MYSTIC profile-shape isolation at fixed total AOD and fixed optical-property family;
+5. quantify effect on photopic/scotopic/Johnson-V sky channels and derived Level-B limiting magnitude;
+6. only if material, design a fast Level-B vertical-profile mapper or set-valued profile envelope;
+7. validate that mapper against held-out direct-MYSTIC states.
 
-1. normalized aerosol vertical profile;
-2. spectral AOD / Angstrom behavior;
-3. SSA;
-4. phase function / `g`;
-5. profile x optical-property interactions.
+A good scientific question is:
 
-Then audit before promotion:
+> At fixed total column AOD and fixed aerosol spectral/phase optical properties, how much does independently specified normalized aerosol vertical optical-depth shape change twilight radiance and derived Level-B quantities across the supported geometry domain?
 
-- pressure/molecular state;
-- temperature profile;
-- ozone;
-- water vapor;
-- surface albedo;
-- humidity-dependent aerosol optical behavior.
-
-Do not choose sensitivity ranges from Taylor or Jerusalem residuals.
+Do not infer the answer from Taylor alone.
 
 ---
 
-# 7. Stellar direct atmospheric transport
+# 8. Spectral aerosol transport boundary
 
-## Status: computationally strong for the current question
+ASIV ordinal 39 validated scalar and derived Level-B scenario transport, not arbitrary full-spectrum aerosol interpolation.
+
+Current scalar/Level-B shadow scenario envelope does not require a full-spectrum production claim.
+
+If a future feature needs full spectrum or color-sensitive aerosol outputs from arbitrary real atmosphere states, that requires a separate frozen spectral validation program. Do not silently promote current scalar ASIV PASS into a full-spectrum PASS.
+
+---
+
+# 9. Stellar direct atmospheric transport
+
+Status: **computationally strong for the current question**.
 
 Matched/native stellar direct-transport differences under ordinary supported geometries are generally seconds-scale in event timing, not a generic several-minute effect.
 
 Low-altitude/red-star cases can be larger and should be reported individually.
 
-Do not confuse stellar direct-beam transport with aerosol effects on twilight **sky scattering**, where vertical aerosol structure has demonstrated a much larger effect in Taylor.
+Do not confuse stellar direct-beam transport with aerosol effects on twilight **sky scattering**, where vertical structure has demonstrated a much larger Taylor effect.
 
 Do not reopen stellar transport as an untargeted place to seek a large correction.
 
 ---
 
-# 8. Human point-source threshold / F
+# 10. Human point-source threshold / F
 
-Crumey/Blackwell applicability is reasonably supported as a point-source threshold foundation, but modern naked-eye first-seeing is not empirically validated for the project population/task.
+Crumey/Blackwell remains a reasonable threshold foundation, but modern naked-eye first-seeing is not empirically validated for the project population/task.
 
 Keep `F = 3.14` pending independent human evidence.
 
-Lowering F makes stars visible earlier and therefore cannot repair an already-too-early timing concern.
+Lowering F makes stars visible earlier and cannot repair an already-too-early concern.
 
-Do not recalibrate F from Jerusalem or Taylor.
-
----
-
-# 9. Transient adaptation
-
-## Current status
-
-- runtime exists but is experimental/shadow-only;
-- `tau = 30 s` remains experimental, not physiologically calibrated;
-- #119 freezes the exact Eq.34 non-monotonic diagnostic;
-- #117 remains the governing physical question;
-- #116 is not merge-ready.
-
-The key unresolved question is whether waning-adaptation debt should be represented by direct added equivalent luminance through Eq.34, by threshold-space/state-aware mapping, or another externally supported construction.
-
-Current external evidence supports:
-
-- history dependence;
-- darkening-rate dependence;
-- local-dominant adaptation;
-- smaller surrounding-field influence;
-- non-universal recovery dynamics.
-
-The current target-direction photopic adaptation-field history is an experimental simplification, not a validated open-sky adaptation kernel.
-
-Do not choose the adaptation field or tau from Jerusalem event times.
+Do not calibrate F from Jerusalem or Taylor.
 
 ---
 
-# 10. Spillmann curves
+# 11. Transient adaptation
 
-Exact external dynamic-adaptation fitting remains blocked until reproducible source figure bytes/data are available.
+Status: **runtime exists; experimental/shadow-only; physiological mapping open**.
 
-Do not digitize from OCR, prose or guessed coordinates.
+- #119 freezes Eq.34 non-monotonic diagnostics;
+- #117 governs the unresolved physical mapping question;
+- #116 is not merge-ready;
+- `tau=30 s` remains experimental, not calibrated.
 
-If reproducible figure data become available:
+External evidence supports history dependence, rate dependence, local-dominant adaptation, smaller surrounding-field influence and non-universal dynamics.
 
-1. archive source/provenance;
+Current target-direction adaptation history is an experimental simplification, not a validated open-sky adaptation kernel.
+
+Do not select tau or adaptation-field semantics from Jerusalem timing.
+
+---
+
+# 12. Spillmann / dynamic-adaptation curves
+
+Exact external curve fitting remains blocked until reproducible source figure bytes/data are available.
+
+Do not digitize from OCR/prose/guessed coordinates.
+
+If reproducible data become available:
+
+1. archive exact source/provenance;
 2. calibrate axes/pixels;
-3. digitize reproducibly;
-4. quantify digitization error;
-5. fit external psychophysical data only;
-6. freeze candidate;
-7. only afterward run project-event sensitivity.
-
-Do not copy the large laboratory maximum effect directly into natural twilight.
+3. digitize reproducibly with uncertainty;
+4. fit/select only against external data;
+5. freeze candidate mapping before project-event sensitivity.
 
 ---
 
-# 11. Mesopic / color
+# 13. Moon / natural night sky / artificial skyglow
 
-The standardized MES2 sensitivity lane is computationally small for the frozen Jerusalem cases:
+These remain important but secondary to the current vertical-atmosphere/fast-mapping work.
 
-- Tishrei about `+17.8 s`;
-- Tammuz `0 s`.
-
-It is not a broad multi-minute explanation.
-
-Do not activate it as validated human physiology and do not prioritize further Jerusalem color tuning.
+- Moon PR #459 remains non-production; finite disk, spectral and real-sky validation remain.
+- Natural-sky PR #460 remains non-production; no universal dark-sky floor.
+- Artificial skyglow requires directional physical radiance, not a single SQM/World-Atlas scalar.
+- Total-sky compositor foundations already exist; do not rebuild the compositor.
 
 ---
 
-# 12. Moon
+# 14. Remaining empirical gates
 
-Draft #459 remains incomplete.
+Even perfect computational atmosphere mapping does not close:
 
-ROLO source/MYSTIC contract exists, but remaining work includes:
+- independent twilight-radiance validation across multiple nights/sites/atmospheres;
+- human first-seeing calibration/validation;
+- transient adaptation in real open-sky search behavior;
+- late/total-sky validation once Moon/airglow/zodiacal/integrated-starlight/artificial light matter.
 
-- finite lunar disk treatment;
-- independent spectral cross-check;
-- scattered-moonlight validation;
-- real-sky validation;
-- production authorization.
-
-Do not wire Moon into trusted total sky yet.
+Keep calibration/training and final holdout evidence separate.
 
 ---
 
-# 13. Natural night sky
+# 15. Current priority order
 
-Draft #460 remains incomplete.
+## P0 — current active gate
 
-Preferred baseline direction remains GAMBONS.
+1. Finish #550 exact-runtime OPAC + custom-tau syntax capability.
+2. If PASS, close/merge the capability evidence only; if FAIL, diagnose the directive-composition boundary before any science.
 
-A constant dark-sky floor is forbidden.
+## P1 — next scientific design
 
-Need a provider with explicit location/time/direction/spectral-channel provenance and exclusion of Moon/artificial skyglow, with compatible atmosphere identity.
+3. Preregister a small independent vertical-profile shape universe.
+4. Freeze all numerical/scientific rules before result opening.
+5. Do **not** allocate seeds/ordinal until review and runtime surface are fixed.
+
+## P2 — direct MYSTIC vertical-profile isolation
+
+6. Execute once under fresh immutable scientific identity.
+7. Quantify sky-channel and derived Level-B sensitivity.
+8. Preserve raw spectrum/numerical uncertainty and CRN-paired contrasts.
+
+## P3 — fast model only if justified
+
+9. If vertical-profile sensitivity is material, design a Level-B mapper/profile-envelope basis.
+10. Validate on held-out direct-MYSTIC states before application integration.
+11. Keep production/default false pending empirical real-sky evidence.
+
+## Parallel non-duplicative work
+
+12. Continue independent Taylor atmosphere search (EarthCARE/ATLID/lidar/AERONET/etc.).
+13. Continue #117 transient mapping science.
+14. Continue Moon/natural/artificial providers when capacity permits.
 
 ---
 
-# 14. Artificial skyglow
-
-One zenith SQM or World Atlas value is not sufficient for arbitrary target direction.
-
-Future architecture must use either calibrated directional/all-sky information or physical propagation of emission inventories through the atmosphere.
-
-Do not invent an altitude/azimuth correction to improve event times.
-
----
-
-# 15. Total sky compositor
-
-Architecture is already merged in #112 and supports Solar/Moon/Natural/Artificial components in common physical channels with atmosphere identity and fail-closed semantics.
-
-Do not rebuild it.
-
-Remaining work is to provide separately admissible component providers.
-
----
-
-# 16. What not to do next
+# 16. Do NOT do next
 
 Do not:
 
-- lower `F` to repair timing;
-- choose tau from Jerusalem;
-- add universal sky or clock offsets;
-- choose AOD/profile/provider/cycle from Taylor residuals;
-- choose aerosol family from AOD alone;
-- hide missing atmosphere under `aerosol_default`;
-- call modeled data measurements;
-- count a CAMS republisher as independent CAMS evidence;
-- promote HRRR smoke mass directly to calibrated optical extinction;
-- treat CAMS forecast00 all-zero extinction as a real aerosol-free profile;
-- apply column SSA/g uniformly with height without an explicit approximation flag;
-- reuse the former Taylor `+0.393 mag` discrepancy as stable;
-- reuse the former large late-row AOD derivative as resolved;
-- run blanket high-photon Taylor reruns;
-- reopen the 90 deg MYSTIC/stellar campaign;
-- merge #116 from its old evidence alone;
-- silently treat solar-only sky as total sky;
-- enable unfinished Moon/Natural/Artificial providers as trusted production values.
+- lower `F`;
+- tune tau from Jerusalem;
+- fit AOD/profile/provider/cycle to Taylor;
+- add universal sky or time offsets;
+- infer aerosol family from AOD;
+- fabricate vertical structure;
+- label modeled fields measurements;
+- count CAMS republishers as independent evidence;
+- convert HRRR smoke mass directly to calibrated aerosol extinction;
+- accept all-zero CAMS extinction as aerosol-free air;
+- apply column SSA/g vertically without labeling the approximation;
+- reuse the old Taylor `+0.393 mag` discrepancy as current truth;
+- reuse the old Taylor AOD derivative;
+- blanket-rerun Taylor at high photons;
+- reopen zenith work;
+- rerun generic SSA/g sensitivity (AOPS already did it);
+- rerun generic full phase/family sensitivity (AFPF already did it);
+- rebuild basic aerosol-family interpolation (ASIV + starsvisibility #100 already did it);
+- imply ASIV scalar PASS is full-spectrum validation;
+- merge #116 before #117 science;
+- imply Atmosphere State v2 richer fields already affect Level-B;
+- activate Moon/natural/artificial components as trusted production defaults without their own gates.
 
 ---
 
-# 17. Current priority order
+# 17. Central current conclusion
 
-## P0
+The project is not presently showing evidence of a gross basic failure of spherical MYSTIC twilight physics.
 
-1. **Keep this #539 closure matrix current** as the single master record.
-2. **Review/freeze Operational Atmosphere State v2** in `starsvisibility #120`.
-3. **Complete the current-main vs #48 audit** without duplicating foundation already in main.
-4. **Reconcile #116 against #119/#117/current main** before any semantic merge.
+The main operational lesson from Taylor is stronger and more useful:
 
-## P1
+> Accurate twilight prediction requires both a sound radiative-transfer model and sufficiently accurate knowledge of the real atmosphere, including vertical aerosol structure when it is material.
 
-5. Run preregistered environmental-dimension sensitivity studies.
-6. Design and validate the fast Level-B atmosphere mapping separately from data acquisition.
-7. Preserve/close Taylor evidence across #508/#529/#535/#536/#487/#489 without duplicate campaigns.
-8. Continue #117 external-physiology/trajectory work.
-9. Continue Moon/Natural/Artificial non-observation provider work behind separate gates.
+The project has now moved beyond merely identifying that problem:
 
-## P2
+- v1 atmosphere acquisition exists in current main;
+- Operational Atmosphere State v2 design is merged;
+- Operational Atmosphere State v2 data/QC/provenance foundation is merged and broad exact-head verified;
+- general aerosol SSA/g/full-phase/family sensitivity and scalar fast-family interpolation are already closed for their stated scopes;
+- generic vertical-profile transport mechanics are merged and CI-verified.
 
-After the architecture/sensitivities are clear:
+The principal remaining computational atmosphere problem is now narrow and explicit:
 
-- implement richer atmosphere providers;
-- add component fusion/fallback only with reviewed compatibility rules;
-- add atmosphere confidence/completeness grades;
-- implement a validated fast profile/optical-property mapper;
-- expand total-sky component providers;
-- prepare all for later independent empirical validation.
+> **Quantify independently defined aerosol vertical-profile sensitivity at fixed column AOD and fixed rich optical properties, then build and validate a fast Level-B vertical-profile mapping only if that sensitivity justifies one.**
 
----
-
-# 18. Reporting contract
-
-Every new scientific/engineering work item should report:
-
-- repository;
-- issue/PR;
-- branch;
-- SHA;
-- exact scientific question;
-- exact inputs frozen before scoring;
-- whether Taylor/Jerusalem residuals were inspected before choosing parameters/source;
-- service provider;
-- underlying scientific source;
-- measured/modelled/forecast/reanalysis/satellite/climatology status;
-- exact valid time/cycle;
-- exact source location/grid/station;
-- spatial/temporal/elevation mismatch;
-- vertical coverage/resolution;
-- spectral coverage;
-- uncertainty;
-- quality flags;
-- workflow/run ID;
-- artifact/digest;
-- result;
-- remaining uncertainty;
-- whether production behavior changed;
-- whether this #539 master record needs another update.
-
----
-
-# 19. Central scientific conclusion
-
-The present evidence does **not** support a simple large error in basic MYSTIC twilight physics as the explanation for the project’s broad timing concern.
-
-Taylor has instead established an operationally crucial lesson:
-
-> Accurate twilight prediction requires both a validated radiative-transfer model and an accurate, independently constrained description of the actual atmosphere for that place and time.
-
-In particular, aerosol vertical structure can materially alter twilight radiance even when total column AOD is held fixed.
-
-The major non-observation objective is therefore:
-
-> **Build a rigorous location/time-dependent environmental state and a separately validated way for Level-B to consume it.**
-
-The project should ask:
-
-> Which physical quantities really vary from place to place and night to night, how much do they change the prediction, where can they be obtained independently, and how can the fast model consume them with explicit uncertainty?
-
-It should not ask:
-
-> Which parameter can we tweak until the desired time or residual appears?
+Production/default claims still require independent real-sky validation, and actual observer-visibility claims still require human evidence.

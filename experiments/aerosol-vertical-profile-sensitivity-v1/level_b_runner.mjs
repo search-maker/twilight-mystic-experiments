@@ -18,6 +18,10 @@ function die(message) {
   throw new Error(message);
 }
 
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
 function gitBlobSha1(filePath) {
   const data = fs.readFileSync(filePath);
   const header = Buffer.from(`blob ${data.length}\0`, 'utf8');
@@ -44,7 +48,7 @@ function parseArgs(argv) {
     if (!key?.startsWith('--') || value === undefined) die(`invalid argument sequence near ${key}`);
     out[key.slice(2)] = value;
   }
-  for (const key of ['input', 'human-threshold', 'output']) {
+  for (const key of ['input', 'input-sha256', 'human-threshold', 'output']) {
     if (!out[key]) die(`missing --${key}`);
   }
   return out;
@@ -60,6 +64,8 @@ const args = parseArgs(process.argv);
 const inputPath = path.resolve(args.input);
 const humanPath = path.resolve(args['human-threshold']);
 const outputPath = path.resolve(args.output);
+if (!/^[0-9a-f]{64}$/.test(args['input-sha256'])) die('input SHA-256 argument malformed');
+if (sha256File(inputPath) !== args['input-sha256']) die('Level-B input raw file SHA-256 drift');
 
 if (gitBlobSha1(humanPath) !== EXPECTED_HUMAN_THRESHOLD_GIT_BLOB) {
   die('bound human-threshold.mjs Git blob drift');
@@ -70,10 +76,6 @@ if (typeof human.limitingVMagnitude !== 'function') {
 }
 
 const input = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
-const storedHash = input?.contentSha256;
-const check = { ...input };
-delete check.contentSha256;
-if (storedHash !== canonicalSha256(check)) die('Level-B input self-hash drift');
 if (input?.stageId !== 'aerosol-vertical-profile-sensitivity-v1-verified-analysis-input') die('Level-B input stage drift');
 if (input?.status !== EXPECTED_STATUS) die('Level-B input status drift');
 if (input?.caseCount !== 360 || input?.groupCount !== 72 || input?.analysisCellCount !== 24) die('Level-B input cardinality drift');
@@ -133,6 +135,7 @@ const output = {
   humanThresholdGitBlobSha1: EXPECTED_HUMAN_THRESHOLD_GIT_BLOB,
   humanThresholdModel: 'Crumey 2014 eq.34 full branch',
   executionDesignCanonicalSha256: input.executionDesignCanonicalSha256,
+  sourceAnalysisInputRawSha256: args['input-sha256'],
   sourceAnalysisInputContentSha256: input.contentSha256,
   pValuesPermitted: false,
   confidenceIntervalsPermitted: false,

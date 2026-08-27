@@ -1,0 +1,95 @@
+name: Taylor HRRR narrowband solver smoke v1
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/taylor-hrrr-narrowband-solver-smoke-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    if: github.head_ref == 'review/taylor-hrrr-narrowband-solver-smoke-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Download exact failed-v2 evidence for HRRR tau file
+        uses: actions/download-artifact@v4
+        with:
+          name: taylor-hrrr-vertical-v2-evidence
+          path: prior
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 33033204508
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: narrowband-smoke
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Execute two bounded technical MYSTIC calls
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA/atmmod/afglus.dat"
+          TAU="$(find prior -type f -name hrrr-shape-tau.dat -print -quit)"
+          test -n "$TAU"
+          GRID='0.262000 1.000000 2.000000 3.000000 4.000000 5.000000 6.000000 7.000000 8.000000 9.000000 10.000000 11.000000 12.000000 13.000000 14.000000 15.000000 16.000000 17.000000 18.000000 19.000000 20.000000 21.000000 22.000000 23.000000 24.000000 25.000000 27.500000 30.000000 32.500000 35.000000 37.500000 40.000000 42.500000 45.000000 47.500000 50.000000 55.000000 60.000000 65.000000 70.000000 75.000000 80.000000 85.000000 90.000000 95.000000 100.000000 105.000000 110.000000 115.000000 120.000000'
+          mkdir default custom
+          for mode in default custom; do
+            if [ "$mode" = default ]; then SEED=947023001; EXTRA=''; else SEED=947023002; EXTRA="aerosol_file tau $TAU"; fi
+            cat > "$mode/input.inp" <<EOF
+          data_files_path $DATA
+          atmosphere_file $ATM
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 549.95 550.05
+          day_of_year 220
+          sza 95.15118796
+          phi0 0
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1000
+          mc_vroom off
+          mc_std
+          mc_randomseed $SEED
+          mc_basename $PWD/$mode/mc
+          mc_spectral_is 550
+          albedo 0.15
+          aerosol_default
+          $EXTRA
+          aerosol_set_tau_at_wvl 550 0.316
+          pressure 1020.0583
+          atm_z_grid $GRID
+          zout 0
+          umu -0.4340822176
+          phi 22.5
+          quiet
+          EOF
+            uvspec -c < "$mode/input.inp"
+            uvspec < "$mode/input.inp"
+            test -s "$mode/mc.rad.spc"
+            grep -E '(^|[[:space:]])550(\.0+)?([[:space:]]|$)' "$mode/mc.rad.spc" >/dev/null
+            wc -l "$mode/mc.rad.spc"
+          done
+          echo NARROWBAND_SOLVER_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-hrrr-narrowband-solver-smoke-v1
+          path: |
+            default
+            custom
+          if-no-files-found: warn
+          retention-days: 90

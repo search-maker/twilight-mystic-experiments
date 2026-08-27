@@ -2,16 +2,18 @@
 """Training-only near-zenith numerical diagnostic for native stellar transport.
 
 The pinned SDISORT runtime returns code 0 but no spectrum when its internal
-``umu0`` rounds to exactly 1.0.  Exact SZA=0 is already proven unsupported, and
-a separate v3.1 recovery proved SZA=0.001 deg is also rejected.  This diagnostic
-therefore maps the numerical transition with a frozen set of strictly positive
-source zenith angles at four atmosphere/AOD corners.
+``umu0`` rounds to exactly 1.0. Exact SZA=0 is already proven unsupported, and
+a separate v3.1 recovery proved SZA=0.001 deg is also rejected. This diagnostic
+maps the numerical transition with a frozen set of strictly positive source
+zenith angles at four atmosphere/AOD corners.
 
-Crucially, a solver endpoint refusal is *data*, not a reason to abort the
-campaign: every case is executed once, raw input/stdout/stderr are retained,
-and each case is classified usable/rejected.  Spectral and Johnson-V
-convergence is computed only among usable cases, relative to the smallest
-usable SZA at that atmosphere corner.
+A solver endpoint refusal is *data*, not a reason to abort the campaign: every
+case is executed once, raw input/stdout/stderr are retained, and each case is
+classified usable/rejected. Spectral and Johnson-V convergence is computed only
+among usable cases, relative to the smallest usable SZA at that atmosphere
+corner. A rejected case is admitted to the numerical-boundary interpretation
+only if it matches the already-proven endpoint signature: return code 0, zero
+spectral rows, and ``Error,  Does not work for umu0=1.0`` in stderr.
 
 No protected holdout coordinate is opened; no model fit, acceptance gate,
 canonical epsilon, production activation, empirical real-sky claim, or human
@@ -30,30 +32,10 @@ from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 NATIVE_PATH = HERE / "native_stellar_zenith_v3.py"
-
-# Broad convergence points plus a tight bracket around the float32-like
-# umu0->1 transition suggested by the exact failure evidence.  The sequence is
-# fixed before opening these diagnostic results and is strictly decreasing.
 SZA_EPSILON_DEG = (
-    1.0,
-    0.5,
-    0.1,
-    0.05,
-    0.03,
-    0.025,
-    0.0225,
-    0.021,
-    0.0205,
-    0.0200,
-    0.0198,
-    0.01975,
-    0.0195,
-    0.0190,
-    0.018,
-    0.015,
-    0.010,
-    0.001,
-    0.0001,
+    1.0, 0.5, 0.1, 0.05, 0.03, 0.025, 0.0225, 0.021, 0.0205,
+    0.0200, 0.0198, 0.01975, 0.0195, 0.0190, 0.018, 0.015, 0.010,
+    0.001, 0.0001,
 )
 ATMOSPHERE_CORNERS = (
     (0.0, 0.05),
@@ -151,7 +133,6 @@ def _structural_wavelengths(stdout_text: str) -> list[float]:
 
 def classify_solver_output(*, native, stdout_text: str, stderr_text: str,
                            return_code: int, target_altitude_deg: float) -> dict[str, Any]:
-    """Classify one solver call without aborting on the known zenith endpoint."""
     wavelengths = _structural_wavelengths(stdout_text)
     base = {
         "solverReturnCode": int(return_code),
@@ -183,6 +164,17 @@ def classify_solver_output(*, native, stdout_text: str, stderr_text: str,
         "directOpticalDepth": parsed["directOpticalDepth"],
         "mu0": parsed["mu0"],
     }
+
+
+def is_proven_endpoint_refusal(row: dict[str, Any]) -> bool:
+    return (
+        row.get("solverUsable") is False
+        and row.get("solverReturnCode") == 0
+        and row.get("dataRowCount") == 0
+        and row.get("stdoutByteCount") == 0
+        and row.get("knownUmu0EqualsOneRefusal") is True
+        and row.get("failureKind") == "STRICT_SPECTRUM_PARSE_REFUSAL"
+    )
 
 
 def run_case(*, native, uvspec: Path, data_dir: Path, atmosphere_file: Path,
@@ -232,7 +224,6 @@ def run_case(*, native, uvspec: Path, data_dir: Path, atmosphere_file: Path,
 
 
 def _usability_monotonic(rows: list[dict[str, Any]]) -> bool:
-    """As SZA decreases, usable may switch True->False at most once."""
     seen_rejected = False
     for row in rows:
         if row["solverUsable"]:
@@ -264,7 +255,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
             raise EpsilonDiagnosticRefusal(f"no usable near-zenith case at atmosphere corner {(elevation_m, aod550)}")
         if any(r["dataRowCount"] != 401 for r in usable):
             raise EpsilonDiagnosticRefusal("usable solver case lacks exact 401-node spectrum")
-        reference = usable[-1]  # smallest SZA that this corner's solver accepts
+        reference = usable[-1]
         comparisons: list[dict[str, Any]] = []
         for row in usable:
             dtau = [float(a) - float(b) for a, b in zip(row["directOpticalDepth"], reference["directOpticalDepth"])]
@@ -273,16 +264,12 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
             for sed in reps:
                 flux = [float(x) for x in sed["fluxRelative"]]
                 av = phot.band_extinction_mag(
-                    wavelength_nm=wavelength_nm,
-                    flux_relative=flux,
-                    band_response=band_response,
-                    transmission=row["lineOfSightDirectTransmission"],
+                    wavelength_nm=wavelength_nm, flux_relative=flux,
+                    band_response=band_response, transmission=row["lineOfSightDirectTransmission"],
                 )
                 ref_av = phot.band_extinction_mag(
-                    wavelength_nm=wavelength_nm,
-                    flux_relative=flux,
-                    band_response=band_response,
-                    transmission=reference["lineOfSightDirectTransmission"],
+                    wavelength_nm=wavelength_nm, flux_relative=flux,
+                    band_response=band_response, transmission=reference["lineOfSightDirectTransmission"],
                 )
                 sed_rows.append({
                     "libraryNumber": int(sed["libraryNumber"]),
@@ -312,6 +299,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
             "smallestSolverUsableSourceZenithAngleDeg": reference["sourceZenithAngleDeg"],
             "largestSolverRejectedSourceZenithAngleDeg": max((r["sourceZenithAngleDeg"] for r in rejected), default=None),
             "solverUsabilityMonotonicTowardZenith": _usability_monotonic(rows),
+            "allRejectedCasesMatchProvenEndpointSignature": all(is_proven_endpoint_refusal(r) for r in rejected),
             "usableCaseCount": len(usable),
             "rejectedCaseCount": len(rejected),
             "rejectedCases": [
@@ -320,6 +308,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
                     "targetAltitudeDeg": r["targetAltitudeDeg"],
                     "failureKind": r["failureKind"],
                     "knownUmu0EqualsOneRefusal": r["knownUmu0EqualsOneRefusal"],
+                    "matchesProvenEndpointSignature": is_proven_endpoint_refusal(r),
                     "dataRowCount": r["dataRowCount"],
                     "stderrTail": r["stderrTail"],
                     "stdoutSha256": r["stdoutSha256"],
@@ -345,6 +334,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
     smallest_all_corner_valid = min(all_corner_valid_eps)
     largest_any_corner_rejected = max(any_corner_rejected_eps) if any_corner_rejected_eps else None
     monotonic_all = all(group["solverUsabilityMonotonicTowardZenith"] for group in groups)
+    rejected_signature_all = all(group["allRejectedCasesMatchProvenEndpointSignature"] for group in groups)
 
     return {
         "schemaVersion": 2,
@@ -355,9 +345,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
         "sza0p001RecoveryFailureRunId": FAILED_V31_RECOVERY_RUN_ID,
         "knownEndpointStderr": KNOWN_ENDPOINT_STDERR,
         "sourceZenithAngleDeg": list(SZA_EPSILON_DEG),
-        "atmosphereCorners": [
-            {"observerElevationM": e, "aod550": a} for e, a in ATMOSPHERE_CORNERS
-        ],
+        "atmosphereCorners": [{"observerElevationM": e, "aod550": a} for e, a in ATMOSPHERE_CORNERS],
         "solverInvocationCount": len(results),
         "solverUsableCaseCount": total_usable,
         "solverRejectedCaseCount": total_rejected,
@@ -366,6 +354,7 @@ def summarize_convergence(*, root: Path, results: list[dict[str, Any]],
         "smallestSourceZenithAngleValidAcrossAllCornersDeg": smallest_all_corner_valid,
         "largestSourceZenithAngleRejectedByAnyCornerDeg": largest_any_corner_rejected,
         "solverUsabilityMonotonicTowardZenithAcrossAllCorners": monotonic_all,
+        "allRejectedCasesMatchProvenEndpointSignature": rejected_signature_all,
         "groups": groups,
         "claimBoundary": {
             "trainingOnlyNumericalDiagnostic": True,
@@ -459,6 +448,7 @@ def main() -> int:
         "solverRejectedCaseCount": summary["solverRejectedCaseCount"],
         "smallestSourceZenithAngleValidAcrossAllCornersDeg": summary["smallestSourceZenithAngleValidAcrossAllCornersDeg"],
         "largestSourceZenithAngleRejectedByAnyCornerDeg": summary["largestSourceZenithAngleRejectedByAnyCornerDeg"],
+        "allRejectedCasesMatchProvenEndpointSignature": summary["allRejectedCasesMatchProvenEndpointSignature"],
         "protectedHoldoutOpened": summary["claimBoundary"]["protectedHoldoutOpened"],
         "canonicalEpsilonSelected": summary["claimBoundary"]["canonicalEpsilonSelected"],
     }, sort_keys=True))

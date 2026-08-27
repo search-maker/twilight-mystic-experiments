@@ -1,0 +1,185 @@
+name: Taylor CAMS same-cycle AOD provider crosscheck v1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+
+jobs:
+  crosscheck:
+    if: github.head_ref == 'review/taylor-cams-aod-provider-crosscheck-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install retrieval and GRIB tools
+        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes
+
+      - name: Retrieve direct ADS CAMS same-cycle AOD532 and AOD550
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p aod-crosscheck
+          python - <<'PY'
+          import cdsapi, json, os, pathlib
+          out=pathlib.Path('aod-crosscheck')
+          key=os.environ.get('ADS_API_KEY','').strip()
+          if not key:
+              raise SystemExit('ADS_API_KEY missing')
+          dataset='cams-global-atmospheric-composition-forecasts'
+          request={
+              'date':['2025-08-08/2025-08-08'],
+              'time':['00:00'],
+              'leadtime_hour':['0','3'],
+              'type':['forecast'],
+              'data_format':'grib',
+              'area':[42.4,-84.0,42.0,-83.6],
+              'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm'],
+          }
+          (out/'ads_request.json').write_text(json.dumps({'dataset':dataset,'request':request},indent=2,sort_keys=True)+'\n')
+          target=out/'ads_2025-08-08_00Z_lead0-3_aod532_aod550.grib'
+          cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False).retrieve(dataset,request,str(target))
+          if not target.is_file() or target.stat().st_size==0:
+              raise SystemExit('ADS AOD retrieval missing')
+          print('ADS_BYTES',target.stat().st_size)
+          PY
+
+      - name: Fetch the independently frozen Open-Meteo cams_global product endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, urllib.parse, urllib.request
+          out=pathlib.Path('aod-crosscheck')
+          params={
+              'latitude':42.256,
+              'longitude':-83.709,
+              'hourly':'aerosol_optical_depth',
+              'domains':'cams_global',
+              'start_date':'2025-08-08',
+              'end_date':'2025-08-08',
+              'timezone':'GMT',
+              'cell_selection':'nearest',
+          }
+          url='https://air-quality-api.open-meteo.com/v1/air-quality?'+urllib.parse.urlencode(params)
+          request=urllib.request.Request(url,headers={'User-Agent':'twilight-mystic-experiments/1.0 scientific-validation'})
+          with urllib.request.urlopen(request,timeout=90) as response:
+              raw=response.read()
+          if not raw:
+              raise SystemExit('Open-Meteo response empty')
+          (out/'open_meteo_raw.json').write_bytes(raw)
+          (out/'open_meteo_request.json').write_text(json.dumps({'url':url,'params':params},indent=2,sort_keys=True)+'\n')
+          print('OPEN_METEO_BYTES',len(raw))
+          PY
+
+      - name: Extract exact site values and frozen 01Z interpolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json, math, pathlib
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_is_defined,codes_release
+          LAT=42.256; LON=-83.709
+          out=pathlib.Path('aod-crosscheck')
+
+          def get(g,key,default=None):
+              try:
+                  if codes_is_defined(g,key): return codes_get(g,key)
+              except Exception: pass
+              return default
+
+          def site_value(g):
+              lats=codes_get_array(g,'latitudes'); lons=codes_get_array(g,'longitudes'); vals=codes_get_array(g,'values')
+              pts=[]
+              for y,x,v in zip(lats,lons,vals):
+                  x=float(x); x=x-360 if x>180 else x
+                  pts.append((round(float(y),6),round(x,6),float(v)))
+              by={(y,x):v for y,x,v in pts}; ys=sorted({p[0] for p in pts}); xs=sorted({p[1] for p in pts})
+              yl=[y for y in ys if y<=LAT]; yh=[y for y in ys if y>=LAT]; xl=[x for x in xs if x<=LON]; xh=[x for x in xs if x>=LON]
+              if yl and yh and xl and xh:
+                  y0=max(yl); y1=min(yh); x0=max(xl); x1=min(xh); keys=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
+                  if all(k in by for k in keys):
+                      fy=0 if y1==y0 else (LAT-y0)/(y1-y0); fx=0 if x1==x0 else (LON-x0)/(x1-x0)
+                      value=(1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+                      return value,{'method':'bilinear_native_nodes','lat0':y0,'lat1':y1,'lon0':x0,'lon1':x1}
+              y,x,value=min(pts,key=lambda p:(p[0]-LAT)**2+(p[1]-LON)**2)
+              return value,{'method':'nearest','lat':y,'lon':x}
+
+          ads=[]
+          with (out/'ads_2025-08-08_00Z_lead0-3_aod532_aod550.grib').open('rb') as f:
+              while True:
+                  g=codes_grib_new_from_file(f)
+                  if g is None: break
+                  try:
+                      value,interp=site_value(g)
+                      ads.append({
+                          'dataDate':int(get(g,'dataDate',0)),
+                          'dataTime':int(get(g,'dataTime',0)),
+                          'leadHour':int(get(g,'step',-1)),
+                          'shortName':str(get(g,'shortName','')),
+                          'name':str(get(g,'name','')),
+                          'units':str(get(g,'units','')),
+                          'valueAnnArbor':value,
+                          'interpolation':interp,
+                      })
+                  finally: codes_release(g)
+          if len(ads)<4:
+              raise SystemExit(f'Expected >=4 ADS AOD messages, got {len(ads)}')
+          ads.sort(key=lambda r:(r['leadHour'],r['name']))
+
+          def wavelength(row):
+              text=(row['shortName']+' '+row['name']).lower()
+              if '532' in text: return 532
+              if '550' in text: return 550
+              return None
+          by={(r['leadHour'],wavelength(r)):r['valueAnnArbor'] for r in ads if wavelength(r) in (532,550)}
+          for key in [(0,532),(0,550),(3,532),(3,550)]:
+              if key not in by: raise SystemExit(f'Missing ADS field {key}')
+          ads01={wl:by[(0,wl)]+(by[(3,wl)]-by[(0,wl)])/3.0 for wl in (532,550)}
+
+          om=json.loads((out/'open_meteo_raw.json').read_text())
+          times=om['hourly']['time']; vals=om['hourly']['aerosol_optical_depth']
+          om_by={t:float(v) for t,v in zip(times,vals) if v is not None}
+          required=['2025-08-08T00:00','2025-08-08T01:00','2025-08-08T03:00']
+          if any(t not in om_by for t in required): raise SystemExit('Required Open-Meteo hours missing')
+
+          summary={
+              'schemaVersion':1,
+              'status':'RETRIEVAL_ONLY_NO_TAYLOR_RESIDUALS_NO_MYSTIC',
+              'site':{'lat':LAT,'lon':LON},
+              'ads':{
+                  'dataset':'cams-global-atmospheric-composition-forecasts',
+                  'baseDateUTC':'2025-08-08','baseHourUTC':0,'leadHours':[0,3],
+                  'values':ads,
+                  'linearInterpolationAt01Z':{'aod532':ads01[532],'aod550':ads01[550]},
+              },
+              'openMeteoFrozenProviderPath':{
+                  'domain':'cams_global','cellSelection':'nearest',
+                  'returnedLat':om.get('latitude'),'returnedLon':om.get('longitude'),'returnedElevationM':om.get('elevation'),
+                  'values':{t:om_by[t] for t in required},
+              },
+              'boundary':'This cross-check compares provider/product representations only. It does not choose a favorable AOD, score Taylor SQM residuals, execute MYSTIC, or authorize changing the frozen Taylor-v1 atmosphere.',
+          }
+          (out/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          with (out/'ads_values.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(ads[0].keys())); w.writeheader(); w.writerows(ads)
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+          sha256sum aod-crosscheck/* > aod-crosscheck/SHA256SUMS.txt
+
+      - name: Upload provider cross-check
+        uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-aod-provider-crosscheck-v1
+          path: aod-crosscheck
+          if-no-files-found: error
+          retention-days: 90

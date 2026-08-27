@@ -2,7 +2,7 @@ name: Taylor CAMS direct extinction retrieval v1
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
 
 permissions:
   contents: read
@@ -26,45 +26,15 @@ jobs:
           persist-credentials: false
       - name: Install retrieval and GRIB tools
         run: |
-          python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes
-      - name: Probe ADS and retrieve frozen Ann Arbor profile if credential exists
-        id: retrieve
+          python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes requests
+      - name: Probe ADS and retrieve frozen Ann Arbor profile
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p cams-output
           python - <<'PY'
-          import json, os, pathlib, sys, urllib.request, urllib.error
+          import json, os, pathlib, sys, time, requests
           out=pathlib.Path('cams-output')
-          urls=[
-            'https://ads.atmosphere.copernicus.eu/api/catalogue/v1/collections/cams-global-atmospheric-composition-forecasts',
-            'https://ads.atmosphere.copernicus.eu/api/retrieve/v1/processes/cams-global-atmospheric-composition-forecasts',
-          ]
-          probe={}
-          for u in urls:
-              try:
-                  with urllib.request.urlopen(u, timeout=30) as r:
-                      body=r.read(200000)
-                      probe[u]={'status':r.status,'content_type':r.headers.get('content-type'),'body_prefix':body[:1000].decode('utf-8','replace')}
-              except urllib.error.HTTPError as e:
-                  probe[u]={'status':e.code,'body_prefix':e.read(1000).decode('utf-8','replace')}
-              except Exception as e:
-                  probe[u]={'error':type(e).__name__+': '+str(e)}
-          (out/'public_probe.json').write_text(json.dumps(probe,indent=2,sort_keys=True)+'\n')
-
-          key=''
-          key_name=''
-          for name in ['ADS_API_KEY','CDSAPI_KEY','CDS_API_KEY','ECMWF_ADS_KEY','ECMWF_API_KEY']:
-              v=os.environ.get(name,'').strip()
-              if v:
-                  key=v; key_name=name; break
-          status={'credential_present':bool(key),'credential_name':key_name if key else None}
-          (out/'credential_status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
-          if not key:
-              print('NO_ADS_CREDENTIAL_PRESENT')
-              sys.exit(0)
-
-          import cdsapi
           dataset='cams-global-atmospheric-composition-forecasts'
           request={
               'variable':['aerosol_extinction_coefficient_532nm','geopotential'],
@@ -77,10 +47,79 @@ jobs:
               'area':[42.4,-84.0,42.0,-83.6],
           }
           (out/'request.json').write_text(json.dumps({'dataset':dataset,'request':request},indent=2,sort_keys=True)+'\n')
-          client=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False)
+          base='https://ads.atmosphere.copernicus.eu/api'
+          probe={}
+          for u in [f'{base}/catalogue/v1/collections/{dataset}',f'{base}/retrieve/v1/processes/{dataset}']:
+              try:
+                  r=requests.get(u,timeout=30)
+                  probe[u]={'status':r.status_code,'content_type':r.headers.get('content-type'),'body_prefix':r.text[:1000]}
+              except Exception as e:
+                  probe[u]={'error':type(e).__name__+': '+str(e)}
+          (out/'public_probe.json').write_text(json.dumps(probe,indent=2,sort_keys=True)+'\n')
+
+          # First test whether this open-data process permits anonymous execution.
+          exec_url=f'{base}/retrieve/v1/processes/{dataset}/execution'
+          try:
+              r=requests.post(exec_url,json={'inputs':request},timeout=60)
+              anon={'status':r.status_code,'body_prefix':r.text[:4000]}
+          except Exception as e:
+              r=None; anon={'error':type(e).__name__+': '+str(e)}
+          (out/'anonymous_execution_probe.json').write_text(json.dumps(anon,indent=2,sort_keys=True)+'\n')
+
           target=out/'cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib'
+          if r is not None and r.status_code in (200,201,202):
+              try:
+                  j=r.json(); job_id=j.get('jobID') or j.get('job_id') or j.get('id')
+              except Exception:
+                  job_id=None
+              if job_id:
+                  (out/'anonymous_job_id.txt').write_text(str(job_id)+'\n')
+                  for _ in range(240):
+                      s=requests.get(f'{base}/retrieve/v1/jobs/{job_id}',timeout=30)
+                      sj=s.json() if 'json' in s.headers.get('content-type','') else {'raw':s.text}
+                      (out/'anonymous_job_status.json').write_text(json.dumps(sj,indent=2,sort_keys=True)+'\n')
+                      state=str(sj.get('status') or sj.get('state') or '').lower()
+                      if state in ('successful','completed','succeeded'):
+                          rr=requests.get(f'{base}/retrieve/v1/jobs/{job_id}/results',timeout=60)
+                          rr.raise_for_status(); rj=rr.json()
+                          (out/'anonymous_results.json').write_text(json.dumps(rj,indent=2,sort_keys=True)+'\n')
+                          href=None
+                          if isinstance(rj,dict):
+                              for v in rj.values():
+                                  if isinstance(v,dict) and isinstance(v.get('href'),str): href=v['href']; break
+                                  if isinstance(v,list):
+                                      for q in v:
+                                          if isinstance(q,dict) and isinstance(q.get('href'),str): href=q['href']; break
+                          if href:
+                              with requests.get(href,stream=True,timeout=120) as dl:
+                                  dl.raise_for_status()
+                                  with target.open('wb') as f:
+                                      for chunk in dl.iter_content(1<<20):
+                                          if chunk: f.write(chunk)
+                              print('ANONYMOUS_CAMS_RETRIEVAL_COMPLETE',target,target.stat().st_size)
+                              break
+                      if state in ('failed','dismissed','cancelled','canceled'):
+                          break
+                      time.sleep(15)
+
+          if target.is_file() and target.stat().st_size:
+              sys.exit(0)
+
+          key=''; key_name=''
+          for name in ['ADS_API_KEY','CDSAPI_KEY','CDS_API_KEY','ECMWF_ADS_KEY','ECMWF_API_KEY']:
+              v=os.environ.get(name,'').strip()
+              if v:
+                  key=v; key_name=name; break
+          status={'credential_present':bool(key),'credential_name':key_name if key else None}
+          (out/'credential_status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
+          if not key:
+              print('NO_ADS_CREDENTIAL_PRESENT')
+              sys.exit(0)
+
+          import cdsapi
+          client=cdsapi.Client(url=base,key=key,quiet=False,debug=False)
           client.retrieve(dataset,request,str(target)).download()
-          print('CAMS_RETRIEVAL_COMPLETE',target,target.stat().st_size)
+          print('AUTHENTICATED_CAMS_RETRIEVAL_COMPLETE',target,target.stat().st_size)
           PY
       - name: Extract point profile if GRIB was retrieved
         shell: bash
@@ -92,7 +131,7 @@ jobs:
             exit 0
           fi
           python - <<'PY'
-          import csv, json, math, pathlib
+          import csv, json, pathlib
           from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_release
           src=pathlib.Path('cams-output/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib')
           rows=[]
@@ -101,28 +140,23 @@ jobs:
                   gid=codes_grib_new_from_file(fh)
                   if gid is None: break
                   try:
-                      short=str(codes_get(gid,'shortName'))
-                      level=int(codes_get(gid,'level'))
-                      dataDate=int(codes_get(gid,'dataDate'))
-                      dataTime=int(codes_get(gid,'dataTime'))
-                      step=int(codes_get(gid,'step'))
+                      short=str(codes_get(gid,'shortName')); level=int(codes_get(gid,'level'))
+                      dataDate=int(codes_get(gid,'dataDate')); dataTime=int(codes_get(gid,'dataTime')); step=int(codes_get(gid,'step'))
                       lats=codes_get_array(gid,'latitudes'); lons=codes_get_array(gid,'longitudes'); vals=codes_get_array(gid,'values')
-                      # Normalize longitudes to [-180,180]. Bilinear interpolation over the four requested grid nodes.
                       pts=[]
                       for la,lo,v in zip(lats,lons,vals):
                           if lo>180: lo-=360
                           pts.append((round(float(la),6),round(float(lo),6),float(v)))
-                      target_lat=42.256; target_lon=-83.709
-                      by={(la,lo):v for la,lo,v in pts}
+                      target_lat=42.256; target_lon=-83.709; by={(la,lo):v for la,lo,v in pts}
                       lat0,lat1=42.0,42.4; lon0,lon1=-84.0,-83.6
                       needed=[(lat0,lon0),(lat0,lon1),(lat1,lon0),(lat1,lon1)]
                       if all(k in by for k in needed):
                           fy=(target_lat-lat0)/(lat1-lat0); fx=(target_lon-lon0)/(lon1-lon0)
                           v=(1-fy)*((1-fx)*by[(lat0,lon0)]+fx*by[(lat0,lon1)])+fy*((1-fx)*by[(lat1,lon0)]+fx*by[(lat1,lon1)])
+                          interpolation='bilinear_four_native_nodes'
                       else:
-                          # exact nearest point fallback is recorded, not hidden
-                          la,lo,v=min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2)
-                      rows.append({'shortName':short,'modelLevel':level,'baseDate':dataDate,'baseTime':dataTime,'leadHour':step,'validHourUTC':step,'valueAnnArbor':v})
+                          la,lo,v=min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2); interpolation='nearest_fallback'
+                      rows.append({'shortName':short,'modelLevel':level,'baseDate':dataDate,'baseTime':dataTime,'leadHour':step,'valueAnnArbor':v,'interpolation':interpolation})
                   finally:
                       codes_release(gid)
           rows.sort(key=lambda r:(r['leadHour'],r['shortName'],r['modelLevel']))

@@ -1,0 +1,102 @@
+name: Taylor default broadband input identity v1
+run-name: Taylor default input identity v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-default-input-identity-v1/**'
+      - '.github/workflows/taylor-default-input-identity-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  PKG: experiments/taylor-default-input-identity-v1
+
+jobs:
+  audit:
+    if: github.head_ref == 'review/taylor-default-input-identity-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Materialize immutable Taylor-v1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p frozen-source original-artifacts
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/observations.csv" > frozen-source/observations.csv
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+          test "$(git rev-parse "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py")" = "34e6229ccbd0976032a292171b4f64c66854029d"
+          python -m py_compile "$PKG/audit.py" frozen-source/run_row.py
+
+      - name: Download exact preserved Taylor row artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          download_one() {
+            row="$1"; id="$2"; digest="$3"
+            zip="original-artifacts/row-${row}.zip"
+            dir="original-artifacts/taylor-sqm-mystic-v1-row-${row}"
+            curl --fail --location --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${id}/zip" \
+              -o "$zip"
+            echo "$digest  $zip" | sha256sum -c -
+            mkdir -p "$dir"
+            unzip -q "$zip" -d "$dir"
+          }
+          download_one 23 9624648965 d2729c25662f4cb124e88932adde370ac2cd34b635349fd7dd587f00378d2be2
+          download_one 24 9624650992 6ad283f0b567352bb94f2a4fc7dbb5dfdfb7db6aa3b72956f9aeefa1860f87fb
+          download_one 25 9624658687 a271a41179ff1725820c95c38fc5dbcef844e3c1ceab877ca86dc0de9d6ef8e8
+          rm original-artifacts/row-23.zip original-artifacts/row-24.zip original-artifacts/row-25.zip
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-default-input-identity-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Prove no solver process is invoked and audit exact inputs
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          test -s "$DATA_DIR/atmmod/afglus.dat"
+          # This workflow intentionally never calls uvspec. It only renders text with the frozen runner.
+          python "$PKG/audit.py" \
+            --baseline-runner frozen-source/run_row.py \
+            --observations frozen-source/observations.csv \
+            --response frozen-source/sqm_response.csv \
+            --original-root original-artifacts \
+            --data-dir "$DATA_DIR" \
+            --output audit-output
+          cat audit-output/audit.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-default-input-identity-v1
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6

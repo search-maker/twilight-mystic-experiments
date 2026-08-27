@@ -1,0 +1,187 @@
+name: Native stellar zenith v3.2 asset publication v1
+run-name: Publish validated native stellar zenith v3.2 assets | ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - 'publish/native-stellar-zenith-v32-assets-v1'
+    paths:
+      - 'review/native-stellar-zenith-v32-publication-v1/dispatch.json'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: native-stellar-zenith-v32-asset-publication-v1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SOURCE_RUN_ID: '33044767268'
+      SOURCE_ARTIFACT_ID: '9635340184'
+      SOURCE_ARTIFACT_NAME: 'native-stellar-zenith-v32-presolver-recovery1-result-33044767268'
+      SOURCE_ARTIFACT_DIGEST: 'sha256:bb08c75c916db36408cdad86a392a450ca09bcc29060d1003c0b1eb551a6e0a0'
+      SOURCE_DISPATCH_SHA: '9e33f2f76bbb34ce651b496cfd910265fbf77b01'
+      RUNTIME_SHA256: '0b96bd5868dc0c72d5cd77b504098d35086feaf573d92556c4f8311a163e3ce2'
+      VALIDATION_SHA256: '235e7252f9d8c926aeda54899d106451a71a85d23dd859d349a1b46c1f7c72be'
+      OLD_V2_RUNTIME_SHA256: '21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f'
+      RESULT_BRANCH: 'publication/native-stellar-zenith-v32-assets-v1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Verify one-shot publication dispatch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-list --count HEAD^..HEAD)" = "1"
+          test "$(git diff --name-only HEAD^ HEAD)" = "review/native-stellar-zenith-v32-publication-v1/dispatch.json"
+          test -z "$(command -v uvspec || true)"
+          python - <<'PY'
+          import json, os, subprocess
+          d=json.load(open('review/native-stellar-zenith-v32-publication-v1/dispatch.json'))
+          expected={
+            'schemaVersion':1,
+            'publicationId':'native-stellar-zenith-v32-assets-v1',
+            'sourceRunId':33044767268,
+            'sourceArtifactId':9635340184,
+            'sourceArtifactDigest':'sha256:bb08c75c916db36408cdad86a392a450ca09bcc29060d1003c0b1eb551a6e0a0',
+            'sourceDispatchSha':'9e33f2f76bbb34ce651b496cfd910265fbf77b01',
+            'runtimeSha256':'0b96bd5868dc0c72d5cd77b504098d35086feaf573d92556c4f8311a163e3ce2',
+            'scientificSolverExecutionAuthorized':False,
+            'protectedHoldoutExecutionAuthorized':False,
+            'postResultRetuningAuthorized':False,
+            'productionAuthorized':False,
+          }
+          assert d==expected, (d, expected)
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip()
+          open(os.environ['RUNNER_TEMP']+'/publication-parent-sha.txt','w').write(parent+'\n')
+          PY
+          if git ls-remote --exit-code --heads origin "$RESULT_BRANCH" >/dev/null 2>&1; then
+            echo "Result branch already exists; refusing overwrite/re-publication"
+            exit 1
+          fi
+
+      - name: Verify immutable GitHub artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID" \
+            > "$RUNNER_TEMP/artifact-metadata.json"
+          python - <<'PY'
+          import json, os
+          p=json.load(open(os.environ['RUNNER_TEMP']+'/artifact-metadata.json'))
+          assert int(p['id'])==int(os.environ['SOURCE_ARTIFACT_ID'])
+          assert p['name']==os.environ['SOURCE_ARTIFACT_NAME']
+          assert p['digest']==os.environ['SOURCE_ARTIFACT_DIGEST']
+          assert int(p['workflow_run']['id'])==int(os.environ['SOURCE_RUN_ID'])
+          assert p['workflow_run']['head_sha']==os.environ['SOURCE_DISPATCH_SHA']
+          assert p['expired'] is False
+          PY
+
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 33044767268
+          name: native-stellar-zenith-v32-presolver-recovery1-result-33044767268
+          path: ${{ runner.temp }}/native-v32-source
+
+      - name: Verify exact validated runtime and validation payload
+        run: |
+          set -euo pipefail
+          SOURCE="$RUNNER_TEMP/native-v32-source"
+          test "$(sha256sum "$SOURCE/stellar-transport-v32-zenith-lut.json" | cut -d' ' -f1)" = "$RUNTIME_SHA256"
+          test "$(sha256sum "$SOURCE/native-stellar-zenith-v32-validation.json" | cut -d' ' -f1)" = "$VALIDATION_SHA256"
+          python - <<'PY'
+          import json, os
+          root=os.environ['RUNNER_TEMP']+'/native-v32-source'
+          runtime=json.load(open(root+'/stellar-transport-v32-zenith-lut.json'))
+          validation=json.load(open(root+'/native-stellar-zenith-v32-validation.json'))
+          assert validation['status']=='COMPUTATIONAL_REFERENCE_VALIDATION_PASS'
+          assert validation['extendedRuntimeSha256']==os.environ['RUNTIME_SHA256']
+          assert validation['overall']['comparisonCount']==192
+          assert validation['overall']['passed'] is True
+          assert validation['overall']['maxAbsDeltaAvMag'] <= validation['overall']['maxAbsDeltaAvMagLimit'] == 0.025
+          assert validation['overall']['rmsDeltaAvMag'] <= validation['overall']['rmsDeltaAvMagLimit'] == 0.01
+          assert set(validation['byValidationAltitudeDeg'])=={'80.9375','83.4375','85.9375','88.4375'}
+          assert all(row['passed'] for row in validation['byValidationAltitudeDeg'].values())
+          assert runtime['axes']['targetAltitudeDeg']==[5,6,7,8,9,10,11,12,13,14,15,17.5,20,22.5,25,27.5,30,35,40,45,50,55,60,65,70,75,80,82.5,85.0,87.5,90.0]
+          assert len(runtime['directOpticalDepth'])==775
+          assert all(len(row)==401 for row in runtime['directOpticalDepth'])
+          assert runtime['representation']['version']=='stellar-transport-v3.2-exact-vertical-endpoint'
+          assert runtime['representation']['positiveEpsilonSubstitutionUsed'] is False
+          assert runtime['provenance']['sourceV2RuntimeSha256']==os.environ['OLD_V2_RUNTIME_SHA256']
+          assert runtime['provenance']['oldDomainValuesUnchanged'] is True
+          assert runtime['provenance']['newTrainingSolverSpectrumCount']==100
+          assert runtime['provenance']['belowZenithSdisortTrainingSpectrumCount']==75
+          assert runtime['provenance']['exactVerticalOpticalColumnTrainingSpectrumCount']==25
+          assert runtime['provenance']['postResultRetuningPerformed'] is False
+          assert runtime['provenance']['empiricalRealSkyValidated'] is False
+          assert runtime['provenance']['humanFirstSeeingValidated'] is False
+          assert runtime['provenance']['productionAuthorized'] is False
+          PY
+
+      - name: Publish exact bytes to isolated result branch
+        run: |
+          set -euo pipefail
+          PARENT_SHA="$(cat "$RUNNER_TEMP/publication-parent-sha.txt")"
+          SOURCE="$RUNNER_TEMP/native-v32-source"
+          git checkout --detach "$PARENT_SHA"
+          git switch -c "$RESULT_BRANCH"
+          mkdir -p generated/level-b-stellar-v32
+          cp "$SOURCE/stellar-transport-v32-zenith-lut.json" generated/level-b-stellar-v32/stellar-transport-v32-zenith-lut.json
+          cp "$SOURCE/native-stellar-zenith-v32-validation.json" generated/level-b-stellar-v32/native-stellar-zenith-v32-validation.json
+          python - <<'PY'
+          import json, os
+          binding={
+            'schemaVersion':1,
+            'mysticState':'MYSTIC-STATE-0081',
+            'status':'COMPUTATIONAL_REFERENCE_VALIDATION_PASS',
+            'sourceRunId':33044767268,
+            'sourceArtifactId':9635340184,
+            'sourceArtifactName':os.environ['SOURCE_ARTIFACT_NAME'],
+            'sourceArtifactDigest':os.environ['SOURCE_ARTIFACT_DIGEST'],
+            'sourceDispatchSha':os.environ['SOURCE_DISPATCH_SHA'],
+            'runtimeSha256':os.environ['RUNTIME_SHA256'],
+            'validationSha256':os.environ['VALIDATION_SHA256'],
+            'sourceV2RuntimeSha256':os.environ['OLD_V2_RUNTIME_SHA256'],
+            'physicalTargetAltitudeMaxDeg':90.0,
+            'oldDomainValuesUnchanged':True,
+            'protectedHoldoutComparisonCount':192,
+            'maxAbsDeltaAvMag':0.00010084243321173414,
+            'rmsDeltaAvMag':5.315519362610782e-05,
+            'maxAbsDeltaAvMagLimit':0.025,
+            'rmsDeltaAvMagLimit':0.01,
+            'postResultRetuningPerformed':False,
+            'empiricalRealSkyValidated':False,
+            'humanFirstSeeingValidated':False,
+            'productionAuthorized':False,
+          }
+          open('generated/level-b-stellar-v32/publication-binding.json','w').write(json.dumps(binding,indent=2,sort_keys=True)+'\n')
+          PY
+          test "$(sha256sum generated/level-b-stellar-v32/stellar-transport-v32-zenith-lut.json | cut -d' ' -f1)" = "$RUNTIME_SHA256"
+          test "$(sha256sum generated/level-b-stellar-v32/native-stellar-zenith-v32-validation.json | cut -d' ' -f1)" = "$VALIDATION_SHA256"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add generated/level-b-stellar-v32
+          test "$(git diff --cached --name-only | wc -l)" = "3"
+          git commit -m 'Publish validated native stellar zenith v3.2 assets'
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
+
+      - name: Publication claim boundary
+        run: |
+          echo 'Published exact computationally validated runtime bytes only.'
+          echo 'No solver execution, retuning, empirical real-sky validation, human first-seeing validation, or production authorization occurred.'

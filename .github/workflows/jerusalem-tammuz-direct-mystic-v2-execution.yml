@@ -1,0 +1,337 @@
+name: Jerusalem Tammuz direct-MYSTIC v2 scientific execution
+run-name: MYSTIC batch v1 | key=${{ inputs.execution_key }} | auth=${{ inputs.authorization_ref }} | ordinal=${{ inputs.authorization_ordinal }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_ref:
+        description: Exact one-purpose Tammuz v2 scientific authorization commit SHA
+        required: true
+        type: string
+      execution_key:
+        description: Exact one-shot Tammuz v2 scientific execution key
+        required: true
+        type: string
+      authorization_ordinal:
+        description: Exact Tammuz v2 scientific authorization ordinal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: jerusalem-tammuz-direct-mystic-v2-${{ inputs.execution_key }}
+  cancel-in-progress: false
+
+env:
+  APPLICATION_REPO: search-maker/starsvisibility
+  APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
+  PACKAGE: experiments/jerusalem-tammuz-direct-mystic-v2
+  AUTHORIZATION: experiments/jerusalem-tammuz-direct-mystic-v2/authorization.scientific.json
+  PROPOSAL: experiments/jerusalem-tammuz-direct-mystic-v1/manifest.proposal.json
+  EVIDENCE: experiments/jerusalem-tammuz-direct-mystic-v1/level-b-event-evidence.json
+  ANALYSIS_CONTRACT: experiments/jerusalem-tammuz-direct-mystic-v1/analysis-contract.json
+  PROPOSAL_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+  EXECUTION_ADAPTER: experiments/jerusalem-tammuz-direct-mystic-v1/execution_adapter.py
+  EXECUTION_WORKFLOW: .github/workflows/jerusalem-tammuz-direct-mystic-v2-execution.yml
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+  PLAN: experiments/jerusalem-tammuz-direct-mystic-v2/execution_plan.py
+  ANALYSIS_DRIVER: experiments/jerusalem-tammuz-direct-mystic-v1/analyze_direct_sky.py
+  VISIBILITY_HELPER: experiments/jerusalem-tammuz-direct-mystic-v1/compute_sky_only_visibility.mjs
+  DERIVED_CHANNELS: experiments/aerosol-family-challenge-v2/derived_channels.py
+  HUMAN_THRESHOLD: scientific-tools/visibility-v3/human-threshold.mjs
+  EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+  AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+  AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+  AUTHORIZATION_PROPOSAL_BUILDER: experiments/jerusalem-tammuz-direct-mystic-v2/authorization_proposal.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      case_count: ${{ steps.plan.outputs.case_count }}
+      timeout_seconds: ${{ steps.plan.outputs.timeout_seconds }}
+    steps:
+      - name: Check out exact one-purpose Tammuz v2 scientific authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require read-only application credential
+        shell: bash
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Check out exact frozen starsvisibility application
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APPLICATION_REPO }}
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Verify one-purpose Tammuz v2 authorization and consumed formal 800m smoke before syntax or solver
+        run: >-
+          python "$PACKAGE/execution_guard.py"
+          --repository-root .
+          --application-root app
+          --application-sha "$APPLICATION_SHA"
+          --authorization "$AUTHORIZATION"
+          --proposal "$PROPOSAL"
+          --evidence "$EVIDENCE"
+          --analysis-contract "$ANALYSIS_CONTRACT"
+          --proposal-adapter "$PROPOSAL_ADAPTER"
+          --execution-adapter "$EXECUTION_ADAPTER"
+          --execution-workflow "$EXECUTION_WORKFLOW"
+          --runtime-lock "$RUNTIME_LOCK"
+          --plan "$PLAN"
+          --analysis-driver "$ANALYSIS_DRIVER"
+          --visibility-helper "$VISIBILITY_HELPER"
+          --derived-channels "$DERIVED_CHANNELS"
+          --human-threshold "$HUMAN_THRESHOLD"
+          --executor "$EXECUTOR"
+          --aggregate "$AGGREGATE"
+          --audit "$AUDIT"
+          --authorization-proposal-builder "$AUTHORIZATION_PROPOSAL_BUILDER"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --output preflight/authorization-guard.json
+      - name: Refuse duplicate Tammuz v2 one-shot marker before syntax or solver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python experiments/mystic-batch-v1/duplicate_run_audit.py
+          --repository "${{ github.repository }}"
+          --workflow jerusalem-tammuz-direct-mystic-v2-execution.yml
+          --current-run-id "${{ github.run_id }}"
+          --execution-key "${{ inputs.execution_key }}"
+          --authorization-ref "${{ inputs.authorization_ref }}"
+          --authorization-ordinal "${{ inputs.authorization_ordinal }}"
+          --token "$GH_TOKEN"
+          --output preflight/duplicate-run-audit.json
+      - name: Freeze exact transformed-row 12-case / 240M Tammuz plan
+        id: plan
+        run: >-
+          python "$PLAN"
+          --proposal "$PROPOSAL"
+          --guard-report preflight/authorization-guard.json
+          --output preflight/plan.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-preflight
+          path: preflight
+          if-no-files-found: warn
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Check out exact one-purpose Tammuz v2 scientific authorization commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: jerusalem-tammuz-direct-mystic-v2
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-preflight
+          path: preflight
+      - name: Recompute exact frozen runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATMOSPHERE="$DATA_DIR/atmmod/afglus.dat"
+          test -x "$UVSPEC"
+          test -d "$DATA_DIR"
+          test -s "$ATMOSPHERE"
+          python "$RUNTIME_PROBE" \
+            --uvspec "$UVSPEC" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$ATMOSPHERE" \
+            --runtime-lock "$RUNTIME_LOCK" \
+            --output "runtime-reports/${{ matrix.case_id }}/runtime-report.json"
+      - name: Execute exactly one isolated preregistered Tammuz v2 case
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          python "$EXECUTOR" \
+            --manifest "$PROPOSAL" \
+            --runtime-report "runtime-reports/${{ matrix.case_id }}/runtime-report.json" \
+            --adapter "$EXECUTION_ADAPTER" \
+            --case-id "${{ matrix.case_id }}" \
+            --data-dir "$DATA_DIR" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uvspec "$UVSPEC" \
+            --output-root case-output \
+            --timeout-seconds "${{ needs.preflight.outputs.timeout_seconds }}" \
+            --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-case-${{ matrix.case_id }}
+          path: |
+            case-output
+            runtime-reports
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerusalem-tammuz-direct-mystic-v2-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Aggregate exact transformed-row 12-case set
+        run: python "$AGGREGATE" --plan preflight/plan.json --cases-root case-artifacts --output-dir aggregate-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-aggregate
+          path: aggregate-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    needs: [preflight, cases, aggregate]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/download-artifact@v4
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-preflight
+          path: preflight
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerusalem-tammuz-direct-mystic-v2-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-aggregate
+          path: aggregate-output
+      - name: Independently audit exact cases, hashes, counts, and statistics
+        run: python "$AUDIT" --plan preflight/plan.json --cases-root case-artifacts --aggregate-dir aggregate-output --output audit-output/audit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-audit
+          path: audit-output
+          if-no-files-found: warn
+          retention-days: 90
+
+  analyze:
+    needs: [preflight, cases, aggregate, audit]
+    if: needs.aggregate.result == 'success' && needs.audit.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.authorization_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require read-only application credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APPLICATION_REPO }}
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerusalem-tammuz-direct-mystic-v2-case-*
+          path: case-artifacts
+          merge-multiple: true
+      - name: Derive ALIS full-spectrum channels and VROOM sparse cross-check
+        run: >-
+          python "$ANALYSIS_DRIVER"
+          --manifest "$PROPOSAL"
+          --evidence "$EVIDENCE"
+          --analysis-contract "$ANALYSIS_CONTRACT"
+          --cases-root case-artifacts
+          --derived-channels "$DERIVED_CHANNELS"
+          --output analysis-output/direct-sky-comparison.json
+      - name: Apply direct sky only to exact frozen F=3.14 human threshold
+        run: >-
+          node "$VISIBILITY_HELPER"
+          --comparison analysis-output/direct-sky-comparison.json
+          --evidence "$EVIDENCE"
+          --human-threshold "app/$HUMAN_THRESHOLD"
+          --output analysis-output/sky-only-visibility.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-analysis
+          path: analysis-output
+          if-no-files-found: warn
+          retention-days: 90

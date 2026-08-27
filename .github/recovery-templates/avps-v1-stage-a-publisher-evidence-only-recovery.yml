@@ -1,0 +1,410 @@
+name: AVPS v1 dispatch publisher
+run-name: AVPS v1 dispatch publisher ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - "status/avps-v1-dispatch-publisher-ordinal-*"
+    paths:
+      - .github/dispatch-requests/avps-v1.json
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v1-dispatch-publisher-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact Stage-A recovery request ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Bind reviewed Stage-A request and recovery contracts
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^status/avps-v1-dispatch-publisher-ordinal-([1-9][0-9]*)$ ]]
+          BRANCH_ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+          mapfile -t REQUEST_PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#REQUEST_PARENTS[@]}" = 1
+          RECOVERY_CONTROL="${REQUEST_PARENTS[0]}"
+          mapfile -t REQUEST_CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#REQUEST_CHANGED[@]}" = 1
+          test "${REQUEST_CHANGED[0]}" = .github/dispatch-requests/avps-v1.json
+
+          python - <<'PY' > request.env
+          import json
+          r=json.load(open('.github/dispatch-requests/avps-v1.json'))
+          if r.get('schemaVersion') != 3: raise SystemExit('Stage-A recovery request schema drift')
+          if r.get('stageId') != 'aerosol-vertical-profile-sensitivity-v1-stage-a-publisher-evidence-only-recovery': raise SystemExit('Stage-A recovery request stage drift')
+          if r.get('status') != 'RECOVER_ALREADY_CONSUMED_PUBLISHER_EVIDENCE_ONLY_NO_SCIENCE': raise SystemExit('Stage-A recovery request status drift')
+          ints=('scientificOrdinal','authorizationPr','recoveryContractPr','recoveryContractRunId','stageAReviewPr','stageAReviewRunId')
+          for key in ints:
+              value=r.get(key)
+              if isinstance(value,bool) or not isinstance(value,int) or value <= 0: raise SystemExit(f'{key} invalid')
+          shas=('authorizationHead','authorizationParent','recoveryContractHead','stageAReviewHead')
+          for key in shas:
+              value=r.get(key)
+              if not isinstance(value,str) or len(value)!=40 or any(c not in '0123456789abcdef' for c in value): raise SystemExit(f'{key} invalid')
+          print(f'ORDINAL={r["scientificOrdinal"]}')
+          print(f'AUTH_HEAD={r["authorizationHead"]}')
+          print(f'AUTH_PARENT={r["authorizationParent"]}')
+          print(f'PR_NUMBER={r["authorizationPr"]}')
+          print(f'RECOVERY_CONTRACT_PR={r["recoveryContractPr"]}')
+          print(f'RECOVERY_CONTRACT_RUN_ID={r["recoveryContractRunId"]}')
+          print(f'RECOVERY_CONTRACT_HEAD={r["recoveryContractHead"]}')
+          print(f'STAGE_A_REVIEW_PR={r["stageAReviewPr"]}')
+          print(f'STAGE_A_REVIEW_RUN_ID={r["stageAReviewRunId"]}')
+          print(f'STAGE_A_REVIEW_HEAD={r["stageAReviewHead"]}')
+          PY
+          source request.env
+          export ORDINAL AUTH_HEAD AUTH_PARENT PR_NUMBER RECOVERY_CONTRACT_PR RECOVERY_CONTRACT_RUN_ID RECOVERY_CONTRACT_HEAD STAGE_A_REVIEW_PR STAGE_A_REVIEW_RUN_ID STAGE_A_REVIEW_HEAD
+          test "$ORDINAL" = "$BRANCH_ORDINAL"
+          AUTH_BRANCH="authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-$ORDINAL"
+          DISPATCH_BRANCH="dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-$ORDINAL"
+          export AUTH_BRANCH DISPATCH_BRANCH
+
+          git fetch origin main "$AUTH_BRANCH" "$DISPATCH_BRANCH" "$RECOVERY_CONTRACT_HEAD" "$STAGE_A_REVIEW_HEAD"
+          LIVE_MAIN="$(git rev-parse origin/main)"
+          test "$LIVE_MAIN" = "$AUTH_PARENT"
+          test "$(git rev-parse origin/$AUTH_BRANCH)" = "$AUTH_HEAD"
+          test "$(git rev-parse origin/$DISPATCH_BRANCH)" = "$AUTH_HEAD"
+
+          mapfile -t CONTROL_PARENTS < <(git cat-file -p "$RECOVERY_CONTROL" | sed -n 's/^parent //p')
+          test "${#CONTROL_PARENTS[@]}" = 1
+          test "${CONTROL_PARENTS[0]}" = "$LIVE_MAIN"
+          mapfile -t CONTROL_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$RECOVERY_CONTROL")
+          test "${#CONTROL_CHANGED[@]}" = 1
+          test "${CONTROL_CHANGED[0]}" = .github/workflows/avps-v1-dispatch-publisher.yml
+
+          mapfile -t AUTH_PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#AUTH_PARENTS[@]}" = 1
+          test "${AUTH_PARENTS[0]}" = "$AUTH_PARENT"
+          mapfile -t AUTH_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_HEAD")
+          test "${#AUTH_CHANGED[@]}" = 1
+          test "${AUTH_CHANGED[0]}" = experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+
+          for pair in "$RECOVERY_CONTRACT_PR:$RECOVERY_CONTRACT_HEAD:review/avps-v1-ordinal40-two-stage-recovery-contract-1" "$STAGE_A_REVIEW_PR:$STAGE_A_REVIEW_HEAD:review/avps-v1-ordinal40-stage-a-publisher-evidence-only-1"; do
+            IFS=: read -r NUM SHA BRANCH <<< "$pair"
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${NUM}" > "pr-${NUM}.json"
+            PR_NUM="$NUM" PR_SHA="$SHA" PR_BRANCH="$BRANCH" python - <<'PY'
+          import json,os
+          p=json.load(open(f'pr-{os.environ["PR_NUM"]}.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('recovery review PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('base') or {}).get('sha')!=os.environ['AUTH_PARENT']: raise SystemExit('recovery review base drift')
+          if (p.get('head') or {}).get('ref')!=os.environ['PR_BRANCH'] or (p.get('head') or {}).get('sha')!=os.environ['PR_SHA']: raise SystemExit('recovery review head drift')
+          PY
+          done
+
+          for pair in "$RECOVERY_CONTRACT_RUN_ID:$RECOVERY_CONTRACT_HEAD:$RECOVERY_CONTRACT_PR" "$STAGE_A_REVIEW_RUN_ID:$STAGE_A_REVIEW_HEAD:$STAGE_A_REVIEW_PR"; do
+            IFS=: read -r RID SHA PRNUM <<< "$pair"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}" > "review-run-${RID}.json"
+            RID="$RID" SHA="$SHA" PRNUM="$PRNUM" python - <<'PY'
+          import json,os
+          r=json.load(open(f'review-run-{os.environ["RID"]}.json'))
+          if r.get('path')!='.github/workflows/contract.yml' or r.get('event')!='pull_request': raise SystemExit('review run workflow/event drift')
+          if r.get('head_sha')!=os.environ['SHA'] or int(r.get('run_attempt') or 0)!=1 or r.get('status')!='completed' or r.get('conclusion')!='success': raise SystemExit('review run is not exact successful attempt 1')
+          prs={int(p.get('number') or 0) for p in r.get('pull_requests',[])}
+          if int(os.environ['PRNUM']) not in prs: raise SystemExit('review run PR binding drift')
+          PY
+          done
+
+          git show "$RECOVERY_CONTRACT_HEAD:review/avps-v1-ordinal40-post-consumption-recovery-v1/RECOVERY_CONTROL_CONTRACT.review.json" > recovery-control-contract.json
+          git show "$RECOVERY_CONTRACT_HEAD:review/avps-v1-ordinal40-post-consumption-recovery-v1/HISTORICAL_CONTROL_EVIDENCE.review.json" > historical-control-evidence.json
+          git show "$RECOVERY_CONTRACT_HEAD:review/avps-v1-ordinal40-post-consumption-recovery-v1/SCIENCE_PREFLIGHT_BLOCKER.review.json" > science-preflight-blocker.json
+          python - <<'PY'
+          import json,os
+          c=json.load(open('recovery-control-contract.json'))
+          h=json.load(open('historical-control-evidence.json'))
+          b=json.load(open('science-preflight-blocker.json'))
+          if c.get('status')!='REVIEW_ONLY_NO_PUBLISHER_ACTIVATION_NO_SCIENCE_NO_SOLVER': raise SystemExit('recovery contract status drift')
+          if c.get('baseMainSha')!=os.environ['AUTH_PARENT'] or c.get('authorizationHead')!=os.environ['AUTH_HEAD']: raise SystemExit('recovery contract identity drift')
+          if int(c.get('scientificOrdinal') or 0)!=int(os.environ['ORDINAL']) or int(c.get('authorizationPr') or 0)!=int(os.environ['PR_NUMBER']): raise SystemExit('recovery contract ordinal/PR drift')
+          a=c.get('stageA') or {}
+          if a.get('name')!='publisher-evidence-only-recovery' or a.get('actionsWritePermitted') is not False or a.get('scienceWorkflowDispatchPermitted') is not False: raise SystemExit('Stage-A contract drift')
+          if a.get('requiredPublisherEvidenceStatus')!='DISPATCH_PUBLISHED_ZERO_RUNTIME': raise SystemExit('Stage-A publisher status drift')
+          if a.get('requiredRecoveryEvidenceStatus')!='POST_CONSUMPTION_PUBLISHER_RECOVERY_PASS_NO_SECOND_CONSUMPTION_NO_SCIENCE_TRIGGER': raise SystemExit('Stage-A recovery status drift')
+          if h.get('status')!='THREE_PRIOR_PUBLISHER_RUNS_CONFIRMED_NO_SCIENCE_NO_SOLVER' or len(h.get('priorPublisherRuns',[]))!=3: raise SystemExit('historical evidence drift')
+          if b.get('status')!='FROZEN_SCIENCE_PREFLIGHT_EXPECTED_TO_REJECT_LEGITIMATE_CONSUMED_MARKER': raise SystemExit('science blocker evidence drift')
+          PY
+
+          CONTROL_WORKFLOW_BLOB="$(git rev-parse "$RECOVERY_CONTROL:.github/workflows/avps-v1-dispatch-publisher.yml")"
+          REVIEW_WORKFLOW_BLOB="$(git rev-parse "$STAGE_A_REVIEW_HEAD:.github/recovery-templates/avps-v1-stage-a-publisher-evidence-only-recovery.yml")"
+          test "$CONTROL_WORKFLOW_BLOB" = "$REVIEW_WORKFLOW_BLOB"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${STAGE_A_REVIEW_PR}/files?per_page=100" > stage-a-review-files-pages.json
+          python - <<'PY'
+          import json
+          pages=json.load(open('stage-a-review-files-pages.json')); rows=[r for page in pages for r in page]
+          paths={r.get('filename') for r in rows}
+          required={'.github/recovery-templates/avps-v1-stage-a-publisher-evidence-only-recovery.yml','tests/test_avps_v1_stage_a_publisher_evidence_only_recovery.py'}
+          if paths!=required: raise SystemExit(f'Stage-A review file surface drift: {sorted(paths)}')
+          PY
+
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "auth_head=$AUTH_HEAD" >> "$GITHUB_OUTPUT"
+          echo "auth_parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "dispatch_branch=$DISPATCH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "recovery_contract_head=$RECOVERY_CONTRACT_HEAD" >> "$GITHUB_OUTPUT"
+          echo "stage_a_review_head=$STAGE_A_REVIEW_HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Bind exact authorization and preauthorization evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > auth-pr-selected.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('auth-pr-selected.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('ref')!=os.environ['AUTH_BRANCH'] or (p.get('head') or {}).get('sha')!=os.environ['AUTH_HEAD']: raise SystemExit('authorization PR head drift')
+          if (p.get('base') or {}).get('sha')!=os.environ['AUTH_PARENT']: raise SystemExit('authorization PR parent drift')
+          PY
+
+          python - <<'PY' > evidence.env
+          import json
+          c=json.load(open('recovery-control-contract.json'))
+          ar=c['authorizationReview']; pre=c['preauthorization']
+          print(f'AUTH_REVIEW_RUN_ID={int(ar["runId"])}')
+          print(f'AUTH_REVIEW_ARTIFACT_ID={int(ar["artifactId"])}')
+          print(f'AUTH_REVIEW_ARTIFACT_DIGEST={ar["artifactDigest"]}')
+          print(f'PREAUTH_RUN_ID={int(pre["runId"])}')
+          print(f'PREAUTH_ARTIFACT_ID={int(pre["artifactId"])}')
+          print(f'PREAUTH_ARTIFACT_DIGEST={pre["artifactDigest"]}')
+          PY
+          source evidence.env
+          export AUTH_REVIEW_RUN_ID AUTH_REVIEW_ARTIFACT_ID AUTH_REVIEW_ARTIFACT_DIGEST PREAUTH_RUN_ID PREAUTH_ARTIFACT_ID PREAUTH_ARTIFACT_DIGEST
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${AUTH_REVIEW_RUN_ID}" > auth-review-selected.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREAUTH_RUN_ID}" > preauth-selected.json
+          python - <<'PY'
+          import json,os
+          ar=json.load(open('auth-review-selected.json')); pre=json.load(open('preauth-selected.json'))
+          if ar.get('head_sha')!=os.environ['AUTH_HEAD'] or int(ar.get('run_attempt') or 0)!=1 or ar.get('status')!='completed' or ar.get('conclusion')!='success': raise SystemExit('authorization review run drift')
+          if pre.get('head_sha')!=os.environ['AUTH_PARENT'] or int(pre.get('run_attempt') or 0)!=1 or pre.get('status')!='completed' or pre.get('conclusion')!='success': raise SystemExit('preauthorization run drift')
+          PY
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUTH_REVIEW_ARTIFACT_ID}/zip" > auth-review.zip
+          test "sha256:$(sha256sum auth-review.zip | awk '{print $1}')" = "$AUTH_REVIEW_ARTIFACT_DIGEST"
+          mkdir auth-review-artifact
+          unzip -q auth-review.zip -d auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREAUTH_ARTIFACT_ID}/zip" > preauth.zip
+          test "sha256:$(sha256sum preauth.zip | awk '{print $1}')" = "$PREAUTH_ARTIFACT_DIGEST"
+          mkdir preauth-artifact
+          unzip -q preauth.zip -d preauth-artifact
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          ar=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          pre=json.load(open('preauth-artifact/preauthorization.json'))
+          seed=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          if ar.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME' or ar.get('headSha')!=os.environ['AUTH_HEAD'] or ar.get('parentSha')!=os.environ['AUTH_PARENT']: raise SystemExit('authorization review artifact drift')
+          if int(ar.get('scientificOrdinal') or 0)!=int(os.environ['ORDINAL']) or ar.get('candidateSeedAuthorizationRecheckPassed') is not True: raise SystemExit('authorization review seed/ordinal drift')
+          if pre.get('status')!='PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED' or pre.get('exactMainSha')!=os.environ['AUTH_PARENT']: raise SystemExit('preauthorization artifact drift')
+          if int(pre.get('nextAvailableScientificOrdinal') or 0)!=int(os.environ['ORDINAL']): raise SystemExit('preauthorization ordinal drift')
+          if seed.get('status')!='PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED' or seed.get('auditedMainHead')!=os.environ['AUTH_PARENT']: raise SystemExit('preauthorization seed proof drift')
+          if any(ar.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('authorization review crossed zero-runtime boundary')
+          PY
+
+      - name: Prove exact consumed state, prior failures and zero science
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > publisher-history-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${DISPATCH_BRANCH}&per_page=100" > dispatch-run-pages.json
+
+          python - <<'PY' > history-run-ids.txt
+          import json
+          h=json.load(open('historical-control-evidence.json'))
+          for r in h['priorPublisherRuns']: print(int(r['runId']))
+          PY
+          while read -r RID; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}" > "historical-run-${RID}.json"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/jobs?per_page=100" > "historical-jobs-${RID}.json"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RID}/artifacts?per_page=100" > "historical-artifacts-${RID}.json"
+          done < history-run-ids.txt
+
+          python - <<'PY' > history-refs.tsv
+          import json
+          h=json.load(open('historical-control-evidence.json'))
+          for r in h['priorPublisherRuns']: print(f'{r["headSha"]}\t{r["historyBranch"]}')
+          PY
+          while IFS=$'\t' read -r SHA BRANCH; do
+            git ls-remote --exit-code --heads origin "$BRANCH" > history-ref.txt
+            grep -q "^${SHA}[[:space:]]" history-ref.txt
+          done < history-refs.tsv
+
+          python - <<'PY'
+          import json,os
+          h=json.load(open('historical-control-evidence.json'))
+          pages=json.load(open('issue60-pages.json')); comments=[r for page in pages for r in page]
+          bodies=[str(r.get('body') or '').strip() for r in comments]
+          allocation=h['issue60AllocationMarker']; consumed=h['issue60ConsumedMarker']
+          if sum(b==allocation for b in bodies)!=1: raise SystemExit('expected exactly one reviewed allocation marker')
+          if sum(b==consumed for b in bodies)!=1: raise SystemExit('expected exactly one consumed marker')
+          if sum(b.startswith(f'ORDINAL{os.environ["ORDINAL"]}_AVPS_V1_AUTHORIZATION_ALLOCATED_') for b in bodies)!=1: raise SystemExit('competing AVPS allocation marker exists')
+
+          dispatch_pages=json.load(open('dispatch-run-pages.json')); dispatch_runs=[r for page in dispatch_pages for r in page.get('workflow_runs',[])]
+          if dispatch_runs: raise SystemExit(f'AVPS dispatch branch already has workflow runs: {[r.get("id") for r in dispatch_runs]}')
+
+          expected={int(r['runId']):r for r in h['priorPublisherRuns']}
+          pub_pages=json.load(open('publisher-history-pages.json')); all_pub=[r for page in pub_pages for r in page.get('workflow_runs',[])]
+          pub=[r for r in all_pub if r.get('path')=='.github/workflows/avps-v1-dispatch-publisher.yml']
+          prior=[r for r in pub if int(r.get('id') or 0)!=int(os.environ['GITHUB_RUN_ID'])]
+          if {int(r.get('id') or 0) for r in prior}!=set(expected): raise SystemExit(f'prior publisher run set drift: {[r.get("id") for r in prior]}')
+          current=[r for r in pub if int(r.get('id') or 0)==int(os.environ['GITHUB_RUN_ID'])]
+          if len(current)!=1 or int(current[0].get('run_attempt') or 0)!=1: raise SystemExit('current Stage-A publisher identity drift')
+          for r in prior:
+              rid=int(r['id']); e=expected[rid]
+              if int(r.get('run_attempt') or 0)!=1 or r.get('status')!='completed' or r.get('conclusion')!='failure': raise SystemExit(f'prior publisher {rid} is not terminal attempt-1 failure')
+              if r.get('head_branch')!=e['headBranch'] or r.get('head_sha')!=e['headSha']: raise SystemExit(f'prior publisher {rid} identity drift')
+
+          original=h['priorPublisherRuns'][0]; rid=int(original['runId'])
+          jobs=json.load(open(f'historical-jobs-{rid}.json')).get('jobs',[])
+          if len(jobs)!=1 or int(jobs[0].get('id') or 0)!=int(original['jobId']): raise SystemExit('original publisher job drift')
+          steps={s.get('name'):s.get('conclusion') for s in jobs[0].get('steps',[])}
+          for item in h['originalPublisherExactRelevantSteps']:
+              if steps.get(item['name'])!=item['conclusion']: raise SystemExit(f'original publisher boundary drift: {item["name"]}={steps.get(item["name"])}')
+
+          artifact_name=f'avps-v1-dispatch-publisher-ordinal-{os.environ["ORDINAL"]}'
+          for rid,e in expected.items():
+              run=json.load(open(f'historical-run-{rid}.json'))
+              jobs=json.load(open(f'historical-jobs-{rid}.json')).get('jobs',[])
+              arts=json.load(open(f'historical-artifacts-{rid}.json')).get('artifacts',[])
+              if run.get('conclusion')!='failure' or int(run.get('run_attempt') or 0)!=1: raise SystemExit(f'historical run {rid} drift')
+              if len(jobs)!=1 or jobs[0].get('conclusion')!='failure': raise SystemExit(f'historical job {rid} drift')
+              byname={s.get('name'):s.get('conclusion') for s in jobs[0].get('steps',[])}
+              if byname.get(e['failedStepName'])!='failure': raise SystemExit(f'historical failed step {rid} drift')
+              if any(a.get('name')==artifact_name and not a.get('expired',False) for a in arts): raise SystemExit(f'historical publisher evidence unexpectedly exists for run {rid}')
+          PY
+
+          git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" > dispatch-ls-remote.txt
+          grep -q "^${AUTH_HEAD}[[:space:]]" dispatch-ls-remote.txt
+
+      - name: Stage immutable Stage-A publisher receipt
+        shell: bash
+        env:
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          DISPATCH_BRANCH: ${{ steps.identity.outputs.dispatch_branch }}
+          RECOVERY_CONTRACT_HEAD: ${{ steps.identity.outputs.recovery_contract_head }}
+          STAGE_A_REVIEW_HEAD: ${{ steps.identity.outputs.stage_a_review_head }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          h=json.load(open('historical-control-evidence.json'))
+          prior=[int(r['runId']) for r in h['priorPublisherRuns']]
+          publisher={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v1-dispatch-publisher',
+            'status':'DISPATCH_PUBLISHED_ZERO_RUNTIME',
+            'scientificOrdinal':int(os.environ['ORDINAL']),
+            'authorizationHead':os.environ['AUTH_HEAD'],
+            'authorizationParent':os.environ['AUTH_PARENT'],
+            'authorizationPr':int(os.environ['PR_NUMBER']),
+            'dispatchBranch':os.environ['DISPATCH_BRANCH'],
+            'dispatchBranchHeadSha':os.environ['AUTH_HEAD'],
+            'actualGitPush':True,
+            'actualGitPushPerformedByThisRun':False,
+            'currentConsumedMarkerPosted':True,
+            'currentConsumedMarkerPostedByThisRun':False,
+            'scienceTriggerMode':'NONE_STAGE_A_EVIDENCE_ONLY',
+            'scienceWorkflowDispatchPerformed':False,
+            'runId':int(os.environ['GITHUB_RUN_ID']),
+            'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+            'conclusion':'success',
+            'postConsumptionRecovery':True,
+            'stageARecovery':True,
+            'priorFailedPublisherRunIds':prior,
+            'recoveryContractHead':os.environ['RECOVERY_CONTRACT_HEAD'],
+            'stageAReviewHead':os.environ['STAGE_A_REVIEW_HEAD'],
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+          }
+          recovery={
+            'schemaVersion':1,
+            'stageId':'avps-v1-ordinal40-stage-a-publisher-evidence-only-recovery',
+            'status':'POST_CONSUMPTION_PUBLISHER_RECOVERY_PASS_NO_SECOND_CONSUMPTION_NO_SCIENCE_TRIGGER',
+            'scientificOrdinal':int(os.environ['ORDINAL']),
+            'authorizationHead':os.environ['AUTH_HEAD'],
+            'authorizationParent':os.environ['AUTH_PARENT'],
+            'dispatchBranch':os.environ['DISPATCH_BRANCH'],
+            'dispatchBranchHeadSha':os.environ['AUTH_HEAD'],
+            'allocationMarkerCount':1,
+            'consumedMarkerCount':1,
+            'dispatchPushRepeated':False,
+            'consumedMarkerRepeated':False,
+            'scienceRunCountBeforeAndDuringStageA':0,
+            'priorFailedPublisherRunIds':prior,
+            'scienceWorkflowDispatchPerformed':False,
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+          }
+          open('dispatch-publisher.json','w').write(json.dumps(publisher,indent=2,sort_keys=True)+'\n')
+          open('post-consumption-stage-a-recovery.json','w').write(json.dumps(recovery,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist immutable Stage-A publisher evidence and stop
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-dispatch-publisher-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            dispatch-publisher.json
+            post-consumption-stage-a-recovery.json
+            dispatch-ls-remote.txt
+            recovery-control-contract.json
+            historical-control-evidence.json
+            science-preflight-blocker.json
+            auth-pr-selected.json
+            auth-review-selected.json
+            preauth-selected.json
+            pr-*.json
+            review-run-*.json
+            historical-run-*.json
+            historical-jobs-*.json
+            historical-artifacts-*.json
+          if-no-files-found: error
+          compression-level: 0

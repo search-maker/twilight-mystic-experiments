@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import re
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +9,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[2]
 AOPS_DIR = ROOT / "experiments" / "aerosol-optical-property-sensitivity-v1" / "execution-candidate"
 AOPS_CONTROL_BLOB = "bc6d5a565b2b98f496793b35b226a334ba6b87f4"
-AOPS_GLOBAL_ORDINAL_BLOB = "27f8ac62bc8a520ab22b0215e847ef878db5aa5f"
-LOCAL_FRESHNESS_BLOB = "8c2de63cc0b4308fd1bf1f631d19b5d3c83bb227"
+LOCAL_FRESHNESS_BLOB = "9ce9be8567bd810db5b5e1deea38d204bc21c17f"
+LOCAL_GLOBAL_ORDINAL_BLOB = "67b4b3ac8aeadcc68b2191d7c0a0b4773d560ef0"
 STAGE = "aerosol-vertical-profile-sensitivity-v1"
 AUTHORIZATION_PATH = f"experiments/{STAGE}/authorization.json"
 CASE_ARTIFACT_PREFIX = "avps-v1-case-"
@@ -19,7 +18,7 @@ AUTH_CONTROL_BLOBS = {
     "experiments/aerosol-vertical-profile-sensitivity-v1/execution_design.py": "fbb094bc5b658819d0c0ca5dfc47d285d35ba412",
     "experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py": "49261f7c2796ef44a72b792531dcade45d2f519f",
     "experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py": "1ad3829ef518649abf42d6710c125d93670398e6",
-    ".github/workflows/aerosol-vertical-profile-authorization-review.yml": "4932154ea1a3e064796e65e0eb82b8e4b334b61c",
+    ".github/workflows/aerosol-vertical-profile-authorization-review.yml": "9fdb445d9a4c62da4889868ea614760c5adcd7c0",
 }
 
 
@@ -50,35 +49,18 @@ def load_bound(name: str, path: Path, expected_blob: str):
     return module
 
 
-def _failed_history_must_be_absent(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
-    pattern = re.compile(
-        rf"^history/{re.escape(STAGE)}-ordinal-{ordinal}-auth-review-failed-([1-9][0-9]*)$",
-        re.I,
-    )
-    found = [
-        str(row.get("name") or "")
-        for row in payload.get("branches", [])
-        if pattern.fullmatch(str(row.get("name") or ""))
-    ]
-    if found:
-        raise SurfaceRefusal(
-            "vertical-profile v1 failed-authorization recovery history exists; a separately reviewed recovery extension is required"
-        )
-    return {"heads": [], "prNumbers": [], "reviewRunIds": []}
-
-
 def _modules():
     validate_authorization_control_bindings()
     freshness = load_bound("avps_freshness_for_control", HERE / "freshness.py", LOCAL_FRESHNESS_BLOB)
     control = load_bound("avps_bound_aops_control_surface", AOPS_DIR / "control_surface.py", AOPS_CONTROL_BLOB)
-    ordinal = load_bound("avps_bound_aops_global_ordinal", AOPS_DIR / "global_ordinal.py", AOPS_GLOBAL_ORDINAL_BLOB)
+    ordinal = load_bound("avps_local_global_ordinal", HERE / "global_ordinal.py", LOCAL_GLOBAL_ORDINAL_BLOB)
     control.authorization_branch = freshness.authorization_branch
     control.dispatch_branch = freshness.dispatch_branch
     control.execution_key = freshness.execution_key
     control.matching_marker = freshness.matching_marker
     control.positive_candidate_claims = freshness.positive_candidate_claims
     control.consumed_marker = freshness.consumed_marker
-    control.failed_authorization_history = _failed_history_must_be_absent
+    control.failed_authorization_history = ordinal.failed_authorization_history
     control.AUTHORIZATION_PATH = AUTHORIZATION_PATH
     control.CASE_ARTIFACT_PREFIX = CASE_ARTIFACT_PREFIX
     return freshness, control, ordinal

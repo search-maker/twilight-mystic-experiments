@@ -36,6 +36,27 @@ marker_regex = mod.marker_regex
 positive_candidate_claims = mod.positive_candidate_claims
 matching_marker = mod.matching_marker
 validate_common = mod.validate_common
-validate_preauthorization = mod.validate_preauthorization
 validate_authorization_review = mod.validate_authorization_review
 validate_dispatch = mod.validate_dispatch
+
+
+def validate_preauthorization(ctx: dict, ordinal: int) -> None:
+    """Allow exactly one rigorously proven failed-review authorization ref to be reused.
+
+    The generic AFPF rule requires the authorization branch to be absent. AVPS
+    keeps that default, except when the stage-aware control surface has proved
+    the existing head is the preserved terminal attempt-1 failed review with no
+    allocation marker, dispatch, consumed marker, science run or execution-key
+    use. This is identity recovery only; it does not allocate the ordinal.
+    """
+    validate_common(ctx, ordinal)
+    require(ctx.get("currentConsumedMarkerCount") == 0, "candidate consumed marker already exists")
+    reusable = ctx.get("authorizationBranchReusableAfterFailedReview") is True
+    branch_exists = ctx.get("authorizationBranchExists") is True
+    require(
+        (not branch_exists) or reusable,
+        "AVPS authorization branch already exists without rigorously preserved failed-review proof",
+    )
+    require(ctx.get("activeAuthorizationPathOnMainExists") is False, "active AVPS authorization path already exists on main")
+    require(ctx.get("matchingAuthorizationMarkers") == 0, "authorization marker already exists before review")
+    require(ctx.get("candidateSeedAuthorizationRecheckPassed") is True, "authorization-time candidate seed recheck has not passed")

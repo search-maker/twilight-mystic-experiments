@@ -1,0 +1,100 @@
+name: Starsvisibility exact-head broad verification v1
+run-name: Starsvisibility broad exact-head verification | ${{ github.sha }}
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    paths:
+      - 'review/starsvisibility-broad-exact-head-dispatch/dispatch.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: starsvisibility-exact-head-broad-verification-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate one-file read-only dispatch
+        id: dispatch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git diff --name-only HEAD^ HEAD)" = "review/starsvisibility-broad-exact-head-dispatch/dispatch.json"
+          python - <<'PY'
+          import json, os, re
+          p='review/starsvisibility-broad-exact-head-dispatch/dispatch.json'
+          d=json.load(open(p))
+          assert d.get('schemaVersion')==1
+          assert d.get('repository')=='search-maker/starsvisibility'
+          sha=d.get('applicationSha')
+          assert isinstance(sha,str) and re.fullmatch(r'[0-9a-f]{40}',sha)
+          assert d.get('testProfile')=='LEVEL_B_BUILD_SITEWIDE_DIST_BROAD_V1'
+          assert d.get('readOnly') is True
+          assert d.get('scientificExecution') is False
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'application_sha={sha}\n')
+          PY
+          test -z "$(command -v uvspec || true)"
+
+      - name: Require read-only starsvisibility credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+
+      - uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ steps.dispatch.outputs.application_sha }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+
+      - name: Verify exact application identity
+        working-directory: app
+        env:
+          EXPECTED_SHA: ${{ steps.dispatch.outputs.application_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(command -v uvspec || true)"
+
+      - name: Install pinned application dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Full Pages build including prebuild parity and sitewide checks
+        working-directory: app
+        run: npm run build:pages
+
+      - name: Recheck current-main integration explicitly
+        working-directory: app
+        run: npm run test:level-b-current-main
+
+      - name: Recheck sitewide preview explicitly
+        working-directory: app
+        run: npm run test:level-b-sitewide-preview
+
+      - name: Recheck packaged stellar v3.2 dist identity
+        working-directory: app
+        run: node scripts/test-level-b-stellar-v2-dist.mjs
+
+      - name: Claim boundary
+        run: |
+          echo 'Read-only application build/test verification only.'
+          echo 'No scientific solver execution, model fitting, holdout opening, or repository mutation occurred.'

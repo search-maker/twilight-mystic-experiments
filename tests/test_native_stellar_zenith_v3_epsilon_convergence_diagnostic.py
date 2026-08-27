@@ -70,6 +70,19 @@ class ZenithEpsilonConvergenceDiagnosticTests(unittest.TestCase):
         self.assertEqual(result["failureKind"], "STRICT_SPECTRUM_PARSE_REFUSAL")
         self.assertTrue(result["knownUmu0EqualsOneRefusal"])
         self.assertEqual(result["dataRowCount"], 0)
+        self.assertTrue(m.is_proven_endpoint_refusal(result))
+
+    def test_other_rejection_is_not_misclassified_as_proven_endpoint(self):
+        m = self.m
+        result = m.classify_solver_output(
+            native=self.native,
+            stdout_text="",
+            stderr_text="different solver failure",
+            return_code=0,
+            target_altitude_deg=89.999,
+        )
+        self.assertFalse(result["solverUsable"])
+        self.assertFalse(m.is_proven_endpoint_refusal(result))
 
     def test_strict_401_node_spectrum_is_classified_usable(self):
         m = self.m
@@ -101,6 +114,7 @@ class ZenithEpsilonConvergenceDiagnosticTests(unittest.TestCase):
         )
         self.assertFalse(result["solverUsable"])
         self.assertEqual(result["failureKind"], "NONZERO_RETURN_CODE")
+        self.assertFalse(m.is_proven_endpoint_refusal(result))
 
     def test_usability_monotonicity_helper_detects_reentry(self):
         m = self.m

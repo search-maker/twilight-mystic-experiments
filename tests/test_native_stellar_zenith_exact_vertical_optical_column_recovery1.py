@@ -149,7 +149,12 @@ class ExactVerticalOpticalColumnRecovery1Tests(unittest.TestCase):
                         "productionAuthorized": False,
                     },
                 }
-                with mock.patch.object(module.v1, "execute_campaign", return_value=fake_result) as call:
+
+                def fake_execute_campaign(**kwargs):
+                    Path(kwargs["output_dir"]).mkdir(parents=True, exist_ok=False)
+                    return fake_result
+
+                with mock.patch.object(module.v1, "execute_campaign", side_effect=fake_execute_campaign) as call:
                     result = module.execute_recovery(
                         root=repo,
                         uvspec=Path("/tmp/uvspec"),

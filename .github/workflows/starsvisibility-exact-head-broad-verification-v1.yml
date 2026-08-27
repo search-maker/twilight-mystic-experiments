@@ -82,33 +82,36 @@ jobs:
         working-directory: app
         run: npm run prepare:level-b-stellar-v2
 
-      # This is the stage-independent source/module current-main contract. The
-      # older scripts/test-level-b-v3-current-main.mjs additionally inspects a
-      # transient intermediate dist/index.html shape and is therefore not a
-      # valid clean-checkout or post-build CI assertion.
       - name: Check source current-main integration
         working-directory: app
         run: node scientific-tools/visibility-v3/tests/test-current-main-integration.mjs
 
-      - name: Full Pages build including prebuild parity and sitewide checks
+      # build:pages itself executes test:level-b-parity and the complete
+      # test:level-b-sitewide-preview suite at their intended intermediate dist
+      # stage. Re-running that suite after finalization is invalid because later
+      # build transforms intentionally change the selector/runtime surface it
+      # asserts. Use the build result itself as the lifecycle-correct gate.
+      - name: Full Pages build including parity and sitewide checks
         working-directory: app
+        env:
+          CF_PAGES_COMMIT_SHA: ${{ steps.dispatch.outputs.application_sha }}
         run: npm run build:pages
 
-      - name: Recheck sitewide preview explicitly after build
-        working-directory: app
-        run: npm run test:level-b-sitewide-preview
-
-      - name: Recheck packaged stellar v3.2 dist identity
+      - name: Recheck packaged stellar v3.2 dist identity after finalization
         working-directory: app
         run: node scripts/test-level-b-stellar-v2-dist.mjs
 
-      - name: Verify deployment marker follows active stellar v3.2 identity
+      - name: Verify final deployment marker follows active stellar v3.2 identity
         working-directory: app
+        env:
+          EXPECTED_APPLICATION_SHA: ${{ steps.dispatch.outputs.application_sha }}
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
           const p = JSON.parse(fs.readFileSync('dist/level-b-software-status.json', 'utf8'));
+          const expectedAppSha = process.env.EXPECTED_APPLICATION_SHA;
           if (p.schemaVersion !== 2) throw new Error('deployment marker schema is not v2');
+          if (p.commitSha !== expectedAppSha) throw new Error(`deployment marker commit mismatch: ${p.commitSha} != ${expectedAppSha}`);
           if (p.stellarTransportLutSha256 !== '0b96bd5868dc0c72d5cd77b504098d35086feaf573d92556c4f8311a163e3ce2') throw new Error('deployment marker active stellar LUT is stale');
           if (p.stellarTransportSourceV2LutSha256 !== '21eeb51fcc5287ab3bb8cb59cfe0bb0073f34e9ca1b6cc6df988c6eb5043631f') throw new Error('deployment marker source-v2 identity missing');
           if (p.stellarTransportSedPublicAssetCommit !== '4b71445139e24236f12952ab41c791bd07a9f7db') throw new Error('deployment marker SED commit drift');
@@ -117,7 +120,7 @@ jobs:
           if (p.stellarTransportPhysicalTargetAltitudeMaxDeg !== 90) throw new Error('deployment marker zenith support missing');
           if (p.stellarTransportOldDomainValuesUnchanged !== true || p.stellarTransportPositiveEpsilonSubstitutionUsed !== false) throw new Error('deployment marker stellar inheritance/zenith semantics drift');
           if (p.stellarTransportEmpiricalRealSkyValidated !== false || p.stellarTransportHumanFirstSeeingValidated !== false || p.productionAuthorized !== false) throw new Error('deployment marker claim boundary drift');
-          console.log('Active stellar v3.2 deployment marker identity: PASS');
+          console.log('Final active stellar v3.2 deployment marker identity: PASS');
           NODE
 
       - name: Claim boundary

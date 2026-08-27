@@ -44,6 +44,17 @@ class AvpsPostConsumptionPublisherRecovery(unittest.TestCase):
         self.assertIn("recoveryReviewPr", TEXT)
         self.assertIn("recoveryReviewHead", TEXT)
 
+    def test_request_variables_are_exported_before_python_environment_reads(self):
+        source = TEXT.index("source request.env")
+        export_line = (
+            "export ORDINAL AUTH_HEAD AUTH_PARENT PR_NUMBER FAILED_PUBLISHER_RUN_ID "
+            "FAILED_PUBLISHER_REQUEST_HEAD RECOVERY_REVIEW_PR RECOVERY_REVIEW_HEAD"
+        )
+        exported = TEXT.index(export_line)
+        first_python_env_read = TEXT.index("os.environ['AUTH_PARENT']")
+        self.assertLess(source, exported)
+        self.assertLess(exported, first_python_env_read)
+
     def test_recovery_control_commit_is_direct_child_of_live_main_and_reviewed_blob(self):
         self.assertIn('test "${CONTROL_PARENTS[0]}" = "$LIVE_MAIN"', TEXT)
         self.assertIn('test "${#CONTROL_CHANGED[@]}" = 1', TEXT)
@@ -51,6 +62,10 @@ class AvpsPostConsumptionPublisherRecovery(unittest.TestCase):
         self.assertIn(".github/recovery-templates/avps-v1-dispatch-publisher-post-consumption-recovery.yml", TEXT)
         self.assertIn('test "$CONTROL_WORKFLOW_BLOB" = "$REVIEW_WORKFLOW_BLOB"', TEXT)
         self.assertIn("recovery review PR must remain Draft/open/unmerged", TEXT)
+
+    def test_original_publisher_run_name_matches_live_github_api_shape(self):
+        self.assertIn("expected_name=f'AVPS v1 dispatch publisher {expected_branch}'", TEXT)
+        self.assertIn("if r.get('name')!=expected_name", TEXT)
 
     def test_original_publisher_must_have_consumed_then_failed_before_science(self):
         for name in (

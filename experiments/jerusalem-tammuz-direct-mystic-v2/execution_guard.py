@@ -204,7 +204,7 @@ def validate(args: argparse.Namespace)->dict[str,Any]:
     auth_stale={k:(auth.get(k),v) for k,v in auth_required.items() if auth.get(k)!=v}
     if auth_stale: raise Refusal("authorization","one-purpose authorization fields changed",auth_stale)
     head=git(root,"rev-parse","HEAD"); parents=git(root,"rev-list","--parents","-n","1","HEAD").split()
-    if head!=args.authorization_ref or auth.get("exactAuthorizationCommit")!=head or len(parents)!=2 or auth.get("exactAuthorizationParentCommit")!=parents[1]: raise Refusal("authorization-commit","authorization commit/parent binding changed",{"head":head,"parents":parents})
+    if head!=args.authorization_ref or len(parents)!=2 or auth.get("exactAuthorizationParentCommit")!=parents[1] or auth.get("exactAuthorizationCommit") is not None: raise Refusal("authorization-commit","authorization ref/parent/self-binding changed",{"head":head,"parents":parents,"exactAuthorizationCommit":auth.get("exactAuthorizationCommit")})
     changed=git(root,"diff","--name-only",parents[1],head).splitlines()
     if changed!=[Path(args.authorization).as_posix()]: raise Refusal("one-purpose-commit","authorization commit must change exactly one file",changed)
 

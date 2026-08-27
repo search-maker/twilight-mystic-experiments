@@ -1,5 +1,5 @@
-name: Taylor HRRR broadband vertical-shape v1
-run-name: Taylor HRRR broadband v1 | ${{ github.event.pull_request.head.sha }}
+name: Taylor HRRR broadband vertical-shape v1 recovery1
+run-name: Taylor HRRR broadband v1 recovery1 | ${{ github.event.pull_request.head.sha }}
 
 on:
   pull_request:
@@ -13,12 +13,13 @@ permissions:
   actions: read
 
 concurrency:
-  group: taylor-hrrr-broadband-vertical-shape-v1-scientific-1
+  group: taylor-hrrr-broadband-vertical-shape-v1-recovery1-scientific-1
   cancel-in-progress: false
 
 env:
   PKG: experiments/taylor-hrrr-broadband-vertical-shape-v1
   REVIEW_PARENT: 75035d9ea316af574b2fac50f52c43c633b2bdbc
+  FAILED_PRE_SOLVER_HEAD: 62c3a3e4c8a9808003c4e2bd7841d569b264740d
   TAYLOR_SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
   HRRR_SHAPE_SOURCE_SHA: 3b32dfba4d861c0db8a4c2dac3e2d5c4ce73e359
   DERIVED_SOURCE_SHA: 86d4432cc902e50e09811558465e9fa489c57ea2
@@ -30,7 +31,7 @@ env:
 
 jobs:
   preflight:
-    if: github.head_ref == 'science/taylor-hrrr-broadband-vertical-shape-v1'
+    if: github.head_ref == 'science/taylor-hrrr-broadband-vertical-shape-v1-recovery1'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -43,25 +44,35 @@ jobs:
           persist-credentials: false
 
       - id: identity
-        name: Verify one-shot science identity and frozen review parent
+        name: Verify recovery identity and byte-identical reviewed science package
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = "1"
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          test "$(git rev-parse HEAD^)" = "$REVIEW_PARENT"
+          test "$(git rev-parse HEAD^)" = "$FAILED_PRE_SOLVER_HEAD"
+          git fetch --no-tags --depth=1 origin "$REVIEW_PARENT"
+          git diff --exit-code "$REVIEW_PARENT" HEAD -- \
+            "$PKG" \
+            tests/test_taylor_hrrr_broadband_vertical_shape_v1_review.py \
+            .github/workflows/taylor-hrrr-broadband-review-v1.yml
           python - <<'PY'
-          import importlib.util, pathlib
+          import ast, pathlib
           p=pathlib.Path('experiments/taylor-hrrr-broadband-vertical-shape-v1/run_row_replicate.py')
-          spec=importlib.util.spec_from_file_location('r',p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-          assert m.ROWS==[23,24,25]
-          assert m.REPLICATES==[1,2]
-          assert m.PHOTONS==50000
-          assert m.SEED_BASE=={1:955000000,2:956000000}
-          seeds=[m.SEED_BASE[q]+row*1000+ray for q in m.REPLICATES for row in m.ROWS for ray in range(1,65)]
+          tree=ast.parse(p.read_text())
+          vals={}
+          for node in tree.body:
+              if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
+                  name=node.targets[0].id
+                  if name in {'ROWS','REPLICATES','PHOTONS','SEED_BASE'}:
+                      vals[name]=ast.literal_eval(node.value)
+          assert vals['ROWS']==[23,24,25]
+          assert vals['REPLICATES']==[1,2]
+          assert vals['PHOTONS']==50000
+          assert vals['SEED_BASE']=={1:955000000,2:956000000}
+          seeds=[vals['SEED_BASE'][q]+row*1000+ray for q in vals['REPLICATES'] for row in vals['ROWS'] for ray in range(1,65)]
           assert len(seeds)==384 and len(set(seeds))==384
-          assert 384*2==768
-          assert 768*50000==38400000
+          assert 384*2==768 and 768*50000==38400000
           print('FROZEN_SCIENTIFIC_UNIVERSE_PASS',len(seeds),'unique seeds / 768 paired-condition calls')
           PY
           python -m py_compile "$PKG/run_row_replicate.py" "$PKG/preflight.py" "$PKG/check_default_replication.py" "$PKG/analyze.py"
@@ -105,7 +116,7 @@ jobs:
 
       - uses: mamba-org/setup-micromamba@v2
         with:
-          environment-name: taylor-hrrr-broadband-preflight-v1
+          environment-name: taylor-hrrr-broadband-preflight-v1r1
           create-args: >-
             -c conda-forge
             python=3.12.4
@@ -147,7 +158,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: taylor-hrrr-broadband-v1-preflight
+          name: taylor-hrrr-broadband-v1r1-preflight
           path: |
             frozen-source
             hrrr/point_profile_raw.csv
@@ -175,12 +186,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: taylor-hrrr-broadband-v1-preflight
+          name: taylor-hrrr-broadband-v1r1-preflight
           path: preflight-artifact
 
       - uses: mamba-org/setup-micromamba@v2
         with:
-          environment-name: taylor-hrrr-broadband-v1
+          environment-name: taylor-hrrr-broadband-v1r1
           create-args: >-
             -c conda-forge
             python=3.12.4
@@ -225,7 +236,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: taylor-hrrr-broadband-v1-row-${{ matrix.row }}-rep-${{ matrix.replicate }}
+          name: taylor-hrrr-broadband-v1r1-row-${{ matrix.row }}-rep-${{ matrix.replicate }}
           path: |
             row-${{ matrix.row }}-rep-${{ matrix.replicate }}
             runtime-report.json
@@ -245,7 +256,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: taylor-hrrr-broadband-v1-row-*-rep-*
+          pattern: taylor-hrrr-broadband-v1r1-row-*-rep-*
           path: new-results
           merge-multiple: false
 
@@ -286,7 +297,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: taylor-hrrr-broadband-v1-default-replication-gate
+          name: taylor-hrrr-broadband-v1r1-default-replication-gate
           path: default-gate
           if-no-files-found: warn
           retention-days: 90
@@ -303,7 +314,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: taylor-hrrr-broadband-v1-row-*-rep-*
+          pattern: taylor-hrrr-broadband-v1r1-row-*-rep-*
           path: new-results
           merge-multiple: false
 
@@ -337,7 +348,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: taylor-hrrr-broadband-v1-analysis
+          name: taylor-hrrr-broadband-v1r1-analysis
           path: analysis-output
           if-no-files-found: error
           retention-days: 90

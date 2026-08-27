@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL = ROOT / ".github/workflows/native-stellar-zenith-v32-one-shot.yml"
 RECOVERY = ROOT / ".github/workflows/native-stellar-zenith-v32-presolver-recovery1.yml"
+
+
+def extract_science_invocation(text: str) -> str:
+    start_marker = 'python "$STAGE_DIR/run_native_stellar_zenith_v32.py"'
+    end_marker = '--output-dir execution-output'
+    start = text.index(start_marker)
+    end = text.index(end_marker, start) + len(end_marker)
+    return text[start:end]
 
 
 class NativeStellarZenithV32PresolverRecovery1Tests(unittest.TestCase):
@@ -46,16 +53,7 @@ class NativeStellarZenithV32PresolverRecovery1Tests(unittest.TestCase):
         self.assertIn("test \"$PACKAGE_SPEC\" = 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1'", self.recovery)
 
     def test_scientific_invocation_is_identical_to_original(self):
-        pattern = re.compile(
-            r'python "\$STAGE_DIR/run_native_stellar_zenith_v32\.py" \\\n'
-            r'.*?--output-dir execution-output',
-            re.DOTALL,
-        )
-        original = pattern.search(self.original)
-        recovery = pattern.search(self.recovery)
-        self.assertIsNotNone(original)
-        self.assertIsNotNone(recovery)
-        self.assertEqual(original.group(0), recovery.group(0))
+        self.assertEqual(extract_science_invocation(self.original), extract_science_invocation(self.recovery))
 
     def test_frozen_science_counts_and_gates_are_unchanged(self):
         frozen_fragments = (

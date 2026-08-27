@@ -1,0 +1,377 @@
+name: Taylor CAMS same-cycle forecast00-03 profile v2
+run-name: Taylor CAMS forecast00-03 profile v2 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-cams-forecast00-03-profile-v2/**'
+      - '.github/workflows/taylor-cams-forecast00-03-profile-v2.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: taylor-cams-forecast00-03-profile-v2-reconstruction-1
+  cancel-in-progress: false
+
+jobs:
+  reconstruct:
+    if: github.head_ref == 'review/taylor-cams-forecast00-03-profile-v2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+      EXT_ARTIFACT_ID: '9633131426'
+      EXT_ARTIFACT_SHA256: e3341e1391de71ea85591ec92caf9552b2729b924425523abedc98608077bb84
+      AOD_ARTIFACT_ID: '9633609512'
+      AOD_ARTIFACT_SHA256: 79a430bd0a0d09ad81daa25f1271487f233dbc1a519a284b3c48bbb1ee8eb061
+    steps:
+      - name: Check out exact v2 identity
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify frozen contract and one-shot identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test -s experiments/taylor-cams-forecast00-03-profile-v2/CONTRACT.md
+
+      - name: Download and verify immutable pre-existing extinction and AOD artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p source/ext source/aod output
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/$EXT_ARTIFACT_ID/zip" \
+            -o source/ext.zip
+          echo "$EXT_ARTIFACT_SHA256  source/ext.zip" | sha256sum -c -
+          unzip -q source/ext.zip -d source/ext
+          test -s source/ext/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib
+
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/$AOD_ARTIFACT_ID/zip" \
+            -o source/aod.zip
+          echo "$AOD_ARTIFACT_SHA256  source/aod.zip" | sha256sum -c -
+          unzip -q source/aod.zip -d source/aod
+          test "$(find source/aod -type f -name summary.json | wc -l)" = "1"
+          find source/aod -type f -name summary.json -print
+
+      - name: Install ADS and GRIB tools
+        run: python -m pip install --disable-pip-version-check 'cdsapi==0.7.7' 'eccodes==2.48.0' 'numpy==2.5.2'
+
+      - name: Retrieve only same-cycle forecast thermodynamic height fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import cdsapi, json, os, pathlib
+          out=pathlib.Path('output')
+          key=os.environ.get('ADS_API_KEY','').strip()
+          if not key:
+              raise SystemExit('ADS_API_KEY missing')
+          dataset='cams-global-atmospheric-composition-forecasts'
+          request={
+              'date':['2025-08-08/2025-08-08'],
+              'time':['00:00'],
+              'leadtime_hour':['0','3'],
+              'type':['forecast'],
+              'data_format':'grib',
+              'area':[42.4,-84.0,42.0,-83.6],
+              'variable':['temperature','specific_humidity','geopotential','logarithm_of_surface_pressure'],
+              'model_level':[str(i) for i in range(1,138)],
+          }
+          (out/'thermodynamic_request.json').write_text(json.dumps({'dataset':dataset,'request':request},indent=2,sort_keys=True)+'\n')
+          target=out/'cams_2025-08-08_00Z_lead0-3_t_q_z_lnsp_ml1-137.grib'
+          cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False).retrieve(dataset,request,str(target))
+          if not target.is_file() or target.stat().st_size==0:
+              raise SystemExit('thermodynamic retrieval missing')
+          print('THERMO_BYTES',target.stat().st_size)
+          PY
+
+      - name: Reconstruct exact 137-level endpoints and apply frozen gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json, math, pathlib
+          import numpy as np
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_is_defined,codes_release
+
+          LAT=42.256
+          LON=-83.709
+          SITE_M=262.0
+          RD=287.06
+          G=9.80665
+          OUT=pathlib.Path('output')
+          EXT=pathlib.Path('source/ext/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib')
+          TH=OUT/'cams_2025-08-08_00Z_lead0-3_t_q_z_lnsp_ml1-137.grib'
+          AOD_SUMMARY=next(pathlib.Path('source/aod').rglob('summary.json'))
+          EXPECTED_AOD={
+              0:{532:0.3379003423329441,550:0.32390820667147624},
+              3:{532:0.2912631035534665,550:0.27895676622763277},
+          }
+
+          def safe(g,k,d=None):
+              try:
+                  if codes_is_defined(g,k): return codes_get(g,k)
+              except Exception:
+                  pass
+              return d
+
+          def site_value(g):
+              la=codes_get_array(g,'latitudes')
+              lo=codes_get_array(g,'longitudes')
+              va=codes_get_array(g,'values')
+              pts=[]
+              for y,x,v in zip(la,lo,va):
+                  x=float(x)
+                  if x>180: x-=360
+                  pts.append((round(float(y),6),round(x,6),float(v)))
+              by={(y,x):v for y,x,v in pts}
+              ys=sorted({y for y,_,_ in pts}); xs=sorted({x for _,x,_ in pts})
+              yl=[y for y in ys if y<=LAT]; yh=[y for y in ys if y>=LAT]
+              xl=[x for x in xs if x<=LON]; xh=[x for x in xs if x>=LON]
+              if yl and yh and xl and xh:
+                  y0=max(yl); y1=min(yh); x0=max(xl); x1=min(xh)
+                  need=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
+                  if all(k in by for k in need):
+                      fy=0.0 if y1==y0 else (LAT-y0)/(y1-y0)
+                      fx=0.0 if x1==x0 else (LON-x0)/(x1-x0)
+                      val=(1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+                      return float(val),{'method':'bilinear_native_nodes','lat0':y0,'lat1':y1,'lon0':x0,'lon1':x1}
+              y,x,v=min(pts,key=lambda p:(p[0]-LAT)**2+(p[1]-LON)**2)
+              return float(v),{'method':'nearest','lat':y,'lon':x}
+
+          def read(path):
+              rows=[]; pv=None
+              with pathlib.Path(path).open('rb') as f:
+                  while True:
+                      g=codes_grib_new_from_file(f)
+                      if g is None: break
+                      try:
+                          value,interp=site_value(g)
+                          rows.append({
+                              'short':str(safe(g,'shortName','')),
+                              'name':str(safe(g,'name','')),
+                              'paramId':safe(g,'paramId',None),
+                              'units':str(safe(g,'units','')),
+                              'typeOfLevel':str(safe(g,'typeOfLevel','')),
+                              'step':int(safe(g,'step',-1)),
+                              'level':int(safe(g,'level',-1)),
+                              'value':value,
+                              'interpolation':interp,
+                          })
+                          if pv is None:
+                              try:
+                                  x=codes_get_array(g,'pv')
+                                  if len(x): pv=np.asarray(x,float)
+                              except Exception:
+                                  pass
+                      finally:
+                          codes_release(g)
+              return rows,pv
+
+          ext,_=read(EXT)
+          thermo,pv=read(TH)
+          if pv is None:
+              raise SystemExit('hybrid pv coefficients missing from thermodynamic GRIB')
+          n=len(pv)//2-1
+          if n!=137:
+              raise SystemExit(f'expected 137 hybrid levels, got {n}')
+          A=pv[:n+1]; B=pv[n+1:]
+
+          E={(r['step'],r['level']):r for r in ext if (r['short']=='aerext532' or ('extinction' in r['name'].lower() and '532' in r['name'])) and r['typeOfLevel']=='hybrid'}
+          T={(r['step'],r['level']):r for r in thermo if r['short']=='t' or r['name'].lower()=='temperature'}
+          Q={(r['step'],r['level']):r for r in thermo if r['short']=='q' or r['name'].lower()=='specific humidity'}
+          Z={(r['step'],r['level']):r for r in thermo if r['short']=='z' or r['name'].lower()=='geopotential'}
+          L={(r['step'],r['level']):r for r in thermo if r['short']=='lnsp' or 'logarithm of surface pressure' in r['name'].lower()}
+
+          expected_keys={(lead,lev) for lead in (0,3) for lev in range(1,138)}
+          if set(E)!=expected_keys:
+              raise SystemExit(f'extinction universe mismatch: {len(E)} keys')
+          if set(T)!=expected_keys:
+              raise SystemExit(f'temperature universe mismatch: {len(T)} keys')
+          if set(Q)!=expected_keys:
+              raise SystemExit(f'humidity universe mismatch: {len(Q)} keys')
+          if any((lead,1) not in Z or (lead,1) not in L for lead in (0,3)):
+              raise SystemExit('geopotential/lnsp carrier missing for a lead')
+
+          # Verify immutable #503 AOD artifact still says the exact values frozen in the v2 contract.
+          aod_json=json.loads(AOD_SUMMARY.read_text())
+          vals=aod_json.get('ads',{}).get('values',[])
+          parsed={}
+          for r in vals:
+              text=(str(r.get('shortName',''))+' '+str(r.get('name',''))).lower()
+              wl=532 if '532' in text else 550 if '550' in text else None
+              if wl in (532,550): parsed[(int(r['leadHour']),wl)]=float(r['valueAnnArbor'])
+          for lead in (0,3):
+              for wl in (532,550):
+                  got=parsed.get((lead,wl))
+                  exp=EXPECTED_AOD[lead][wl]
+                  if got is None or abs(got-exp)>1e-12:
+                      raise SystemExit(f'immutable AOD evidence mismatch lead={lead} wl={wl}: {got} != {exp}')
+
+          def trap(points):
+              return sum(0.5*(max(0,b0)+max(0,b1))*(h1-h0) for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]) if h1>h0)
+
+          def upto(points,cut):
+              total=0.0
+              for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]):
+                  if h0>=cut: break
+                  if h1<=h0: continue
+                  hu=min(h1,cut)
+                  frac=(hu-h0)/(h1-h0)
+                  bu=b0+frac*(b1-b0)
+                  total+=0.5*(max(0,b0)+max(0,bu))*(hu-h0)
+                  if h1>=cut: break
+              return total
+
+          profile=[]
+          summaries=[]
+          all_pass=True
+          for lead,endpoint in ((0,'forecast00'),(3,'forecast03')):
+              sp=math.exp(float(L[(lead,1)]['value']))
+              zs=float(Z[(lead,1)]['value'])
+              native_surface_h=zs/G
+              if not math.isfinite(sp) or sp<=0 or not math.isfinite(native_surface_h):
+                  raise SystemExit(f'{endpoint}: invalid surface state')
+
+              # ECMWF hydrostatic full-level geopotential reconstruction from the surface upward.
+              zh=zs
+              comp={}
+              for lev in range(137,0,-1):
+                  tv=float(T[(lead,lev)]['value'])*(1.0+0.609133*float(Q[(lead,lev)]['value']))
+                  ptop=A[lev-1]+B[lev-1]*sp
+                  pbot=A[lev]+B[lev]*sp
+                  if lev==1:
+                      dlog=math.log(pbot/0.1)
+                      alpha=math.log(2.0)
+                  else:
+                      dlog=math.log(pbot/ptop)
+                      alpha=1.0-(ptop/(pbot-ptop))*dlog
+                  tr=tv*RD
+                  zf=zh+tr*alpha
+                  zh=zh+tr*dlog
+                  comp[lev]=(zf/G,ptop,pbot)
+
+              endpoint_rows=[]
+              for lev in range(137,0,-1):
+                  h,pt,pb=comp[lev]
+                  agl=h-native_surface_h
+                  beta=float(E[(lead,lev)]['value'])
+                  endpoint_rows.append((agl,beta,lev,h,pt,pb))
+              endpoint_rows.sort(key=lambda x:x[0])
+
+              heights=[x[0] for x in endpoint_rows]
+              betas=[x[1] for x in endpoint_rows]
+              levels=[x[2] for x in endpoint_rows]
+              strict_height=all(math.isfinite(x) for x in heights) and all(heights[i+1]>heights[i] for i in range(len(heights)-1))
+              finite_nonnegative=all(math.isfinite(x) and x>=0 for x in betas)
+              positive_count=sum(x>0 for x in betas)
+              exact_levels=(len(levels)==137 and set(levels)==set(range(1,138)))
+
+              # Extend the lowest full-level extinction down to the model surface, matching the preregistered integration convention.
+              points=[(0.0,betas[0])]+[(x[0],x[1]) for x in endpoint_rows]
+              points.sort()
+              tau=trap(points)
+              aod532=EXPECTED_AOD[lead][532]
+              ratio=tau/aod532 if aod532>0 else float('nan')
+              gate=bool(exact_levels and strict_height and finite_nonnegative and positive_count>0 and math.isfinite(tau) and tau>0 and 0.95<=ratio<=1.05)
+              all_pass=all_pass and gate
+
+              peak=max(endpoint_rows,key=lambda x:x[1])
+              summary={
+                  'endpoint':endpoint,
+                  'baseDateUTC':'2025-08-08',
+                  'baseHourUTC':0,
+                  'leadHour':lead,
+                  'validDateUTC':'2025-08-08',
+                  'validHourUTC':lead,
+                  'modelLevelCount':len(levels),
+                  'nonzeroLevelCount':positive_count,
+                  'strictlyIncreasingHeight':strict_height,
+                  'finiteNonnegativeExtinction':finite_nonnegative,
+                  'surfacePressure_Pa':sp,
+                  'nativeSurfaceHeight_m':native_surface_h,
+                  'directCamsAOD532':EXPECTED_AOD[lead][532],
+                  'directCamsAOD550':EXPECTED_AOD[lead][550],
+                  'integratedExtinctionTau532':tau,
+                  'integrationToDirectAOD532Ratio':ratio,
+                  'peakExtinction532_m-1':peak[1],
+                  'peakModelLevel':peak[2],
+                  'peakHeightAGL_m':peak[0],
+                  'gatePass':gate,
+              }
+              for km in (0.5,1,2,3,5,10):
+                  summary['tauFractionBelow'+str(km).replace('.','p')+'km']=upto(points,km*1000.0)/tau if tau>0 else None
+              summaries.append(summary)
+
+              for agl,beta,lev,h,pt,pb in endpoint_rows:
+                  profile.append({
+                      'endpoint':endpoint,
+                      'leadHour':lead,
+                      'modelLevel':lev,
+                      'extinction532_m-1':beta,
+                      'heightAGL_m':agl,
+                      'siteAnchoredAltitude_m':SITE_M+agl,
+                      'nativeFullLevelGeopotentialHeight_m':h,
+                      'pressureApprox_Pa':0.5*(pt+pb),
+                      'temperature_K':float(T[(lead,lev)]['value']),
+                      'specificHumidity_kgkg':float(Q[(lead,lev)]['value']),
+                  })
+
+          profile.sort(key=lambda r:(r['leadHour'],r['heightAGL_m']))
+          with (OUT/'profile.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(profile[0]))
+              w.writeheader(); w.writerows(profile)
+          with (OUT/'summary.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(summaries[0]))
+              w.writeheader(); w.writerows(summaries)
+          result={
+              'schemaVersion':1,
+              'stageId':'taylor-cams-forecast00-03-profile-v2',
+              'status':'PROFILE_INTERNAL_CONSISTENCY_PASS' if all_pass else 'PROFILE_INTERNAL_CONSISTENCY_FAIL',
+              'site':{'lat':LAT,'lon':LON,'elevation_m':SITE_M},
+              'sourceExtinctionArtifact':{'id':9633131426,'sha256':'e3341e1391de71ea85591ec92caf9552b2729b924425523abedc98608077bb84'},
+              'sourceAodArtifact':{'runId':33040267228,'id':9633609512,'sha256':'79a430bd0a0d09ad81daa25f1271487f233dbc1a519a284b3c48bbb1ee8eb061'},
+              'thermodynamicMethod':'ECMWF hydrostatic model-level reconstruction using T/q/lnsp/surface geopotential and GRIB hybrid A/B coefficients',
+              'endpoints':summaries,
+              'boundary':'Retrieval/reconstruction only. No Taylor SQM residuals and no libRadtran/MYSTIC execution. PASS does not authorize atmosphere replacement or production changes.',
+          }
+          (OUT/'summary.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=False))
+          if not all_pass:
+              raise SystemExit('PROFILE_INTERNAL_CONSISTENCY_FAIL')
+          PY
+
+      - name: Hash generated evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum output/* > output/SHA256SUMS.txt
+
+      - name: Upload v2 reconstruction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-forecast00-03-profile-v2
+          path: output
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

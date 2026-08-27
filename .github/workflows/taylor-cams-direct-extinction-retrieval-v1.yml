@@ -1,4 +1,4 @@
-name: Taylor CAMS 137-level height recovery v1
+name: Taylor CAMS prior-cycle 137-level profile v1
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   actions: read
 
 jobs:
-  recover-heights:
+  prior-cycle-profile:
     if: github.head_ref == 'review/taylor-cams-direct-extinction-retrieval-v1'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -24,60 +24,44 @@ jobs:
       - name: Install ADS and GRIB tools
         run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes numpy
 
-      - name: Download frozen extinction GRIB artifact
+      - name: Retrieve frozen prior-cycle CAMS fields
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p source cams-output
-          curl --fail --location --silent --show-error \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/9633131426/zip" \
-            -o source/ext-artifact.zip
-          echo "e3341e1391de71ea85591ec92caf9552b2729b924425523abedc98608077bb84  source/ext-artifact.zip" | sha256sum -c -
-          unzip -q source/ext-artifact.zip -d source/ext
-          test -s source/ext/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib
-
-      - name: Retrieve frozen T/Q and Z/LNSP fields
-        shell: bash
-        run: |
-          set -euo pipefail
+          mkdir -p cams-output
           python - <<'PY'
           import cdsapi, json, os, pathlib
           out=pathlib.Path('cams-output')
           key=os.environ.get('ADS_API_KEY','').strip()
-          if not key:
-              raise SystemExit('ADS_API_KEY missing')
+          if not key: raise SystemExit('ADS_API_KEY missing')
           dataset='cams-global-atmospheric-composition-forecasts'
           common={
-              'date':['2025-08-08/2025-08-08'],
-              'time':['00:00'],
-              'leadtime_hour':['0','3'],
+              'date':['2025-08-07/2025-08-07'],
+              'time':['12:00'],
+              'leadtime_hour':['12','15'],
               'type':['forecast'],
               'data_format':'grib',
               'area':[42.4,-84.0,42.0,-83.6],
           }
-          tq={**common,
-              'variable':['temperature','specific_humidity'],
+          ml={**common,
+              'variable':['aerosol_extinction_coefficient_532nm','temperature','specific_humidity','geopotential','logarithm_of_surface_pressure'],
               'model_level':[str(i) for i in range(1,138)],
           }
-          zlnsp={**common,
-              'variable':['geopotential','logarithm_of_surface_pressure'],
-              'model_level':['1'],
+          aod={**common,
+              'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm'],
           }
-          (out/'height_requests.json').write_text(json.dumps({'dataset':dataset,'tq':tq,'zlnsp':zlnsp},indent=2,sort_keys=True)+'\n')
+          (out/'request.json').write_text(json.dumps({'dataset':dataset,'modelLevelFields':ml,'aodFields':aod},indent=2,sort_keys=True)+'\n')
           client=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False)
-          tqfile=out/'cams_2025-08-08_00Z_lead0-3_t_q_ml1-137.grib'
-          zfile=out/'cams_2025-08-08_00Z_lead0-3_z_lnsp_ml1.grib'
-          client.retrieve(dataset,tq,str(tqfile))
-          client.retrieve(dataset,zlnsp,str(zfile))
-          if not tqfile.is_file() or tqfile.stat().st_size==0: raise SystemExit('T/Q retrieval missing')
-          if not zfile.is_file() or zfile.stat().st_size==0: raise SystemExit('Z/LNSP retrieval missing')
-          print('TQ_BYTES',tqfile.stat().st_size,'ZLNSP_BYTES',zfile.stat().st_size)
+          mlfile=out/'cams_2025-08-07_12Z_lead12-15_ext532_t_q_z_lnsp_ml.grib'
+          aodfile=out/'cams_2025-08-07_12Z_lead12-15_aod532_aod550.grib'
+          client.retrieve(dataset,ml,str(mlfile))
+          client.retrieve(dataset,aod,str(aodfile))
+          if not mlfile.is_file() or mlfile.stat().st_size==0: raise SystemExit('model-level retrieval missing')
+          if not aodfile.is_file() or aodfile.stat().st_size==0: raise SystemExit('AOD retrieval missing')
+          print('ML_BYTES',mlfile.stat().st_size,'AOD_BYTES',aodfile.stat().st_size)
           PY
 
-      - name: Compute ECMWF model-level geopotential and pair with extinction
+      - name: Compute exact 137-level heights and extinction diagnostics
         shell: bash
         run: |
           set -euo pipefail
@@ -86,150 +70,120 @@ jobs:
           import numpy as np
           from eccodes import codes_grib_new_from_file, codes_get, codes_get_array, codes_is_defined, codes_release
 
-          target_lat=42.256; target_lon=-83.709
-          R_D=287.06; G=9.80665
+          LAT=42.256; LON=-83.709; R_D=287.06; G=9.80665
           out=pathlib.Path('cams-output')
-          ext_path=pathlib.Path('source/ext/cams_2025-08-08_00Z_lead0-3_aerext532_geopotential_ml1-137.grib')
-          tq_path=out/'cams_2025-08-08_00Z_lead0-3_t_q_ml1-137.grib'
-          zlnsp_path=out/'cams_2025-08-08_00Z_lead0-3_z_lnsp_ml1.grib'
+          mlfile=out/'cams_2025-08-07_12Z_lead12-15_ext532_t_q_z_lnsp_ml.grib'
+          aodfile=out/'cams_2025-08-07_12Z_lead12-15_aod532_aod550.grib'
 
-          def safe_get(gid,key,default=None):
+          def safe(g,k,d=None):
               try:
-                  if codes_is_defined(gid,key): return codes_get(gid,key)
+                  if codes_is_defined(g,k): return codes_get(g,k)
               except Exception: pass
-              return default
-
-          def point_value(gid):
-              lats=codes_get_array(gid,'latitudes'); lons=codes_get_array(gid,'longitudes'); vals=codes_get_array(gid,'values')
+              return d
+          def point(g):
+              lats=codes_get_array(g,'latitudes'); lons=codes_get_array(g,'longitudes'); vals=codes_get_array(g,'values')
               pts=[]
               for la,lo,v in zip(lats,lons,vals):
-                  lo=float(lo)
-                  if lo>180: lo-=360
+                  lo=float(lo); lo=lo-360 if lo>180 else lo
                   pts.append((round(float(la),6),round(lo,6),float(v)))
-              by={(la,lo):v for la,lo,v in pts}
-              ulats=sorted(set(p[0] for p in pts)); ulons=sorted(set(p[1] for p in pts))
-              lo_lat=[x for x in ulats if x<=target_lat]; hi_lat=[x for x in ulats if x>=target_lat]
-              lo_lon=[x for x in ulons if x<=target_lon]; hi_lon=[x for x in ulons if x>=target_lon]
-              if lo_lat and hi_lat and lo_lon and hi_lon:
-                  y0=max(lo_lat); y1=min(hi_lat); x0=max(lo_lon); x1=min(hi_lon)
-                  needed=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
-                  if all(k in by for k in needed):
-                      fy=0 if y1==y0 else (target_lat-y0)/(y1-y0); fx=0 if x1==x0 else (target_lon-x0)/(x1-x0)
-                      return (1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)]) + fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
-              return min(pts,key=lambda p:(p[0]-target_lat)**2+(p[1]-target_lon)**2)[2]
-
-          def read_fields(path):
-              fields=[]; pv=None; nv=None
-              with path.open('rb') as fh:
+              by={(y,x):v for y,x,v in pts}; ys=sorted(set(y for y,_,_ in pts)); xs=sorted(set(x for _,x,_ in pts))
+              yl=[y for y in ys if y<=LAT]; yh=[y for y in ys if y>=LAT]; xl=[x for x in xs if x<=LON]; xh=[x for x in xs if x>=LON]
+              if yl and yh and xl and xh:
+                  y0=max(yl); y1=min(yh); x0=max(xl); x1=min(xh)
+                  need=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
+                  if all(k in by for k in need):
+                      fy=0 if y1==y0 else (LAT-y0)/(y1-y0); fx=0 if x1==x0 else (LON-x0)/(x1-x0)
+                      return (1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+              return min(pts,key=lambda p:(p[0]-LAT)**2+(p[1]-LON)**2)[2]
+          def read(path):
+              rows=[]; pv=None
+              with path.open('rb') as f:
                   while True:
-                      gid=codes_grib_new_from_file(fh)
-                      if gid is None: break
+                      g=codes_grib_new_from_file(f)
+                      if g is None: break
                       try:
-                          short=str(safe_get(gid,'shortName','')); name=str(safe_get(gid,'name',''))
-                          step=int(safe_get(gid,'step',-1)); lev=int(safe_get(gid,'level',-1)); units=str(safe_get(gid,'units',''))
-                          value=point_value(gid)
-                          fields.append({'shortName':short,'name':name,'step':step,'level':lev,'units':units,'value':value})
+                          r={'short':str(safe(g,'shortName','')),'name':str(safe(g,'name','')),'step':int(safe(g,'step',-1)),
+                             'level':int(safe(g,'level',-1)),'units':str(safe(g,'units','')),'value':point(g)}
+                          rows.append(r)
                           if pv is None:
                               try:
-                                  arr=codes_get_array(gid,'pv')
-                                  if len(arr)>0:
-                                      pv=np.array(arr,dtype=float); nv=int(safe_get(gid,'NV',len(arr)))
+                                  x=codes_get_array(g,'pv')
+                                  if len(x): pv=np.asarray(x,float)
                               except Exception: pass
-                      finally: codes_release(gid)
-              return fields,pv,nv
-
-          ext,ext_pv,ext_nv=read_fields(ext_path)
-          tq,tq_pv,tq_nv=read_fields(tq_path)
-          zs,z_pv,z_nv=read_fields(zlnsp_path)
-          pv=tq_pv if tq_pv is not None else (ext_pv if ext_pv is not None else z_pv)
-          if pv is None: raise SystemExit('No hybrid pv coefficients in GRIB')
-          nlevels=len(pv)//2-1
-          if nlevels!=137: raise SystemExit(f'Expected 137 hybrid levels, got {nlevels}')
-          a=pv[:nlevels+1]; b=pv[nlevels+1:]
-
-          by_t={(r['step'],r['level']):r['value'] for r in tq if r['shortName']=='t' or r['name'].lower()=='temperature'}
-          by_q={(r['step'],r['level']):r['value'] for r in tq if r['shortName']=='q' or r['name'].lower()=='specific humidity'}
-          by_ext={(r['step'],r['level']):r['value'] for r in ext if 'extinction' in r['name'].lower() and '532' in r['name']}
-          by_z={(r['step'],r['level']):r['value'] for r in zs if r['shortName']=='z' or r['name'].lower()=='geopotential'}
-          by_lnsp={(r['step'],r['level']):r['value'] for r in zs if r['shortName']=='lnsp' or 'logarithm of surface pressure' in r['name'].lower()}
-          leads=sorted(set(s for s,l in by_ext))
-          profile=[]; summaries=[]
+                      finally: codes_release(g)
+              return rows,pv
+          ml,pv=read(mlfile); aod,_=read(aodfile)
+          if pv is None: raise SystemExit('hybrid pv missing')
+          N=len(pv)//2-1
+          if N!=137: raise SystemExit(f'expected 137 levels, got {N}')
+          A=pv[:N+1]; B=pv[N+1:]
+          t={(r['step'],r['level']):r['value'] for r in ml if r['short']=='t' or r['name'].lower()=='temperature'}
+          q={(r['step'],r['level']):r['value'] for r in ml if r['short']=='q' or r['name'].lower()=='specific humidity'}
+          ext={(r['step'],r['level']):r['value'] for r in ml if 'extinction' in r['name'].lower() and '532' in r['name']}
+          z={(r['step'],r['level']):r['value'] for r in ml if r['short']=='z' or r['name'].lower()=='geopotential'}
+          lnsp={(r['step'],r['level']):r['value'] for r in ml if r['short']=='lnsp' or 'logarithm of surface pressure' in r['name'].lower()}
+          aod532={r['step']:r['value'] for r in aod if r['short']=='aod532' or ('total aerosol optical depth' in r['name'].lower() and '532' in r['name'])}
+          aod550={r['step']:r['value'] for r in aod if r['short']=='aod550' or ('total aerosol optical depth' in r['name'].lower() and '550' in r['name'])}
+          leads=sorted(set(s for s,l in ext))
 
           def trap(points):
-              total=0.0
-              for (z0,b0),(z1,b1) in zip(points[:-1],points[1:]):
-                  if z1>z0: total += 0.5*(max(0,b0)+max(0,b1))*(z1-z0)
-              return total
-          def to_cut(points,cut):
-              total=0.0
-              for (z0,b0),(z1,b1) in zip(points[:-1],points[1:]):
-                  if z0>=cut: break
-                  if z1<=z0: continue
-                  zu=min(z1,cut); f=(zu-z0)/(z1-z0); bu=b0+f*(b1-b0)
-                  total += .5*(max(0,b0)+max(0,bu))*(zu-z0)
-                  if z1>=cut: break
-              return total
+              return sum(.5*(max(b0,0)+max(b1,0))*(h1-h0) for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]) if h1>h0)
+          def part(points,cut):
+              ans=0.0
+              for (h0,b0),(h1,b1) in zip(points[:-1],points[1:]):
+                  if h0>=cut: break
+                  if h1<=h0: continue
+                  hu=min(h1,cut); f=(hu-h0)/(h1-h0); bu=b0+f*(b1-b0)
+                  ans += .5*(max(b0,0)+max(bu,0))*(hu-h0)
+                  if h1>=cut: break
+              return ans
 
+          prof=[]; sums=[]
           for step in leads:
-              if (step,1) not in by_z or (step,1) not in by_lnsp: raise SystemExit(f'Missing z/lnsp step {step}')
-              if any((step,lev) not in by_t or (step,lev) not in by_q or (step,lev) not in by_ext for lev in range(1,138)):
-                  raise SystemExit(f'Missing T/Q/ext model level step {step}')
-              sp=math.exp(by_lnsp[(step,1)])
-              surface_z=by_z[(step,1)]
-              surface_h=surface_z/G
-              z_h=surface_z
-              computed={}
-              # Official ECMWF integration: from ground upward, levels 137 -> 1.
+              if any((step,l) not in t or (step,l) not in q or (step,l) not in ext for l in range(1,138)): raise SystemExit(f'missing levels step {step}')
+              if (step,1) not in z or (step,1) not in lnsp: raise SystemExit(f'missing z/lnsp step {step}')
+              if step not in aod532 or step not in aod550: raise SystemExit(f'missing direct AOD step {step}')
+              if max(ext[(step,l)] for l in range(1,138))<=0: raise SystemExit(f'nonpositive extinction profile step {step}')
+              sp=math.exp(lnsp[(step,1)]); zs=z[(step,1)]; hs=zs/G; zh=zs; comp={}
               for lev in range(137,0,-1):
-                  tv=by_t[(step,lev)]*(1.0+0.609133*by_q[(step,lev)])
-                  ph_lev=a[lev-1]+b[lev-1]*sp
-                  ph_plus=a[lev]+b[lev]*sp
-                  if lev==1:
-                      dlog=math.log(ph_plus/0.1); alpha=math.log(2.0)
-                  else:
-                      dlog=math.log(ph_plus/ph_lev)
-                      alpha=1.0-(ph_lev/(ph_plus-ph_lev))*dlog
-                  trd=tv*R_D
-                  z_f=z_h+trd*alpha
-                  z_h=z_h+trd*dlog
-                  computed[lev]={'z':z_f,'height':z_f/G,'pHalfTop':ph_lev,'pHalfBottom':ph_plus}
-              pts=[(0.0,by_ext[(step,137)])]
+                  tv=t[(step,lev)]*(1+0.609133*q[(step,lev)])
+                  ptop=A[lev-1]+B[lev-1]*sp; pbot=A[lev]+B[lev]*sp
+                  if lev==1: dlog=math.log(pbot/0.1); alpha=math.log(2)
+                  else: dlog=math.log(pbot/ptop); alpha=1-(ptop/(pbot-ptop))*dlog
+                  trd=tv*R_D; zf=zh+trd*alpha; zh=zh+trd*dlog
+                  comp[lev]=(zf/G,ptop,pbot)
+              pts=[(0.0,ext[(step,137)])]
               for lev in range(137,0,-1):
-                  h=computed[lev]['height']; agl=h-surface_h; beta=by_ext[(step,lev)]
-                  pfull=0.5*(computed[lev]['pHalfTop']+computed[lev]['pHalfBottom'])
-                  profile.append({
-                      'validHourUTC':step,'modelLevel':lev,'extinction532_m-1':beta,
-                      'geopotentialHeight_m':h,'heightAGL_m':agl,'siteAnchoredAltitude_m':262.0+agl,
-                      'approxFullLevelPressure_Pa':pfull,'temperature_K':by_t[(step,lev)],'specificHumidity_kgkg':by_q[(step,lev)]
-                  })
+                  h,pt,pb=comp[lev]; agl=h-hs; beta=ext[(step,lev)]
+                  prof.append({'baseDateUTC':'2025-08-07','baseHourUTC':12,'leadHour':step,'validHourUTC':(12+step)%24,
+                               'modelLevel':lev,'extinction532_m-1':beta,'heightAGL_m':agl,'siteAnchoredAltitude_m':262+agl,
+                               'geopotentialHeight_m':h,'fullLevelPressureApprox_Pa':.5*(pt+pb),'temperature_K':t[(step,lev)],'specificHumidity_kgkg':q[(step,lev)]})
                   pts.append((agl,beta))
-              pts=sorted(pts)
-              tau=trap(pts)
-              peak=max([(by_ext[(step,l)],l,computed[l]['height']-surface_h) for l in range(1,138)])
-              s={'validHourUTC':step,'surfacePressure_Pa':sp,'nativeSurfaceGeopotentialHeight_m':surface_h,
-                 'integratedTau532_trapezoid':tau,'peakExtinction532_m-1':peak[0],'peakModelLevel':peak[1],'peakHeightAGL_m':peak[2]}
-              for km in [0.5,1,2,3,5,10]:
-                  part=to_cut(pts,km*1000); key=str(km).replace('.','p')
-                  s[f'tauFractionBelow{key}km']=part/tau if tau>0 else None
-              summaries.append(s)
-
-          profile.sort(key=lambda r:(r['validHourUTC'],r['heightAGL_m']))
-          with (out/'ann_arbor_cams_extinction532_137level_profile.csv').open('w',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=list(profile[0].keys())); w.writeheader(); w.writerows(profile)
-          with (out/'ann_arbor_cams_extinction532_137level_summary.csv').open('w',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=list(summaries[0].keys())); w.writeheader(); w.writerows(summaries)
-          summary={'method':'ECMWF official model-level geopotential algorithm using T, q, lnsp, surface z and GRIB hybrid pv coefficients',
-                   'sourceExtinctionArtifactId':9633131426,'nlevels':nlevels,'leadHours':leads,'target':[target_lat,target_lon],
-                   'siteElevation_m':262.0,'perLead':summaries}
-          (out/'height_profile_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
-          print(json.dumps(summary,indent=2,sort_keys=True))
+              pts.sort(); ti=trap(pts); pk=max((ext[(step,l)],l,comp[l][0]-hs) for l in range(1,138))
+              s={'baseHourUTC':12,'leadHour':step,'validHourUTC':(12+step)%24,'surfacePressure_Pa':sp,'nativeSurfaceHeight_m':hs,
+                 'integratedExtinctionTau532':ti,'directCamsAOD532':aod532[step],'directCamsAOD550':aod550[step],
+                 'integrationToDirectAOD532Ratio':ti/aod532[step] if aod532[step]>0 else None,
+                 'peakExtinction532_m-1':pk[0],'peakModelLevel':pk[1],'peakHeightAGL_m':pk[2]}
+              for km in [.5,1,2,3,5,10]:
+                  k=str(km).replace('.','p'); s[f'tauFractionBelow{k}km']=part(pts,km*1000)/ti
+              sums.append(s)
+          prof.sort(key=lambda r:(r['leadHour'],r['heightAGL_m']))
+          with (out/'ann_arbor_cams_priorcycle_extinction532_137level_profile.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(prof[0])); w.writeheader(); w.writerows(prof)
+          with (out/'ann_arbor_cams_priorcycle_extinction532_summary.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(sums[0])); w.writeheader(); w.writerows(sums)
+          meta={'selectionReason':'avoid lead-0 zero forecast diagnostic; use single prior 12Z cycle with lead12/15 for valid 00Z/03Z, frozen before viewing results',
+                'method':'ECMWF model-level geopotential algorithm using T/q/lnsp/surface-z and GRIB hybrid coefficients',
+                'target':{'lat':LAT,'lon':LON,'siteElevation_m':262},'nlevels':137,'perValidTime':sums}
+          (out/'summary.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(meta,indent=2,sort_keys=True))
           PY
           sha256sum cams-output/* > cams-output/SHA256SUMS.txt
 
-      - name: Upload exact 137-level CAMS profile
+      - name: Upload prior-cycle CAMS profile
         uses: actions/upload-artifact@v4
         with:
-          name: taylor-cams-extinction532-137level-profile-v1
+          name: taylor-cams-priorcycle-extinction532-137level-v1
           path: cams-output
           if-no-files-found: error
           retention-days: 90

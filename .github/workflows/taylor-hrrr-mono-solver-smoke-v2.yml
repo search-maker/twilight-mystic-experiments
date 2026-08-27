@@ -1,0 +1,127 @@
+name: Taylor HRRR monochromatic solver smoke v2
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/taylor-hrrr-mono-solver-smoke-v2.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    if: github.head_ref == 'review/taylor-hrrr-mono-solver-smoke-v2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Download exact failed-v2 evidence for frozen HRRR tau shape
+        uses: actions/download-artifact@v4
+        with:
+          name: taylor-hrrr-vertical-v2-evidence
+          path: prior
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 33033204508
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mono-smoke-v2
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Build exact above-site tau grid and execute two bounded MYSTIC calls
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA/atmmod/afglus.dat"
+          OLD_TAU="$(find prior -type f -path '*/row-23/hrrr-shape-tau.dat' -print -quit)"
+          test -n "$OLD_TAU"
+          python - "$OLD_TAU" <<'PY'
+          import sys
+          from pathlib import Path
+          src=Path(sys.argv[1])
+          out=[]; total=0.0
+          for line in src.read_text().splitlines():
+              s=line.strip()
+              if not s or s.startswith('#'): continue
+              z,v=map(float,s.split())
+              if abs(z)<1e-12:
+                  z=0.262
+                  v*=0.738
+              out.append((z,v)); total+=v
+          assert abs(total-1.0)<1e-10, total
+          assert abs(out[-1][0]-0.262)<1e-12
+          Path('hrrr-above-site-tau.dat').write_text('# exact row23 HRRR shape remapped to common site grid; sum tau=1\n'+'\n'.join(f'{z:.6f} {v:.15e}' for z,v in out)+'\n')
+          print('TAU_SUM',total,'BOTTOM',out[-1])
+          PY
+          GRID='0.262000 1.000000 2.000000 3.000000 4.000000 5.000000 6.000000 7.000000 8.000000 9.000000 10.000000 11.000000 12.000000 13.000000 14.000000 15.000000 16.000000 17.000000 18.000000 19.000000 20.000000 21.000000 22.000000 23.000000 24.000000 25.000000 27.500000 30.000000 32.500000 35.000000 37.500000 40.000000 42.500000 45.000000 47.500000 50.000000 55.000000 60.000000 65.000000 70.000000 75.000000 80.000000 85.000000 90.000000 95.000000 100.000000 105.000000 110.000000 115.000000 120.000000'
+          mkdir default custom
+          for mode in default custom; do
+            if [ "$mode" = default ]; then SEED=948023001; EXTRA=''; else SEED=948023002; EXTRA="aerosol_file tau $PWD/hrrr-above-site-tau.dat"; fi
+            cat > "$mode/input.inp" <<EOF
+          data_files_path $DATA
+          atmosphere_file $ATM
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          wavelength 550
+          day_of_year 220
+          sza 95.15118796
+          phi0 0
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 5000
+          mc_vroom off
+          mc_std
+          mc_randomseed $SEED
+          mc_basename $PWD/$mode/mc
+          albedo 0.15
+          aerosol_default
+          $EXTRA
+          aerosol_set_tau_at_wvl 550 0.316
+          pressure 1020.0583
+          atm_z_grid $GRID
+          zout 0
+          umu -0.4340822176
+          phi 22.5
+          quiet
+          EOF
+            uvspec -c < "$mode/input.inp"
+            uvspec < "$mode/input.inp" > "$mode/stdout.txt"
+            test -s "$mode/mc.rad.spc"
+            test -s "$mode/mc.rad.std.spc"
+            python - "$mode/mc.rad.spc" "$mode/mc.rad.std.spc" <<'PY'
+          import math,sys
+          for fn in sys.argv[1:]:
+              vals=[]
+              for line in open(fn):
+                  p=line.split()
+                  if len(p)>=2:
+                      try: vals.append(tuple(map(float,p)))
+                      except ValueError: pass
+              assert vals, fn
+              flat=[x for row in vals for x in row]
+              assert all(math.isfinite(x) for x in flat), (fn, vals)
+              print(fn, vals)
+          PY
+          done
+          sha256sum hrrr-above-site-tau.dat default/input.inp custom/input.inp default/mc.rad.spc custom/mc.rad.spc > SHA256SUMS.txt
+          echo MONOCHROMATIC_SOLVER_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-hrrr-mono-solver-smoke-v2
+          path: |
+            default
+            custom
+            hrrr-above-site-tau.dat
+            SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 90

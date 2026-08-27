@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Authorization-control generation v1 deliberately changes this watched control file so
+# merging the verifier/builder package forces a new exact-main preauthorization artifact.
+
 import hashlib
 import importlib.util
 import re

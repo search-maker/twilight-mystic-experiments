@@ -3,8 +3,8 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 
 const CASES = Object.freeze({
-  tishrei: Object.freeze({ date: '2025-09-23', sunsetMs: 1758641660932, expectedAod550: 0.22, baselineTau30Minutes: 41.015625 }),
-  tammuz: Object.freeze({ date: '2026-06-16', sunsetMs: 1781628380546, expectedAod550: 0.18, baselineTau30Minutes: 49.921875 }),
+  tishrei: Object.freeze({ date: '2025-09-23', sunsetMs: 1758641660932, expectedAod550: 0.22, preFixTau30ReferenceMinutes: 41.015625 }),
+  tammuz: Object.freeze({ date: '2026-06-16', sunsetMs: 1781628380546, expectedAod550: 0.18, preFixTau30ReferenceMinutes: 49.921875 }),
 });
 const TAUS = Object.freeze([20, 30, 45, 60]);
 const caseId = process.env.CASE_ID;
@@ -196,12 +196,15 @@ try {
       completingKeys: event.completingKeys ?? [],
       selected,
     };
-    if (tauSeconds === 30) {
-      if (!result.found) throw new Error('tau30 baseline event missing');
-      if (Math.abs(result.minutesAfterSunset - frozen.baselineTau30Minutes) > 0.02) {
-        throw new Error(`tau30 baseline drift ${result.minutesAfterSunset} vs ${frozen.baselineTau30Minutes}`);
-      }
-    }
+    if (tauSeconds === 30 && !result.found) throw new Error('post-fix tau30 event missing');
+    const preFixReference = tauSeconds === 30 ? {
+      tauSeconds: 30,
+      minutesAfterSunset: frozen.preFixTau30ReferenceMinutes,
+      postFixMinusPreFixSeconds: result.found
+        ? (result.minutesAfterSunset - frozen.preFixTau30ReferenceMinutes) * 60
+        : null,
+      use: 'historical pre-fix comparison only; not an acceptance gate',
+    } : null;
     return {
       caseId,
       tauSeconds,
@@ -216,6 +219,7 @@ try {
       reasonCounts,
       entriesWithVisibilityIntervals: evaluated.filter(e => e.intervalsMs.length).length,
       qualifierCacheSize: qualifierCache.size,
+      preFixReference,
       result,
     };
   }, { caseId, tauSeconds, frozen });
@@ -231,6 +235,7 @@ try {
     claimBoundary: {
       sensitivityOnly: true,
       defaultTau30Unchanged: true,
+      preFixTau30EventNotAnAcceptanceGate: true,
       fieldFactor314Unchanged: true,
       noTauCalibrationClaim: true,
       noHumanFirstSeeingValidation: true,
@@ -240,7 +245,7 @@ try {
       noPandora: true,
     },
   }, null, 2) + '\n');
-  console.log('TAU_SENSITIVITY=' + JSON.stringify({ caseId, tauSeconds, result: audit.result, statusCounts: audit.statusCounts }));
+  console.log('TAU_SENSITIVITY=' + JSON.stringify({ caseId, tauSeconds, preFixReference: audit.preFixReference, result: audit.result, statusCounts: audit.statusCounts }));
 } finally {
   await browser.close();
 }

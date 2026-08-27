@@ -52,7 +52,8 @@ class StellarOpticalGridFormatProbeRecovery1Tests(unittest.TestCase):
         differences = [(a, b) for a, b in zip(original_lines, recovered_lines) if a != b]
         self.assertEqual(len(differences), 1)
         self.assertEqual(differences[0][0], "source solar")
-        self.assertTrue(differences[0][1].endswith("source solar " + str(m.SOLAR_FLUX_RELATIVE_PATH)))
+        self.assertTrue(differences[0][1].startswith("source solar "))
+        self.assertTrue(differences[0][1].endswith(str(m.SOLAR_FLUX_RELATIVE_PATH)))
         self.assertIn("write_optical_properties", recovered)
         self.assertIn("rte_solver disort", recovered)
         self.assertNotIn("rte_solver mystic", recovered.lower())

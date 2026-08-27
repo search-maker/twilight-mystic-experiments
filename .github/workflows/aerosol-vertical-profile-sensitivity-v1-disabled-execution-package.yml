@@ -1,0 +1,139 @@
+name: Aerosol vertical-profile v1 disabled execution package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/execution_package.py'
+      - 'tests/test_aerosol_vertical_profile_sensitivity_v1_execution_package.py'
+      - '.github/workflows/aerosol-vertical-profile-sensitivity-v1-disabled-execution-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Require solver-free deterministic review environment
+        shell: bash
+        run: test -z "$(command -v uvspec || true)"
+      - name: Run disabled-package unit tests
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_aerosol_vertical_profile_sensitivity_v1_execution_package.py' -v
+      - name: Freeze disabled 360-case package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-vertical-profile-sensitivity-v1/execution_package.py > disabled-execution-package.json
+          python - <<'PY'
+          import json
+          x=json.load(open('disabled-execution-package.json'))
+          assert x['status']=='DISABLED_EXECUTION_PACKAGE_REVIEW_ONLY_SEEDS_UNALLOCATED'
+          assert x['caseCount']==360 and x['groupCount']==72
+          assert x['distinctPreSeedScienceSurfaceCount']==120
+          assert x['candidateSeedsAppliedToCases'] is False
+          assert x['scientificOrdinal'] is None
+          assert x['scientificExecutionAuthorized'] is False
+          assert x['solverExecutionAuthorized'] is False
+          assert x['resultOpeningAuthorized'] is False
+          assert all(c['seed'] is None and c['executionAuthorized'] is False for c in x['cases'])
+          print(x['canonicalPackageSha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vertical-profile-v1-disabled-execution-package
+          path: disabled-execution-package.json
+          retention-days: 14
+      - name: Claim boundary
+        run: |
+          echo 'Case-card/science-directive review only.'
+          echo 'No seed application, no ordinal, no uvspec/MYSTIC, no results.'
+
+  exact-afgl-profile-bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: avps-disabled-package
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Bind exact base runtime without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p exact-afgl-profile-bundle/profiles
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output exact-afgl-profile-bundle/runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('exact-afgl-profile-bundle/runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['scientificSolverExecuted'] is False
+          assert r['syntaxCheckExecuted'] is False
+          PY
+      - name: Freeze five exact-AFGL normalized tau profiles
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          p=Path('experiments/aerosol-vertical-profile-sensitivity-v1/execution_package.py')
+          spec=importlib.util.spec_from_file_location('avps_exact_afgl_package',p)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import execution package')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          atmosphere=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data/atmmod/afglus.dat'
+          bundle=mod.build_exact_profile_bundle(atmosphere)
+          out=Path('exact-afgl-profile-bundle')
+          metadata={k:v for k,v in bundle.items() if k!='profiles'}
+          metadata['profiles']={}
+          for state,row in bundle['profiles'].items():
+              text=row['text']
+              (out/'profiles'/f'{state}.tau').write_text(text,encoding='utf-8',newline='\n')
+              metadata['profiles'][state]={k:v for k,v in row.items() if k!='text'}
+          (out/'profile-bundle.json').write_text(json.dumps(metadata,indent=2,sort_keys=True)+'\n')
+          assert metadata['afglLevelCount'] >= 2
+          assert len(metadata['profiles']) == 5
+          assert len({v['sha256'] for v in metadata['profiles'].values()}) == 5
+          assert all(abs(v['tauSum']-1.0)<1e-12 for v in metadata['profiles'].values())
+          print(json.dumps({s:v['sha256'] for s,v in metadata['profiles'].items()},sort_keys=True))
+          PY
+      - name: Prove no parser or scientific solver was invoked
+        shell: micromamba-shell {0}
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('exact-afgl-profile-bundle/runtime-report.json'))
+          assert r['scientificSolverExecuted'] is False and r['syntaxCheckExecuted'] is False
+          print('exact AFGL profile generation only; uvspec never invoked')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vertical-profile-v1-exact-afgl-profile-bundle
+          path: exact-afgl-profile-bundle/
+          retention-days: 14
+      - name: Claim boundary
+        run: |
+          echo 'Exact locked AFGL grid + normalized tau byte freeze only.'
+          echo 'No uvspec invocation, no MYSTIC/scientific solver, no seed application, no ordinal, no results.'

@@ -1,0 +1,119 @@
+name: Taylor CAMS analysis00 GRIB metadata probe v1
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.head_ref == 'review/taylor-cams-analysis00-grib-metadata-probe-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install ADS and GRIB tools
+        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes
+
+      - name: Retrieve exact failed-run analysis00 model-level request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe-output
+          python - <<'PY'
+          import cdsapi, json, os, pathlib
+          out=pathlib.Path('probe-output')
+          key=os.environ.get('ADS_API_KEY','').strip()
+          if not key: raise SystemExit('ADS_API_KEY missing')
+          dataset='cams-global-atmospheric-composition-forecasts'
+          request={
+            'date':['2025-08-08/2025-08-08'],
+            'time':['00:00'],
+            'data_format':'grib',
+            'area':[42.4,-84.0,42.0,-83.6],
+            'type':['analysis'],
+            'leadtime_hour':['0'],
+            'variable':['aerosol_extinction_coefficient_532nm','temperature','specific_humidity','geopotential','logarithm_of_surface_pressure'],
+            'model_level':[str(i) for i in range(1,138)],
+          }
+          (out/'request.json').write_text(json.dumps({'dataset':dataset,'request':request},indent=2,sort_keys=True)+'\n')
+          target=out/'analysis00_ext532_t_q_z_lnsp_ml1-137.grib'
+          cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False).retrieve(dataset,request,str(target))
+          if not target.is_file() or target.stat().st_size==0: raise SystemExit('retrieval missing')
+          print('GRIB_BYTES',target.stat().st_size)
+          PY
+
+      - name: Enumerate GRIB field identity only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import collections, json, pathlib
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_is_defined,codes_release
+          p=pathlib.Path('probe-output/analysis00_ext532_t_q_z_lnsp_ml1-137.grib')
+          def sg(g,k,d=None):
+              try:
+                  if codes_is_defined(g,k): return codes_get(g,k)
+              except Exception: pass
+              return d
+          rows=[]; pv_lengths=[]
+          with p.open('rb') as f:
+              while True:
+                  g=codes_grib_new_from_file(f)
+                  if g is None: break
+                  try:
+                      r={
+                        'shortName':str(sg(g,'shortName','')),
+                        'name':str(sg(g,'name','')),
+                        'paramId':sg(g,'paramId',None),
+                        'units':str(sg(g,'units','')),
+                        'typeOfLevel':str(sg(g,'typeOfLevel','')),
+                        'stepType':str(sg(g,'stepType','')),
+                        'step':sg(g,'step',None),
+                        'level':sg(g,'level',None),
+                        'dataDate':sg(g,'dataDate',None),
+                        'dataTime':sg(g,'dataTime',None),
+                        'validityDate':sg(g,'validityDate',None),
+                        'validityTime':sg(g,'validityTime',None),
+                      }
+                      rows.append(r)
+                      try: pv_lengths.append(len(codes_get_array(g,'pv')))
+                      except Exception: pass
+                  finally: codes_release(g)
+          if not rows: raise SystemExit('no GRIB messages')
+          groups={}
+          for r in rows:
+              key=(r['shortName'],r['name'],r['paramId'],r['units'],r['typeOfLevel'],r['stepType'],r['step'])
+              g=groups.setdefault(key,{'count':0,'levels':[]})
+              g['count']+=1
+              if r['level'] is not None: g['levels'].append(r['level'])
+          summary=[]
+          for key,g in sorted(groups.items(),key=lambda x:str(x[0])):
+              short,name,param,units,tol,st,step=key
+              levels=sorted(set(g['levels']))
+              summary.append({
+                'shortName':short,'name':name,'paramId':param,'units':units,'typeOfLevel':tol,
+                'stepType':st,'step':step,'messageCount':g['count'],
+                'levelCount':len(levels),'minLevel':levels[0] if levels else None,'maxLevel':levels[-1] if levels else None,
+              })
+          result={'status':'TECHNICAL_METADATA_ONLY','messageCount':len(rows),'maxPvLength':max(pv_lengths) if pv_lengths else 0,'fieldGroups':summary}
+          pathlib.Path('probe-output/field-metadata.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+          sha256sum probe-output/* > probe-output/SHA256SUMS.txt
+
+      - name: Upload metadata probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-analysis00-grib-metadata-probe-v1
+          path: probe-output
+          if-no-files-found: error
+          retention-days: 90

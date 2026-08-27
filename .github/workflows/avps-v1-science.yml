@@ -1,0 +1,596 @@
+name: AVPS v1 scientific execution
+run-name: AVPS v1 science ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v1-science-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      ordinal: ${{ steps.identity.outputs.ordinal }}
+      matrix2: ${{ steps.matrices.outputs.matrix2 }}
+      matrix4: ${{ steps.matrices.outputs.matrix4 }}
+      matrix6: ${{ steps.matrices.outputs.matrix6 }}
+      matrix8: ${{ steps.matrices.outputs.matrix8 }}
+    steps:
+      - name: Checkout exact dispatch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Bind exact dispatch, authorization and parent-main identity
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_REF_NAME" =~ ^dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-([1-9][0-9]*)$ ]]
+          ORDINAL="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          AUTH_BRANCH="authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-$ORDINAL"
+          git fetch origin main "$AUTH_BRANCH"
+          AUTH_HEAD="$(git rev-parse "origin/$AUTH_BRANCH")"
+          test "$AUTH_HEAD" = "$GITHUB_SHA"
+          mapfile -t AUTH_PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#AUTH_PARENTS[@]}" = 1
+          AUTH_PARENT="${AUTH_PARENTS[0]}"
+          test "$(git rev-parse origin/main)" = "$AUTH_PARENT"
+          mapfile -t AUTH_CHANGED < <(git diff-tree --no-commit-id --name-only -r "$AUTH_HEAD")
+          test "${#AUTH_CHANGED[@]}" = 1
+          test "${AUTH_CHANGED[0]}" = experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+          python - <<'PY' > auth.env
+          import json
+          a=json.load(open('experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json'))
+          n=a.get('scientificOrdinal')
+          if isinstance(n,bool) or not isinstance(n,int) or n <= 0: raise SystemExit('authorization ordinal invalid')
+          print(f'AUTH_ORDINAL={n}')
+          print(f'AUTH_BRANCH_DOC={a.get("authorizationBranch","")}')
+          print(f'DISPATCH_BRANCH_DOC={a.get("dispatchBranch","")}')
+          print(f'AUTH_PARENT_DOC={a.get("exactAuthorizationParentCommit","")}')
+          PY
+          source auth.env
+          test "$AUTH_ORDINAL" = "$ORDINAL"
+          test "$AUTH_BRANCH_DOC" = "$AUTH_BRANCH"
+          test "$DISPATCH_BRANCH_DOC" = "$GITHUB_REF_NAME"
+          test "$AUTH_PARENT_DOC" = "$AUTH_PARENT"
+
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${OWNER}:${AUTH_BRANCH}&per_page=100" > auth-pr-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-pr-pages.json')); prs=[p for page in pages for p in page]
+          matches=[p for p in prs if (p.get('head') or {}).get('ref')==os.environ['AUTH_BRANCH'] and (p.get('head') or {}).get('sha')==os.environ['AUTH_HEAD']]
+          if len(matches)!=1: raise SystemExit(f'expected one authorization PR, got {len(matches)}')
+          p=matches[0]
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('authorization PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('ref')!='main': raise SystemExit('authorization PR base drift')
+          Path('auth-pr-selected.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          PR_NUMBER="$(python -c 'import json;print(json.load(open("auth-pr-selected.json"))["number"])')"
+          export ORDINAL AUTH_BRANCH AUTH_HEAD AUTH_PARENT PR_NUMBER
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-vertical-profile-authorization-review.yml/runs?branch=${AUTH_BRANCH}&event=pull_request&per_page=100" > auth-review-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('auth-review-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_HEAD']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact authorization review history invalid: same={len(same)} good={len(good)}')
+          Path('auth-review-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          REVIEW_RUN_ID="$(python -c 'import json;print(json.load(open("auth-review-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts?per_page=100" > auth-review-artifacts.json
+          REVIEW_AID="$(python - <<'PY'
+          import json,os
+          rows=json.load(open('auth-review-artifacts.json')).get('artifacts',[])
+          expected=f'vertical-profile-v1-authorization-review-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'authorization review artifact count {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir auth-review-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${REVIEW_AID}/zip" > auth-review.zip
+          unzip -q auth-review.zip -d auth-review-artifact
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          if r.get('status')!='AUTHORIZATION_REVIEW_PASS_ZERO_RUNTIME' or r.get('headSha')!=os.environ['AUTH_HEAD'] or r.get('parentSha')!=os.environ['AUTH_PARENT']: raise SystemExit('authorization review evidence drift')
+          if int(r.get('scientificOrdinal') or 0)!=int(os.environ['ORDINAL']): raise SystemExit('authorization review ordinal drift')
+          if r.get('candidateSeedAuthorizationRecheckPassed') is not True: raise SystemExit('authorization review seed proof missing')
+          if any(r.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('authorization review crossed zero-runtime boundary')
+          PY
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml/runs?branch=main&event=push&per_page=100" > preauth-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('preauth-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          same=[r for r in runs if r.get('head_sha')==os.environ['AUTH_PARENT']]
+          good=[r for r in same if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          if len(same)!=1 or len(good)!=1: raise SystemExit(f'exact parent preauthorization history invalid: same={len(same)} good={len(good)}')
+          Path('preauth-selected.json').write_text(json.dumps(good[0],indent=2,sort_keys=True)+'\n')
+          PY
+          PRE_RID="$(python -c 'import json;print(json.load(open("preauth-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PRE_RID}/artifacts?per_page=100" > preauth-artifacts.json
+          python - <<'PY' > preauth.env
+          import json,re
+          rows=json.load(open('preauth-artifacts.json')).get('artifacts',[])
+          good=[a for a in rows if a.get('name')=='vertical-profile-v1-preauthorization-proof' and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit('preauthorization artifact missing/drifted')
+          a=good[0]; digest=str(a.get('digest') or '')
+          if re.fullmatch(r'sha256:[0-9a-f]{64}',digest) is None: raise SystemExit('preauthorization artifact digest malformed')
+          print(f'PRE_AID={int(a["id"])}'); print(f'PRE_DIGEST={digest}')
+          PY
+          source preauth.env
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PRE_AID}/zip" > preauth.zip
+          test "sha256:$(sha256sum preauth.zip | awk '{print $1}')" = "$PRE_DIGEST"
+          mkdir preauth-artifact
+          unzip -q preauth.zip -d preauth-artifact
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/avps-v1-dispatch-publisher.yml/runs?event=push&per_page=100" > publisher-run-pages.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          pages=json.load(open('publisher-run-pages.json')); runs=[r for page in pages for r in page.get('workflow_runs',[])]
+          good=[r for r in runs if int(r.get('run_attempt') or 0)==1 and r.get('status')=='completed' and r.get('conclusion')=='success']
+          candidates=[]
+          for r in good:
+              branch=str(r.get('head_branch') or '')
+              if branch==f'status/avps-v1-dispatch-publisher-ordinal-{os.environ["ORDINAL"]}': candidates.append(r)
+          if len(candidates)!=1: raise SystemExit(f'expected one successful publisher run for ordinal, got {len(candidates)}')
+          Path('publisher-selected.json').write_text(json.dumps(candidates[0],indent=2,sort_keys=True)+'\n')
+          PY
+          PUB_RID="$(python -c 'import json;print(json.load(open("publisher-selected.json"))["id"])')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PUB_RID}/artifacts?per_page=100" > publisher-artifacts.json
+          PUB_AID="$(python - <<'PY'
+          import json,os
+          rows=json.load(open('publisher-artifacts.json')).get('artifacts',[])
+          expected=f'avps-v1-dispatch-publisher-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'publisher artifact count {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir publisher-artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUB_AID}/zip" > publisher.zip
+          unzip -q publisher.zip -d publisher-artifact
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.load(open(next(Path('publisher-artifact').rglob('dispatch-publisher.json'))))
+          if p.get('status')!='DISPATCH_PUBLISHED_ZERO_RUNTIME' or p.get('authorizationHead')!=os.environ['AUTH_HEAD'] or p.get('authorizationParent')!=os.environ['AUTH_PARENT']: raise SystemExit('publisher evidence drift')
+          if int(p.get('scientificOrdinal') or 0)!=int(os.environ['ORDINAL']) or int(p.get('authorizationPr') or 0)!=int(os.environ['PR_NUMBER']): raise SystemExit('publisher ordinal/PR drift')
+          if p.get('dispatchBranchHeadSha')!=os.environ['AUTH_HEAD']: raise SystemExit('publisher dispatch head drift')
+          if any(p.get(k) is not False for k in ('scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed')): raise SystemExit('publisher crossed zero-runtime boundary')
+          PY
+
+          echo "ordinal=$ORDINAL" >> "$GITHUB_OUTPUT"
+          echo "auth_head=$AUTH_HEAD" >> "$GITHUB_OUTPUT"
+          echo "auth_parent=$AUTH_PARENT" >> "$GITHUB_OUTPUT"
+          echo "auth_branch=$AUTH_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "review_run_id=$REVIEW_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "preauth_artifact_id=$PRE_AID" >> "$GITHUB_OUTPUT"
+          echo "preauth_artifact_digest=$PRE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "publisher_run_id=$PUB_RID" >> "$GITHUB_OUTPUT"
+
+      - name: Build live pre-solver seed proof and one-use science guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ steps.identity.outputs.ordinal }}
+          AUTH_HEAD: ${{ steps.identity.outputs.auth_head }}
+          AUTH_PARENT: ${{ steps.identity.outputs.auth_parent }}
+          AUTH_BRANCH: ${{ steps.identity.outputs.auth_branch }}
+          PR_NUMBER: ${{ steps.identity.outputs.pr_number }}
+          PREAUTH_ARTIFACT_ID: ${{ steps.identity.outputs.preauth_artifact_id }}
+          PREAUTH_ARTIFACT_DIGEST: ${{ steps.identity.outputs.preauth_artifact_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p execution-preflight
+          git ls-files -z > execution-preflight/tracked-files.nul
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          path=Path('experiments/aerosol-vertical-profile-sensitivity-v1/seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('avps_science_seed_ledger',path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import seed ledger')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          ledger=mod.validate_ledger()
+          Path('execution-preflight/candidate-seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          Path('execution-preflight/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+          python experiments/aerosol-vertical-profile-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list execution-preflight/tracked-files.nul \
+            --candidate-seed-ledger execution-preflight/candidate-seed-ledger.json \
+            --allow-self-ledger-json execution-preflight/empty-self-ledger-policy.json \
+            --output execution-preflight/tracked-seed-scan.json
+          python experiments/aerosol-vertical-profile-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger execution-preflight/candidate-seed-ledger.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "$GITHUB_REF_NAME" \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output execution-preflight/repository-global-seed-scan.json
+          python experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py \
+            --stage-dir experiments/aerosol-vertical-profile-sensitivity-v1 \
+            --tracked-tree-report execution-preflight/tracked-seed-scan.json \
+            --repository-global-report execution-preflight/repository-global-seed-scan.json \
+            --expected-main-head "$GITHUB_SHA" \
+            --output execution-preflight/live-seed-authorization-proof.json
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import preauthorization_surface,science_guard
+          root=Path('.'); stage=root/'experiments/aerosol-vertical-profile-sensitivity-v1'
+          auth=json.load(open(stage/'authorization.json'))
+          report=json.load(open('preauth-artifact/preauthorization.json'))
+          auth_seed=json.load(open('preauth-artifact/seed-authorization-proof.json'))
+          live_seed=json.load(open('execution-preflight/live-seed-authorization-proof.json'))
+          pr=json.load(open('auth-pr-selected.json')); rr=json.load(open('auth-review-selected.json'))
+          review=json.load(open(next(Path('auth-review-artifact').rglob('authorization-review.json'))))
+          pubrun=json.load(open('publisher-selected.json')); publisher=json.load(open(next(Path('publisher-artifact').rglob('dispatch-publisher.json'))))
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=preauthorization_surface.build_dispatch_surface(
+              payload,int(os.environ['ORDINAL']),os.environ['GITHUB_SHA'],os.environ['AUTH_PARENT'],
+              current_pr=int(os.environ['PR_NUMBER']),current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,post_dispatch=True,
+          )
+          ctx={
+              'eventName':os.environ['GITHUB_EVENT_NAME'],'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'headSha':os.environ['GITHUB_SHA'],'refName':os.environ['GITHUB_REF_NAME'],
+              'dispatchBranchHeadSha':os.environ['GITHUB_SHA'],'authorizationBranchHeadSha':os.environ['GITHUB_SHA'],
+              'liveMain':os.environ['AUTH_PARENT'],'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+              'authorizationHead':os.environ['GITHUB_SHA'],'authorizationParent':os.environ['AUTH_PARENT'],
+              'pr':{'number':pr['number'],'state':pr['state'],'draft':pr['draft'],'merged':pr.get('merged_at') is not None,'headBranch':pr['head']['ref'],'headSha':pr['head']['sha']},
+              'authorizationReview':{'status':review['status'],'headSha':review['headSha'],'parentSha':review['parentSha'],'scientificOrdinal':review['scientificOrdinal'],'candidateSeedAuthorizationRecheckPassed':review['candidateSeedAuthorizationRecheckPassed'],'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False},
+              'authorizationReviewRunAttempt':rr['run_attempt'],'authorizationReviewRunConclusion':rr['conclusion'],
+              'publisherRun':{'runAttempt':pubrun['run_attempt'],'status':pubrun['status'],'conclusion':pubrun['conclusion']},
+              'publisherEvidence':publisher,'freshness':surface,
+              'issue60AuthorizationMarkers':surface.get('matchingAuthorizationMarkerBodies',[]),
+              'issue60ConsumedMarkers':surface.get('currentConsumedMarkerBodies',[]),
+          }
+          out=science_guard.evaluate(
+              root,auth,report,auth_seed,live_seed,ctx,
+              preauthorization_artifact_id=int(os.environ['PREAUTH_ARTIFACT_ID']),
+              preauthorization_artifact_digest=os.environ['PREAUTH_ARTIFACT_DIGEST'],
+          )
+          if out.get('status')!='EXACT_ONE_USE_AVPS_V1_DISPATCH_AUTHORIZED': raise SystemExit('science guard did not authorize exact one-use AVPS execution')
+          Path('execution-preflight/execution-guard.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          Path('execution-preflight/freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Emit exact four 90-case matrices from frozen authorized universe
+        id: matrices
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import adapter
+          auth=json.load(open('experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json'))
+          cases=adapter.authorized_case_universe(auth)
+          by_dep={2:[],4:[],6:[],8:[]}
+          for case in cases:
+              dep=int(round(float(case['sunDepressionDeg'])))
+              if dep not in by_dep: raise SystemExit(f'unexpected depression {dep}')
+              by_dep[dep].append({'caseId':case['caseId']})
+          if any(len(rows)!=90 for rows in by_dep.values()): raise SystemExit(f'shard cardinality drift: { {k:len(v) for k,v in by_dep.items()} }')
+          if len({r['caseId'] for rows in by_dep.values() for r in rows})!=360: raise SystemExit('matrix case uniqueness drift')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              for dep in (2,4,6,8):
+                  rows=sorted(by_dep[dep],key=lambda r:r['caseId'])
+                  f.write(f'matrix{dep}='+json.dumps({'include':rows},sort_keys=True,separators=(',',':'))+'\n')
+          PY
+
+      - name: Acquire and hash-bind exact OPAC archive once for this science run
+        shell: bash
+        env:
+          SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+          EXPECTED_ARCHIVE_SHA256: 11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e
+          EXPECTED_ARCHIVE_SIZE: '743391266'
+        run: |
+          set -euo pipefail
+          OUT=execution-preflight/optprop_v2.1.tar.gz
+          curl --location --fail-with-body --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 --connect-timeout 30 --max-time 2700 \
+            --user-agent 'twilight-mystic-experiments avps-v1-science-preflight/1.0' \
+            --output "$OUT" "$SOURCE_URL"
+          test "$(stat -c %s "$OUT")" = "$EXPECTED_ARCHIVE_SIZE"
+          printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$OUT" | sha256sum -c -
+
+      - name: Persist pre-solver guard evidence and exact OPAC source bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-preflight-ordinal-${{ steps.identity.outputs.ordinal }}
+          path: |
+            execution-preflight/
+            auth-pr-selected.json
+            auth-review-selected.json
+            publisher-selected.json
+            preauth-selected.json
+            experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+          if-no-files-found: error
+          compression-level: 0
+
+  cases-dep2:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix2) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps: &case_steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: avps-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Fetch exact same-run preflight guard and OPAC archive artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > current-run-artifact-pages.json
+          AID="$(python - <<'PY'
+          import json,os
+          pages=json.load(open('current-run-artifact-pages.json')); rows=[a for page in pages for a in page.get('artifacts',[])]
+          expected=f'avps-v1-preflight-ordinal-{os.environ["ORDINAL"]}'
+          good=[a for a in rows if a.get('name')==expected and not a.get('expired',False)]
+          if len(good)!=1: raise SystemExit(f'expected one preflight artifact, got {len(good)}')
+          print(good[0]['id'])
+          PY
+          )"
+          mkdir preflight
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AID}/zip" > preflight.zip
+          unzip -q preflight.zip -d preflight
+          test -f preflight/execution-preflight/execution-guard.json
+          test -f preflight/execution-preflight/optprop_v2.1.tar.gz
+          test -f preflight/experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+
+      - name: Reconstruct exact frozen OPAC overlay and capture runtime identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          ARCHIVE=preflight/execution-preflight/optprop_v2.1.tar.gz
+          test "$(stat -c %s "$ARCHIVE")" = 743391266
+          printf '%s  %s\n' '11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e' "$ARCHIVE" | sha256sum -c -
+          PYTHONPATH=experiments/aerosol-full-phase-function-sensitivity-v1/execution-candidate python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from runtime_overlay import stage_frozen_overlay
+          base=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data'
+          archive=Path('preflight/execution-preflight/optprop_v2.1.tar.gz')
+          report=stage_frozen_overlay(base,archive,Path('libradtran-overlay'))
+          Path('overlay-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          if report.get('status')!='FROZEN_OPAC_RUNTIME_OVERLAY_STAGED': raise SystemExit('overlay staging status drift')
+          if report.get('augmentedDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('augmented data tree drift')
+          PY
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$PWD/libradtran-overlay/data" \
+            --atmosphere "$PWD/libradtran-overlay/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          if r.get('scientificSolverExecuted') is not False: raise SystemExit('runtime report not pre-solver')
+          if r.get('libRadtranDataTreeSha256')!='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80': raise SystemExit('runtime augmented data-tree hash drift')
+          PY
+
+      - name: Execute exactly one preregistered AVPS case
+        shell: micromamba-shell {0}
+        env:
+          CASE_ID: ${{ matrix.caseId }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import os,shutil
+          from pathlib import Path
+          from executor import execute_case
+          uvspec=shutil.which('uvspec')
+          if not uvspec: raise SystemExit('uvspec missing')
+          execute_case(
+              Path('.'),
+              Path('preflight/experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json'),
+              Path('preflight/execution-preflight/execution-guard.json'),
+              Path('runtime-report.json'),
+              os.environ['CASE_ID'],
+              Path('libradtran-overlay/data'),
+              Path('case-output'),
+              Path(uvspec),
+              allow_execution=True,
+          )
+          PY
+          cp overlay-report.json "case-output/${CASE_ID}/overlay-report.json"
+
+      - name: Persist immutable raw case evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}/
+          if-no-files-found: error
+          compression-level: 0
+
+  cases-dep4:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix4) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps: *case_steps
+
+  cases-dep6:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix6) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps: *case_steps
+
+  cases-dep8:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix8) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps: *case_steps
+
+  aggregate-and-open:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.cases-dep2.result == 'success' && needs.cases-dep4.result == 'success' && needs.cases-dep6.result == 'success' && needs.cases-dep8.result == 'success' }}
+    needs: [preflight, cases-dep2, cases-dep4, cases-dep6, cases-dep8]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download exact current-run artifacts and metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded-artifacts aggregate-output
+          gh run download "$GITHUB_RUN_ID" --dir downloaded-artifacts
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > artifact-pages.json
+          python - <<'PY'
+          import json
+          pages=json.load(open('artifact-pages.json'))
+          rows=[a for page in pages for a in page.get('artifacts',[])]
+          json.dump({'artifacts':rows},open('artifact-metadata.json','w'),indent=2,sort_keys=True)
+          if len([a for a in rows if str(a.get('name') or '').startswith('avps-v1-case-')])!=360: raise SystemExit('exact 360 case artifact metadata required before aggregate')
+          PY
+
+      - name: Verify exact 360 artifacts and build still-closed analysis input
+        shell: bash
+        env:
+          ORDINAL: ${{ needs.preflight.outputs.ordinal }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import aggregate_results
+          acquisition,analysis_input=aggregate_results.aggregate(
+              Path('.'),
+              Path('experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json'),
+              Path('downloaded-artifacts'),
+              Path('artifact-metadata.json'),
+              expected_workflow_run_id=int(os.environ['GITHUB_RUN_ID']),
+              expected_scientific_ordinal=int(os.environ['ORDINAL']),
+          )
+          Path('aggregate-output/acquisition.json').write_text(json.dumps(acquisition,indent=2,sort_keys=True)+'\n')
+          Path('aggregate-output/verified-analysis-input.json').write_text(json.dumps(analysis_input,indent=2,sort_keys=True)+'\n')
+          if acquisition.get('status')!='COMPLETE_EXACT_360_CASE_ARTIFACT_UNIVERSE_RESULTS_STILL_CLOSED': raise SystemExit('aggregate acquisition gate did not close exact 360')
+          if analysis_input.get('status')!='COMPLETE_EXACT_360_ANALYSIS_INPUT_AFTER_AGGREGATE_VERIFICATION': raise SystemExit('analysis input gate did not pass')
+          PY
+
+      - name: Open preregistered primary scalar results only after exact-360 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import json
+          from pathlib import Path
+          import open_results
+          out=open_results.open_results(Path('.'),Path('aggregate-output/verified-analysis-input.json'))
+          if out.get('status')!='COMPLETED_PREREGISTERED_AVPS_V1_PRIMARY_ANALYSIS_AFTER_EXACT_360_GATE': raise SystemExit('primary result opening did not pass')
+          Path('aggregate-output/primary-analysis.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Fetch exact frozen Level-B human threshold implementation
+        shell: bash
+        env:
+          STARS_REF: e0da52eb0a2d5bac333da6572f51df52ea7e676e
+          EXPECTED_BLOB: bb4cd0ff02159ecffe276022cec9d292c7a434a3
+        run: |
+          set -euo pipefail
+          curl --location --fail --silent --show-error \
+            -o aggregate-output/human-threshold.mjs \
+            "https://raw.githubusercontent.com/search-maker/starsvisibility/${STARS_REF}/scientific-tools/visibility-v3/human-threshold.mjs"
+          python - <<'PY'
+          import hashlib,os
+          from pathlib import Path
+          data=Path('aggregate-output/human-threshold.mjs').read_bytes()
+          blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          if blob!=os.environ['EXPECTED_BLOB']: raise SystemExit(f'human-threshold Git blob drift: {blob}')
+          PY
+
+      - name: Open preregistered Level-B endpoint only after exact-360 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_SHA="$(sha256sum aggregate-output/verified-analysis-input.json | awk '{print $1}')"
+          node experiments/aerosol-vertical-profile-sensitivity-v1/level_b_runner.mjs \
+            --input aggregate-output/verified-analysis-input.json \
+            --input-sha256 "$INPUT_SHA" \
+            --human-threshold aggregate-output/human-threshold.mjs \
+            --output aggregate-output/level-b-analysis.json
+          python - <<'PY'
+          import json
+          p=json.load(open('aggregate-output/level-b-analysis.json'))
+          if p.get('status')!='COMPLETED_PREREGISTERED_AVPS_V1_LEVEL_B_AFTER_EXACT_360_GATE': raise SystemExit('Level-B result opening did not pass')
+          if p.get('fieldFactor')!=3.14: raise SystemExit('Level-B F drift')
+          PY
+
+      - name: Persist complete exact-360 AVPS result package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-complete-ordinal-${{ needs.preflight.outputs.ordinal }}
+          path: |
+            aggregate-output/
+            artifact-metadata.json
+          if-no-files-found: error
+          compression-level: 0

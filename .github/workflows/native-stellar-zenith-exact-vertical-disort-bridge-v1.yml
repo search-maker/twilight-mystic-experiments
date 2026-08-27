@@ -1,0 +1,172 @@
+name: Native stellar exact-vertical DISORT bridge v1
+run-name: Native stellar exact-vertical DISORT bridge ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - dispatch/native-stellar-zenith-exact-vertical-disort-bridge-v1
+
+permissions:
+  contents: read
+
+env:
+  STAGE_DIR: review/native-stellar-zenith-v3
+  DISPATCH_PATH: review/native-stellar-zenith-v3/exact-vertical-disort-bridge-v1-dispatch.json
+  SED_SHA256: 85cbf41c86309b9d54d4765516167165f2d8736bcda8994337ef25d775ea11cb
+  JOHNSON_V_SHA256: 51c357eb4cb3609361759f9750ad13ae13a901970913e3a5d87bb5c45ee2db9a
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  UVSPEC_HELP_SHA256: 868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+
+concurrency:
+  group: native-stellar-zenith-exact-vertical-disort-bridge-v1
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact bridge dispatch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-shot bridge diagnostic boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = dispatch/native-stellar-zenith-exact-vertical-disort-bridge-v1
+          git fetch origin main
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$DISPATCH_PATH"
+          python - <<'PY'
+          import json, os, subprocess
+          d=json.load(open(os.environ['DISPATCH_PATH'],encoding='utf-8'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          expected={
+            'schemaVersion':1,
+            'stageId':'native-stellar-zenith-exact-vertical-disort-bridge-v1',
+            'status':'AUTHORIZED_TRAINING_ONLY_EXACT_VERTICAL_BRIDGE_DIAGNOSTIC',
+            'baseMainSha':parent,
+            'sourceEpsilonDiagnosticRunId':33036341965,
+            'sourceEpsilonSelectionStatus':'NO_SELECTION_UNDER_PREREGISTERED_PROTOCOL',
+            'disortSzaDeg':[0.0,0.5,1.0],
+            'sdisortSzaDeg':[0.5,1.0],
+            'atmosphereCorners':[{'observerElevationM':0.0,'aod550':0.05},{'observerElevationM':0.0,'aod550':0.4},{'observerElevationM':2500.0,'aod550':0.05},{'observerElevationM':2500.0,'aod550':0.4}],
+            'solverInvocationCountAuthorized':20,
+            'maxAbsDeltaVerticalOpticalDepthLimit':5e-6,
+            'maxAbsDeltaSolverBridgeOpticalDepthLimit':5e-6,
+            'maxAbsDeltaAvMagLimit':1e-4,
+            'protectedHoldoutOpeningAuthorized':False,
+            'modelFitAuthorized':False,
+            'stellarLutAcceptanceGateEvaluationAuthorized':False,
+            'productionAuthorized':False,
+            'githubRerunPermitted':False,
+            'solverRetryPermitted':False,
+          }
+          for k,v in expected.items():
+            if d.get(k)!=v: raise SystemExit(f'bridge dispatch mismatch {k}: {d.get(k)!r} != {v!r}')
+          PY
+
+      - name: Set up exact libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: native-stellar-exact-vertical-disort-bridge-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify exact runtime and frozen inputs
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$SED_SHA256" review/asiv-matched-stellar-transport-v1/frozen-assets/pickles-sed-1nm.json | sha256sum -c -
+          printf '%s  %s\n' "$JOHNSON_V_SHA256" review/asiv-matched-stellar-transport-v1/frozen-assets/johnson-v-1nm.json | sha256sum -c -
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          UVHELP_SHA="$(python - <<'PY'
+          import hashlib, subprocess, shutil
+          u=shutil.which('uvspec'); r=subprocess.run([u,'-h'],capture_output=True,check=True)
+          print(hashlib.sha256(r.stdout+r.stderr).hexdigest())
+          PY
+          )"
+          test "$UVHELP_SHA" = "$UVSPEC_HELP_SHA256"
+          PACKAGE_SPEC="$(python - <<'PY'
+          import subprocess
+          text=subprocess.check_output(['micromamba','list','rubin-libradtran'],text=True)
+          rows=[]
+          for raw in text.splitlines():
+            p=raw.split()
+            if len(p)>=3 and p[0]=='rubin-libradtran': rows.append(p[:3])
+          if len(rows)!=1: raise SystemExit(f'package identity ambiguity: {rows!r}')
+          print('='.join(rows[0]))
+          PY
+          )"
+          test "$PACKAGE_SPEC" = 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1'
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data',u.parent.parent/'data'):
+            if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+          python "$STAGE_DIR/diagnose_exact_vertical_disort_bridge_v1.py"
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+
+      - name: Execute 20 frozen training-only bridge spectra once
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test ! -e diagnostic-output
+          python "$STAGE_DIR/diagnose_exact_vertical_disort_bridge_v1.py" \
+            --execute --allow-execution \
+            --root . \
+            --uvspec "$UVSPEC" \
+            --data-dir "$LIBRADTRAN_DATA" \
+            --atmosphere-file "$LIBRADTRAN_DATA/atmmod/afglus.dat" \
+            --wavelength-grid-file experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat \
+            --sed-bundle review/asiv-matched-stellar-transport-v1/frozen-assets/pickles-sed-1nm.json \
+            --johnson-v review/asiv-matched-stellar-transport-v1/frozen-assets/johnson-v-1nm.json \
+            --output-dir diagnostic-output
+
+      - name: Publish raw bridge evidence before final gate
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-stellar-zenith-exact-vertical-disort-bridge-v1-${{ github.run_id }}
+          path: diagnostic-output/
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+
+      - name: Require frozen bridge diagnostic PASS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          d=json.load(open('diagnostic-output/exact-vertical-disort-bridge-summary.json'))
+          if d.get('stageId')!='native-stellar-zenith-exact-vertical-disort-bridge-v1': raise SystemExit('stage drift')
+          if d.get('solverInvocationCount')!=20: raise SystemExit('solver count drift')
+          if d.get('status')!='EXACT_VERTICAL_DISORT_BRIDGE_DIAGNOSTIC_PASS':
+            raise SystemExit('frozen exact-vertical DISORT bridge gates did not pass')
+          m=d.get('metrics',{})
+          if m.get('maxAbsDeltaVerticalOpticalDepth',1)>5e-6: raise SystemExit('vertical tau gate failed')
+          if m.get('maxAbsDeltaSolverBridgeOpticalDepth',1)>5e-6: raise SystemExit('solver bridge tau gate failed')
+          if m.get('maxAbsDeltaAvMag',1)>1e-4: raise SystemExit('photometric bridge gate failed')
+          c=d.get('claimBoundary',{})
+          for key in ('protectedHoldoutOpened','modelFitPerformed','stellarLutAcceptanceGateEvaluated','productionAuthorized','empiricalRealSkyValidated','humanFirstSeeingValidated'):
+            if c.get(key) is not False: raise SystemExit(f'claim boundary drift: {key}')
+          print(json.dumps({'status':d['status'],'metrics':m},sort_keys=True))
+          PY

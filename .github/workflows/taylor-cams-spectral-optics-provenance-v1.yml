@@ -1,0 +1,520 @@
+name: Taylor CAMS spectral optics provenance v1
+run-name: Taylor CAMS spectral optics provenance v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: read
+
+env:
+  ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+
+jobs:
+  retrieve:
+    if: github.head_ref == 'review/taylor-cams-spectral-optics-provenance-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify retrieval-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test -s experiments/taylor-cams-spectral-optics-provenance-v1/README.md
+          ! grep -R -n -E 'Taylor.*residual|comparison\.csv|metrics\.json' .github/workflows/taylor-cams-spectral-optics-provenance-v1.yml experiments/taylor-cams-spectral-optics-provenance-v1/README.md || true
+
+      - name: Install CAMS retrieval and GRIB tools
+        run: python -m pip install --disable-pip-version-check 'cdsapi==0.7.7' 'eccodes==2.48.0' 'numpy==2.5.2'
+
+      - name: Retrieve same-cycle CAMS spectral column optics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python - <<'PY'
+          import json, os, pathlib
+          import cdsapi
+
+          out = pathlib.Path('output')
+          key = os.environ.get('ADS_API_KEY', '').strip()
+          if not key:
+              raise SystemExit('ADS_API_KEY missing')
+
+          dataset = 'cams-global-atmospheric-composition-forecasts'
+          variables = [
+              'total_aerosol_optical_depth_380nm',
+              'total_aerosol_optical_depth_400nm',
+              'total_aerosol_optical_depth_440nm',
+              'total_aerosol_optical_depth_469nm',
+              'total_aerosol_optical_depth_500nm',
+              'total_aerosol_optical_depth_532nm',
+              'total_aerosol_optical_depth_550nm',
+              'total_aerosol_optical_depth_645nm',
+              'total_aerosol_optical_depth_670nm',
+              'total_aerosol_optical_depth_800nm',
+              'total_absorption_aerosol_optical_depth_500nm',
+              'total_absorption_aerosol_optical_depth_532nm',
+              'total_absorption_aerosol_optical_depth_550nm',
+              'total_absorption_aerosol_optical_depth_645nm',
+              'total_absorption_aerosol_optical_depth_670nm',
+              'total_absorption_aerosol_optical_depth_800nm',
+              'single_scattering_albedo_380nm',
+              'single_scattering_albedo_400nm',
+              'single_scattering_albedo_440nm',
+              'single_scattering_albedo_469nm',
+              'single_scattering_albedo_500nm',
+              'single_scattering_albedo_532nm',
+              'single_scattering_albedo_550nm',
+              'single_scattering_albedo_645nm',
+              'single_scattering_albedo_670nm',
+              'single_scattering_albedo_800nm',
+              'asymmetry_factor_380nm',
+              'asymmetry_factor_400nm',
+              'asymmetry_factor_440nm',
+              'asymmetry_factor_469nm',
+              'asymmetry_factor_500nm',
+              'asymmetry_factor_532nm',
+              'asymmetry_factor_550nm',
+              'asymmetry_factor_645nm',
+              'asymmetry_factor_670nm',
+              'asymmetry_factor_800nm',
+          ]
+          request = {
+              'date': ['2025-08-08/2025-08-08'],
+              'time': ['00:00'],
+              'leadtime_hour': ['0', '3'],
+              'type': ['forecast'],
+              'data_format': 'grib',
+              'area': [42.4, -84.0, 42.0, -83.6],
+              'variable': variables,
+          }
+          (out / 'surface_request.json').write_text(
+              json.dumps({'dataset': dataset, 'request': request}, indent=2, sort_keys=True) + '\n'
+          )
+          target = out / 'cams_2025-08-08_00Z_lead0-3_spectral_surface_optics.grib'
+          cdsapi.Client(
+              url='https://ads.atmosphere.copernicus.eu/api', key=key, quiet=False, debug=False
+          ).retrieve(dataset, request, str(target))
+          if not target.is_file() or target.stat().st_size == 0:
+              raise SystemExit('surface spectral-optics retrieval missing')
+          print('SURFACE_BYTES', target.stat().st_size)
+          PY
+
+      - name: Retrieve same-cycle CAMS spectral extinction profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          import cdsapi
+
+          out = pathlib.Path('output')
+          key = os.environ.get('ADS_API_KEY', '').strip()
+          if not key:
+              raise SystemExit('ADS_API_KEY missing')
+
+          dataset = 'cams-global-atmospheric-composition-forecasts'
+          request = {
+              'date': ['2025-08-08/2025-08-08'],
+              'time': ['00:00'],
+              'leadtime_hour': ['0', '3'],
+              'type': ['forecast'],
+              'data_format': 'grib',
+              'area': [42.4, -84.0, 42.0, -83.6],
+              'variable': [
+                  'aerosol_extinction_coefficient_355nm',
+                  'aerosol_extinction_coefficient_532nm',
+                  'aerosol_extinction_coefficient_1064nm',
+              ],
+              'model_level': [str(i) for i in range(1, 138)],
+          }
+          (out / 'extinction_profile_request.json').write_text(
+              json.dumps({'dataset': dataset, 'request': request}, indent=2, sort_keys=True) + '\n'
+          )
+          target = out / 'cams_2025-08-08_00Z_lead0-3_ext355_532_1064_ml1-137.grib'
+          cdsapi.Client(
+              url='https://ads.atmosphere.copernicus.eu/api', key=key, quiet=False, debug=False
+          ).retrieve(dataset, request, str(target))
+          if not target.is_file() or target.stat().st_size == 0:
+              raise SystemExit('spectral extinction-profile retrieval missing')
+          print('PROFILE_BYTES', target.stat().st_size)
+          PY
+
+      - name: Extract exact-site values and provenance diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json, math, pathlib, re
+          import numpy as np
+          from eccodes import (
+              codes_grib_new_from_file,
+              codes_get,
+              codes_get_array,
+              codes_is_defined,
+              codes_release,
+          )
+
+          LAT = 42.256
+          LON = -83.709
+          OUT = pathlib.Path('output')
+          SURFACE = OUT / 'cams_2025-08-08_00Z_lead0-3_spectral_surface_optics.grib'
+          PROFILE = OUT / 'cams_2025-08-08_00Z_lead0-3_ext355_532_1064_ml1-137.grib'
+
+          AOD_WL = [380, 400, 440, 469, 500, 532, 550, 645, 670, 800]
+          AAOD_WL = [500, 532, 550, 645, 670, 800]
+          SSA_WL = [380, 400, 440, 469, 500, 532, 550, 645, 670, 800]
+          G_WL = [380, 400, 440, 469, 500, 532, 550, 645, 670, 800]
+          EXT_WL = [355, 532, 1064]
+
+          def safe(g, key, default=None):
+              try:
+                  if codes_is_defined(g, key):
+                      return codes_get(g, key)
+              except Exception:
+                  pass
+              return default
+
+          def site_value(g):
+              lats = codes_get_array(g, 'latitudes')
+              lons = codes_get_array(g, 'longitudes')
+              vals = codes_get_array(g, 'values')
+              pts = []
+              for y, x, v in zip(lats, lons, vals):
+                  x = float(x)
+                  if x > 180:
+                      x -= 360
+                  pts.append((round(float(y), 6), round(x, 6), float(v)))
+              by = {(y, x): v for y, x, v in pts}
+              ys = sorted({y for y, _, _ in pts})
+              xs = sorted({x for _, x, _ in pts})
+              yl = [y for y in ys if y <= LAT]
+              yh = [y for y in ys if y >= LAT]
+              xl = [x for x in xs if x <= LON]
+              xh = [x for x in xs if x >= LON]
+              if yl and yh and xl and xh:
+                  y0, y1 = max(yl), min(yh)
+                  x0, x1 = max(xl), min(xh)
+                  need = [(y0, x0), (y0, x1), (y1, x0), (y1, x1)]
+                  if all(k in by for k in need):
+                      fy = 0.0 if y1 == y0 else (LAT - y0) / (y1 - y0)
+                      fx = 0.0 if x1 == x0 else (LON - x0) / (x1 - x0)
+                      value = (
+                          (1 - fy) * ((1 - fx) * by[(y0, x0)] + fx * by[(y0, x1)])
+                          + fy * ((1 - fx) * by[(y1, x0)] + fx * by[(y1, x1)])
+                      )
+                      return float(value), {
+                          'method': 'bilinear_native_nodes',
+                          'lat0': y0,
+                          'lat1': y1,
+                          'lon0': x0,
+                          'lon1': x1,
+                      }
+              y, x, value = min(pts, key=lambda p: (p[0] - LAT) ** 2 + (p[1] - LON) ** 2)
+              return float(value), {'method': 'nearest', 'lat': y, 'lon': x}
+
+          def wavelength(text):
+              m = re.search(r'(?<!\d)(355|380|400|440|469|500|532|550|645|670|800|1064)(?!\d)', text)
+              return int(m.group(1)) if m else None
+
+          def category(short_name, name):
+              text = (short_name + ' ' + name).lower()
+              if 'extinction' in text:
+                  return 'extinction'
+              if 'absorption' in text and 'optical depth' in text:
+                  return 'aaod'
+              if 'single scattering albedo' in text or 'single-scattering albedo' in text:
+                  return 'ssa'
+              if 'asymmetry factor' in text:
+                  return 'g'
+              if 'aerosol optical depth' in text or 'total aerosol optical depth' in text:
+                  return 'aod'
+              return 'unknown'
+
+          def read_grib(path):
+              rows = []
+              with pathlib.Path(path).open('rb') as f:
+                  while True:
+                      g = codes_grib_new_from_file(f)
+                      if g is None:
+                          break
+                      try:
+                          value, interp = site_value(g)
+                          short_name = str(safe(g, 'shortName', ''))
+                          name = str(safe(g, 'name', ''))
+                          rows.append({
+                              'dataDate': int(safe(g, 'dataDate', 0)),
+                              'dataTime': int(safe(g, 'dataTime', 0)),
+                              'leadHour': int(safe(g, 'step', -1)),
+                              'shortName': short_name,
+                              'name': name,
+                              'paramId': safe(g, 'paramId', None),
+                              'units': str(safe(g, 'units', '')),
+                              'typeOfLevel': str(safe(g, 'typeOfLevel', '')),
+                              'level': int(safe(g, 'level', -1)),
+                              'category': category(short_name, name),
+                              'wavelength_nm': wavelength(short_name + ' ' + name),
+                              'valueAnnArbor': value,
+                              'interpolation': interp,
+                          })
+                      finally:
+                          codes_release(g)
+              return rows
+
+          surface = read_grib(SURFACE)
+          profiles = read_grib(PROFILE)
+
+          # Surface-universe gate: every preregistered field must exist exactly once for lead 0 and 3.
+          expected_surface = {
+              'aod': AOD_WL,
+              'aaod': AAOD_WL,
+              'ssa': SSA_WL,
+              'g': G_WL,
+          }
+          surface_by = {}
+          duplicates = []
+          for r in surface:
+              key = (r['leadHour'], r['category'], r['wavelength_nm'])
+              if key in surface_by:
+                  duplicates.append(key)
+              surface_by[key] = r
+          missing = []
+          for lead in (0, 3):
+              for cat, wavelengths in expected_surface.items():
+                  for wl in wavelengths:
+                      if (lead, cat, wl) not in surface_by:
+                          missing.append({'leadHour': lead, 'category': cat, 'wavelength_nm': wl})
+          if missing or duplicates:
+              raise SystemExit('surface optical field universe incomplete: missing=%s duplicates=%s' % (missing, duplicates))
+
+          # Frozen 01Z interpolation, one third from valid 00Z to 03Z.
+          surface_rows = []
+          for lead in (0, 3):
+              for cat, wavelengths in expected_surface.items():
+                  for wl in wavelengths:
+                      r = surface_by[(lead, cat, wl)]
+                      surface_rows.append({
+                          'validHourUTC': lead,
+                          'category': cat,
+                          'wavelength_nm': wl,
+                          'value': r['valueAnnArbor'],
+                          'units': r['units'],
+                          'shortName': r['shortName'],
+                          'name': r['name'],
+                          'paramId': r['paramId'],
+                          'interpolation': json.dumps(r['interpolation'], sort_keys=True),
+                      })
+          for cat, wavelengths in expected_surface.items():
+              for wl in wavelengths:
+                  a = surface_by[(0, cat, wl)]['valueAnnArbor']
+                  b = surface_by[(3, cat, wl)]['valueAnnArbor']
+                  surface_rows.append({
+                      'validHourUTC': 1,
+                      'category': cat,
+                      'wavelength_nm': wl,
+                      'value': a + (b - a) / 3.0,
+                      'units': surface_by[(0, cat, wl)]['units'],
+                      'shortName': 'derived_linear_00_03',
+                      'name': 'frozen linear interpolation at 01Z',
+                      'paramId': '',
+                      'interpolation': 'time: one-third 00Z->03Z; space: endpoint bilinear',
+                  })
+
+          def value_at(hour, cat, wl):
+              if hour in (0, 3):
+                  return surface_by[(hour, cat, wl)]['valueAnnArbor']
+              a = surface_by[(0, cat, wl)]['valueAnnArbor']
+              b = surface_by[(3, cat, wl)]['valueAnnArbor']
+              return a + (b - a) / 3.0
+
+          derived_ssa = []
+          for hour in (0, 1, 3):
+              for wl in AAOD_WL:
+                  aod = value_at(hour, 'aod', wl)
+                  aaod = value_at(hour, 'aaod', wl)
+                  direct = value_at(hour, 'ssa', wl)
+                  from_ratio = None if aod <= 0 else 1.0 - aaod / aod
+                  derived_ssa.append({
+                      'validHourUTC': hour,
+                      'wavelength_nm': wl,
+                      'aod': aod,
+                      'aaod': aaod,
+                      'ssa_direct': direct,
+                      'ssa_from_1_minus_aaod_over_aod': from_ratio,
+                      'direct_minus_derived': None if from_ratio is None else direct - from_ratio,
+                  })
+
+          angstrom = []
+          for hour in (0, 1, 3):
+              xs, ys = [], []
+              for wl in AOD_WL:
+                  v = value_at(hour, 'aod', wl)
+                  if v > 0:
+                      xs.append(math.log(float(wl)))
+                      ys.append(math.log(float(v)))
+              if len(xs) < 2:
+                  alpha = None
+                  rms = None
+              else:
+                  slope, intercept = np.polyfit(np.asarray(xs), np.asarray(ys), 1)
+                  pred = slope * np.asarray(xs) + intercept
+                  alpha = -float(slope)
+                  rms = float(np.sqrt(np.mean((np.asarray(ys) - pred) ** 2)))
+              angstrom.append({
+                  'validHourUTC': hour,
+                  'wavelength_min_nm': min(AOD_WL),
+                  'wavelength_max_nm': max(AOD_WL),
+                  'angstrom_alpha_loglinear': alpha,
+                  'log_aod_fit_rms': rms,
+              })
+
+          # Spectral extinction-profile availability. All-zero endpoint is a scientific result, not a failure.
+          prof_by = {}
+          for r in profiles:
+              if r['category'] != 'extinction' or r['wavelength_nm'] not in EXT_WL:
+                  continue
+              key = (r['leadHour'], r['wavelength_nm'])
+              prof_by.setdefault(key, []).append(r)
+          profile_summary = []
+          profile_rows = []
+          profile_universe_missing = []
+          for lead in (0, 3):
+              for wl in EXT_WL:
+                  rs = prof_by.get((lead, wl), [])
+                  levels = [int(r['level']) for r in rs]
+                  vals = [float(r['valueAnnArbor']) for r in rs]
+                  exact_levels = len(rs) == 137 and set(levels) == set(range(1, 138))
+                  if not exact_levels:
+                      profile_universe_missing.append({'leadHour': lead, 'wavelength_nm': wl, 'count': len(rs)})
+                  finite_nonnegative = bool(vals) and all(math.isfinite(v) and v >= 0 for v in vals)
+                  nonzero = sum(v > 0 for v in vals)
+                  profile_summary.append({
+                      'leadHour': lead,
+                      'wavelength_nm': wl,
+                      'modelLevelCount': len(rs),
+                      'exactLevels1to137': exact_levels,
+                      'finiteNonnegative': finite_nonnegative,
+                      'nonzeroLevelCount': nonzero,
+                      'maxExtinction': max(vals) if vals else None,
+                      'fieldStatus': 'available_nonzero' if nonzero else ('available_all_zero' if exact_levels else 'incomplete'),
+                  })
+                  for r in sorted(rs, key=lambda x: x['level']):
+                      profile_rows.append({
+                          'leadHour': lead,
+                          'wavelength_nm': wl,
+                          'modelLevel': r['level'],
+                          'extinction': r['valueAnnArbor'],
+                          'units': r['units'],
+                          'shortName': r['shortName'],
+                          'name': r['name'],
+                          'paramId': r['paramId'],
+                      })
+          if profile_universe_missing:
+              raise SystemExit('profile message universe incomplete: %s' % profile_universe_missing)
+
+          # Keep the result explicitly independent of Taylor brightness residuals.
+          result = {
+              'schemaVersion': 1,
+              'stageId': 'taylor-cams-spectral-optics-provenance-v1',
+              'status': 'PROVENANCE_CAPTURED_NO_TAYLOR_RESIDUALS_NO_MYSTIC',
+              'site': {'lat': LAT, 'lon': LON},
+              'cams': {
+                  'dataset': 'cams-global-atmospheric-composition-forecasts',
+                  'baseDateUTC': '2025-08-08',
+                  'baseHourUTC': 0,
+                  'leadHoursRetrieved': [0, 3],
+                  'interpolatedHourUTC': 1,
+                  'spatialInterpolation': 'bilinear over enclosing returned grid nodes',
+              },
+              'surfaceFieldCounts': {
+                  'rawMessages': len(surface),
+                  'expectedPerLead': sum(len(v) for v in expected_surface.values()),
+              },
+              'angstrom': angstrom,
+              'derivedSsaCrosscheck': derived_ssa,
+              'extinctionProfileAvailability': profile_summary,
+              'scientificBoundary': (
+                  'Retrieval/provenance only. No Taylor SQM values or residuals are read, no libRadtran/MYSTIC solver is executed, '
+                  'and no aerosol property is selected by agreement with Taylor. Forecast00 all-zero extinction fields, if present, '
+                  'are retained as provider results rather than replaced.'
+              ),
+          }
+          (OUT / 'summary.json').write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n')
+
+          with (OUT / 'surface_optics.csv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(surface_rows[0]))
+              w.writeheader(); w.writerows(sorted(surface_rows, key=lambda r: (r['validHourUTC'], r['category'], r['wavelength_nm'])))
+          with (OUT / 'ssa_crosscheck.csv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(derived_ssa[0]))
+              w.writeheader(); w.writerows(derived_ssa)
+          with (OUT / 'angstrom.csv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(angstrom[0]))
+              w.writeheader(); w.writerows(angstrom)
+          with (OUT / 'extinction_profile_availability.csv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(profile_summary[0]))
+              w.writeheader(); w.writerows(profile_summary)
+          with (OUT / 'extinction_profiles_model_level.csv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(profile_rows[0]))
+              w.writeheader(); w.writerows(profile_rows)
+
+          md = []
+          md.append('# Taylor CAMS spectral-optics provenance result')
+          md.append('')
+          md.append('Status: **PROVENANCE_CAPTURED_NO_TAYLOR_RESIDUALS_NO_MYSTIC**.')
+          md.append('')
+          md.append('Same-cycle CAMS Global forecast base: **2025-08-08 00Z**, exact Ann Arbor site **42.256 N, 83.709 W** by bilinear sampling. Surface optics are retrieved at lead 0 and 3 h; 01Z is the preregistered one-third linear interpolation.')
+          md.append('')
+          md.append('## Spectral column summary')
+          md.append('')
+          md.append('|UTC|AOD550|SSA550 direct|SSA550 from AOD/AAOD|g550|Angstrom alpha 380-800|')
+          md.append('|---:|---:|---:|---:|---:|---:|')
+          for hour in (0, 1, 3):
+              d = next(x for x in derived_ssa if x['validHourUTC'] == hour and x['wavelength_nm'] == 550)
+              a = next(x for x in angstrom if x['validHourUTC'] == hour)
+              md.append('|%02dZ|%.6f|%.6f|%.6f|%.6f|%.4f|' % (
+                  hour,
+                  value_at(hour, 'aod', 550),
+                  value_at(hour, 'ssa', 550),
+                  d['ssa_from_1_minus_aaod_over_aod'],
+                  value_at(hour, 'g', 550),
+                  a['angstrom_alpha_loglinear'],
+              ))
+          md.append('')
+          md.append('## Extinction-profile availability')
+          md.append('')
+          md.append('|lead|wavelength|levels|nonzero levels|status|')
+          md.append('|---:|---:|---:|---:|---|')
+          for r in profile_summary:
+              md.append('|%d h|%d nm|%d|%d|%s|' % (
+                  r['leadHour'], r['wavelength_nm'], r['modelLevelCount'], r['nonzeroLevelCount'], r['fieldStatus']
+              ))
+          md.append('')
+          md.append('This artifact does not read Taylor SQM observations or residuals, does not execute MYSTIC/libRadtran, and does not choose any CAMS property according to fit quality.')
+          (OUT / 'report.md').write_text('\n'.join(md) + '\n')
+
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Hash provenance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum output/* > output/SHA256SUMS.txt
+
+      - name: Upload Taylor CAMS spectral-optics provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-spectral-optics-provenance-v1
+          path: output
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

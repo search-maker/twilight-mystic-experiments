@@ -1,0 +1,23 @@
+import { writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+
+const SOURCE_COMMIT = '168f93d579949dd0eede3e944e086d83673011bc';
+const SOURCE_PATH = 'review/jerusalem-shadow-vs-matched-stellar-exact-v1/run.mjs';
+const response = await fetch(`https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/${SOURCE_COMMIT}/${SOURCE_PATH}`);
+if (!response.ok) throw new Error(`failed to load exact source harness ${response.status}`);
+let source = await response.text();
+
+const oldKeys = "  if (bvCandidates.length !== 1) throw new Error(`could not uniquely infer B-V catalog key: ${bvCandidates.join(',')}`);\n  if (spCandidates.length !== 1) throw new Error(`could not uniquely infer spectral-type catalog key: ${spCandidates.join(',')}`);\n  return Object.freeze({ bvKey: bvCandidates[0], spectralTypeKey: spCandidates[0] });";
+const newKeys = "  if (bvCandidates.length !== 1) throw new Error(`could not uniquely infer B-V catalog key: ${bvCandidates.join(',')}`);\n  const spectralTypeKey = spCandidates.includes('spectralType') ? 'spectralType' : (spCandidates.length === 1 ? spCandidates[0] : null);\n  if (!spectralTypeKey) throw new Error(`could not select spectral-type catalog key: ${spCandidates.join(',')}`);\n  return Object.freeze({ bvKey: bvCandidates[0], spectralTypeKey });";
+if (!source.includes(oldKeys)) throw new Error('catalog-key patch target not found');
+source = source.replace(oldKeys, newKeys);
+
+const oldSky = '        scenarioSkyPhotopicCdM2: sample.sky.photopicLuminanceCdM2,';
+const newSky = '        scenarioSkyPhotopicCdM2: sample.shadow.sky.channels.photopic.value,';
+if (!source.includes(oldSky)) throw new Error('result-shape patch target not found');
+source = source.replace(oldSky, newSky);
+
+const patchedPath = resolve('review/jerusalem-shadow-vs-matched-stellar-exact-v1/.run-recovery2-patched.mjs');
+await writeFile(patchedPath, source, 'utf8');
+await import(pathToFileURL(patchedPath).href);

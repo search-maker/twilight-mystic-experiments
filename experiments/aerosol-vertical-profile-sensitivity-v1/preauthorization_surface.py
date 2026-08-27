@@ -15,6 +15,12 @@ LOCAL_FRESHNESS_BLOB = "8c2de63cc0b4308fd1bf1f631d19b5d3c83bb227"
 STAGE = "aerosol-vertical-profile-sensitivity-v1"
 AUTHORIZATION_PATH = f"experiments/{STAGE}/authorization.json"
 CASE_ARTIFACT_PREFIX = "avps-v1-case-"
+AUTH_CONTROL_BLOBS = {
+    "experiments/aerosol-vertical-profile-sensitivity-v1/execution_design.py": "fbb094bc5b658819d0c0ca5dfc47d285d35ba412",
+    "experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py": "c377ba093a0afa7160997f7279a7fb52f789347e",
+    "experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py": "1ad3829ef518649abf42d6710c125d93670398e6",
+    ".github/workflows/aerosol-vertical-profile-authorization-review.yml": "4932154ea1a3e064796e65e0eb82b8e4b334b61c",
+}
 
 
 class SurfaceRefusal(RuntimeError):
@@ -24,6 +30,13 @@ class SurfaceRefusal(RuntimeError):
 def git_blob_sha1(path: Path) -> str:
     data = path.read_bytes()
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
+def validate_authorization_control_bindings() -> dict[str, str]:
+    actual = {rel: git_blob_sha1(ROOT / rel) for rel in AUTH_CONTROL_BLOBS}
+    if actual != AUTH_CONTROL_BLOBS:
+        raise SurfaceRefusal(f"authorization-control byte drift: expected={AUTH_CONTROL_BLOBS} actual={actual}")
+    return actual
 
 
 def load_bound(name: str, path: Path, expected_blob: str):
@@ -55,6 +68,7 @@ def _failed_history_must_be_absent(payload: dict[str, Any], ordinal: int) -> dic
 
 
 def _modules():
+    validate_authorization_control_bindings()
     freshness = load_bound("avps_freshness_for_control", HERE / "freshness.py", LOCAL_FRESHNESS_BLOB)
     control = load_bound("avps_bound_aops_control_surface", AOPS_DIR / "control_surface.py", AOPS_CONTROL_BLOB)
     ordinal = load_bound("avps_bound_aops_global_ordinal", AOPS_DIR / "global_ordinal.py", AOPS_GLOBAL_ORDINAL_BLOB)

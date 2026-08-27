@@ -11,7 +11,9 @@ STAGE = ROOT / "experiments/aerosol-vertical-profile-sensitivity-v1"
 DESIGN_PATH = STAGE / "execution_design.py"
 GUARD_PATH = STAGE / "authorization_guard.py"
 BUILDER_PATH = STAGE / "build_authorization.py"
+SURFACE_PATH = STAGE / "preauthorization_surface.py"
 WORKFLOW = ROOT / ".github/workflows/aerosol-vertical-profile-authorization-review.yml"
+CONTROL_WORKFLOW = ROOT / ".github/workflows/aerosol-vertical-profile-authorization-control-review.yml"
 PREAUTH_WORKFLOW = ROOT / ".github/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml"
 SEED_CANONICAL = "a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e"
 ROWS_CANONICAL = "f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683"
@@ -196,8 +198,20 @@ class AerosolVerticalProfileAuthorizationControlCurrentV1Tests(unittest.TestCase
         with self.assertRaises(guard.AuthorizationRefusal):
             guard.review(auth, bad, ROOT, report, proof, **kwargs)
 
-    def test_workflows_keep_zero_runtime_and_invalidate_preauthorization_on_control_drift(self) -> None:
+    def test_authorization_control_bytes_are_bound_into_watched_preauthorization_surface(self) -> None:
+        surface = load("avps_surface_binding_test", SURFACE_PATH)
+        actual = surface.validate_authorization_control_bindings()
+        self.assertEqual(actual, surface.AUTH_CONTROL_BLOBS)
+        self.assertEqual(len(actual), 4)
+        self.assertIn("experiments/aerosol-vertical-profile-sensitivity-v1/execution_design.py", actual)
+        self.assertIn("experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py", actual)
+        self.assertIn("experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py", actual)
+        self.assertIn(".github/workflows/aerosol-vertical-profile-authorization-review.yml", actual)
+        self.assertIn("experiments/aerosol-vertical-profile-sensitivity-v1/preauthorization_surface.py", PREAUTH_WORKFLOW.read_text())
+
+    def test_workflows_remain_zero_runtime_and_control_review_covers_binding_inputs(self) -> None:
         text = WORKFLOW.read_text()
+        control = CONTROL_WORKFLOW.read_text()
         for required in (
             "types: [opened]", "test \"$GITHUB_RUN_ATTEMPT\" = 1",
             "vertical-profile-v1-preauthorization-proof", "authorization-review-evidence",
@@ -206,15 +220,16 @@ class AerosolVerticalProfileAuthorizationControlCurrentV1Tests(unittest.TestCase
             self.assertIn(required, text)
         for forbidden in ("setup-micromamba", "rubin-libradtran", "--allow-execution", "git push ", "workflow_dispatch:", "repository_dispatch:"):
             self.assertNotIn(forbidden, text)
-        pre = PREAUTH_WORKFLOW.read_text()
+            self.assertNotIn(forbidden, control)
         for path in (
             "experiments/aerosol-vertical-profile-sensitivity-v1/execution_design.py",
             "experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py",
             "experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py",
+            "experiments/aerosol-vertical-profile-sensitivity-v1/preauthorization_surface.py",
             "tests/test_aerosol_vertical_profile_authorization_control_current_v1.py",
             ".github/workflows/aerosol-vertical-profile-authorization-review.yml",
         ):
-            self.assertIn(path, pre)
+            self.assertIn(path, control)
 
 
 if __name__ == "__main__":

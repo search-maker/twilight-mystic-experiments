@@ -13,7 +13,6 @@ MAX_EXCLUSIVE = 2_147_483_647
 SPAN = MAX_EXCLUSIVE - MIN_SEED
 EXECUTION_CANDIDATE_PATH = Path(__file__).resolve().parent / "execution_candidate.py"
 EXECUTION_CANDIDATE_BLOB = "ac77f6f594b74d2b6fa0ece5ad7dcb106e498976"
-LEDGER_PATH = Path(__file__).resolve().parent / "candidate-seed-ledger.v1.json"
 
 
 class Refusal(RuntimeError):
@@ -81,7 +80,7 @@ def build_ledger() -> dict[str, Any]:
     return {
         "schemaVersion": 1,
         "stageId": f"{STAGE_ID}-candidate-seeds",
-        "status": "CANDIDATE_ONLY_NOT_APPLIED_NOT_AUTHORIZED",
+        "status": "CANDIDATE_ONLY_ARTIFACT_ONLY_NOT_APPLIED_NOT_AUTHORIZED",
         "namespace": NAMESPACE,
         "derivation": "seed=(uint64_be(SHA256(namespace|groupId|counter)[0:8]) % (MAX_EXCLUSIVE-MIN_SEED)) + MIN_SEED; increment counter only for within-ledger collision",
         "scannerCompatibility": {
@@ -100,7 +99,7 @@ def build_ledger() -> dict[str, Any]:
         "allCollisionCountersZero": all(row["collisionCounter"] == 0 for row in rows),
         "candidateSeedCanonicalSha256": canonical_sha256(seeds),
         "candidateRowsCanonicalSha256": canonical_sha256(rows),
-        "appliedToCaseSkeletons": False,
+        "trackedCandidateSeedLedger": False,
         "candidateSeedFreshnessProven": False,
         "scientificOrdinalAllocated": False,
         "authorizationPermitted": False,
@@ -110,20 +109,23 @@ def build_ledger() -> dict[str, Any]:
 
 
 def validate_ledger() -> dict[str, Any]:
-    ledger = json.loads(LEDGER_PATH.read_text())
-    expected = build_ledger()
-    if ledger != expected:
-        raise Refusal("candidate seed ledger differs from deterministic frozen derivation")
+    """Rebuild the artifact-only candidate ledger from the frozen group universe."""
+    ledger = build_ledger()
+    if ledger["candidateSeedCount"] != 72 or len(set(ledger["candidateSeeds"])) != 72:
+        raise Refusal("candidate ledger cardinality/uniqueness drift")
+    if not ledger["allCollisionCountersZero"]:
+        raise Refusal("within-ledger seed collision required a nonzero counter")
     return ledger
 
 
 if __name__ == "__main__":
     value = validate_ledger()
     print(json.dumps({
-        "status": "PASS_VERTICAL_PROFILE_CANDIDATE_LEDGER_DETERMINISTIC_NOT_AUTHORIZED",
+        "status": "PASS_VERTICAL_PROFILE_CANDIDATE_LEDGER_DETERMINISTIC_ARTIFACT_ONLY_NOT_AUTHORIZED",
         "candidateSeedCount": value["candidateSeedCount"],
         "candidateSeedCanonicalSha256": value["candidateSeedCanonicalSha256"],
         "candidateRowsCanonicalSha256": value["candidateRowsCanonicalSha256"],
         "allCollisionCountersZero": value["allCollisionCountersZero"],
+        "trackedCandidateSeedLedger": value["trackedCandidateSeedLedger"],
         "candidateSeedFreshnessProven": value["candidateSeedFreshnessProven"],
     }, sort_keys=True))

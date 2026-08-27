@@ -1,0 +1,238 @@
+name: OPAC custom tau composition capability v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/opac-custom-tau-composition-capability-v1/**'
+      - '.github/workflows/opac-custom-tau-composition-capability-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-capability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      EXPECTED_ARCHIVE_SHA256: 11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e
+      EXPECTED_ARCHIVE_SIZE: '743391266'
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      EXPECTED_STAGED_DATA_SHA256: 5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Enforce review-only first attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-custom-tau-capability-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact base runtime without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p capability-audit
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output capability-audit/base-runtime-report.json
+          python - <<'PY'
+          import json, os
+          x=json.load(open('capability-audit/base-runtime-report.json'))
+          assert x['scientificSolverExecuted'] is False
+          assert x['syntaxCheckExecuted'] is False
+          assert x['uvspecSha256'] == os.environ['EXPECTED_UVSPEC_SHA256']
+          assert x['libRadtranDataTreeSha256'] == os.environ['EXPECTED_BASE_DATA_SHA256']
+          PY
+
+      - name: Reconstruct exact staged OPAC data tree
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/capability-runtime/share/libRadtran"
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" "$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data"
+          curl --location --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors --retry-delay 10 \
+            --connect-timeout 30 --max-time 2700 \
+            --user-agent 'twilight-mystic-experiments opac-custom-tau-capability/1.0' \
+            --output capability-audit/optprop_v2.1.tar.gz "$SOURCE_URL"
+          python - <<'PY'
+          import hashlib, os, tarfile
+          from pathlib import Path, PurePosixPath
+          archive=Path('capability-audit/optprop_v2.1.tar.gz')
+          root=Path(os.environ['GITHUB_WORKSPACE'])/'capability-runtime/share/libRadtran'
+          h=hashlib.sha256(archive.read_bytes()).hexdigest()
+          if archive.stat().st_size != int(os.environ['EXPECTED_ARCHIVE_SIZE']): raise SystemExit('archive size drift')
+          if h != os.environ['EXPECTED_ARCHIVE_SHA256']: raise SystemExit('archive SHA drift')
+          with tarfile.open(archive,'r:gz') as tf:
+              members=tf.getmembers()
+              if len(members) != 28: raise SystemExit(f'archive member-count drift: {len(members)}')
+              for m in members:
+                  p=PurePosixPath(m.name)
+                  if not m.isfile() or p.is_absolute() or '..' in p.parts or not p.parts or p.parts[0] != 'data':
+                      raise SystemExit(f'unsafe archive member: {m.name}')
+                  dest=root.joinpath(*p.parts)
+                  if dest.exists(): raise SystemExit(f'overlay collision: {m.name}')
+              for m in members:
+                  p=PurePosixPath(m.name); dest=root.joinpath(*p.parts); dest.parent.mkdir(parents=True,exist_ok=True)
+                  src=tf.extractfile(m)
+                  if src is None: raise SystemExit(f'cannot stream {m.name}')
+                  with dest.open('xb') as out:
+                      while True:
+                          block=src.read(1024*1024)
+                          if not block: break
+                          out.write(block)
+          PY
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data" \
+            --atmosphere "$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output capability-audit/staged-runtime-report.json
+          python - <<'PY'
+          import json, os
+          x=json.load(open('capability-audit/staged-runtime-report.json'))
+          assert x['scientificSolverExecuted'] is False
+          assert x['syntaxCheckExecuted'] is False
+          assert x['uvspecSha256'] == os.environ['EXPECTED_UVSPEC_SHA256']
+          assert x['libRadtranDataTreeSha256'] == os.environ['EXPECTED_STAGED_DATA_SHA256']
+          PY
+          rm capability-audit/optprop_v2.1.tar.gz
+
+      - name: Build custom tau on exact AFGL levels using merged transport foundation
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+          root=Path(os.environ['GITHUB_WORKSPACE'])
+          data=root/'capability-runtime/share/libRadtran/data'
+          atmosphere=data/'atmmod/afglus.dat'
+          module_path=root/'review/aerosol-vertical-profile-transport-v1/profile_transport.py'
+          spec=importlib.util.spec_from_file_location('profile_transport',module_path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import merged profile transport')
+          pt=importlib.util.module_from_spec(spec); sys.modules[spec.name]=pt; spec.loader.exec_module(pt)
+          levels=[]
+          for line in atmosphere.read_text().splitlines():
+              s=line.strip()
+              if not s or s.startswith('#'): continue
+              levels.append(float(s.split()[0]))
+          if len(levels)<2 or any(levels[i] <= levels[i+1] for i in range(len(levels)-1)):
+              raise SystemExit('AFGL altitude grid drift')
+          edges_m=[z*1000.0 for z in reversed(levels)]
+          bottom, top=edges_m[0], edges_m[-1]
+          middle=min(bottom+2000.0, (bottom+top)/2.0)
+          remapped=pt.remap_normalized_vertical_shape(
+              [bottom,middle,top],[1.0,0.2,0.001],edges_m,
+              outside_below_policy='reject',outside_above_policy='reject',
+              source_identity={'purpose':'syntax-capability-only','scientificInterpretation':False},
+          )
+          text=pt.render_libradtran_aerosol_tau(remapped,header='synthetic syntax-only OPAC composition capability profile')
+          out=root/'capability-audit/custom-tau.dat'; out.write_text(text)
+          rows=[line for line in text.splitlines() if line and not line.startswith('#')]
+          vals=[float(line.split()[1]) for line in rows]
+          if abs(sum(vals)-1.0)>1e-12 or vals[0] != 0.0:
+              raise SystemExit('tau normalization/lower-bound convention drift')
+          (root/'capability-audit/custom-tau-meta.json').write_text(json.dumps(remapped.as_dict(),indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Execute exactly one uvspec syntax check for combined OPAC plus custom tau
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          DATA="$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data"
+          TAU="$GITHUB_WORKSPACE/capability-audit/custom-tau.dat"
+          cat > capability-audit/case.inp <<EOF
+          data_files_path $DATA/
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar
+          wavelength 380 780
+          albedo 0.15
+          sza 96
+          aerosol_default
+          aerosol_species_library OPAC
+          aerosol_species_file continental_average
+          aerosol_file tau $TAU
+          aerosol_set_tau_at_wvl 550 0.10
+          rte_solver disort
+          number_of_streams 8
+          output_user lambda edir edn eup
+          quiet
+          EOF
+          python - <<'PY'
+          from pathlib import Path
+          lines=[x.strip() for x in Path('capability-audit/case.inp').read_text().splitlines() if x.strip()]
+          expected=[
+              'aerosol_default',
+              'aerosol_species_library OPAC',
+              'aerosol_species_file continental_average',
+          ]
+          aerosol=[x for x in lines if x.startswith('aerosol_')]
+          if aerosol[:3] != expected: raise SystemExit(f'aerosol directive order drift: {aerosol}')
+          if sum(x.startswith('aerosol_file tau ') for x in aerosol) != 1: raise SystemExit('custom tau directive count drift')
+          if aerosol[-1] != 'aerosol_set_tau_at_wvl 550 0.10': raise SystemExit('AOD normalization must be last aerosol directive')
+          PY
+          set +e
+          timeout 120 "$(command -v uvspec)" -c < capability-audit/case.inp > capability-audit/syntax-stdout.txt 2> capability-audit/syntax-stderr.txt
+          status=$?
+          set -e
+          test "$status" = "0"
+
+      - name: Freeze capability report
+        if: always()
+        shell: micromamba-shell {0}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path('capability-audit')
+          stdout=(root/'syntax-stdout.txt').read_text() if (root/'syntax-stdout.txt').exists() else ''
+          stderr=(root/'syntax-stderr.txt').read_text() if (root/'syntax-stderr.txt').exists() else ''
+          case=(root/'case.inp').read_text() if (root/'case.inp').exists() else ''
+          report={
+              'schemaVersion':1,
+              'stageId':'opac-custom-tau-composition-capability-v1',
+              'application':'libRadtran syntax capability only',
+              'uvspecCommand':['uvspec','-c'],
+              'caseInputSha256':hashlib.sha256(case.encode()).hexdigest() if case else None,
+              'stdoutSha256':hashlib.sha256(stdout.encode()).hexdigest(),
+              'stderrSha256':hashlib.sha256(stderr.encode()).hexdigest(),
+              'scientificSolverExecuted':False,
+              'mysticExecuted':False,
+              'scientificOrdinalAllocated':False,
+              'profileScientificInterpretation':False,
+              'productionAuthorized':False,
+          }
+          (root/'capability-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload capability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opac-custom-tau-composition-capability-v1
+          path: capability-audit
+          retention-days: 14
+
+      - name: Claim boundary
+        run: |
+          echo 'uvspec -c syntax capability only.'
+          echo 'No MYSTIC/scientific solver, no profile selection, no fitting, no science ordinal, no production authorization.'

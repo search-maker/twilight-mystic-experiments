@@ -1,0 +1,232 @@
+name: Jerusalem Tammuz direct-MYSTIC v2 package no-solver validation
+
+on:
+  push:
+    branches:
+      - 'review/jerusalem-tammuz-direct-mystic-v2-package-v1'
+    paths:
+      - '.github/workflows/jerusalem-tammuz-direct-mystic-v2-*.yml'
+      - 'experiments/jerusalem-tammuz-direct-mystic-v1/**'
+      - 'experiments/jerusalem-tammuz-direct-mystic-v2/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-no-uvspec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
+      PACKAGE: experiments/jerusalem-tammuz-direct-mystic-v2
+      AUTHORIZATION: experiments/jerusalem-tammuz-direct-mystic-v2/authorization.scientific.json
+      LANE_PREREG: experiments/jerusalem-tammuz-direct-mystic-v2/lane.preregistration.json
+      PROPOSAL: experiments/jerusalem-tammuz-direct-mystic-v1/manifest.proposal.json
+      EVIDENCE: experiments/jerusalem-tammuz-direct-mystic-v1/level-b-event-evidence.json
+      ANALYSIS_CONTRACT: experiments/jerusalem-tammuz-direct-mystic-v1/analysis-contract.json
+      PROPOSAL_ADAPTER: experiments/mystic-batch-v1/cross_geometry_adapter.py
+      EXECUTION_ADAPTER: experiments/jerusalem-tammuz-direct-mystic-v1/execution_adapter.py
+      EXECUTION_WORKFLOW: .github/workflows/jerusalem-tammuz-direct-mystic-v2-execution.yml
+      RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+      PLAN: experiments/jerusalem-tammuz-direct-mystic-v2/execution_plan.py
+      ANALYSIS_DRIVER: experiments/jerusalem-tammuz-direct-mystic-v1/analyze_direct_sky.py
+      VISIBILITY_HELPER: experiments/jerusalem-tammuz-direct-mystic-v1/compute_sky_only_visibility.mjs
+      DERIVED_CHANNELS: experiments/aerosol-family-challenge-v2/derived_channels.py
+      HUMAN_THRESHOLD: scientific-tools/visibility-v3/human-threshold.mjs
+      EXECUTOR: experiments/mystic-batch-v1/scientific_case_executor.py
+      AGGREGATE: experiments/mystic-batch-v1/scientific_aggregate.py
+      AUDIT: experiments/mystic-batch-v1/scientific_audit.py
+      AUTHORIZATION_PROPOSAL_BUILDER: experiments/jerusalem-tammuz-direct-mystic-v2/authorization_proposal.py
+      EXPECTED_EXECUTION_KEY: jerusalem-tammuz-direct-mystic-v2:diagnostic:1
+      EXPECTED_AUTHORIZATION_ORDINAL: '1'
+    steps:
+      - name: Check out exact package head with full ancestry
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require read-only application credential
+        env:
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Check out exact frozen starsvisibility application
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+
+      - name: Prove no libRadtran executable is present before validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v uvspec >/dev/null 2>&1; then
+            echo 'Unexpected uvspec before no-solver package validation' >&2
+            exit 1
+          fi
+          echo 'NO_UVSPEC_BEFORE_VALIDATION=PASS'
+
+      - name: Static syntax and frozen-boundary checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p validation-output
+          python -m py_compile "$PACKAGE/authorization_proposal.py" "$PACKAGE/execution_guard.py" "$PACKAGE/execution_plan.py" "$EXECUTION_ADAPTER" "$ANALYSIS_DRIVER"
+          node --check "$VISIBILITY_HELPER"
+          test "$(git -C app rev-parse HEAD)" = "$APPLICATION_SHA"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          auth=json.loads(Path(os.environ['AUTHORIZATION']).read_text())
+          lane=json.loads(Path(os.environ['LANE_PREREG']).read_text())
+          proposal=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          evidence=json.loads(Path(os.environ['EVIDENCE']).read_text())
+          analysis=json.loads(Path(os.environ['ANALYSIS_CONTRACT']).read_text())
+          workflow=Path(os.environ['EXECUTION_WORKFLOW']).read_text()
+          assert auth['authorized'] is False
+          assert auth['scientificExecution'] is False
+          assert auth['scientificDiagnostic'] is False
+          assert auth['authorizationOrdinal']==0
+          assert auth['executionKey'] is None
+          assert auth['consumed'] is False
+          assert auth['exactAuthorizationParentCommit'] is None
+          assert auth['exactAuthorizationCommit'] is None
+          assert lane['laneId']=='jerusalem-tammuz-direct-mystic-v2'
+          assert lane['status']=='PREREGISTERED_NO_EXECUTION'
+          assert lane['futureAuthorization']['executionKey']==os.environ['EXPECTED_EXECUTION_KEY']
+          assert lane['futureAuthorization']['authorizationOrdinal']==1
+          assert lane['futureAuthorization']['retryAllowed'] is False
+          assert lane['futureAuthorization']['resumeAllowed'] is False
+          assert lane['futureAuthorization']['rerunAllowed'] is False
+          source=lane['sourceScientificPayload']
+          assert source['applicationSha']==os.environ['APPLICATION_SHA']
+          assert source['sourceEvidenceRunId']==33025015603
+          assert source['sourceEvidenceArtifactId']==9628151845
+          assert source['sourceEvidenceArtifactDigest']=='sha256:42ed5920f88428c768bc25f7203de7ea48173fe541f857f9fedcc42efaec1008'
+          assert source['catalogBasis']=='LIVE_DATE_TRANSFORMED_LEVEL_B_DIRECT_CATALOG_HANDOFF'
+          assert source['caseCount']==12 and source['configuredPhotonHistoriesSum']==240_000_000
+          assert source['fieldFactorBaseline']==3.14 and source['aod550']==0.18 and source['observerElevationM']==800
+          assert proposal['batchId']=='jerusalem-tammuz-three-star-direct-mystic-v1'
+          assert proposal['proposalOnly'] is True and proposal['scientificExecution'] is False
+          assert proposal['preregisteredEvent']['threeStarSemantics']['fieldFactorBaseline']==3.14
+          assert proposal['preregisteredEvent']['atmosphere']['aod550']==0.18
+          assert len(proposal['geometries'])==3 and len(proposal['cases'])==12
+          assert sum(c['photonHistories'] for c in proposal['cases'])==240_000_000
+          assert evidence['source']['transformedCatalogCount']==7653
+          assert evidence['source']['rawCatalogCount']==9090
+          assert {s['catalogId'] for s in evidence['stars']}=={'HR 5191','HR 4905','HR 3982'}
+          assert analysis['analysisId']=='jerusalem-tammuz-direct-mystic-level-b-comparison-v1'
+          assert analysis['scientificExecution'] is False
+          assert analysis['skyOnlyVisibilitySubstitution']['fieldFactor']==3.14
+          assert analysis['levelBComparison']['rawCatalogReconstructionAllowed'] is False
+          assert analysis['levelBComparison']['fullSpectrumLevelBValidationClaimAllowed'] is False
+          run_line=next(line for line in workflow.splitlines() if line.startswith('run-name: '))
+          assert run_line.startswith('run-name: MYSTIC batch v1 | key=')
+          assert 'inputs.execution_key' in run_line and 'inputs.authorization_ref' in run_line and 'inputs.authorization_ordinal' in run_line
+          assert workflow.count('fetch-depth: 0') >= 4
+          assert 'workflow_dispatch:' in workflow
+          assert 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1' in workflow
+          print('TAMMUZ_V2_STATIC_BOUNDARY_PASS')
+          PY
+
+      - name: Build hash-bound authorization proposal only
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python "$AUTHORIZATION_PROPOSAL_BUILDER" --repository-root . --application-root app --output validation-output/authorization-proposal.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          a=p['proposedAuthorization']
+          assert p['status']=='TAMMUZ_V2_PROPOSAL_ONLY_NOT_AUTHORIZATION'
+          assert p['executionAuthorizedByProposal'] is False
+          assert a['authorized'] is True and a['scientificExecution'] is True and a['scientificDiagnostic'] is True
+          assert a['scientificPurpose']=='jerusalem-tammuz-direct-mystic-v2'
+          assert a['laneId']=='jerusalem-tammuz-direct-mystic-v2'
+          assert a['executionKey']==os.environ['EXPECTED_EXECUTION_KEY']
+          assert a['authorizationOrdinal']==1
+          assert a['batchId']=='jerusalem-tammuz-three-star-direct-mystic-v1'
+          assert a['requiredSmokeRunId']==33011713466
+          assert a['requiredSmokeAuditArtifactId']==9622825000
+          assert a['exactAuthorizationParentCommit']==os.popen('git rev-parse HEAD').read().strip()
+          assert a['exactAuthorizationCommit'] is None
+          for k in ('proposalRawSha256','levelBEvidenceRawSha256','analysisContractRawSha256','executionAdapterRawSha256','executionWorkflowRawSha256','runtimeLockRawSha256','planRawSha256','analysisDriverRawSha256','visibilityHelperRawSha256','authorizationProposalBuilderRawSha256','lanePreregistrationRawSha256','v2ExecutionGuardRawSha256'):
+              assert isinstance(a[k],str) and len(a[k])==64
+          print('TAMMUZ_V2_AUTHORIZATION_PROPOSAL_PASS')
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git diff --name-only)"
+
+      - name: Simulate one-purpose authorization locally and validate guard plus exact plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          python - <<'PY'
+          import json, os
+          p=json.load(open('validation-output/authorization-proposal.json'))
+          with open(os.environ['AUTHORIZATION'],'w') as f:
+              json.dump(p['proposedAuthorization'],f,indent=2,sort_keys=True); f.write('\n')
+          PY
+          test "$(git diff --name-only)" = "$AUTHORIZATION"
+          git config user.name 'tammuz-v2-package-validation'
+          git config user.email 'tammuz-v2-package-validation@invalid.local'
+          git add "$AUTHORIZATION"
+          git commit -m 'LOCAL TEST ONLY - Tammuz v2 authorization'
+          TEST_AUTH_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$AUTHORIZATION"
+          env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch GITHUB_RUN_ATTEMPT=1 \
+            python "$PACKAGE/execution_guard.py" \
+            --repository-root . --application-root app --application-sha "$APPLICATION_SHA" \
+            --authorization "$AUTHORIZATION" --proposal "$PROPOSAL" --evidence "$EVIDENCE" --analysis-contract "$ANALYSIS_CONTRACT" \
+            --proposal-adapter "$PROPOSAL_ADAPTER" --execution-adapter "$EXECUTION_ADAPTER" --execution-workflow "$EXECUTION_WORKFLOW" \
+            --runtime-lock "$RUNTIME_LOCK" --plan "$PLAN" --analysis-driver "$ANALYSIS_DRIVER" --visibility-helper "$VISIBILITY_HELPER" \
+            --derived-channels "$DERIVED_CHANNELS" --human-threshold "$HUMAN_THRESHOLD" --executor "$EXECUTOR" --aggregate "$AGGREGATE" \
+            --audit "$AUDIT" --authorization-proposal-builder "$AUTHORIZATION_PROPOSAL_BUILDER" --authorization-ref "$TEST_AUTH_SHA" \
+            --execution-key "$EXPECTED_EXECUTION_KEY" --authorization-ordinal "$EXPECTED_AUTHORIZATION_ORDINAL" --output validation-output/guard-report.json
+          python "$PLAN" --proposal "$PROPOSAL" --guard-report validation-output/guard-report.json --output validation-output/plan.json
+          python - <<'PY'
+          import json
+          g=json.load(open('validation-output/guard-report.json'))
+          p=json.load(open('validation-output/plan.json'))
+          assert g['status']=='AUTHORIZED_TAMMUZ_V2_AFTER_FORMAL_SMOKE_PASS'
+          assert g['caseCount']==12 and g['configuredMcPhotonsSum']==240_000_000
+          assert g['requiredSmokeRunId']==33011713466 and g['requiredSmokeAuditArtifactId']==9622825000
+          assert p['caseCount']==12 and p['configuredMcPhotonsSum']==240_000_000
+          assert len(p['matrix']['include'])==12
+          assert {x['group_id'] for x in p['matrix']['include']}=={'tammuz-alkaid-hr5191','tammuz-alioth-hr4905','tammuz-regulus-hr3982'}
+          assert sorted(x['method'] for x in p['matrix']['include'])==['alis']*6+['reference-vroom']*6
+          print('TAMMUZ_V2_GUARD_AND_PLAN_PASS_NO_SOLVER')
+          PY
+
+      - name: Prove no syntax or MYSTIC solver executable was invoked
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v uvspec >/dev/null 2>&1; then
+            echo 'Unexpected uvspec after no-solver package validation' >&2
+            exit 1
+          fi
+          test ! -e case-output
+          test ! -e aggregate-output
+          test ! -e audit-output
+          echo 'NO_UVSPEC_NO_MYSTIC_EXECUTION=PASS'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-tammuz-direct-mystic-v2-package-validation-${{ github.run_id }}
+          path: validation-output
+          if-no-files-found: warn
+          retention-days: 90

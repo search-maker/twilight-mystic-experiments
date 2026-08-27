@@ -25,7 +25,7 @@ concurrency:
 jobs:
   diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout exact diagnostic dispatch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -49,23 +49,27 @@ jobs:
           import json,os,subprocess
           d=json.load(open(os.environ['DISPATCH_PATH'],encoding='utf-8'))
           parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          eps=[1.0,0.5,0.1,0.05,0.03,0.025,0.0225,0.021,0.0205,0.0200,0.0198,0.01975,0.0195,0.0190,0.018,0.015,0.010,0.001,0.0001]
           expected={
-            'schemaVersion':1,
+            'schemaVersion':2,
             'stageId':'native-stellar-zenith-v3-epsilon-convergence-v1',
             'status':'AUTHORIZED_TRAINING_ONLY_NUMERICAL_DIAGNOSTIC',
             'baseMainSha':parent,
             'diagnosticOfRunId':33033742217,
             'exact90DiagnosticRunId':33034345605,
+            'sza0p001RecoveryFailureRunId':33035467761,
             'knownExact90Stderr':'Error,  Does not work for umu0=1.0',
-            'sourceZenithAngleDeg':[1.0,0.5,0.1,0.01,0.001,0.0001],
+            'sourceZenithAngleDeg':eps,
             'atmosphereCorners':[{'observerElevationM':0.0,'aod550':0.05},{'observerElevationM':0.0,'aod550':0.4},{'observerElevationM':2500.0,'aod550':0.05},{'observerElevationM':2500.0,'aod550':0.4}],
-            'solverInvocationCountAuthorized':24,
+            'solverInvocationCountAuthorized':76,
+            'endpointRefusalIsRecordedNotFatal':True,
             'protectedHoldoutOpeningAuthorized':False,
             'modelFitAuthorized':False,
             'canonicalEpsilonSelectionAuthorized':False,
             'acceptanceGateEvaluationAuthorized':False,
             'productionAuthorized':False,
             'githubRerunPermitted':False,
+            'solverRetryPermitted':False,
           }
           for k,v in expected.items():
             if d.get(k)!=v: raise SystemExit(f'diagnostic dispatch mismatch {k}: {d.get(k)!r} != {v!r}')
@@ -120,7 +124,7 @@ jobs:
           echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
           echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
 
-      - name: Run 24 training-only near-zenith numerical cases
+      - name: Run 76 training-only near-zenith numerical cases once
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
@@ -136,27 +140,45 @@ jobs:
             --johnson-v review/asiv-matched-stellar-transport-v1/frozen-assets/johnson-v-1nm.json \
             --output-dir diagnostic-output
 
-      - name: Verify diagnostic scope only
+      - name: Verify diagnostic completeness without selecting epsilon
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           d=json.load(open('diagnostic-output/epsilon-convergence-summary.json'))
+          if d.get('schemaVersion')!=2: raise SystemExit('summary schema drift')
           if d.get('status')!='TRAINING_ONLY_NUMERICAL_CONVERGENCE_DIAGNOSTIC_COMPLETE': raise SystemExit('diagnostic incomplete')
-          if d.get('solverInvocationCount')!=24: raise SystemExit('solver count drift')
-          if d.get('wavelengthNodeCountPerCase')!=401: raise SystemExit('wavelength-grid drift')
+          if d.get('solverInvocationCount')!=76: raise SystemExit('solver count drift')
+          if d.get('solverUsableCaseCount',0)<=0: raise SystemExit('no usable near-zenith cases')
+          if d.get('solverRejectedCaseCount',0)<=0: raise SystemExit('expected endpoint refusals were not observed')
+          if d.get('solverUsableCaseCount')+d.get('solverRejectedCaseCount')!=76: raise SystemExit('case classification count drift')
+          if d.get('usableWavelengthNodeCountPerCase')!=401: raise SystemExit('usable wavelength-grid drift')
+          if d.get('smallestSourceZenithAngleValidAcrossAllCornersDeg') is None: raise SystemExit('all-corner valid epsilon boundary missing')
+          if d.get('largestSourceZenithAngleRejectedByAnyCornerDeg') is None: raise SystemExit('rejected epsilon boundary missing')
+          if d.get('solverUsabilityMonotonicTowardZenithAcrossAllCorners') is not True: raise SystemExit('solver endpoint behavior is non-monotonic')
+          groups=d.get('groups',[])
+          if len(groups)!=4: raise SystemExit('atmosphere-corner count drift')
+          if not all(g.get('usableCaseCount',0)>0 and g.get('rejectedCaseCount',0)>0 for g in groups): raise SystemExit('every corner must bracket usable/rejected solver behavior')
           c=d.get('claimBoundary',{})
-          for key in ('protectedHoldoutOpened','modelFitPerformed','canonicalEpsilonSelected','acceptanceGateEvaluated','productionAuthorized'):
+          for key in ('protectedHoldoutOpened','modelFitPerformed','canonicalEpsilonSelected','acceptanceGateEvaluated','productionAuthorized','empiricalRealSkyValidated','humanFirstSeeingValidated'):
             if c.get(key) is not False: raise SystemExit(f'claim boundary drift: {key}')
-          print(json.dumps({'status':d['status'],'solverInvocationCount':d['solverInvocationCount'],'groups':d['groups']},sort_keys=True))
+          print(json.dumps({
+            'status':d['status'],
+            'solverInvocationCount':d['solverInvocationCount'],
+            'solverUsableCaseCount':d['solverUsableCaseCount'],
+            'solverRejectedCaseCount':d['solverRejectedCaseCount'],
+            'smallestSourceZenithAngleValidAcrossAllCornersDeg':d['smallestSourceZenithAngleValidAcrossAllCornersDeg'],
+            'largestSourceZenithAngleRejectedByAnyCornerDeg':d['largestSourceZenithAngleRejectedByAnyCornerDeg'],
+            'groups':groups,
+          },sort_keys=True))
           PY
 
       - name: Publish raw and summarized diagnostic evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: native-stellar-zenith-v3-epsilon-convergence-v1
+          name: native-stellar-zenith-v3-epsilon-convergence-v1-${{ github.run_id }}
           path: diagnostic-output/
           if-no-files-found: warn
           retention-days: 90

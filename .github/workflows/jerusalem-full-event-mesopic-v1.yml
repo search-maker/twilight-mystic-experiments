@@ -1,0 +1,130 @@
+name: Jerusalem full-event mesopic sensitivity v1
+
+on:
+  push:
+    branches:
+      - review/jerusalem-exact-event-mesopic-v1
+    paths:
+      - 'review/jerusalem-full-event-mesopic-v1/run.mjs'
+      - '.github/workflows/jerusalem-full-event-mesopic-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case_id: [tishrei, tammuz]
+    env:
+      APPLICATION_SHA: 80110c8cb4575c7be3c91b4817be5126c40b2b15
+      MESOPIC_SHA: c1de484b9dfe5e91f569be02debea3c214d67d11
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+      CASE_ID: ${{ matrix.case_id }}
+
+    steps:
+      - name: Check out diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+
+      - name: Check out exact current application snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out exact mesopic review source
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.MESOPIC_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: mesopic-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install exact application tooling
+        working-directory: app
+        run: npm ci
+
+      - name: Build exact application and bind mesopic source
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm run build:pages
+          grep -q 'LEVEL-B-THREE-STAR-DIRECT-CATALOG-HANDOFF-V3' dist/work-in-progress/index.html
+          grep -q 'LEVEL-B-THREE-STAR-CATALOG-ONLY-WORKER-BYPASS-V1' dist/work-in-progress/index.html
+          grep -q 'fieldFactor: 3.14' scientific-tools/visibility-v3/level-b-current-main-adapter.mjs
+          mkdir -p dist/scientific-tools/visibility-v3/review
+          cp ../mesopic-source/scientific-tools/visibility-v3/review/mesopic-star-sky-sensitivity-v1.mjs dist/scientific-tools/visibility-v3/review/
+
+      - name: Instrument date-transformed catalog snapshot only
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='dist/work-in-progress/index.html';
+          let s=fs.readFileSync(p,'utf8');
+          const needle='globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows;';
+          const count=s.split(needle).length-1;
+          if(count!==1) throw new Error(`instrumentation anchor count ${count}`);
+          s=s.replace(needle,needle+'\n          globalThis.__DIAG_LEVEL_B_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows.map(row => ({ ...row }));');
+          fs.writeFileSync(p,s);
+          NODE
+
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Run full-catalog CIE MES2 sensitivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp review/jerusalem-full-event-mesopic-v1/run.mjs app/full-event-mesopic.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/mesopic-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node full-event-mesopic.mjs
+
+      - name: Assert no direct MYSTIC solver execution
+        shell: bash
+        run: |
+          test ! -e "$RUNNER_TEMP/jerusalem-full-event-mesopic/uvspec.log"
+          test ! -e "$RUNNER_TEMP/jerusalem-full-event-mesopic/mc.rad.spc"
+          echo NO_MYSTIC_SOLVER_EXECUTION
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jerusalem-full-event-mesopic-${{ matrix.case_id }}
+          path: ${{ runner.temp }}/jerusalem-full-event-mesopic/${{ matrix.case_id }}.json
+          if-no-files-found: warn
+          retention-days: 90

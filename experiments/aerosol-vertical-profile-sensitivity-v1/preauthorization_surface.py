@@ -17,7 +17,7 @@ AUTHORIZATION_PATH = f"experiments/{STAGE}/authorization.json"
 CASE_ARTIFACT_PREFIX = "avps-v1-case-"
 AUTH_CONTROL_BLOBS = {
     "experiments/aerosol-vertical-profile-sensitivity-v1/execution_design.py": "fbb094bc5b658819d0c0ca5dfc47d285d35ba412",
-    "experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py": "c377ba093a0afa7160997f7279a7fb52f789347e",
+    "experiments/aerosol-vertical-profile-sensitivity-v1/authorization_guard.py": "49261f7c2796ef44a72b792531dcade45d2f519f",
     "experiments/aerosol-vertical-profile-sensitivity-v1/build_authorization.py": "1ad3829ef518649abf42d6710c125d93670398e6",
     ".github/workflows/aerosol-vertical-profile-authorization-review.yml": "4932154ea1a3e064796e65e0eb82b8e4b334b61c",
 }

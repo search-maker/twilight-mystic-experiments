@@ -1,0 +1,309 @@
+name: Aerosol vertical-profile v1 main preauthorization gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/freshness.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/preauthorization_surface.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py'
+      - 'tests/test_aerosol_vertical_profile_preauthorization_gate.py'
+      - '.github/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/freshness.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/preauthorization_surface.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py'
+      - 'tests/test_aerosol_vertical_profile_preauthorization_gate.py'
+      - '.github/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Require solver-free review environment
+        shell: bash
+        run: test -z "$(command -v uvspec || true)"
+      - name: Run preauthorization control tests
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_aerosol_vertical_profile_preauthorization_gate.py' -v
+      - name: Claim boundary
+        run: |
+          echo 'PR review only. No seed recheck, ordinal proposal, authorization, uvspec/MYSTIC or results.'
+
+  preauthorization:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: aerosol-vertical-profile-v1-preauthorization-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout exact candidate main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Prove exact attempt-1 main and zero-runtime surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test ! -e experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-vertical-profile-preauthorization-main-gate.yml').read_text()
+          forbidden=(
+              'setup-'+'micromamba','rubin-'+'libradtran',
+              '--allow-'+'execution','git '+'push ','workflow_'+'dispatch:',
+              'repository_'+'dispatch:','schedule'+':'
+          )
+          found=[item for item in forbidden if item in text]
+          if found:
+              raise SystemExit(f'preauthorization exposed runtime/dispatch transition: {found}')
+          PY
+          test -z "$(command -v uvspec || true)"
+          mkdir -p preauthorization-evidence
+          git ls-files -z > preauthorization-evidence/tracked-files.nul
+
+      - name: Re-run deterministic control tests on exact main
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_aerosol_vertical_profile_preauthorization_gate.py' -v
+
+      - name: Rebuild exact artifact-only candidate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          path=Path('experiments/aerosol-vertical-profile-sensitivity-v1/seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('avps_main_seed_ledger',path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import seed ledger')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          ledger=mod.validate_ledger()
+          assert ledger['candidateSeedCount']==72
+          assert ledger['candidateSeedCanonicalSha256']=='a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e'
+          assert ledger['candidateRowsCanonicalSha256']=='f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683'
+          assert ledger['trackedCandidateSeedLedger'] is False
+          Path('preauthorization-evidence/candidate-seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/empty-self-ledger-policy.json').write_text(json.dumps({
+              'schemaVersion':2,
+              'requiredTrackedSelfLedgerPaths':[],
+              'futureEvidenceSelfLedgerPaths':[],
+          },indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Exact-main tracked-tree candidate-seed scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-vertical-profile-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list preauthorization-evidence/tracked-files.nul \
+            --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json \
+            --allow-self-ledger-json preauthorization-evidence/empty-self-ledger-policy.json \
+            --output preauthorization-evidence/tracked-seed-scan.json
+
+      - name: Authorization-time repository-global candidate-seed recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-vertical-profile-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name main \
+            --expected-repo-head "$GITHUB_SHA" \
+            --output preauthorization-evidence/repository-global-seed-scan.json
+
+      - name: Build exact-main seed authorization proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py \
+            --stage-dir experiments/aerosol-vertical-profile-sensitivity-v1 \
+            --tracked-tree-report preauthorization-evidence/tracked-seed-scan.json \
+            --repository-global-report preauthorization-evidence/repository-global-seed-scan.json \
+            --expected-main-head "$GITHUB_SHA" \
+            --output preauthorization-evidence/seed-authorization-proof.json
+
+      - name: Derive fresh global ordinal proposal and pass preauthorization guard
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          import preauthorization_surface
+
+          payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          latest=preauthorization_surface.latest_consumed_or_dispatched_ordinal(payload)
+          if not isinstance(latest,int) or latest <= 0:
+              raise SystemExit('cannot derive positive latest prior global ordinal')
+          candidate,observations=preauthorization_surface.derive_next_global_ordinal(
+              payload,latest,current_run_id=int(os.environ['GITHUB_RUN_ID'])
+          )
+          surface=preauthorization_surface.build_surface(
+              payload,candidate,current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,
+          )
+          proof=json.loads(Path('preauthorization-evidence/seed-authorization-proof.json').read_text())
+          if proof.get('auditedMainHead') != os.environ['GITHUB_SHA']:
+              raise SystemExit('seed proof not bound to exact current main')
+          if proof.get('status') != 'PASS_CANDIDATE_SEEDS_AUTHORIZATION_RECHECK_NOT_ALLOCATED':
+              raise SystemExit('seed authorization recheck status drift')
+          identity=preauthorization_surface.identity_for(candidate)
+          report={
+              'schemaVersion':1,
+              'stageId':'aerosol-vertical-profile-sensitivity-v1-preauthorization',
+              'status':'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED',
+              'exactMainSha':os.environ['GITHUB_SHA'],
+              'runId':int(os.environ['GITHUB_RUN_ID']),
+              'runAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'latestPriorConsumedScientificOrdinal':surface['latestPriorConsumedScientificOrdinal'],
+              'nextAvailableScientificOrdinal':candidate,
+              'globalOrdinalObservationCount':len(observations),
+              'globalOrdinalMaxObserved':max(int(row['ordinal']) for row in observations),
+              'authorizationBranch':identity['authorizationBranch'],
+              'dispatchBranch':identity['dispatchBranch'],
+              'executionKey':identity['executionKey'],
+              'identityGuardStatus':'AVPS_V1_PREAUTHORIZATION_FRESH_GLOBAL_IDENTITY_NOT_ALLOCATED',
+              'seedProofStatus':proof['status'],
+              'seedAuthorizationProofRawSha256':hashlib.sha256(Path('preauthorization-evidence/seed-authorization-proof.json').read_bytes()).hexdigest(),
+              'candidateSeedCount':proof['candidateSeedCount'],
+              'candidateSeedCanonicalSha256':proof['candidateSeedCanonicalSha256'],
+              'candidateRowsCanonicalSha256':proof['candidateRowsCanonicalSha256'],
+              'trackedTreeExternalCollisionCount':proof['trackedTreeExternalCollisionCount'],
+              'repositoryGlobalCollisionCount':proof['repositoryGlobalCollisionCount'],
+              'repositoryGlobalDoubleEnumerationStable':proof['repositoryGlobalDoubleEnumerationStable'],
+              'priorReviewProofArtifactCount':proof['priorReviewProofArtifactCount'],
+              'scientificOrdinalAllocated':False,
+              'authorizationCreated':False,
+              'dispatchCreated':False,
+              'candidateSeedsAppliedToCases':False,
+              'scientificRuntimeSetupPerformed':False,
+              'scientificExecutionPerformed':False,
+              'solverExecutionPerformed':False,
+              'resultOpeningPerformed':False,
+              'githubRerunAllowed':False,
+              'retryAllowed':False,
+              'resumeAllowed':False,
+          }
+          report['reportSha256']=hashlib.sha256(
+              json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          ).hexdigest()
+          Path('preauthorization-evidence/global-ordinal-observations.json').write_text(json.dumps(observations,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/preauthorization.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload zero-runtime preauthorization evidence
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: vertical-profile-v1-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Publish terminal non-allocation checkpoint to Issue 60
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,re,urllib.request
+          from pathlib import Path
+          report=json.loads(Path('preauthorization-evidence/preauthorization.json').read_text())
+          if report.get('status') != 'PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED':
+              raise SystemExit('preauthorization status not pass')
+          if any(report.get(key) is not False for key in (
+              'scientificOrdinalAllocated','authorizationCreated','dispatchCreated','candidateSeedsAppliedToCases',
+              'scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed','resultOpeningPerformed'
+          )):
+              raise SystemExit('preauthorization crossed allocation/runtime boundary')
+          artifact_id=os.environ.get('ARTIFACT_ID','').strip()
+          digest=os.environ.get('ARTIFACT_DIGEST','').strip()
+          if not artifact_id.isdigit() or re.fullmatch(r'[0-9a-f]{64}',digest) is None:
+              raise SystemExit('artifact identity malformed')
+          body='\n'.join([
+              'AVPS-V1-PREAUTHORIZATION-RUN',
+              f'exact_main={report["exactMainSha"]}',
+              f'run={report["runId"]}',
+              f'attempt={report["runAttempt"]}',
+              f'status={report["status"]}',
+              f'latest_consumed={report["latestPriorConsumedScientificOrdinal"]}',
+              f'next_if_separately_allocated={report["nextAvailableScientificOrdinal"]}',
+              f'candidate_seed_count={report["candidateSeedCount"]}',
+              f'candidate_seed_canonical_sha256={report["candidateSeedCanonicalSha256"]}',
+              f'candidate_rows_canonical_sha256={report["candidateRowsCanonicalSha256"]}',
+              f'artifact_id={artifact_id}',
+              f'artifact_digest=sha256:{digest}',
+              f'report_sha256={report["reportSha256"]}',
+              'authorization_created=false',
+              'scientific_identity_allocated=false',
+              'candidate_seeds_applied=false',
+              'dispatch_created=false',
+              'scientific_runtime=false',
+              'solver_execution=false',
+              'result_opening=false',
+          ])
+          req=urllib.request.Request(
+              f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/60/comments',
+              data=json.dumps({'body':body}).encode(),
+              headers={
+                  'Authorization':f'Bearer {os.environ["GITHUB_TOKEN"]}',
+                  'Accept':'application/vnd.github+json',
+                  'X-GitHub-Api-Version':'2022-11-28',
+                  'Content-Type':'application/json',
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(req,timeout=90) as response:
+              row=json.load(response)
+          if not int(row.get('id') or 0):
+              raise SystemExit('Issue60 checkpoint failed')
+          print(f'issue60_comment_id={row["id"]}')
+          PY
+
+      - name: Claim boundary
+        run: |
+          echo 'Exact-main preauthorization only.'
+          echo 'No scientific ordinal allocation, no seed application, no authorization/dispatch, no uvspec/MYSTIC, no results.'

@@ -115,21 +115,16 @@ def validate_authorization_bindings(auth: dict[str, Any]) -> None:
         raise AdapterRefusal("authorization exact-AFGL tau binding drift")
 
 
-def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
-    validate_authorization_bindings(auth)
-    package, package_mod = _package_and_module()
-    skeleton = _skeleton()
-
-    packaged = [row for row in package["cases"] if row.get("caseId") == case_id]
-    full = [row for row in skeleton["cases"] if row.get("caseId") == case_id]
-    if len(packaged) != 1 or len(full) != 1:
-        raise AdapterRefusal(f"case must exist exactly once in both frozen surfaces: {case_id}")
-    packaged_case = packaged[0]
-    full_case = full[0]
+def _join_frozen_case(
+    packaged_case: dict[str, Any],
+    full_case: dict[str, Any],
+    package_mod: Any,
+    seed_map: dict[str, int],
+    auth: dict[str, Any],
+) -> dict[str, Any]:
     for key in ("caseId", "groupId", "stateId"):
         if packaged_case.get(key) != full_case.get(key):
             raise AdapterRefusal(f"package/skeleton identity mismatch: {key}")
-
     expected_surface = package_mod.render_case_science_surface(full_case)
     if packaged_case.get("caseSurface") != expected_surface:
         raise AdapterRefusal("package/skeleton science surface mismatch")
@@ -139,7 +134,6 @@ def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
     base = dict(full_case)
     base["caseSurface"] = list(packaged_case["caseSurface"])
     base["caseSurfaceSha256"] = str(packaged_case["caseSurfaceSha256"])
-    seed_map = _seed_by_group()
     group_id = str(base["groupId"])
     if group_id not in seed_map:
         raise AdapterRefusal("frozen case group has no candidate seed")
@@ -152,13 +146,31 @@ def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
     return base
 
 
+def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
+    validate_authorization_bindings(auth)
+    package, package_mod = _package_and_module()
+    skeleton = _skeleton()
+    seed_map = _seed_by_group()
+    packaged = [row for row in package["cases"] if row.get("caseId") == case_id]
+    full = [row for row in skeleton["cases"] if row.get("caseId") == case_id]
+    if len(packaged) != 1 or len(full) != 1:
+        raise AdapterRefusal(f"case must exist exactly once in both frozen surfaces: {case_id}")
+    return _join_frozen_case(packaged[0], full[0], package_mod, seed_map, auth)
+
+
 def authorized_case_universe(auth: dict[str, Any]) -> list[dict[str, Any]]:
     validate_authorization_bindings(auth)
-    package, _ = _package_and_module()
-    case_ids = [str(row["caseId"]) for row in package["cases"]]
-    if len(case_ids) != 360 or len(set(case_ids)) != 360:
-        raise AdapterRefusal("frozen package case ID universe drift")
-    cases = [authorized_case(case_id, auth) for case_id in case_ids]
+    package, package_mod = _package_and_module()
+    skeleton = _skeleton()
+    seed_map = _seed_by_group()
+    packaged_by_id = {str(row["caseId"]): row for row in package["cases"]}
+    full_by_id = {str(row["caseId"]): row for row in skeleton["cases"]}
+    if len(packaged_by_id) != 360 or len(full_by_id) != 360 or set(packaged_by_id) != set(full_by_id):
+        raise AdapterRefusal("frozen package/skeleton case ID universe drift")
+    cases = [
+        _join_frozen_case(packaged_by_id[case_id], full_by_id[case_id], package_mod, seed_map, auth)
+        for case_id in sorted(packaged_by_id)
+    ]
     if len({case["groupId"] for case in cases}) != 72:
         raise AdapterRefusal("authorized group universe drift")
     by_group: dict[str, list[dict[str, Any]]] = {}
@@ -166,6 +178,8 @@ def authorized_case_universe(auth: dict[str, Any]) -> list[dict[str, Any]]:
         by_group.setdefault(str(case["groupId"]), []).append(case)
     if any(len(rows) != 5 for rows in by_group.values()):
         raise AdapterRefusal("authorized states-per-group drift")
+    if any(len({row["stateId"] for row in rows}) != 5 for rows in by_group.values()):
+        raise AdapterRefusal("authorized state identity drift within group")
     if any(len({row["seed"] for row in rows}) != 1 for rows in by_group.values()):
         raise AdapterRefusal("CRN pairing drift within group")
     if len({rows[0]["seed"] for rows in by_group.values()}) != 72:

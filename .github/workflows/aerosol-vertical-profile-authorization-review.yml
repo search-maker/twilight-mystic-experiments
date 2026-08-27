@@ -165,6 +165,66 @@ jobs:
             --allow-self-ledger-json authorization-review-evidence/empty-self-ledger-policy.json \
             --output authorization-review-evidence/tracked-seed-scan.json
 
+      - name: Stabilize authorization-head Actions metadata before global scan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # pull_request workflows are created asynchronously. The global seed
+          # audit remains unchanged and still performs its own two full repository
+          # enumerations; this barrier merely waits until sibling runs for the
+          # reviewed head have all reached terminal state and their identity set
+          # has remained unchanged for a 30-second quiet window.
+          sleep 30
+          python - <<'PY'
+          import json, os, subprocess, time
+
+          repo=os.environ['GITHUB_REPOSITORY']
+          head=os.environ['HEAD_SHA']
+          current=int(os.environ['GITHUB_RUN_ID'])
+          deadline=time.time()+900
+          previous_ids=None
+          stable_polls=0
+          observed_siblings=0
+
+          while time.time() < deadline:
+              raw=subprocess.check_output([
+                  'gh','api','--paginate','--slurp',
+                  f'repos/{repo}/actions/runs?head_sha={head}&per_page=100'
+              ], text=True)
+              pages=json.loads(raw)
+              rows=[r for page in pages for r in page.get('workflow_runs',[])]
+              siblings=[r for r in rows if int(r.get('id') or 0) != current]
+              ids=tuple(sorted(int(r.get('id') or 0) for r in siblings))
+              unfinished=[r for r in siblings if r.get('status') != 'completed']
+              observed_siblings=max(observed_siblings,len(siblings))
+
+              if not unfinished and ids == previous_ids:
+                  stable_polls += 1
+              else:
+                  stable_polls = 0
+              previous_ids = ids
+
+              if stable_polls >= 6:
+                  print(json.dumps({
+                      'status':'AUTHORIZATION_HEAD_SIBLING_ACTIONS_STABLE',
+                      'headSha':head,
+                      'currentRunId':current,
+                      'siblingRunIds':list(ids),
+                      'siblingCount':len(ids),
+                      'stablePolls':stable_polls,
+                      'quietWindowSeconds':30,
+                  },sort_keys=True))
+                  break
+              time.sleep(5)
+          else:
+              raise SystemExit(
+                  f'authorization-head Actions metadata did not stabilize; observed siblings={observed_siblings}'
+              )
+          PY
+
       - name: Stable authorization-head repository-global seed recheck
         shell: bash
         env:

@@ -30,13 +30,18 @@ class StarsvisibilityExactHeadBroadVerificationV1Tests(unittest.TestCase):
         self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', self.text)
 
     def test_broad_application_surface_is_exercised(self):
+        # build:pages runs the parity + complete sitewide-preview suite at the
+        # intended intermediate dist stage. Re-running sitewide-preview after
+        # finalization is invalid because later build transforms intentionally
+        # change the selector/runtime surface it asserts.
         for command in (
             'npm run build:pages',
             'npm run test:level-b-current-main',
-            'npm run test:level-b-sitewide-preview',
             'node scripts/test-level-b-stellar-v2-dist.mjs',
         ):
             self.assertIn(command, self.text)
+        self.assertIn('build:pages itself executes test:level-b-parity and the complete', self.text)
+        self.assertIn('test:level-b-sitewide-preview suite', self.text)
 
 
 if __name__ == '__main__':

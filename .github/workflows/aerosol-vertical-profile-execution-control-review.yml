@@ -1,0 +1,188 @@
+name: Aerosol vertical-profile v1 execution control review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/adapter.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/analysis.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/level_b_analysis.mjs'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/level_b_runner.mjs'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/executor.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/aggregate_results.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/open_results.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/dispatch_guard.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py'
+      - 'experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json'
+      - 'tests/test_aerosol_vertical_profile_execution_control_v1.py'
+      - 'tests/test_aerosol_vertical_profile_level_b_analysis_v1.mjs'
+      - '.github/workflows/avps-v1-dispatch-publisher.yml'
+      - '.github/workflows/avps-v1-science.yml'
+      - '.github/workflows/aerosol-vertical-profile-execution-control-review.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact review head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Require zero-runtime review boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          test ! -e experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json
+
+      - name: Compile new Python controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            experiments/aerosol-vertical-profile-sensitivity-v1/adapter.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/analysis.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/executor.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/aggregate_results.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/open_results.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/dispatch_guard.py \
+            experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py
+
+      - name: Run AVPS Python execution-control tests
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_aerosol_vertical_profile_execution_control_v1.py' -v
+
+      - name: Run AVPS Level-B contract tests
+        shell: bash
+        run: node --test tests/test_aerosol_vertical_profile_level_b_analysis_v1.mjs
+
+      - name: Verify frozen execution-contract source and orchestration blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('.')
+          c=json.load(open('experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json'))
+          if c.get('status')!='FROZEN_REVIEW_ONLY_EXECUTION_TRANSPORT_NOT_AUTHORIZED': raise SystemExit('contract status drift')
+          if any(c.get(k) is not False for k in ('candidateSeedsAllocated','scientificOrdinalAllocated','authorizationCreated','dispatchCreated','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized')): raise SystemExit('contract crossed authorization boundary')
+          if (c.get('expectedCaseCount'),c.get('expectedGroupCount'),c.get('expectedAnalysisCellCount'),c.get('expectedStatesPerGroup'),c.get('expectedPrimaryContrastCount')) != (360,72,24,5,4): raise SystemExit('contract cardinality drift')
+          if c.get('fieldFactor')!=3.14 or c.get('photonHistoriesPerCase')!=20_000_000: raise SystemExit('F/photon drift')
+          def blob(path):
+              data=path.read_bytes(); return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          b=c['sourceBindings']
+          pairs=[
+            ('protocolPath','protocolGitBlobSha1'),('executionCandidatePath','executionCandidateGitBlobSha1'),
+            ('executionPackagePath','executionPackageGitBlobSha1'),('adapterPath','adapterGitBlobSha1'),
+            ('analysisPath','analysisGitBlobSha1'),('levelBAnalysisPath','levelBAnalysisGitBlobSha1'),
+            ('levelBRunnerPath','levelBRunnerGitBlobSha1'),('executorPath','executorGitBlobSha1'),
+            ('aggregatorPath','aggregatorGitBlobSha1'),('openResultsPath','openResultsGitBlobSha1'),
+            ('dispatchGuardPath','dispatchGuardGitBlobSha1'),('scienceGuardPath','scienceGuardGitBlobSha1'),
+            ('runtimeOverlayPath','runtimeOverlayGitBlobSha1'),('processGroupRunnerPath','processGroupRunnerGitBlobSha1'),
+            ('r8DerivedChannelsPath','r8DerivedChannelsGitBlobSha1'),('r8AnalysisPath','r8AnalysisGitBlobSha1'),
+            ('wavelengthGridPath','wavelengthGridGitBlobSha1'),
+          ]
+          for pkey,hkey in pairs:
+              p=root/b[pkey]
+              if blob(p)!=b[hkey]: raise SystemExit(f'contract source blob drift: {p}')
+          o=c.get('orchestrationBindings') or {}
+          opairs=(('dispatchPublisherWorkflowPath','dispatchPublisherWorkflowGitBlobSha1'),('scienceWorkflowPath','scienceWorkflowGitBlobSha1'))
+          for pkey,hkey in opairs:
+              p=root/o[pkey]
+              if blob(p)!=o[hkey]: raise SystemExit(f'contract orchestration blob drift: {p}')
+          if (o.get('caseShards'),o.get('casesPerShard'),o.get('maxParallelPerShard'),o.get('maximumConcurrentCaseJobs')) != (4,90,2,8): raise SystemExit('orchestration shard/parallel contract drift')
+          ext=c.get('externalLevelBBinding') or {}
+          if ext.get('repository')!='search-maker/starsvisibility' or ext.get('ref')!='e0da52eb0a2d5bac333da6572f51df52ea7e676e': raise SystemExit('external Level-B ref drift')
+          if ext.get('expectedGitBlobSha1')!='bb4cd0ff02159ecffe276022cec9d292c7a434a3' or ext.get('fieldFactor')!=3.14 or ext.get('branch')!='full': raise SystemExit('external Level-B contract drift')
+          if (c.get('reviewBoundary') or {}).get('activeWorkflowAdded') is not True: raise SystemExit('active workflow review boundary drift')
+          PY
+
+      - name: Parse active orchestration YAML without executing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e "require 'yaml'; YAML.load_file('.github/workflows/avps-v1-dispatch-publisher.yml', aliases: true); YAML.load_file('.github/workflows/avps-v1-science.yml', aliases: true); puts 'AVPS orchestration YAML parse: PASS'"
+
+      - name: Statically verify guarded publisher and science workflow structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          publisher=Path('.github/workflows/avps-v1-dispatch-publisher.yml').read_text()
+          science=Path('.github/workflows/avps-v1-science.yml').read_text()
+          required_publisher=(
+              'status/avps-v1-dispatch-publisher-ordinal-*',
+              '.github/dispatch-requests/avps-v1.json',
+              'test "$GITHUB_RUN_ATTEMPT" = 1',
+              'authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-',
+              'dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-',
+              'DISPATCH_PUBLISHED_ZERO_RUNTIME',
+              'actions/workflows/avps-v1-science.yml/dispatches',
+          )
+          required_science=(
+              'workflow_'+'dispatch:',
+              'test "$GITHUB_RUN_ATTEMPT" = 1',
+              'EXACT_ONE_USE_AVPS_V1_DISPATCH_AUTHORIZED',
+              'repository_global_seed_scan.py',
+              'max-parallel: 2',
+              'execute_case(',
+              "e0da52eb0a2d5bac333da6572f51df52ea7e676e",
+              'bb4cd0ff02159ecffe276022cec9d292c7a434a3',
+              "needs.cases-dep2.result == 'success'",
+              "needs.cases-dep4.result == 'success'",
+              "needs.cases-dep6.result == 'success'",
+              "needs.cases-dep8.result == 'success'",
+              'COMPLETE_EXACT_360_CASE_ARTIFACT_UNIVERSE_RESULTS_STILL_CLOSED',
+          )
+          for item in required_publisher:
+              if item not in publisher: raise SystemExit(f'publisher structure missing: {item}')
+          for item in required_science:
+              if item not in science: raise SystemExit(f'science structure missing: {item}')
+          for forbidden in ('pull_request:', 'schedule:'):
+              if forbidden in science: raise SystemExit(f'science workflow exposed unintended trigger: {forbidden}')
+          PY
+
+      - name: Prove review workflow trigger and environment are review-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/aerosol-vertical-profile-execution-control-review.yml').read_text()
+          trigger=text.split('\njobs:',1)[0]
+          if '  pull_request:' not in trigger: raise SystemExit('review workflow lost pull_request trigger')
+          for item in ('workflow_'+'dispatch:','repository_'+'dispatch:','sche'+'dule:'):
+              if item in trigger: raise SystemExit(f'review workflow exposed unintended trigger: {item}')
+          lines=text.splitlines()
+          mamba_uses='uses: '+'mamba-org/'
+          mamba_action='setup-'+'micromamba'
+          package_line='create-'+'args:'
+          package_name='rubin-'+'libradtran'
+          if any(mamba_uses in line and mamba_action in line for line in lines):
+              raise SystemExit('review workflow installs a scientific runtime')
+          if any(package_line in line and package_name in line for line in lines):
+              raise SystemExit('review workflow installs libRadtran')
+          # The earlier job step already proves `command -v uvspec` is empty in the actual review environment.
+          # With no runtime installer in this workflow, later review steps cannot acquire the scientific solver.
+          PY
+
+      - name: Claim boundary
+        run: |
+          echo 'Review-only AVPS execution/control validation.'
+          echo 'No ordinal allocation, no authorization, no dispatch, no uvspec/MYSTIC, no result opening.'

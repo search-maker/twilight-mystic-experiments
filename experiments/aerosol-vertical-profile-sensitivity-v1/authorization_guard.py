@@ -14,6 +14,17 @@ HERE = Path(__file__).resolve().parent
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_SEED_CANONICAL = "a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e"
 EXPECTED_ROWS_CANONICAL = "f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683"
+EXPECTED_EXECUTION_CONTROL_BLOBS = {
+    "executionContract": ("experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json", "230874923004115ff21f218bb0ce4d2e038d3a98"),
+    "dispatchGuard": ("experiments/aerosol-vertical-profile-sensitivity-v1/dispatch_guard.py", "e95f6c30e503709ba8c3fe14dc9edeae665e5877"),
+    "scienceGuard": ("experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py", "c774be7ea8655854bb85071a9fb260e21498beda"),
+    "dispatchPublisherWorkflow": (".github/workflows/avps-v1-dispatch-publisher.yml", "cd8aa5151533133a33c046ad2bed2bd7e2c11089"),
+    "scienceWorkflow": (".github/workflows/avps-v1-science.yml", "55f48bbdf99aac58a96bd96f6735a4e56b8b466a"),
+}
+EXPECTED_STARS_REPOSITORY = "search-maker/starsvisibility"
+EXPECTED_STARS_COMMIT = "e0da52eb0a2d5bac333da6572f51df52ea7e676e"
+EXPECTED_HUMAN_THRESHOLD_PATH = "scientific-tools/visibility-v3/human-threshold.mjs"
+EXPECTED_HUMAN_THRESHOLD_GIT_BLOB = "bb4cd0ff02159ecffe276022cec9d292c7a434a3"
 
 
 class AuthorizationRefusal(RuntimeError):
@@ -28,6 +39,78 @@ def _load(name: str, path: Path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
+def _execution_control_bindings(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    actual: dict[str, str] = {}
+    for key, (relative, expected) in EXPECTED_EXECUTION_CONTROL_BLOBS.items():
+        path = root / relative
+        if not path.is_file():
+            raise AuthorizationRefusal(f"execution-control source missing: {relative}")
+        blob = _git_blob_sha1(path)
+        if blob != expected:
+            raise AuthorizationRefusal(f"execution-control byte drift: {relative}")
+        actual[key] = blob
+
+    contract_path = root / EXPECTED_EXECUTION_CONTROL_BLOBS["executionContract"][0]
+    contract = json.loads(contract_path.read_text())
+    if contract.get("stageId") != f"{STAGE}-execution-contract":
+        raise AuthorizationRefusal("execution contract stage drift")
+    if contract.get("status") != "FROZEN_REVIEW_ONLY_EXECUTION_TRANSPORT_NOT_AUTHORIZED":
+        raise AuthorizationRefusal("execution contract status drift")
+    if any(contract.get(key) is not False for key in (
+        "candidateSeedsAllocated", "scientificOrdinalAllocated", "authorizationCreated",
+        "dispatchCreated", "scientificExecutionAuthorized", "solverExecutionAuthorized",
+        "resultOpeningAuthorized",
+    )):
+        raise AuthorizationRefusal("execution contract crossed review boundary")
+    if (contract.get("expectedCaseCount"), contract.get("expectedGroupCount"), contract.get("expectedAnalysisCellCount"),
+        contract.get("expectedStatesPerGroup"), contract.get("expectedPrimaryContrastCount")) != (360, 72, 24, 5, 4):
+        raise AuthorizationRefusal("execution contract cardinality drift")
+    if contract.get("photonHistoriesPerCase") != 20_000_000 or contract.get("fieldFactor") != 3.14:
+        raise AuthorizationRefusal("execution contract F/photon drift")
+
+    orchestration = contract.get("orchestrationBindings") or {}
+    if orchestration.get("dispatchPublisherWorkflowGitBlobSha1") != actual["dispatchPublisherWorkflow"]:
+        raise AuthorizationRefusal("contract/publisher workflow binding drift")
+    if orchestration.get("scienceWorkflowGitBlobSha1") != actual["scienceWorkflow"]:
+        raise AuthorizationRefusal("contract/science workflow binding drift")
+    if (orchestration.get("caseShards"), orchestration.get("casesPerShard"), orchestration.get("maxParallelPerShard"),
+        orchestration.get("maximumConcurrentCaseJobs")) != (4, 90, 2, 8):
+        raise AuthorizationRefusal("execution orchestration cardinality drift")
+    if orchestration.get("aggregateRequiresAllFourShardsSuccess") is not True:
+        raise AuthorizationRefusal("aggregate success gate drift")
+
+    external = contract.get("externalLevelBBinding") or {}
+    expected_external = {
+        "repository": EXPECTED_STARS_REPOSITORY,
+        "ref": EXPECTED_STARS_COMMIT,
+        "path": EXPECTED_HUMAN_THRESHOLD_PATH,
+        "expectedGitBlobSha1": EXPECTED_HUMAN_THRESHOLD_GIT_BLOB,
+        "fieldFactor": 3.14,
+        "branch": "full",
+    }
+    if external != expected_external:
+        raise AuthorizationRefusal("external Level-B binding drift")
+
+    control = {
+        "executionContractPath": EXPECTED_EXECUTION_CONTROL_BLOBS["executionContract"][0],
+        "executionContractGitBlobSha1": actual["executionContract"],
+        "dispatchGuardPath": EXPECTED_EXECUTION_CONTROL_BLOBS["dispatchGuard"][0],
+        "dispatchGuardGitBlobSha1": actual["dispatchGuard"],
+        "scienceGuardPath": EXPECTED_EXECUTION_CONTROL_BLOBS["scienceGuard"][0],
+        "scienceGuardGitBlobSha1": actual["scienceGuard"],
+        "dispatchPublisherWorkflowPath": EXPECTED_EXECUTION_CONTROL_BLOBS["dispatchPublisherWorkflow"][0],
+        "dispatchPublisherWorkflowGitBlobSha1": actual["dispatchPublisherWorkflow"],
+        "scienceWorkflowPath": EXPECTED_EXECUTION_CONTROL_BLOBS["scienceWorkflow"][0],
+        "scienceWorkflowGitBlobSha1": actual["scienceWorkflow"],
+    }
+    return control, expected_external
 
 
 def seed_proof_raw_sha256(proof: dict[str, Any]) -> str:
@@ -93,6 +176,7 @@ def build_expected_document(
     design_mod.validate_seed_authorization_proof(seed_authorization_proof, parent_main)
     design = design_mod.build_review_execution_design(seed_authorization_proof, parent_main)
     freshness = _load("avps_freshness_for_authorization", HERE / "freshness.py")
+    control_bindings, external_level_b = _execution_control_bindings(root)
 
     runtime = dict(design.get("runtimeBinding") or {})
     return {
@@ -126,6 +210,8 @@ def build_expected_document(
         "baseDataTreeSha256": runtime.get("baseDataTreeSha256"),
         "stagedOpacDataTreeSha256": runtime.get("stagedOpacDataTreeSha256"),
         "officialOptpropArchiveSha256": runtime.get("officialOptpropArchiveSha256"),
+        "executionControlBindings": control_bindings,
+        "externalLevelBBinding": external_level_b,
         "caseCount": 360,
         "commonRandomNumberGroupCount": 72,
         "statesPerGroup": 5,
@@ -222,6 +308,9 @@ def review(
         "groupCount": design["groupCount"],
         "disabledExecutionPackageCanonicalSha256": design["sourceDisabledExecutionPackageCanonicalSha256"],
         "exactAfglProfileBundleArtifactDigest": design["exactAfglProfileBundleArtifactDigest"],
+        "executionContractGitBlobSha1": auth["executionControlBindings"]["executionContractGitBlobSha1"],
+        "dispatchPublisherWorkflowGitBlobSha1": auth["executionControlBindings"]["dispatchPublisherWorkflowGitBlobSha1"],
+        "scienceWorkflowGitBlobSha1": auth["executionControlBindings"]["scienceWorkflowGitBlobSha1"],
         "scientificRuntimeSetupPerformed": False,
         "scientificExecutionPerformed": False,
         "solverExecutionPerformed": False,

@@ -1,0 +1,80 @@
+name: Jerusalem transient monotonicity audit v1
+
+on:
+  push:
+    branches:
+      - review/jerusalem-transient-mesopic-snapshot-v1
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      APPLICATION_SHA: 80110c8cb4575c7be3c91b4817be5126c40b2b15
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - working-directory: app
+        run: npm ci
+      - name: Build exact application
+        working-directory: app
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: npm run build:pages
+      - name: Instrument exact transformed-row catalog handoff
+        working-directory: app
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='dist/work-in-progress/index.html';
+          let s=fs.readFileSync(p,'utf8');
+          const needle='globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows;';
+          if(s.split(needle).length-1!==1) throw new Error('catalog handoff anchor drift');
+          s=s.replace(needle,needle+'\n          globalThis.__DIAG_LEVEL_B_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows.map(row => ({ ...row }));');
+          fs.writeFileSync(p,s);
+          NODE
+      - working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: Run Merak monotonicity audit
+        shell: bash
+        run: |
+          cp review/jerusalem-transient-monotonicity-audit-v1/run.mjs app/transient-monotonicity.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/server.log" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node transient-monotonicity.mjs
+      - name: Assert no MYSTIC
+        shell: bash
+        run: |
+          test ! -e "$RUNNER_TEMP/transient-monotonicity-audit/uvspec.log"
+          test ! -e "$RUNNER_TEMP/transient-monotonicity-audit/mc.rad.spc"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transient-monotonicity-merak-v1
+          path: ${{ runner.temp }}/transient-monotonicity-audit/merak.json
+          retention-days: 90

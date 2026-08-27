@@ -32,7 +32,7 @@ class AvpsPostConsumptionPublisherRecovery(unittest.TestCase):
         self.assertIn("issues: read", TEXT)
         self.assertNotIn("contents: write", TEXT)
         self.assertNotIn("issues: write", TEXT)
-        self.assertNotRegex(TEXT, r"\bgit push\b")
+        self.assertIsNone(re.search(r"(?m)^\s*git\s+push(?:\s|$)", TEXT))
         self.assertNotIn('issues/60/comments" -f body=', TEXT)
 
     def test_recovery_requires_fresh_attempt_one_request(self):

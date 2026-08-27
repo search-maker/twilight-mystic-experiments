@@ -1,8 +1,8 @@
 # STAR VISIBILITY / MYSTIC — CURRENT NEW-WORKER HANDOFF
 
-**Current status: 2026-08-27, after AVPS control freeze #559 and during failed-authorization recovery #562**
+**Current status: 2026-08-27, after AVPS recovery #562, fresh-trigger #563, and successful exact-main preauthorization run 33111875371**
 
-This file supersedes the older post-#557 checkpoint. It is the current standalone handoff for continuing the non-observation computational/scientific work without repeating closed lanes or crossing scientific-control boundaries.
+This file is the current standalone handoff for continuing the non-observation computational/scientific work. It supersedes the older post-#557 checkpoint and the intermediate version that still described #562 as active.
 
 ---
 
@@ -14,28 +14,47 @@ This file supersedes the older post-#557 checkpoint. It is the current standalon
 
 Current `main`:
 
-- `107d63a01de96bc359af0ecd8f0129b7232ddcf1`
-- merge commit of PR #559, `Freeze AVPS execution, analysis, and result-opening controls`.
+- `99ade7798627e67921139697ba1a004fa8a304bb`
+- merge commit of PR #563, a **mode-only, exact-blob-preserving** trigger used solely to obtain a fresh attempt-1 AVPS exact-main preauthorization after repository-metadata drift.
 
-## What is already merged after the older handoff
+No scientific/control file contents changed in #563. The watched file
 
-### #558 — MERGED
+`experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py`
+
+kept exact Git blob:
+
+- `98746ba72195454be1b770ef561d14a1473962ea`
+
+and changed only mode `100644 -> 100755`.
+
+GitHub compare reported:
+
+- one changed file;
+- `0` additions;
+- `0` deletions;
+- `0` content changes.
+
+---
+
+# 0A. AVPS control sequence now merged
+
+## #558 — MERGED
 `Add current-main AVPS authorization control gate`
 
 Merge commit:
 
 - `608359c645aaa2ff184124ee718c09e971d5e13b`
 
-It bound authorization construction to the exact merged #557 disabled execution package and AFGL evidence, required exact one-file Draft authorization review, and made control-byte changes force a new exact-main preauthorization.
+It bound authorization construction to the exact merged disabled execution package and AFGL evidence, required exact one-file Draft authorization review, and made control-byte changes force a new exact-main preauthorization.
 
-### #559 — MERGED
+## #559 — MERGED
 `Freeze AVPS execution, analysis, and result-opening controls`
 
 Merge commit:
 
 - `107d63a01de96bc359af0ecd8f0129b7232ddcf1`
 
-It froze the remaining AVPS v1 science transport before identity allocation:
+It froze before identity allocation:
 
 - exact 360-case reconstruction;
 - exact 72-CRN pairing;
@@ -47,274 +66,277 @@ It froze the remaining AVPS v1 science transport before identity allocation:
 - separate primary result opening;
 - Level-B endpoint through current Crumey Eq.34 full branch with `F=3.14`;
 - separate dispatch-transition and science-run guards;
-- execution contract byte-binding all transport/runtime identities.
+- execution contract byte-binding transport/runtime identities.
 
-No scientific run was performed by #558 or #559.
+No science was executed by #558/#559.
 
----
+## #562 — MERGED
+`Recover AVPS failed authorization review without consuming ordinal 40`
 
-# 0A. Fresh exact-main preauthorization that DID pass
+Merge commit:
 
-After #559 merged, a fresh attempt-1 exact-main preauthorization ran with no repository writes during its critical scan.
+- `cd56db1e823a75d617c026fecf359a80e8c64cb7`
 
-Run:
+This recovery exists because the first ordinal-40 authorization review failed closed from repository-metadata instability, not from a seed collision.
 
-- `33107919037`
-- exact main: `107d63a01de96bc359af0ecd8f0129b7232ddcf1`
-- attempt: 1
-- conclusion: **SUCCESS**
+It now:
 
-Fresh proof:
+1. preserves failed authorization heads as auditable immutable history;
+2. permits reuse of ordinal 40 only when the prior authorization review was terminal attempt-1, closed/unmerged, and had no allocation/dispatch/science evidence;
+3. refuses reuse if there is an allocation marker, dispatch/consumed evidence, science run, execution-key prior use, competing positive claim, rerun history, or malformed/multiple failed-history evidence;
+4. adds an authorization-head Actions quiet-window before the unchanged repository-global double enumeration;
+5. changes no scientific design, seed values, case universe, atmosphere choice, photon budget, Level-B rule or result rule.
 
-- latest consumed global scientific ordinal: `39`
-- next candidate if separately allocated: `40`
-- candidate CRN seeds: `72`
-- tracked-tree candidate-seed collisions: `0`
-- repository-global candidate-seed collisions: `0`
-- double enumeration stable: `true`
-- scientific identity allocated: `false`
+## #563 — MERGED
+`Trigger fresh AVPS preauthorization after handoff metadata drift`
 
-Preauthorization artifact:
+Merge commit / current main:
 
-- ID `9661482182`
-- ZIP digest `sha256:25bd8f20ddd45ab606a794bf22183d27634a4d6ae4e30819267aa1c8a79f062e`
+- `99ade7798627e67921139697ba1a004fa8a304bb`
 
-Important:
-
-> This proof says ordinal 40 was the fresh next candidate. It did **not** allocate ordinal 40.
-
-There was still no Issue 60 allocation marker, no dispatch branch, no MYSTIC science run, and no result opening.
+This was mode-only and content-preserving, as described above.
 
 ---
 
-# 0B. Authorization materialization and failed first authorization review
+# 0B. First ordinal-40 authorization attempt — failed safely and is historical only
 
-## #560 — CLOSED / UNMERGED helper only
+## #560 — CLOSED / UNMERGED helper
 
-`Materialize current-main AVPS authorization candidate`
+Zero-runtime materializer on old main. It produced the old authorization artifact but allocated nothing and ran no solver.
 
-- base: exact main `107d63a01de96bc359af0ecd8f0129b7232ddcf1`
-- helper head: `db9b0cce0e3f6b2d03991bbdf0c443a1459ac3ee`
-- zero-runtime only
-- no identity allocation
-- no dispatch
-- no libRadtran/MYSTIC
-- no results
+## #561 — CLOSED / UNMERGED
 
-Materializer run passed and produced authorization artifact:
+First one-file ordinal-40 authorization candidate.
 
-- artifact ID `9661587430`
-- digest `sha256:eb912439...` (use GitHub artifact metadata for the complete digest if needed)
-
-The produced `authorization.json` bound the exact fresh preauthorization, frozen 360-case/72-CRN design, 20M photons/case, exact AFGL tau hashes, execution-control workflow bytes, current Level-B identity and `F=3.14`.
-
-It explicitly had:
-
-- `dispatchAuthorized=false`
-- `resultOpeningAuthorized=false`
-- `productionAuthorized=false`
-
-#560 was intentionally closed unmerged after artifact production.
-
-## #561 — CLOSED / UNMERGED first ordinal-40 authorization candidate
-
-Branch:
+Authorization branch:
 
 - `authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-40`
 
-Head:
+Failed head:
 
 - `67844e1dd2523963f2682f186387280dfb930760`
-
-The Git blob of `authorization.json` was verified identical to the materialized artifact before opening the PR.
 
 Authorization review run:
 
 - `33109014744`
-- attempt 1
-- conclusion: **FAILURE — fail closed**
+- attempt `1`
+- conclusion `failure`
 
-What passed before failure:
+Passed before failure:
 
-- exact one-file Draft authorization identity;
+- exact one-file Draft identity;
 - direct-child parent identity;
-- exact successful parent-main preauthorization resolution;
+- exact parent-main preauthorization resolution;
 - candidate ledger rebuild;
-- exact authorization-head tracked-tree seed scan.
+- tracked-tree candidate-seed scan.
 
-Where it failed:
+Failed only at:
 
-- `Stable authorization-head repository-global seed recheck`
+- repository-global two-pass stability.
 
-Exact failure reason:
+Exact refusal:
 
 > `snapshot-fenced repository-global metadata changed between two complete enumerations; refuse this audit and start a fresh attempt-1 workflow run`
 
-This was **not a seed collision** and **not a bad authorization document**.
+There was:
 
-The race happened because sibling pull-request workflows for the same authorization head were being created/completing while the two full repository enumerations were in progress.
+- no candidate-seed collision finding;
+- no Issue 60 allocation marker;
+- no dispatch branch;
+- no consumed marker;
+- no AVPS science run;
+- no result opening.
 
-Critical boundary:
+Therefore ordinal 40 was **not consumed and not allocated**.
 
-- NO Issue 60 allocation marker was posted;
-- NO dispatch branch was created;
-- NO consumed marker exists;
-- NO AVPS scientific execution ran;
-- NO result was opened;
-- ordinal 40 therefore remains unconsumed/unallocated.
-
-#561 is closed and unmerged.
-
-The failed head is deliberately preserved as immutable history at:
+The failed head is preserved at:
 
 - `history/aerosol-vertical-profile-sensitivity-v1-ordinal-40-auth-review-failed-1`
 
-Do not delete this history evidence.
+Do not delete or rewrite this history ref.
 
 ---
 
-# 0C. Active recovery — #562
+# 0C. Why the first post-#562 preauthorization failed
 
-PR #562:
+After #562 merged at:
 
-`Recover AVPS failed authorization review without consuming ordinal 40`
+- `cd56db1e823a75d617c026fecf359a80e8c64cb7`
 
-Branch:
+push preauthorization run:
 
-- `fix/avps-v1-failed-auth-review-recovery-1`
+- `33110552017`
+- attempt `1`
 
-Latest head at this handoff update:
+failed closed during repository-global double enumeration.
 
-- `82a3e5390c28f5dbf9078b085c904879ce47d211`
+This failure is fully explained and was **not scientific**:
 
-Purpose:
+- repository-global scan ran approximately `19:52:48Z` through `19:58:17Z`;
+- the user-requested handoff update commit `471678a0bc12535d8dab70190b7081e835fd8671` was created at `19:57:54Z`;
+- that repository-metadata write landed inside the two-pass scan window;
+- the tracked-tree scan had passed;
+- no candidate-seed collision was reported;
+- no ordinal was allocated;
+- no dispatch/science/results boundary was crossed.
 
-1. preserve the failed #561 head as historical evidence;
-2. prove ordinal 40 is reusable only because the failed review was terminal attempt-1, closed/unmerged, and had no allocation/dispatch/science evidence;
-3. add an authorization-head Actions quiet-window barrier before the unchanged repository-global double-enumeration audit;
-4. keep all scientific design and all seed/case/result rules unchanged.
-
-Recovery refuses reuse if any of these appear:
-
-- allocation marker;
-- dispatch branch;
-- consumed marker;
-- scientific execution run;
-- execution-key prior use;
-- competing positive ordinal claim;
-- rerun/non-attempt-1 authorization review history;
-- malformed/multiple failed-history evidence.
-
-The first #562 CI head (`0092d2f...`) had:
-
-- AVPS main-preauthorization review: PASS
-- AVPS scientific review: PASS
-- current-main authorization-control tests: PASS
-- 4/5 failed-authorization recovery tests: PASS
-- one recovery test: FAIL because the test searched for the wrong literal `${head}` while the workflow correctly used Python `{head}`.
-
-That test-only typo was fixed in head:
-
-- `82a3e5390c28f5dbf9078b085c904879ce47d211`
-
-No recovery logic changed in that fix.
-
-**Do not merge #562 until all current-head gates pass.**
+Do **not** rerun that workflow as attempt 2. The project correctly used a fresh main identity instead.
 
 ---
 
-# 1. Immediate continuation order
+# 0D. Authoritative fresh exact-main preauthorization — SUCCESS
+
+PR #563 created the new exact-main identity without changing watched file bytes.
+
+Fresh push-triggered preauthorization:
+
+- run `33111875371`
+- exact main `99ade7798627e67921139697ba1a004fa8a304bb`
+- attempt `1`
+- conclusion **SUCCESS**
+
+All substantive gates passed:
+
+1. exact attempt-1 main / zero-runtime identity;
+2. deterministic control tests;
+3. exact artifact-only candidate ledger;
+4. exact-main tracked-tree candidate-seed scan;
+5. repository-global candidate-seed double enumeration;
+6. exact-main seed authorization proof;
+7. fresh global ordinal proposal / preauthorization guard;
+8. zero-runtime artifact upload;
+9. terminal Issue 60 **non-allocation** checkpoint.
+
+Fresh proof values:
+
+- latest consumed global scientific ordinal: `39`
+- next if separately allocated: `40`
+- candidate seed count: `72`
+- candidate seed canonical SHA-256: `a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e`
+- candidate rows canonical SHA-256: `f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683`
+- tracked-tree external collision count: `0`
+- repository-global collision count: `0`
+- repository-global double enumeration stable: `true`
+- audited branch head matches repository head: `true`
+- all collision counters zero: `true`
+
+Preauthorization report:
+
+- status `PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED`
+- report SHA-256 `12f8c7fe6cc7c5cbf36d320066d4a88e02695b541d2ffb0dae2e820961414175`
+
+Artifact:
+
+- ID `9663132186`
+- name `vertical-profile-v1-preauthorization-proof`
+- GitHub digest `sha256:1253612ffe4ba228e319f6b063256abd7340d11eec76981db4cc39a3619b2df6`
+- downloaded ZIP SHA-256 independently rechecked and exactly identical to that digest.
+
+The ZIP contains:
+
+- `candidate-seed-ledger.json`
+- `empty-self-ledger-policy.json`
+- `freshness.json`
+- `global-ordinal-observations.json`
+- `preauthorization.json`
+- `repository-global-seed-scan.json`
+- `seed-authorization-proof.json`
+- `tracked-files.nul`
+- `tracked-seed-scan.json`
+
+Critical flags remain:
+
+- `scientificOrdinalAllocated=false`
+- `authorizationCreated=false`
+- `dispatchCreated=false`
+- `scientificRuntimeSetupPerformed=false`
+- `scientificExecutionPerformed=false`
+- `solverExecutionPerformed=false`
+- `resultOpeningPerformed=false`
+
+Bottom line:
+
+> ordinal 40 is now freshly proven to be the next available candidate, but it is still **not allocated**.
+
+---
+
+# 1. Immediate continuation order from this exact checkpoint
 
 Follow this order exactly.
 
-## Step 1 — finish #562 review
+## Step 1 — materialize a NEW authorization document from artifact 9663132186
 
-- wait for current-head PR workflows on `82a3e539...`;
-- inspect any failure before merge;
-- confirm no scientific/runtime/result boundary was crossed;
-- if all gates pass, mark #562 ready and merge with expected-head protection.
+Do **not** reuse the old #561 authorization bytes because they bind old main/preauthorization identities.
 
-## Step 2 — after #562 merge, stop repository writes during exact-main preauthorization
+Build a new `authorization.json` using the merged builder against:
 
-The merge will change `main`, deliberately invalidating the old exact-main preauthorization `33107919037`.
+- exact main `99ade7798627e67921139697ba1a004fa8a304bb`;
+- preauthorization run `33111875371`;
+- artifact `9663132186`;
+- artifact digest `sha256:1253612ffe4ba228e319f6b063256abd7340d11eec76981db4cc39a3619b2df6`.
 
-A fresh push-triggered AVPS exact-main preauthorization must pass on the new merge commit.
+Materialization must remain zero-runtime and must not itself allocate ordinal 40.
 
-During its repository-global double enumeration:
+## Step 2 — create a fresh one-file ordinal-40 authorization review
 
-> do not create/update branches, PRs, comments, issues, handoffs, or other repository metadata.
-
-Read-only observation is fine.
-
-The new preauthorization must prove again:
-
-- exact new main;
-- 72 candidate seeds;
-- zero tracked-tree collisions;
-- zero repository-global collisions;
-- stable double enumeration;
-- fresh global ordinal still 40 under the failed-history recovery rules;
-- no allocation/dispatch/science/result boundary crossed.
-
-## Step 3 — materialize a new authorization document from the NEW proof
-
-Do not reuse the old `authorization.json` bytes from #561 because its parent/preauthorization bindings point to old main `107d63...`.
-
-Use the merged builder against the new exact-main preauthorization artifact.
-
-A zero-runtime helper/materializer is acceptable, but must not allocate identity or execute science.
-
-## Step 4 — reuse ordinal 40 through a fresh one-file authorization PR
-
-The intended authorization branch name remains:
+Reuse the intended branch identity only under the merged #562 failed-history rules:
 
 - `authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-40`
 
-The branch may be moved to the new exact one-file child commit only after the failed #561 head has been preserved under the history ref above and recovery gates are merged.
+The new authorization head must be:
 
-Open a **new** Draft authorization PR.
-
-Requirements:
-
-- direct child of live main;
+- a direct child of live main;
 - exactly one changed file: `experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json`;
-- attempt 1 only;
-- authorization-head tracked-tree scan;
-- authorization-head repository-global double enumeration;
-- sibling-Actions stabilization barrier first;
-- zero runtime;
-- no marker before review success.
+- a fresh attempt-1 Draft PR;
+- derived byte-for-byte from the new materialization;
+- zero-runtime.
 
-## Step 5 — allocate only after successful authorization review
+Before the repository-global authorization scan, the merged quiet-window barrier must settle sibling Actions metadata.
 
-Only after the new authorization review is fully successful may one exact Issue 60 marker be posted:
+The review must pass:
+
+- one-file/direct-child identity;
+- exact successful parent-main preauthorization resolution;
+- tracked-tree seed scan;
+- repository-global stable double enumeration;
+- fresh authorization guard/control surface.
+
+## Step 3 — allocation marker only AFTER review success
+
+Only after a successful new authorization review may exactly one Issue 60 marker be posted:
 
 `ORDINAL40_AVPS_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=<AUTH_HEAD> parent=<AUTH_PARENT> pr=<PR_NUMBER>`
 
-The marker itself is the allocation boundary.
+That marker is the allocation boundary.
 
-Before that marker exists, do not claim ordinal 40 is allocated.
+Before it exists, never say ordinal 40 is allocated.
 
-## Step 6 — dispatch remains separate
+## Step 4 — dispatch is a separate transition
 
-After allocation marker:
+After allocation:
 
-- re-run the dispatch freshness/control checks;
-- create the dispatch transition only through the reviewed publisher/guard;
-- exactly one consumed marker after successful dispatch transition;
-- no manual bypass;
-- no rerun as a substitute for fresh attempt-1 identity.
+- run the separate dispatch freshness/control guard;
+- create dispatch only through the reviewed publisher/guard;
+- require the exact authorization head/parent/PR marker;
+- create exactly one consumed marker after the dispatch transition succeeds;
+- never use GitHub Re-run as a substitute for a fresh identity.
 
-## Step 7 — results remain closed until exact aggregate validation
+## Step 5 — science execution only after dispatch authorization
 
-Even after MYSTIC execution begins, do not inspect/open scientific results until:
+Only after all previous controls pass may the frozen 360-case MYSTIC campaign execute.
 
-- all 360 cases are present;
-- all artifact/member hashes verify;
+No adaptive/tuned cases may be added after results exist.
+
+## Step 6 — results stay closed until exact aggregate validation
+
+Do not inspect/open the scientific result payload until:
+
+- all 360 cases exist;
+- artifact/member hashes verify;
 - exact runtime identities verify;
-- all attempts/case identities verify;
-- derived channels verify;
-- aggregate guard passes.
+- case/attempt identities verify;
+- 8001-node channels and derived quantities verify;
+- exact-360 aggregate guard passes.
 
 Primary result opening is a separate post-aggregate action.
 
@@ -324,9 +346,9 @@ Primary result opening is a separate post-aggregate action.
 
 - `F = 3.14` remains the current default.
 - transient `tau = 30 s` remains experimental only.
-- Do not tune F, tau, AOD, aerosol profile, provider, forecast cycle, sky offset, threshold, interpolation/support, or another environmental parameter to force a desired Jerusalem/Taylor time.
-- Do not select an atmospheric dataset/cycle/provider because it minimizes Taylor residuals.
-- Freeze external/environmental inputs before target scoring whenever possible.
+- Never tune F, tau, AOD, aerosol profile, provider, forecast cycle, sky offset, threshold, interpolation/support, or another environmental input to force a desired Taylor/Jerusalem time.
+- Never select an atmospheric dataset/cycle/provider because it minimizes a target residual.
+- Freeze external/environmental choices before target scoring whenever possible.
 - No universal magnitude correction.
 - No universal minute correction.
 - Do not infer aerosol family from AOD alone.
@@ -335,10 +357,10 @@ Primary result opening is a separate post-aggregate action.
 - Do not call modeled fields measurements.
 - A CAMS republisher is not an independent scientific source from CAMS.
 - No `humanFirstSeeingValidated` claim without independent human evidence.
-- Taylor mainly validates direct MYSTIC, not Level-B or human first-seeing.
+- Taylor primarily validates direct MYSTIC sky radiance, not Level-B or human first-seeing.
 - Pandora/Izaña remain unopened unless separately authorized.
 - matched-stellar v1 is obsolete.
-- Do not reopen the closed 90° MYSTIC/stellar campaign.
+- Do not reopen the closed exact-zenith / 90° MYSTIC-stellar campaign.
 
 ---
 
@@ -359,17 +381,17 @@ Frozen Crumey Eq.34 mesopic non-monotonic diagnostic:
 - maximum formal negative adaptation penalty ≈ `-0.02861 mag`
 
 ## #116 — OPEN / DO NOT MERGE YET
-It floors negative transient visibility penalties to equilibrium. That is a semantic/physiological model change, not a software cleanup.
+It floors negative transient visibility penalties to equilibrium. That is a semantic/physiological model change, not a cleanup.
 
 Before merge:
 
 1. characterize actual `(physical B, adaptation debt, effective B)` trajectories;
 2. decide mapping from external psychophysics;
 3. preregister semantic criteria;
-4. perform complete post-decision timing audit;
+4. perform a complete post-decision timing audit;
 5. exact-head parity/build.
 
-## #117 — physical question still open
+## #117 — physical question remains open
 
 Main question:
 
@@ -385,17 +407,18 @@ Do not change production transient semantics before this is scientifically resol
 Established component provenance, spectral AOD, vertical profile, SSA/phase/g, molecular/surface/cloud status, explicit missing/approximated/rejected/conflict semantics, historical/current/future modes, QC, and explicit v2 -> v1 projection.
 
 ## #121 — MERGED foundation
+
 Merge commit:
 
 - `e0da52eb0a2d5bac333da6572f51df52ea7e676e`
 
-Implemented representation/QC/provenance foundation.
+Implemented the representation/QC/provenance foundation.
 
 Important limitation:
 
 > richer v2 atmospheric fields are not yet generally consumed by the current fast Level-B sky model.
 
-The remaining engineering/scientific problem is not merely acquiring richer atmosphere data; it is mapping that state into Level-B and validating the mapping independently against MYSTIC.
+The central remaining engineering/scientific problem is mapping rich physical atmosphere into Level-B and independently validating that mapping against MYSTIC.
 
 ---
 
@@ -444,9 +467,9 @@ Do not reinterpret this as proof that the exact Taylor atmosphere is known.
 
 ---
 
-# 7. Taylor Monte Carlo uncertainty
+# 7. Taylor uncertainty and atmosphere provenance boundary
 
-Empirical single-run scatter from the dedicated multi-seed screen:
+Empirical Taylor single-run MYSTIC scatter:
 
 - row1 `0.00264 mag`
 - row5 `0.00517`
@@ -469,13 +492,9 @@ Late reconverged central residuals rows 23–25:
 
 These late rows are not compelling standalone inconsistencies after uncertainty treatment.
 
-AOD finite-difference derivative remains unresolved. Do not reuse an old large derivative as a precise physical derivative.
+AOD finite-difference derivative remains unresolved.
 
----
-
-# 8. Taylor CAMS provenance boundary
-
-Approx same-cycle columns near Taylor:
+Approx same-cycle CAMS columns near Taylor:
 
 - AOD550 ≈ `0.31–0.32`
 - SSA550 ≈ `0.95`
@@ -487,28 +506,28 @@ But forecast00 vertical extinction returned 137 exact zero coefficients despite 
 Therefore:
 
 - forecast00 all-zero extinction is invalid;
-- do not call a mixed run `same-cycle full CAMS` unless vertical fields are genuinely valid;
+- do not call a mixed run `same-cycle full CAMS` unless vertical fields are valid;
 - height-uniform column SSA/g must be labeled approximation;
 - never select forecast03 because it gives a better Taylor residual.
 
-Independent Taylor atmosphere archive search is a separate worker lane: EarthCARE/ATLID, lidar/ceilometer, AERONET, etc. Do not duplicate that lane unless explicitly assigned.
+Independent Taylor atmosphere archive search remains a separate worker lane: EarthCARE/ATLID, lidar/ceilometer, AERONET, etc. Do not duplicate unless explicitly assigned.
 
 HRRR:
 
-- #487 owns the scientific vertical-shape comparison;
+- #487 owns scientific vertical-shape comparison;
 - #489 is only a technical 550-nm smoke test.
 
 ---
 
-# 9. Generalized aerosol vertical-profile sensitivity v1 — active principal lane
+# 8. Generalized aerosol vertical-profile sensitivity v1 — active principal lane
 
 Scientific question:
 
 > At fixed total AOD550 and fixed coherent OPAC rich optical properties/phase function, how much does independently specified normalized aerosol vertical optical-depth shape change twilight radiance and the derived Level-B limiting-magnitude endpoint?
 
-This is not a Taylor fit.
+This is **not** a Taylor fit.
 
-Frozen states:
+Frozen vertical states:
 
 1. Continental average
 2. Maritime clean
@@ -557,7 +576,7 @@ No universal minute conversion. No adaptive post-result cases.
 
 ---
 
-# 10. AVPS merged build-up before authorization
+# 9. AVPS build-up and why the control sequence is strict
 
 Relevant merged sequence includes:
 
@@ -565,35 +584,36 @@ Relevant merged sequence includes:
 - #550 exact-runtime OPAC + custom tau compatibility
 - #551 scientific preregistration
 - #552 unseeded execution skeleton
-- subsequent control/profile/evidence work
 - #557 frozen disabled execution package
 - #558 authorization control
 - #559 execution/analysis/result-opening control
+- #562 failed-authorization reuse + quiet-window recovery
+- #563 exact-blob mode-only fresh-preauthorization trigger
 
-The purpose of the long control sequence is deliberate:
+The long sequence is deliberate:
 
-> all scientific design, case identity, runtime identity, analysis rules, result-opening rules, and authorization semantics must be frozen before fresh seeds/ordinal are finally allocated and before MYSTIC results exist.
+> scientific design, case identity, runtime identity, analysis rules, result-opening rules and authorization semantics are frozen before final identity allocation and before MYSTIC results exist.
 
 Do not short-circuit this by manually running the 360 cases.
 
 ---
 
-# 11. What AVPS is intended to answer
+# 10. What AVPS is intended to answer
 
-If the campaign executes successfully, the result should quantify vertical-profile sensitivity independently of Taylor/Jerusalem residuals.
+If the campaign executes successfully, it should quantify vertical-profile sensitivity independently of Taylor/Jerusalem residuals.
 
-It should answer, at the frozen geometry/AOD grid:
+It should answer at the frozen geometry/AOD grid:
 
 - how much V-band effective sky radiance changes when only normalized vertical optical-depth shape changes;
 - how much photopic/scotopic channels change;
-- how much current Level-B limiting magnitude would move under those independent radiance differences;
+- how much current Level-B limiting magnitude moves under those independent radiance differences;
 - whether a fast operational atmosphere mapping needs explicit vertical-profile sensitivity or can safely collapse some profile information in some domain.
 
 It does **not** by itself validate a universal atmosphere-to-Level-B mapping.
 
 ---
 
-# 12. Next scientific lanes after AVPS
+# 11. Next scientific lanes after AVPS
 
 Priority remains:
 
@@ -608,11 +628,11 @@ Provider/data choices and sensitivity ranges must be frozen independently of Tay
 
 ---
 
-# 13. Level-B mapping remains the central unresolved engineering question
+# 12. Level-B mapping remains the central unresolved engineering question
 
 Operational Atmosphere v2 can represent richer physical states, but the current fast model does not yet consume arbitrary rich atmosphere with demonstrated predictive equivalence to direct MYSTIC.
 
-The desired end state is:
+Desired end state:
 
 1. acquire the best independently known atmosphere for place/time;
 2. represent it without inventing missing components;
@@ -623,17 +643,17 @@ The desired end state is:
 
 ---
 
-# 14. Other later lanes
+# 13. Other later lanes
 
 - Moon: draft/validation work remains later priority.
 - Natural night background: draft work remains later priority.
 - Artificial skyglow: provider/model still needed.
-- Total sky compositor exists, but components must each have valid provenance/domain rules.
-- Transient adaptation issue #117 remains scientifically unresolved and should not be silently changed while atmosphere work proceeds.
+- Total sky compositor exists, but each component needs valid provenance/domain rules.
+- Transient adaptation issue #117 remains scientifically unresolved and must not be silently changed while atmosphere work proceeds.
 
 ---
 
-# 15. Reporting contract
+# 14. Reporting contract
 
 Every scientific campaign/report should state explicitly:
 
@@ -648,38 +668,26 @@ Every scientific campaign/report should state explicitly:
 - approximations/missing components;
 - numerical uncertainty / MC scatter;
 - whether the comparison is direct MYSTIC, Level-B, or human first-seeing;
-- whether any target observations were used for source/model selection.
+- whether target observations were used for source/model selection.
 
-Never collapse these layers into one vague statement that `the model matches observations`.
+Never collapse these layers into a vague statement that `the model matches observations`.
 
 ---
 
-# 16. Current bottom line
+# 15. Current bottom line
 
-The project is **not finished**, but the AVPS lane is much closer to a clean scientific execution than at the post-#557 checkpoint.
+The project is **not finished**, but AVPS has now crossed an important clean checkpoint:
 
-What is now frozen:
+- all scientific/runtime/analysis/result-opening rules are frozen;
+- the failed first authorization is preserved and proven unallocated;
+- failed ordinal 40 is safely reusable under merged fail-closed rules;
+- the handoff-metadata race was identified exactly;
+- a content-preserving fresh-main trigger was reviewed and merged;
+- a new exact-main attempt-1 preauthorization has passed completely;
+- 72 candidate seeds are proven clean;
+- ordinal 40 is freshly proven next;
+- **nothing has yet been allocated, dispatched, simulated or opened**.
 
-- AVPS scientific design;
-- 360-case universe;
-- 72-CRN structure;
-- profile transport;
-- OPAC/custom-tau syntax;
-- disabled package;
-- authorization control;
-- execution control;
-- aggregate verification;
-- result-opening rules;
-- Level-B endpoint rule with `F=3.14`.
+Immediate task from this file:
 
-What happened at #561:
-
-> authorization review failed safely because repository metadata changed during the double enumeration. It did not discover a seed collision and did not allocate or execute anything.
-
-What #562 is doing:
-
-> preserve that failure as auditable history, reuse ordinal 40 only under fail-closed proof, and prevent sibling Actions creation from racing the next authorization-head snapshot.
-
-Immediate task:
-
-> finish #562 gates, merge only if clean, run a new exact-main preauthorization with repository writes frozen, rebuild authorization from that new proof, then perform a fresh one-file ordinal-40 authorization review. Do not post an allocation marker or dispatch anything before that review passes.
+> materialize a new `authorization.json` from run `33111875371` / artifact `9663132186`, then open a fresh exact one-file Draft authorization review for ordinal 40. Only after that review passes may the Issue 60 allocation marker be created. MYSTIC remains forbidden until the subsequent separate dispatch transition succeeds.

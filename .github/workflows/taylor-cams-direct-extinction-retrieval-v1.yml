@@ -1,4 +1,4 @@
-name: Taylor CAMS prior-cycle split retrieval v2
+name: Taylor CAMS current-cycle AOD sanity v1
 
 on:
   pull_request:
@@ -6,13 +6,12 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  prior-cycle-profile:
+  current-cycle-aod:
     if: github.head_ref == 'review/taylor-cams-direct-extinction-retrieval-v1'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     env:
       ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
     steps:
@@ -20,129 +19,47 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Install ADS and GRIB tools
-        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes numpy
-
-      - name: Retrieve frozen prior-cycle fields as small requests
+      - name: Install clients
+        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes
+      - name: Retrieve and decode current-cycle AOD
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p cams-output
+          mkdir -p out
           python - <<'PY'
-          import cdsapi, json, os, pathlib
-          out=pathlib.Path('cams-output')
-          key=os.environ.get('ADS_API_KEY','').strip()
-          if not key: raise SystemExit('ADS_API_KEY missing')
-          ds='cams-global-atmospheric-composition-forecasts'
-          common={'date':['2025-08-07/2025-08-07'],'time':['12:00'],'leadtime_hour':['12','15'],'type':['forecast'],'data_format':'grib','area':[42.4,-84.0,42.0,-83.6]}
-          levels=[str(i) for i in range(1,138)]
-          reqs={
-            'ext':{**common,'variable':['aerosol_extinction_coefficient_532nm'],'model_level':levels},
-            'tq':{**common,'variable':['temperature','specific_humidity'],'model_level':levels},
-            'surface':{**common,'variable':['geopotential','logarithm_of_surface_pressure'],'model_level':['1']},
-            'aod':{**common,'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm']},
-          }
-          files={
-            'ext':out/'ext532.grib','tq':out/'t_q.grib','surface':out/'z_lnsp.grib','aod':out/'aod532_550.grib'
-          }
-          (out/'requests.json').write_text(json.dumps({'dataset':ds,'requests':reqs},indent=2,sort_keys=True)+'\n')
-          c=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=key,quiet=False,debug=False)
-          for k in ['ext','tq','surface','aod']:
-              c.retrieve(ds,reqs[k],str(files[k]))
-              if not files[k].is_file() or files[k].stat().st_size==0: raise SystemExit(f'{k} missing')
-              print(k,'BYTES',files[k].stat().st_size)
-          PY
-
-      - name: Build exact valid-00Z and valid-03Z 137-level profile
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import csv,json,math,pathlib,numpy as np
-          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_is_defined,codes_release
-          LAT=42.256; LON=-83.709; RD=287.06; G=9.80665; out=pathlib.Path('cams-output')
-          def sg(g,k,d=None):
-              try:
-                  if codes_is_defined(g,k): return codes_get(g,k)
-              except Exception: pass
-              return d
-          def pv_at(g):
-              la=codes_get_array(g,'latitudes'); lo=codes_get_array(g,'longitudes'); va=codes_get_array(g,'values'); pts=[]
-              for y,x,v in zip(la,lo,va):
-                  x=float(x); x=x-360 if x>180 else x; pts.append((round(float(y),6),round(x,6),float(v)))
-              by={(y,x):v for y,x,v in pts}; ys=sorted({p[0] for p in pts}); xs=sorted({p[1] for p in pts})
-              yl=[y for y in ys if y<=LAT]; yh=[y for y in ys if y>=LAT]; xl=[x for x in xs if x<=LON]; xh=[x for x in xs if x>=LON]
-              if yl and yh and xl and xh:
-                  y0=max(yl); y1=min(yh); x0=max(xl); x1=min(xh); need=[(y0,x0),(y0,x1),(y1,x0),(y1,x1)]
-                  if all(k in by for k in need):
+          import cdsapi,csv,json,os,pathlib
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_release
+          LAT=42.256; LON=-83.709; out=pathlib.Path('out')
+          req={'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm'],'date':['2025-08-08/2025-08-08'],'time':['00:00'],'leadtime_hour':['0','3'],'type':['forecast'],'data_format':'grib','area':[42.4,-84.0,42.0,-83.6]}
+          (out/'request.json').write_text(json.dumps(req,indent=2,sort_keys=True)+'\n')
+          c=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=os.environ['ADS_API_KEY'],quiet=False,debug=False)
+          f=out/'aod.grib'; c.retrieve('cams-global-atmospheric-composition-forecasts',req,str(f))
+          rows=[]
+          with f.open('rb') as fh:
+              while True:
+                  g=codes_grib_new_from_file(fh)
+                  if g is None: break
+                  try:
+                      s=str(codes_get(g,'shortName')); n=str(codes_get(g,'name')); step=int(codes_get(g,'step'))
+                      lats=codes_get_array(g,'latitudes'); lons=codes_get_array(g,'longitudes'); vals=codes_get_array(g,'values')
+                      pts=[]
+                      for la,lo,v in zip(lats,lons,vals):
+                          lo=float(lo); lo=lo-360 if lo>180 else lo; pts.append((round(float(la),6),round(lo,6),float(v)))
+                      by={(y,x):v for y,x,v in pts}; ys=sorted({p[0] for p in pts}); xs=sorted({p[1] for p in pts})
+                      y0=max(y for y in ys if y<=LAT); y1=min(y for y in ys if y>=LAT); x0=max(x for x in xs if x<=LON); x1=min(x for x in xs if x>=LON)
                       fy=0 if y1==y0 else (LAT-y0)/(y1-y0); fx=0 if x1==x0 else (LON-x0)/(x1-x0)
-                      return (1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
-              return min(pts,key=lambda p:(p[0]-LAT)**2+(p[1]-LON)**2)[2]
-          def read(p):
-              rows=[]; hybrid=None
-              with pathlib.Path(p).open('rb') as f:
-                  while True:
-                      g=codes_grib_new_from_file(f)
-                      if g is None: break
-                      try:
-                          rows.append({'short':str(sg(g,'shortName','')),'name':str(sg(g,'name','')),'step':int(sg(g,'step',-1)),'level':int(sg(g,'level',-1)),'units':str(sg(g,'units','')),'value':pv_at(g)})
-                          if hybrid is None:
-                              try:
-                                  x=codes_get_array(g,'pv')
-                                  if len(x): hybrid=np.asarray(x,float)
-                              except Exception: pass
-                      finally: codes_release(g)
-              return rows,hybrid
-          ex,pve=read(out/'ext532.grib'); tq,pvt=read(out/'t_q.grib'); su,pvs=read(out/'z_lnsp.grib'); ao,_=read(out/'aod532_550.grib')
-          hybrid=next((x for x in [pvt,pve,pvs] if x is not None),None); N=len(hybrid)//2-1
-          if N!=137: raise SystemExit(f'hybrid levels={N}')
-          A=hybrid[:N+1]; B=hybrid[N+1:]
-          T={(r['step'],r['level']):r['value'] for r in tq if r['short']=='t' or r['name'].lower()=='temperature'}
-          Q={(r['step'],r['level']):r['value'] for r in tq if r['short']=='q' or r['name'].lower()=='specific humidity'}
-          E={(r['step'],r['level']):r['value'] for r in ex if 'extinction' in r['name'].lower() and '532' in r['name']}
-          Z={(r['step'],r['level']):r['value'] for r in su if r['short']=='z' or r['name'].lower()=='geopotential'}
-          L={(r['step'],r['level']):r['value'] for r in su if r['short']=='lnsp' or 'logarithm of surface pressure' in r['name'].lower()}
-          A532={r['step']:r['value'] for r in ao if r['short']=='aod532' or ('optical depth' in r['name'].lower() and '532' in r['name'])}
-          A550={r['step']:r['value'] for r in ao if r['short']=='aod550' or ('optical depth' in r['name'].lower() and '550' in r['name'])}
-          leads=sorted({s for s,l in E}); prof=[]; summ=[]
-          def trap(P): return sum(.5*(max(0,b0)+max(0,b1))*(h1-h0) for (h0,b0),(h1,b1) in zip(P[:-1],P[1:]) if h1>h0)
-          def upto(P,c):
-              x=0.
-              for (h0,b0),(h1,b1) in zip(P[:-1],P[1:]):
-                  if h0>=c: break
-                  if h1<=h0: continue
-                  hu=min(h1,c); f=(hu-h0)/(h1-h0); bu=b0+f*(b1-b0); x+=.5*(max(0,b0)+max(0,bu))*(hu-h0)
-                  if h1>=c: break
-              return x
-          for st in leads:
-              if st not in A532 or st not in A550: raise SystemExit(f'AOD missing step {st}')
-              if any((st,l) not in E or (st,l) not in T or (st,l) not in Q for l in range(1,138)): raise SystemExit(f'level missing {st}')
-              if max(E[(st,l)] for l in range(1,138))<=0: raise SystemExit(f'zero extinction {st}')
-              sp=math.exp(L[(st,1)]); zs=Z[(st,1)]; hs=zs/G; zh=zs; C={}
-              for lev in range(137,0,-1):
-                  tv=T[(st,lev)]*(1+.609133*Q[(st,lev)]); pt=A[lev-1]+B[lev-1]*sp; pb=A[lev]+B[lev]*sp
-                  if lev==1: dl=math.log(pb/.1); al=math.log(2.)
-                  else: dl=math.log(pb/pt); al=1-(pt/(pb-pt))*dl
-                  tr=tv*RD; zf=zh+tr*al; zh+=tr*dl; C[lev]=(zf/G,pt,pb)
-              P=[(0.,E[(st,137)])]
-              for lev in range(137,0,-1):
-                  h,pt,pb=C[lev]; agl=h-hs; beta=E[(st,lev)]; P.append((agl,beta)); prof.append({'baseDate':'2025-08-07','baseHourUTC':12,'leadHour':st,'validDate':'2025-08-08','validHourUTC':(12+st)%24,'modelLevel':lev,'extinction532_m-1':beta,'heightAGL_m':agl,'siteAnchoredAltitude_m':262+agl,'pressureApprox_Pa':.5*(pt+pb),'temperature_K':T[(st,lev)],'specificHumidity_kgkg':Q[(st,lev)]})
-              P.sort(); tau=trap(P); pk=max((E[(st,l)],l,C[l][0]-hs) for l in range(1,138)); s={'baseHourUTC':12,'leadHour':st,'validHourUTC':(12+st)%24,'integratedTau532':tau,'directAOD532':A532[st],'directAOD550':A550[st],'tauToDirectAOD532Ratio':tau/A532[st],'surfacePressure_Pa':sp,'nativeSurfaceHeight_m':hs,'peakExtinction532_m-1':pk[0],'peakModelLevel':pk[1],'peakHeightAGL_m':pk[2]}
-              for km in [.5,1,2,3,5,10]: s['fractionBelow'+str(km).replace('.','p')+'km']=upto(P,km*1000)/tau
-              summ.append(s)
-          prof.sort(key=lambda r:(r['leadHour'],r['heightAGL_m']))
-          with (out/'profile.csv').open('w',newline='') as f: w=csv.DictWriter(f,fieldnames=list(prof[0])); w.writeheader(); w.writerows(prof)
-          with (out/'summary.csv').open('w',newline='') as f: w=csv.DictWriter(f,fieldnames=list(summ[0])); w.writeheader(); w.writerows(summ)
-          meta={'selection':'2025-08-07 12Z leads 12/15 -> valid 2025-08-08 00Z/03Z; chosen before results to avoid unusable lead-0 extinction diagnostic','method':'ECMWF hydrostatic model-level height algorithm; direct CAMS extinction532 and AOD532/550','target':{'lat':LAT,'lon':LON,'siteElevation_m':262},'nlevels':137,'results':summ}
-          (out/'summary.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n'); print(json.dumps(meta,indent=2,sort_keys=True))
+                      v=(1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+                      rows.append({'base':'2025-08-08T00Z','leadHour':step,'validHourUTC':step,'shortName':s,'name':n,'value':v})
+                  finally: codes_release(g)
+          rows.sort(key=lambda r:(r['leadHour'],r['shortName']))
+          with (out/'current_cycle_aod.csv').open('w',newline='') as q:
+              w=csv.DictWriter(q,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+          (out/'summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n'); print(json.dumps(rows,indent=2))
           PY
-          sha256sum cams-output/* > cams-output/SHA256SUMS.txt
-
-      - name: Upload split-retrieval CAMS profile
-        uses: actions/upload-artifact@v4
+          sha256sum out/* > out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
         with:
-          name: taylor-cams-priorcycle-split-extinction532-v2
-          path: cams-output
+          name: taylor-cams-currentcycle-aod-v1
+          path: out
           if-no-files-found: error
           retention-days: 90

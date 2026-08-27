@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import math
 import re
 import sys
 from pathlib import Path
@@ -12,9 +11,11 @@ from typing import Any
 STAGE = "aerosol-vertical-profile-sensitivity-v1"
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+EXECUTION_CANDIDATE_PATH = HERE / "execution_candidate.py"
 EXECUTION_PACKAGE_PATH = HERE / "execution_package.py"
 SEED_LEDGER_PATH = HERE / "seed_ledger.py"
 WAVELENGTH_GRID_PATH = ROOT / "experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat"
+EXPECTED_EXECUTION_CANDIDATE_BLOB = "ac77f6f594b74d2b6fa0ece5ad7dcb106e498976"
 EXPECTED_EXECUTION_PACKAGE_BLOB = "4b588e5eb289e9074935bf4ca22a4e2c6185bdb9"
 EXPECTED_DISABLED_PACKAGE_CANONICAL = "ecf7052454e47a9e047cb944f22b031473c0986e9d8b9cec1aa010d425b39cc1"
 EXPECTED_WAVELENGTH_GRID_BLOB = "3bb3db96580d555ef758f57cabd6cac55b61cebb"
@@ -33,6 +34,12 @@ def git_blob_sha1(path: Path) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
+def canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+
+
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -43,7 +50,7 @@ def _load(name: str, path: Path):
     return module
 
 
-def _package() -> dict[str, Any]:
+def _package_and_module() -> tuple[dict[str, Any], Any]:
     if git_blob_sha1(EXECUTION_PACKAGE_PATH) != EXPECTED_EXECUTION_PACKAGE_BLOB:
         raise AdapterRefusal("execution package byte drift")
     if git_blob_sha1(WAVELENGTH_GRID_PATH) != EXPECTED_WAVELENGTH_GRID_BLOB:
@@ -52,7 +59,17 @@ def _package() -> dict[str, Any]:
     package = mod.build_disabled_execution_package()
     if package.get("canonicalPackageSha256") != EXPECTED_DISABLED_PACKAGE_CANONICAL:
         raise AdapterRefusal("execution package canonical drift")
-    return package
+    return package, mod
+
+
+def _skeleton() -> dict[str, Any]:
+    if git_blob_sha1(EXECUTION_CANDIDATE_PATH) != EXPECTED_EXECUTION_CANDIDATE_BLOB:
+        raise AdapterRefusal("execution candidate byte drift")
+    mod = _load("avps_adapter_execution_candidate", EXECUTION_CANDIDATE_PATH)
+    skeleton = mod.build_review_execution_skeleton()
+    if skeleton.get("caseCount") != 360 or skeleton.get("groupCount") != 72:
+        raise AdapterRefusal("execution skeleton cardinality drift")
+    return skeleton
 
 
 def _seed_by_group() -> dict[str, int]:
@@ -100,11 +117,28 @@ def validate_authorization_bindings(auth: dict[str, Any]) -> None:
 
 def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
     validate_authorization_bindings(auth)
-    package = _package()
-    matches = [row for row in package["cases"] if row.get("caseId") == case_id]
-    if len(matches) != 1:
-        raise AdapterRefusal(f"expected exactly one frozen case: {case_id}")
-    base = dict(matches[0])
+    package, package_mod = _package_and_module()
+    skeleton = _skeleton()
+
+    packaged = [row for row in package["cases"] if row.get("caseId") == case_id]
+    full = [row for row in skeleton["cases"] if row.get("caseId") == case_id]
+    if len(packaged) != 1 or len(full) != 1:
+        raise AdapterRefusal(f"case must exist exactly once in both frozen surfaces: {case_id}")
+    packaged_case = packaged[0]
+    full_case = full[0]
+    for key in ("caseId", "groupId", "stateId"):
+        if packaged_case.get(key) != full_case.get(key):
+            raise AdapterRefusal(f"package/skeleton identity mismatch: {key}")
+
+    expected_surface = package_mod.render_case_science_surface(full_case)
+    if packaged_case.get("caseSurface") != expected_surface:
+        raise AdapterRefusal("package/skeleton science surface mismatch")
+    if packaged_case.get("caseSurfaceSha256") != canonical_sha256(expected_surface):
+        raise AdapterRefusal("package case-surface canonical hash mismatch")
+
+    base = dict(full_case)
+    base["caseSurface"] = list(packaged_case["caseSurface"])
+    base["caseSurfaceSha256"] = str(packaged_case["caseSurfaceSha256"])
     seed_map = _seed_by_group()
     group_id = str(base["groupId"])
     if group_id not in seed_map:
@@ -116,6 +150,27 @@ def authorized_case(case_id: str, auth: dict[str, Any]) -> dict[str, Any]:
     base["resultOpeningAuthorized"] = False
     base["scientificOrdinal"] = int(auth["scientificOrdinal"])
     return base
+
+
+def authorized_case_universe(auth: dict[str, Any]) -> list[dict[str, Any]]:
+    validate_authorization_bindings(auth)
+    package, _ = _package_and_module()
+    case_ids = [str(row["caseId"]) for row in package["cases"]]
+    if len(case_ids) != 360 or len(set(case_ids)) != 360:
+        raise AdapterRefusal("frozen package case ID universe drift")
+    cases = [authorized_case(case_id, auth) for case_id in case_ids]
+    if len({case["groupId"] for case in cases}) != 72:
+        raise AdapterRefusal("authorized group universe drift")
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for case in cases:
+        by_group.setdefault(str(case["groupId"]), []).append(case)
+    if any(len(rows) != 5 for rows in by_group.values()):
+        raise AdapterRefusal("authorized states-per-group drift")
+    if any(len({row["seed"] for row in rows}) != 1 for rows in by_group.values()):
+        raise AdapterRefusal("CRN pairing drift within group")
+    if len({rows[0]["seed"] for rows in by_group.values()}) != 72:
+        raise AdapterRefusal("authorized group seed uniqueness drift")
+    return cases
 
 
 def exact_profile_texts(data_dir: Path, auth: dict[str, Any]) -> dict[str, str]:
@@ -140,6 +195,8 @@ def render_case_input(case: dict[str, Any], auth: dict[str, Any], data_dir: Path
     seed = case.get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 < seed < SEED_DOMAIN_MAX_EXCLUSIVE:
         raise AdapterRefusal("case seed invalid")
+    if int(case.get("photonHistories") or 0) != 20_000_000:
+        raise AdapterRefusal("case photon budget drift")
     state_id = str(case.get("stateId") or "")
     if state_id not in auth["exactAfglProfileTauSha256"]:
         raise AdapterRefusal("case state outside exact-AFGL profile universe")
@@ -174,7 +231,7 @@ def render_case_input(case: dict[str, Any], auth: dict[str, Any], data_dir: Path
         raise AdapterRefusal("required frozen directive missing/duplicated")
     if lines.count(f"mc_randomseed {seed}") != 1:
         raise AdapterRefusal("authorized seed directive drift")
-    if lines.count(f"mc_photons {int(case['photonHistories'])}") != 1 or int(case["photonHistories"]) != 20_000_000:
+    if lines.count("mc_photons 20000000") != 1:
         raise AdapterRefusal("photon directive drift")
     return "\n".join(lines) + "\n"
 
@@ -187,10 +244,10 @@ def prepare_case_files(case: dict[str, Any], auth: dict[str, Any], data_dir: Pat
     profile_texts = exact_profile_texts(data_dir, auth)
     state_id = str(case["stateId"])
     profile_path = profiles_dir / f"{state_id}.tau"
-    profile_path.write_text(profile_texts[state_id], encoding="utf-8")
+    profile_path.write_text(profile_texts[state_id], encoding="utf-8", newline="\n")
     rendered = render_case_input(case, auth, data_dir, repository_root, output_root)
     input_path = case_dir / "case.inp"
-    input_path.write_text(rendered, encoding="utf-8")
+    input_path.write_text(rendered, encoding="utf-8", newline="\n")
     return {
         "caseDir": str(case_dir.resolve()),
         "inputPath": str(input_path.resolve()),

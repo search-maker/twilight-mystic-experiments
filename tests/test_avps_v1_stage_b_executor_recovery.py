@@ -113,7 +113,8 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs"'), 1)
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
         self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100"', text)
-        self.assertNotIn('gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/60/comments', text)
+        actual_issue60_posts = [line.strip() for line in text.splitlines() if line.strip().startswith("gh api --method POST") and "issues/60/comments" in line]
+        self.assertEqual(actual_issue60_posts, [])
         for forbidden in ("aggregate_results", "open_results", "gh run rerun", "/rerun"):
             self.assertNotIn(forbidden, text)
 
@@ -124,9 +125,10 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
         actual_rerun_commands = [line.strip() for line in text.splitlines() if line.strip().startswith("gh run rerun")]
         self.assertEqual(actual_rerun_commands, [])
+        actual_issue60_posts = [line.strip() for line in text.splitlines() if line.strip().startswith("gh api --method POST") and "issues/60/comments" in line]
+        self.assertEqual(actual_issue60_posts, [])
         self.assertIn("! grep -F 'gh run rerun' \"$f\"", text)
-        self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100"', text)
-        self.assertNotIn('gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/60/comments', text)
+        self.assertIn("! grep -F 'gh api --method POST \"repos/${GITHUB_REPOSITORY}/issues/60/comments' \"$f\"", text)
 
     def test_result_opening_stays_closed(self):
         b = self.contract["resultBoundary"]

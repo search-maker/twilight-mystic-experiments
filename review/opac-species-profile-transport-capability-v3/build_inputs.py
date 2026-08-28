@@ -76,7 +76,7 @@ def parse_afgl_heights_km(path: Path) -> tuple[float, ...]:
     if len(rows) < 5:
         raise CapabilityInputError("atmosphere needs at least five altitude levels")
     if not all(rows[i] > rows[i + 1] for i in range(len(rows) - 1)):
-        raise CapabilityInputError,"expected strictly descending AFGL altitude grid")
+        raise CapabilityInputError("expected strictly descending AFGL altitude grid")
     if rows[-1] > 1e-9:
         raise CapabilityInputError("capability is frozen to a sea-level atmosphere grid")
     return tuple(rows)

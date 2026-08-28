@@ -37,28 +37,55 @@ export function leftGeneralizedInverseAnchoredEnvelope({
   const rtol = Number(relativeThresholdTolerance);
   if (!Number.isFinite(rtol) || rtol <= 0 || rtol >= 1e-6) throw new RangeError('relativeThresholdTolerance out of frozen numerical range');
   if (!Number.isInteger(maxIterations) || maxIterations < 64 || maxIterations > 256) throw new RangeError('maxIterations out of frozen range');
-  const atAnchor = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: anchor, thresholdLux, localMaximumB });
-  const atUpper = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: upper, thresholdLux, localMaximumB });
+  const localMax = positive('localMaximumB', localMaximumB);
+  const atAnchor = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: anchor, thresholdLux, localMaximumB: localMax });
+  const atUpper = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: upper, thresholdLux, localMaximumB: localMax });
   const tol = Math.max(Number.MIN_VALUE, target * rtol);
   if (target < atAnchor - tol || target > atUpper + tol) throw new RangeError('target threshold outside attained anchored-envelope range');
   if (Math.abs(target - atAnchor) <= tol) {
-    return Object.freeze({ backgroundCdM2: anchor, forwardThresholdLux: atAnchor, iterations: 0, relativeThresholdTolerance: rtol });
+    return Object.freeze({ backgroundCdM2: anchor, forwardThresholdLux: atAnchor, iterations: 0, relativeThresholdTolerance: rtol, certifiedStationaryPointReturned: false });
   }
+
+  // Eq.34 has a certified local threshold maximum at localMax. When the target
+  // is that attained envelope maximum, the exact left generalized inverse is
+  // the certified stationary point itself. Do not move left merely because a
+  // threshold tolerance makes a nearby pre-maximum point numerically close.
+  if (anchor <= localMax && localMax <= upper) {
+    const atLocalMax = thresholdLux(localMax);
+    if (Math.abs(target - atLocalMax) <= tol) {
+      return Object.freeze({
+        backgroundCdM2: localMax,
+        forwardThresholdLux: atLocalMax,
+        iterations: 0,
+        relativeThresholdTolerance: rtol,
+        certifiedStationaryPointReturned: true,
+      });
+    }
+  }
+
   let lo = anchor;
   let hi = upper;
-  // Seek the left boundary of {B: M_anchor(B) >= target - tol}.
+  // Away from the certified envelope maximum, seek the left crossing of the
+  // monotone anchored envelope. Threshold tolerance controls forward equality,
+  // not which certified stationary point defines a plateau boundary.
   for (let i = 0; i < maxIterations; i += 1) {
     const mid = lo + (hi - lo) / 2;
     if (mid === lo || mid === hi) break;
-    const value = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: mid, thresholdLux, localMaximumB });
+    const value = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: mid, thresholdLux, localMaximumB: localMax });
     if (value >= target - tol) hi = mid;
     else lo = mid;
   }
-  const forward = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: hi, thresholdLux, localMaximumB });
+  const forward = anchoredPathEnvelopeThreshold({ anchorB: anchor, endB: hi, thresholdLux, localMaximumB: localMax });
   if (Math.abs(forward - target) > Math.max(tol * 2, target * 5e-12)) {
     throw new Error(`generalized-inverse forward check failed: ${forward} vs ${target}`);
   }
-  return Object.freeze({ backgroundCdM2: hi, forwardThresholdLux: forward, iterations: maxIterations, relativeThresholdTolerance: rtol });
+  return Object.freeze({
+    backgroundCdM2: hi,
+    forwardThresholdLux: forward,
+    iterations: maxIterations,
+    relativeThresholdTolerance: rtol,
+    certifiedStationaryPointReturned: false,
+  });
 }
 
 export function thresholdDerivedEquivalentBackground({ adaptationFieldB, laggedAdaptationB, thresholdLux }) {
@@ -78,6 +105,7 @@ export function thresholdDerivedEquivalentBackground({ adaptationFieldB, laggedA
     inferredTotalAdaptationBackgroundCdM2: inverse.backgroundCdM2,
     equivalentBackgroundCdM2,
     inverseForwardThresholdLux: inverse.forwardThresholdLux,
+    certifiedStationaryPointReturned: inverse.certifiedStationaryPointReturned,
   });
 }
 

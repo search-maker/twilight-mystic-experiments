@@ -1,0 +1,86 @@
+name: Review OPAC species-profile transport capability v4
+
+on:
+  pull_request:
+    paths:
+      - review/opac-species-profile-transport-capability-v4/**
+      - .github/recovery-templates/opac-species-profile-transport-capability-v4.yml
+      - .github/workflows/opac-species-profile-transport-capability-v4-review.yml
+
+permissions: {contents: read, pull-requests: read}
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {ref: '${{ github.event.pull_request.head.sha }}', fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Bind exact review-only identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request; test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-species-profile-transport-capability-v4
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" > pr.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('review PR must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('ref')!='review/opac-species-profile-transport-capability-v4' or (p.get('head') or {}).get('sha')!=os.environ['PR_HEAD']: raise SystemExit('review head drift')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('review base drift')
+          PY
+      - name: Prove v4 code and scope without solver execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/opac-species-profile-transport-capability-v4.yml
+          python -m py_compile review/opac-species-profile-transport-capability-v4/build_inputs.py review/opac-species-profile-transport-capability-v4/activation_support.py
+          python - <<'PY'
+          import hashlib,importlib.util,tempfile
+          from pathlib import Path
+          bpath=Path('review/opac-species-profile-transport-capability-v4/build_inputs.py')
+          spec=importlib.util.spec_from_file_location('v4',bpath); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          assert m.STAGE_ID=='opac-species-profile-transport-capability-v4'
+          assert m.ALIAS_SOURCE_REL.as_posix()=='aerosol/OPAC/optprop/inso.mie.cdf'
+          assert m.ALIAS_TARGET_REL.as_posix()=='aerosol/OPAC/INSO.nc'
+          assert m.MYSTIC_PHOTONS==500_000 and m.MYSTIC_SEED==730_194_613 and m.AOD550==0.10
+          heights=(20.,12.,8.,4.,2.,1.,0.); assert m.synthetic_density_shape(heights,'low') != m.synthetic_density_shape(heights,'high')
+          # Exercise alias code with the frozen source hash by temporarily overriding only the constant in-memory.
+          with tempfile.TemporaryDirectory() as td:
+            root=Path(td); src=root/m.ALIAS_SOURCE_REL; src.parent.mkdir(parents=True); src.write_bytes(b'alias-review-bytes')
+            m.EXPECTED_SOURCE_SHA256=hashlib.sha256(src.read_bytes()).hexdigest()
+            a=m.prepare_inso_alias(root); target=root/m.ALIAS_TARGET_REL
+            assert target.read_bytes()==src.read_bytes() and a['byteIdentical'] is True and a['aliasRelativePath']=='aerosol/OPAC/INSO.nc'
+          text=bpath.read_text(); protocol=Path('review/opac-species-profile-transport-capability-v4/PROTOCOL.md').read_text(); support=Path('review/opac-species-profile-transport-capability-v4/activation_support.py').read_text(); workflow=Path('.github/recovery-templates/opac-species-profile-transport-capability-v4.yml').read_text()
+          required=('aerosol_species_library OPAC','aerosol_species_file','aerosol_set_tau_at_wvl 550','ALIAS_TARGET_REL = Path("aerosol/OPAC/INSO.nc")','EXPECTED_SOURCE_SHA256 = "fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407"')
+          if [x for x in required if x not in text]: raise SystemExit('builder freeze missing')
+          if 'aerosol_file tau' in text: raise SystemExit('competing tau override forbidden')
+          for x in ('33180158034','aerosol/OPAC/INSO.nc','NO SCIENTIFIC ORDINAL','Ordinal 40 must never be reused'):
+            if x.lower() not in protocol.lower(): raise SystemExit(f'protocol freeze missing {x}')
+          for x in ('aliasRelativePath") != "aerosol/OPAC/INSO.nc"','"scientificOrdinalAllocated": False','"productionAuthorized": False'):
+            if x not in support: raise SystemExit(f'support freeze missing {x}')
+          for x in ('status/opac-species-profile-transport-capability-v4','REQUEST_ONE_SHOT_OPAC_LIBRARY_ROOT_ALIAS_CAPABILITY_V4','aerosol/OPAC/INSO.nc','PASS_LIBRARY_ROOT_ALIAS_REACHES_DISORT_AND_MYSTIC'):
+            if x not in workflow: raise SystemExit(f'inactive workflow freeze missing {x}')
+          if 'workflow_dispatch:' in workflow: raise SystemExit('manual dispatch forbidden')
+          PY
+      - name: Freeze review receipt without libRadtran execution
+        shell: bash
+        run: |
+          set -euo pipefail; mkdir review-receipt
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def blob(path):
+            b=Path(path).read_bytes(); return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          out={'schemaVersion':1,'stageId':'opac-species-profile-transport-capability-v4-review','status':'REVIEW_PASS_ACTIVATION_INACTIVE_NO_LIBRADTRAN_EXECUTION','reviewHead':os.environ['PR_HEAD'],'workflowRunId':int(os.environ['GITHUB_RUN_ID']),'workflowRunAttempt':1,'builderGitBlobSha1':blob('review/opac-species-profile-transport-capability-v4/build_inputs.py'),'activationSupportGitBlobSha1':blob('review/opac-species-profile-transport-capability-v4/activation_support.py'),'protocolGitBlobSha1':blob('review/opac-species-profile-transport-capability-v4/PROTOCOL.md'),'inactiveWorkflowGitBlobSha1':blob('.github/recovery-templates/opac-species-profile-transport-capability-v4.yml'),'libRadtranExecuted':False,'mysticExecuted':False,'scientificOrdinalAllocated':False,'taylorOrJerusalemUsed':False,'productionAuthorized':False,'activationAuthorizedByReview':False}
+          raw=json.dumps(out,sort_keys=True,separators=(',',':')).encode(); out['contentSha256']=hashlib.sha256(raw).hexdigest(); Path('review-receipt/review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: {name: opac-species-profile-transport-capability-v4-review, path: review-receipt/, if-no-files-found: error, compression-level: 0}

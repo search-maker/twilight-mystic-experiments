@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER_PATH = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py"
 CONTRACT_PATH = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/RECOVERY_CONTROL_CONTRACT.review.json"
 REVIEW_WORKFLOW_PATH = ROOT / ".github/workflows/avps-v1-stage-b-post-consumption-surface-review.yml"
+SCIENCE_GUARD_PATH = ROOT / "experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py"
 
 spec = importlib.util.spec_from_file_location("avps_stage_b_surface_tested", HELPER_PATH)
 if spec is None or spec.loader is None:
@@ -56,6 +57,16 @@ class AvpsStageBPostConsumptionSurface(unittest.TestCase):
         self.assertEqual(c["globalOrdinalGitBlobSha1"], actual["experiments/aerosol-vertical-profile-sensitivity-v1/global_ordinal.py"])
         self.assertEqual(c["freshnessGitBlobSha1"], actual["experiments/aerosol-vertical-profile-sensitivity-v1/freshness.py"])
         self.assertEqual(c["executionContractGitBlobSha1"], actual["experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json"])
+
+    def test_frozen_science_guard_enforces_canonical_seed_identity(self):
+        text = SCIENCE_GUARD_PATH.read_text()
+        self.assertIn('live_seed_proof.get("candidateSeedCanonicalSha256")', text)
+        self.assertIn('authorization.get("candidateSeedCanonicalSha256")', text)
+        self.assertIn('live_seed_proof.get("candidateRowsCanonicalSha256")', text)
+        self.assertIn('authorization.get("candidateRowsCanonicalSha256")', text)
+        s = self.contract["stageBRecoverySurface"]
+        self.assertEqual(s["mustPreserveCandidateSeedCanonicalSha256"], "a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e")
+        self.assertEqual(s["mustPreserveCandidateRowsCanonicalSha256"], "f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683")
 
     def _payload(self):
         return {

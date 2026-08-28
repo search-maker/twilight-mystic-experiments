@@ -1,0 +1,200 @@
+name: Review aerosol vertical-profile sensitivity v2 preregistration
+
+on:
+  pull_request:
+    paths:
+      - review/aerosol-vertical-profile-sensitivity-v2-prereg/**
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-prereg-review.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BASE_MAIN: 99ade7798627e67921139697ba1a004fa8a304bb
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      RENDERER_PR: '596'
+      RENDERER_HEAD: 8adfd4fafa4c039394d12e6f6aff1795b750f4d2
+      RENDERER_BLOB: 99f61e1daa03cecef055a3773544574738d65082
+      RENDERER_RUN: '33193123594'
+      RENDERER_CONTRACT_RUN: '33193123597'
+      RENDERER_ARTIFACT: '9694613680'
+      RENDERER_ARTIFACT_DIGEST: sha256:5e6942d879326ffc2dc8805d7649086cae32ad2e16aeec19a62cd3b0a89e3e27
+      RENDERER_REPORT_CONTENT_SHA: 20f26c65ce1d01e4514ceea36f2c95ecbf421d05a805b0a3d23e58f1fc9dda24
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review identity and renderer PASS evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/aerosol-vertical-profile-sensitivity-v2-prereg
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}" > current-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$RENDERER_PR" > renderer-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RENDERER_RUN" > renderer-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RENDERER_CONTRACT_RUN" > renderer-contract-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RENDERER_RUN/artifacts" > renderer-artifacts.json
+          git fetch origin "$RENDERER_HEAD"
+          test "$(git rev-parse "$RENDERER_HEAD:review/avps-four-species-renderer-validation-v1/renderer.py")" = "$RENDERER_BLOB"
+          python - <<'PY'
+          import json,os
+          p=json.load(open('current-pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['PR_HEAD'] or p['base']['sha']!=os.environ['BASE_MAIN']:
+              raise SystemExit('v2 prereg PR drift')
+          rp=json.load(open('renderer-pr.json'))
+          if rp['state']!='open' or rp['draft'] is not True or rp['merged_at'] is not None or rp['head']['sha']!=os.environ['RENDERER_HEAD'] or rp['base']['sha']!=os.environ['BASE_MAIN']:
+              raise SystemExit('#596 renderer PR drift')
+          rr=json.load(open('renderer-run.json')); cr=json.load(open('renderer-contract-run.json'))
+          if rr['id']!=int(os.environ['RENDERER_RUN']) or rr['head_sha']!=os.environ['RENDERER_HEAD'] or rr['run_attempt']!=1 or rr['conclusion']!='success':
+              raise SystemExit('#596 dedicated run drift')
+          if cr['id']!=int(os.environ['RENDERER_CONTRACT_RUN']) or cr['head_sha']!=os.environ['RENDERER_HEAD'] or cr['run_attempt']!=1 or cr['conclusion']!='success':
+              raise SystemExit('#596 repository contract drift')
+          arts=json.load(open('renderer-artifacts.json'))['artifacts']
+          hit=[a for a in arts if a['id']==int(os.environ['RENDERER_ARTIFACT'])]
+          if len(hit)!=1 or hit[0].get('digest')!=os.environ['RENDERER_ARTIFACT_DIGEST'] or hit[0].get('expired'):
+              raise SystemExit('#596 artifact drift')
+          PY
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/branches?per_page=100" > branches.json
+          python - <<'PY'
+          import json
+          names=[row['name'] for page in json.load(open('branches.json')) for row in page]
+          bad=[n for n in names if 'ordinal-41' in n or 'ordinal41' in n]
+          if bad: raise SystemExit(f'ordinal 41 unexpectedly allocated: {bad}')
+          PY
+
+      - name: Download and verify exact five rendered profile bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf renderer-evidence
+          gh run download "$RENDERER_RUN" -n avps-four-species-renderer-validation-v1 -D renderer-evidence
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          report=json.load(open('renderer-evidence/bundle/renderer-validation-report.json'))
+          manifest=json.load(open('renderer-evidence/bundle/render-manifest.json'))
+          if report.get('status')!='PASS_FIVE_FROZEN_AVPS_TEMPLATES_RENDERED_AS_COMMON_SCALAR_FOUR_SPECIES_NULL_TAU_SHAPES': raise SystemExit('renderer report status drift')
+          if report.get('contentSha256')!=os.environ['RENDERER_REPORT_CONTENT_SHA']: raise SystemExit('renderer report content SHA drift')
+          if report.get('scientificOrdinalAllocated') is not False or report.get('mysticExecuted') is not False or report.get('scientificRadiativeTransferSolved') is not False: raise SystemExit('renderer evidence crossed science boundary')
+          if report.get('baselineSemanticsCheck',{}).get('maxAbsFractionDifference')!=0.0 or report.get('baselineSemanticsCheck',{}).get('l1FractionDifference')!=0.0: raise SystemExit('renderer baseline exactness drift')
+          expected={
+            'opac-profile-continental-average':'ceed598f7681951cd0e6208b267beb5b41a52ab10311f37ce76f925700caff3d',
+            'opac-profile-maritime-clean':'487b67bd7dbe89d12d032fdf2b33cab545e16a2e0697170648317f1a76362a67',
+            'opac-profile-desert':'2b4d2e03c6ae3143d9bb05d2da49f57f75172dc1f24d34f7d4a4939bf9952fef',
+            'opac-profile-arctic':'98f2fa5428c830764252fd0a2662b0f5c957fc027ffcb7bdc0a5e500dfd7d3d6',
+            'opac-profile-antarctic':'ee063c6dca68cf9a31d8bb9d993f1fed5cb34c8bb056ac180c97171b5d6b4f19',
+          }
+          if set(manifest.get('states',{}))!=set(expected): raise SystemExit('renderer state universe drift')
+          for state,want in expected.items():
+              p=Path('renderer-evidence/bundle/profiles')/f'{state}.four-species.dat'
+              got=hashlib.sha256(p.read_bytes()).hexdigest()
+              if got!=want or manifest['states'][state].get('profileSha256')!=want:
+                  raise SystemExit(f'rendered profile byte drift: {state}')
+          PY
+
+      - name: Build and audit fresh 360-case review skeleton
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p review-output
+          python -m py_compile review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py
+          python review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py > review-output/skeleton.json
+          python - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          x=json.load(open('review-output/skeleton.json'))
+          if (x['caseCount'],x['groupCount'],x['statesPerGroup'],x['distinctPreSeedScienceSurfaceCount'],x['seedCount'])!=(360,72,5,120,0): raise SystemExit('v2 skeleton cardinality drift')
+          if x['scientificOrdinal'] is not None or x['scientificExecutionAuthorized'] or x['solverExecutionAuthorized'] or x['resultOpeningAuthorized']: raise SystemExit('v2 skeleton crossed review boundary')
+          cases=x['cases']
+          if len({c['caseId'] for c in cases})!=360 or not all(c['caseId'].startswith('avps-v2-') for c in cases): raise SystemExit('fresh v2 case identity drift')
+          if any(c['seed'] is not None or c['scientificOrdinal'] is not None for c in cases): raise SystemExit('seed/ordinal allocated in prereg skeleton')
+          for c in cases:
+              aerosol=c['aerosolDirectives']
+              if any(line.startswith('aerosol_file ') for line in aerosol): raise SystemExit('forbidden aerosol_file directive')
+              if sum(line.startswith('aerosol_species_file ') for line in aerosol)!=1: raise SystemExit('four-species directive cardinality drift')
+              if not aerosol[2].endswith(' INSO WASO SOOT SUSO'): raise SystemExit('four-species order drift')
+          old_path=Path('experiments/aerosol-vertical-profile-sensitivity-v1/execution_candidate.py')
+          spec=importlib.util.spec_from_file_location('old_avps_candidate',old_path); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          old_ids={c['caseId'] for c in mod.build_review_execution_skeleton()['cases']}
+          new_ids={c['caseId'] for c in cases}
+          if old_ids & new_ids: raise SystemExit('v2 reused ordinal-40/v1 case identity')
+          PY
+
+      - name: Prove no solver, seed or ordinal allocation exists in review package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          workflow=Path('.github/workflows/aerosol-vertical-profile-sensitivity-v2-prereg-review.yml').read_text()
+          protocol=Path('review/aerosol-vertical-profile-sensitivity-v2-prereg/protocol.review.json').read_text()
+          review=Path('review/aerosol-vertical-profile-sensitivity-v2-prereg/PROTOCOL.md').read_text()
+          if 'setup-micromamba' in workflow or 'command -v uvspec' in workflow or ' uvspec ' in workflow: raise SystemExit('review workflow must not invoke libRadtran')
+          for text in (protocol,review):
+              if 'aerosol_file tau profiles/' in text: raise SystemExit('old effective implementation revived')
+          if 'aerosol-vertical-profile-sensitivity-v2|group-seed|sha256-v1' not in protocol: raise SystemExit('fresh seed namespace missing')
+          if 'ordinal 41' not in review.lower(): raise SystemExit('ordinal boundary missing')
+          PY
+
+      - name: Freeze preregistration review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          x=json.load(open('review-output/skeleton.json'))
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-prereg-review',
+            'status':'REVIEW_PASS_360_FRESH_CASE_IDENTITIES_EXACT_FOUR_SPECIES_PROFILES_SEEDS_AND_ORDINAL_UNALLOCATED',
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'rendererHead':os.environ['RENDERER_HEAD'],
+            'rendererRunId':int(os.environ['RENDERER_RUN']),
+            'rendererArtifactId':int(os.environ['RENDERER_ARTIFACT']),
+            'rendererArtifactDigest':os.environ['RENDERER_ARTIFACT_DIGEST'],
+            'skeletonCanonicalSha256':x['canonicalSkeletonSha256'],
+            'skeletonFileSha256':sha('review-output/skeleton.json'),
+            'caseCount':x['caseCount'],
+            'groupCount':x['groupCount'],
+            'seedCount':x['seedCount'],
+            'scientificOrdinal':None,
+            'scientificExecutionAuthorized':False,
+            'solverExecuted':False,
+            'taylorOrJerusalemUsed':False,
+            'productionAuthorized':False,
+          }
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); out['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('review-output/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aerosol-vertical-profile-sensitivity-v2-prereg-review
+          path: review-output/
+          if-no-files-found: error
+          compression-level: 0

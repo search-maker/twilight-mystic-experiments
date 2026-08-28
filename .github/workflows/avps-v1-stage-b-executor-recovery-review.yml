@@ -1,0 +1,122 @@
+name: AVPS Stage B executor-contract recovery review
+run-name: Review AVPS Stage B executor recovery ${{ github.event.pull_request.number }}
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/recovery-templates/avps-v1-stage-b-executor-recovery-v2.yml
+      - .github/workflows/avps-v1-stage-b-executor-recovery-review.yml
+      - review/avps-v1-ordinal40-stage-b-executor-recovery-v1/**
+      - tests/test_avps_v1_stage_b_executor_recovery.py
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-stage-b-executor-recovery-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact recovery review head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Run recovery unit contract
+        run: python tests/test_avps_v1_stage_b_executor_recovery.py
+
+      - name: Bind frozen repository and exact failed execution evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = 99ade7798627e67921139697ba1a004fa8a304bb
+          test "$(git rev-parse HEAD:experiments/aerosol-vertical-profile-sensitivity-v1/executor.py)" = 68eb7f6916bae204e60f6a378eae25f9c2bff184
+          test "$(git rev-parse HEAD:experiments/aerosol-vertical-profile-sensitivity-v1/execution-contract.review.json)" = 230874923004115ff21f218bb0ce4d2e038d3a98
+          test "$(git rev-parse HEAD:experiments/full-spectrum-estimator-pilot-v2/executor.py)" = 4d4ee9af433157182185784ded162fb139c9fa2d
+
+          mkdir -p recovery-review-evidence
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33137514692" > recovery-review-evidence/failed-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33137514692/artifacts?per_page=100" > recovery-review-evidence/failed-run-artifacts.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312" > recovery-review-evidence/failed-job-1.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322" > recovery-review-evidence/failed-job-2.json
+          gh api --allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs" > recovery-review-evidence/failed-job-1.log
+          gh api --allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs" > recovery-review-evidence/failed-job-2.log
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33138196230" > recovery-review-evidence/cancel-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98742886631" > recovery-review-evidence/cancel-job.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          e=Path('recovery-review-evidence')
+          r=json.load(open(e/'failed-run.json'))
+          expected={'id':33137514692,'head_sha':'79b95f0ee0fafeb07f3785da91e63598035d4ac1','head_branch':'status/avps-v1-stage-b-science-recovery-ordinal-40','event':'workflow_dispatch','run_attempt':1,'path':'.github/workflows/avps-v1-science.yml','status':'completed','conclusion':'cancelled'}
+          for k,v in expected.items():
+              if r.get(k)!=v: raise SystemExit(f'failed-run identity drift {k}: {r.get(k)!r} != {v!r}')
+          arts=json.load(open(e/'failed-run-artifacts.json')).get('artifacts',[])
+          if len(arts)!=1: raise SystemExit(f'failed run must have exactly one preflight artifact, got {len(arts)}')
+          a=arts[0]
+          if int(a.get('id') or 0)!=9672728847 or a.get('name')!='avps-v1-stage-b-preflight-ordinal-40' or a.get('digest')!='sha256:afe5c4c11e7885023b443a49f2babbbe25f763f2486aa4042102c0a300bf16d6' or a.get('expired') is True: raise SystemExit('failed-run preflight artifact identity drift')
+          if any(str(x.get('name') or '').startswith('avps-v1-case-') for x in arts): raise SystemExit('failed run unexpectedly has a valid AVPS case artifact')
+          needle='required raw output/member missing or empty: syntax-stdout.txt'
+          for i,jid in enumerate((98741943312,98741943322),1):
+              j=json.load(open(e/f'failed-job-{i}.json'))
+              if int(j.get('run_id') or 0)!=33137514692 or j.get('status')!='completed' or j.get('conclusion')!='failure': raise SystemExit(f'exemplar failed job identity drift: {jid}')
+              steps={s.get('name'):s for s in j.get('steps',[])}
+              if (steps.get('Execute exactly one preregistered AVPS case') or {}).get('conclusion')!='failure': raise SystemExit(f'exemplar job failed at wrong step: {jid}')
+              if needle not in (e/f'failed-job-{i}.log').read_text(errors='replace'): raise SystemExit(f'exemplar log lacks exact transport refusal: {jid}')
+          cr=json.load(open(e/'cancel-run.json'))
+          if int(cr.get('id') or 0)!=33138196230 or int(cr.get('run_attempt') or 0)!=1 or cr.get('status')!='completed' or cr.get('conclusion')!='success': raise SystemExit('cancel-control run drift')
+          cj=json.load(open(e/'cancel-job.json'))
+          if int(cj.get('id') or 0)!=98742886631 or cj.get('conclusion')!='success': raise SystemExit('cancel-control job drift')
+          steps={s.get('name'):s for s in cj.get('steps',[])}
+          if (steps.get('Bind exact failed run and cancel only that run') or {}).get('conclusion')!='success': raise SystemExit('exact cancel step was not successful')
+          PY
+
+      - name: Prove inactive v2 recovery transport preserves exact boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=.github/recovery-templates/avps-v1-stage-b-executor-recovery-v2.yml
+          test -f "$f"
+          test ! -e .github/recovery-templates/avps-v1-stage-b-executor-recovery.yml
+          test "$(grep -c -- '--allow-escape-sequences .*98741943312/logs' "$f")" = 1
+          test "$(grep -c -- '--allow-escape-sequences .*98741943322/logs' "$f")" = 1
+          grep -F 'status/avps-v1-stage-b-executor-recovery-ordinal-40' "$f"
+          grep -F '33137514692' "$f"
+          grep -F '9672728847' "$f"
+          grep -F 'recovery_executor.py' "$f"
+          grep -F 'gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100"' "$f"
+          ! grep -F 'gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/60/comments' "$f"
+          ! grep -F 'aggregate_results' "$f"
+          ! grep -F 'open_results' "$f"
+          ! grep -F 'gh run rerun' "$f"
+          ! grep -F '/rerun' "$f"
+
+      - name: Persist review evidence only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-stage-b-executor-recovery-review
+          path: recovery-review-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Prove review performed no solver execution
+        run: echo 'AVPS_STAGE_B_EXECUTOR_RECOVERY_REVIEW_PASS_NO_SCIENCE_NO_SOLVER'

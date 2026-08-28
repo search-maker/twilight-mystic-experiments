@@ -1,6 +1,6 @@
 # STAR VISIBILITY / MYSTIC — LIVE CURRENT HANDOFF
 
-**Live refresh: 2026-08-28 — four-species transport and exact NULL/RH/tau calibration are now proven; ordinal 41 remains unallocated; next gate is the explicit four-species renderer for the five frozen AVPS vertical templates.**
+**Live refresh: 2026-08-28 — PR #596 is the active four-species renderer gate. Initial head `510581558a7cebefd1cba642892160f5d3da69b0` failed closed before reconstruction because `mkdir evidence` was non-idempotent; no renderer/NULL validation ran. The only correction is `mkdir -p evidence` on fresh head `ff8c1eeea0b0307fb799be1d20f6ba836f232331`; fresh review `33192854324` and repo contract `33192854366` are active. Ordinal 41 remains unallocated.**
 
 The filename is historical. This content is the current computational/scientific checkpoint.
 
@@ -320,41 +320,60 @@ aerosol_file tau <state>
 
 because ordinal 40 proved the custom tau state lost the intended solver-physics contrast.
 
-## 11. Current next gate — explicit four-species renderer validation, still no ordinal
+## 11. Current gate — PR #596 explicit four-species renderer validation, still no ordinal
 
-All source/runtime quantities needed to validate a corrected representation are now frozen.
+PR #596 is Draft/open/unmerged:
 
-Preferred representation principle:
+- branch `review/avps-four-species-renderer-validation-v1`
+- initial head `510581558a7cebefd1cba642892160f5d3da69b0`
+- initial review run `33192621988` attempt 1 — FAILURE before runtime reconstruction
+- failed step: `Reconstruct exact locked runtime and frozen OPAC archive`
+- exact cause: `mkdir: cannot create directory ‘evidence’: File exists`
+- failure artifact `9694407319`, digest `sha256:78673b59a68b78893898638da243740b2ea904c2bfea72b565dae101f0202cf2`
+- no lower-bound baseline validation, five-state renderer validation, DISORT or MYSTIC ran on that head
+- do not rerun the failed head/run
 
-- interpolate the locked `continental_average.dat` four-species mass vector onto the exact AFGL-US levels from 35 km downward;
-- at every altitude keep the four species as **one common nonnegative scalar multiple of that local standard mixture vector**;
-- this preserves local INSO/WASO/SOOT/SUSO ratios and the AFGL-driven OPAC RH optics while varying only the amount of the fixed mixture;
-- emit one explicit four-species `aerosol_species_file` profile, with the proven no-extension aliases;
-- never combine it with `aerosol_file tau`;
-- keep `aerosol_set_tau_at_wvl 550 0.10/0.30` as the separate column normalization.
+Fresh correction:
 
-The renderer must be validated against the actual runtime layer-tau table calibrated by #595, not merely against an analytic mass-extinction calculation.
+- current head `ff8c1eeea0b0307fb799be1d20f6ba836f232331`
+- only change from the failed head: `mkdir evidence` -> `mkdir -p evidence`
+- renderer code, protocol, exact #595 dependency blob, original AVPS template blob and all tolerances are unchanged
+- fresh renderer review `33192854324` is active
+- fresh repo contract `33192854366` is active
+- ordinal 41 remains unallocated
 
-### Recommended deterministic validation construction
+Frozen renderer representation under test:
 
-On the AFGL grid, standard-mixture mass is zero at 35 km and above. There are exactly 29 nonzero mixture nodes from 32.5 km through 0 km and exactly 29 aerosol-containing layers below 35 km.
+- expand exact `continental_average.dat` onto the exact AFGL grid using lower-bound layer semantics, zero at/above35 km;
+- first require the explicit expanded four-species profile at AOD550=0.10 to reproduce built-in `aerosol_species_file continental_average` normalized NULL layer-tau shape within the already-frozen #595 print-precision limits;
+- only after that baseline gate, use for each active layer `common_scalar = frozen_target_layer_tau_fraction / expanded_standard_layer_tau_fraction`;
+- multiply INSO/WASO/SOOT/SUSO in that layer by the same finite nonnegative scalar, preserving the local standard species ratios;
+- emit one explicit four-species `aerosol_species_file` profile per frozen AVPS state;
+- never use `aerosol_file tau`;
+- keep `aerosol_set_tau_at_wvl 550 0.10/0.30` as separate column normalization;
+- validate all five states at AOD550 0.10 and0.30 with actual NULL/verbose layer-tau output.
 
-A review-only NULL workflow should:
+Frozen PASS tolerances are unchanged from #595:
 
-1. prove that an AFGL-grid resampling with scalar=1 at every active node reproduces the built-in `continental_average` normalized 550-nm layer-tau shape within a preregistered print-precision tolerance;
-2. build a 29x29 runtime response matrix using 29 NULL/verbose basis profiles, each preserving the local standard species ratio and activating one scalar node at a frozen basis amplitude;
-3. parse layer tau with the already calibrated `scatter+abs` parser;
-4. solve the square linear system deterministically for each of the five already-frozen target normalized layer-tau vectors;
-5. require finite nonnegative scalar solutions and a bounded matrix condition number; no post-result clipping except a preregistered tiny numerical-zero tolerance;
-6. render all five explicit four-species mass profiles;
-7. validate each state with actual NULL/verbose at AOD550 0.10 **and** 0.30;
-8. compare all 49 runtime layer-tau fractions to the original `opac_vertical_templates.py` target fractions under preregistered tight max-absolute and L1 tolerances;
-9. require zero target/runtime aerosol fraction above35 km;
-10. preserve all basis matrix, solved scalars, rendered profiles and validation tables as evidence.
+- AOD sum abs <= `2.1e-6`
+- row-sum vs printed sum line <= `7e-5`
+- target normalized-shape max abs <= `6e-5`
+- target normalized-shape L1 <= `1.5e-3`
+- the same shape limits for 0.10 vs0.30 rescale comparison
 
-This is still renderer validation, not scientific MYSTIC execution.
+If the lower-bound/common-scalar construction fails the actual runtime NULL table, do **not** relax tolerances or clip scientific states post hoc. Preserve the failure and fall back to the already-preregistered 29x29 NULL response-matrix construction below. If it passes, the matrix is unnecessary complexity and the simpler runtime-validated representation becomes the renderer evidence.
 
-Only after this gate passes should the replacement AVPS execution skeleton/directives be rewritten and re-reviewed.
+### Frozen fallback only if the simple runtime gate fails scientifically
+
+A response-matrix renderer may then:
+
+1. build 29 NULL/verbose local-standard-mixture basis profiles over the active below-35-km nodes;
+2. parse layer tau with the already calibrated `scatter+abs` parser;
+3. solve the deterministic square response system for each frozen target vector;
+4. require finite nonnegative solutions and a preregistered condition-number/numerical-zero policy;
+5. validate all five rendered states again at AOD550 0.10 and0.30 against the unchanged target/tolerances.
+
+This fallback may be selected only because the simple representation fails its independent runtime validation, never from Taylor/Jerusalem residual behavior.
 
 ## 12. Original scientific screen to preserve unless independently changed before seeds/results
 
@@ -384,6 +403,7 @@ Do not:
 - allocate ordinal 41 yet;
 - reuse ordinal-40 case/seed identities;
 - GitHub-rerun v2/v3/v4/trace/v5/#592 consumed one-shot identities;
+- GitHub-rerun #596 failed run `33192621988`;
 - infer scientific materiality/effect size from capability/NULL audits;
 - use #592 equal-0.25 mass weights scientifically;
 - replace `continental_average` with INSO-only;
@@ -406,12 +426,12 @@ Do not:
 ## 15. Resume checklist
 
 - [ ] confirm frozen `main == 99ade7798627e67921139697ba1a004fa8a304bb`;
-- [ ] confirm PRs #590–#595 remain Draft/open/unmerged on their final evidence heads;
+- [ ] confirm PRs #590–#596 remain Draft/open/unmerged on their final/current evidence heads;
 - [ ] preserve #595 artifact `9693948772`, digest `sha256:97d431fe31724731a24697233c2154b836159a29299f8f42ea1853ebdf9d266a`;
-- [ ] search for parallel renderer work before opening the next branch;
-- [ ] preregister renderer response-matrix construction, condition/nonnegative rules and validation tolerances before any basis/validation run;
-- [ ] run only NULL/verbose for renderer validation; no scientific MYSTIC and no ordinal;
-- [ ] after renderer PASS, rewrite/review the 360-case execution skeleton to use exact explicit four-species profiles and no `aerosol_file tau`;
+- [ ] preserve #596 failed attempt `33192621988` and artifact `9694407319`; never rerun it;
+- [ ] inspect fresh #596 review `33192854324` and contract `33192854366` on exact head `ff8c1eee...`;
+- [ ] if #596 PASS, freeze its artifact/report and rewrite/review the 360-case execution skeleton to use exact explicit four-species profiles and no `aerosol_file tau`;
+- [ ] if #596 fails on runtime renderer physics, preserve that head/results and move to the frozen 29x29 NULL response-matrix fallback without relaxing target/tolerances;
 - [ ] only after tracked-tree science freeze re-audit Issue #60 and branches;
 - [ ] allocate 72 fresh CRN group seeds with repository-global collision audit;
 - [ ] allocate the fresh scientific ordinal only in a separate authorization review;
@@ -420,4 +440,4 @@ Do not:
 
 ## 16. One-line live status
 
-**The infrastructure/physics-transport gap is now closed through source, RH and runtime-tau calibration: four `continental_average` species reach the solvers, exact 550-nm/RH optics are frozen, runtime RH selection is observed, and NULL `scatter+abs` is calibrated as layer tau with AOD rescale preserving shape. Ordinal 41 remains unallocated. The next task is a review-only 29x29 NULL response-matrix renderer that preserves local `continental_average` composition and proves all five original AVPS target tau550 shapes before any new scientific execution.**
+**Source, four-species transport, exact 550-nm/RH behavior and NULL layer-tau calibration are proven through #595. PR #596 is now testing the corrected explicit four-species renderer against the actual runtime NULL table. Its initial head failed only on non-idempotent `mkdir evidence` before any renderer validation; the fresh head changes only that control-plane line and is under review. Ordinal 41 remains unallocated and no replacement scientific MYSTIC run is authorized yet.**

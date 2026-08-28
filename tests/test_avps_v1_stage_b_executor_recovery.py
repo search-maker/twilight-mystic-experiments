@@ -112,7 +112,9 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
         self.assertIn("recovery_executor.py", text)
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs"'), 1)
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
-        for forbidden in ("aggregate_results", "open_results", "gh run rerun", "/rerun", "issues/60/comments"):
+        self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100"', text)
+        self.assertNotIn('gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/60/comments', text)
+        for forbidden in ("aggregate_results", "open_results", "gh run rerun", "/rerun"):
             self.assertNotIn(forbidden, text)
 
     def test_review_workflow_uses_safe_log_capture_and_v2_template(self):
@@ -120,7 +122,11 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
         self.assertIn("avps-v1-stage-b-executor-recovery-v2.yml", text)
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs"'), 1)
         self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
-        self.assertNotIn("gh run rerun", text)
+        actual_rerun_commands = [line.strip() for line in text.splitlines() if line.strip().startswith("gh run rerun")]
+        self.assertEqual(actual_rerun_commands, [])
+        self.assertIn("! grep -F 'gh run rerun' \"$f\"", text)
+        self.assertIn('gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100"', text)
+        self.assertNotIn('gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/60/comments', text)
 
     def test_result_opening_stays_closed(self):
         b = self.contract["resultBoundary"]

@@ -8,9 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLISHER = ROOT / ".github/recovery-templates/avps-v1-stage-b-science-recovery-publisher.yml"
 SCIENCE = ROOT / ".github/recovery-templates/avps-v1-stage-b-science-recovery.yml"
 HELPER = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py"
+SCIENCE_GUARD = ROOT / "experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py"
 PT = PUBLISHER.read_text()
 ST = SCIENCE.read_text()
 HT = HELPER.read_text()
+SGT = SCIENCE_GUARD.read_text()
 
 
 class AvpsStageBRecoveryTransport(unittest.TestCase):
@@ -70,10 +72,15 @@ class AvpsStageBRecoveryTransport(unittest.TestCase):
         self.assertIn("freshness.validate_dispatch(surface, ordinal, head_sha, post_dispatch=True)", HT)
 
     def test_exact_science_identity_is_frozen(self):
-        self.assertIn("candidateSeedCanonicalSha256", ST)
+        self.assertIn("live-seed-authorization-proof.json", ST)
         self.assertIn("repository_global_seed_scan.py", ST)
         self.assertIn("--audit-mode authorization-recheck", ST)
         self.assertIn("--expected-branch-name \"dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-${ORDINAL}\"", ST)
+        self.assertIn("sg.evaluate(Path('science')", ST)
+        self.assertIn('live_seed_proof.get("candidateSeedCanonicalSha256")', SGT)
+        self.assertIn('authorization.get("candidateSeedCanonicalSha256")', SGT)
+        self.assertIn('live_seed_proof.get("candidateRowsCanonicalSha256")', SGT)
+        self.assertIn('authorization.get("candidateRowsCanonicalSha256")', SGT)
         self.assertIn("rubin-libradtran=2.0.6=py312pl5321he9373c2_1", ST)
         self.assertIn("11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e", ST)
         self.assertIn("5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80", ST)

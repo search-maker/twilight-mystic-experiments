@@ -1,0 +1,144 @@
+name: OPAC explicit-species resolver path trace v1
+on:
+  push:
+    branches: [status/opac-species-resolver-path-trace-v1]
+    paths: [.github/dispatch-requests/opac-species-resolver-path-trace-v1.json]
+permissions: {actions: read, contents: read, pull-requests: read}
+concurrency: {group: opac-species-resolver-path-trace-v1, cancel-in-progress: false}
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      V2_HEAD: d90d3bca966d566d328fc1d91fb44f65c58d12b4
+      V2_BUILDER_BLOB: fd859415cd3f05367b1f121a3286588bb4eb1882
+      V4_HEAD: 7b2a2f7ae14a7777408ab36de65fcc4a91b4a8de
+      V4_EXTRACTOR_BLOB: c3a6bdf832dbb78da74e0157c0124b12c53c1c0e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {path: control, fetch-depth: 0, persist-credentials: false}
+      - name: Bind exact reviewed one-shot diagnostic identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/opac-species-resolver-path-trace-v1
+          python - <<'PY' > req.env
+          import json
+          r=json.load(open('control/.github/dispatch-requests/opac-species-resolver-path-trace-v1.json'))
+          if (r.get('schemaVersion'),r.get('stageId'),r.get('status')) != (1,'opac-species-resolver-path-trace-v1','REQUEST_ONE_SHOT_OPAC_SPECIES_RESOLVER_PATH_TRACE_V1'):
+              raise SystemExit('request drift')
+          for k in ('reviewPr','reviewRunId'):
+              print(f'{k.upper()}={int(r[k])}')
+          for k in ('reviewHead','baseMain'):
+              v=r[k]
+              if len(v)!=40 or any(c not in '0123456789abcdef' for c in v):
+                  raise SystemExit(f'{k} invalid')
+              print(f'{k.upper()}={v}')
+          PY
+          source req.env; export REVIEWPR REVIEWRUNID REVIEWHEAD BASEMAIN
+          test "$BASEMAIN" = 99ade7798627e67921139697ba1a004fa8a304bb
+          P="$(git -C control rev-parse HEAD^)"
+          test "$(git -C control diff-tree --no-commit-id --name-only -r HEAD)" = .github/dispatch-requests/opac-species-resolver-path-trace-v1.json
+          test "$(git -C control rev-parse "$P^")" = "$BASEMAIN"
+          test "$(git -C control diff-tree --no-commit-id --name-only -r "$P" | sort | tr '\n' ' ')" = ".github/workflows/opac-species-resolver-path-trace-v1.yml review/opac-species-resolver-path-trace-v1/parse_trace.py "
+          git -C control fetch origin main "$REVIEWHEAD" "$V2_HEAD" "$V4_HEAD"
+          test "$(git -C control rev-parse origin/main)" = "$BASEMAIN"
+          test "$(git -C control rev-parse "$V2_HEAD:review/opac-species-profile-transport-capability-v2/build_inputs.py")" = "$V2_BUILDER_BLOB"
+          test "$(git -C control rev-parse "$V4_HEAD:review/opac-species-profile-transport-capability-v4/activation_support.py")" = "$V4_EXTRACTOR_BLOB"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$REVIEWPR" > pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEWRUNID" > run.json
+          REVIEWHEAD="$REVIEWHEAD" REVIEWRUNID="$REVIEWRUNID" python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json')); r=json.load(open('run.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('review PR drift')
+          if p['head']['ref']!='review/opac-species-resolver-path-trace-v1' or p['head']['sha']!=os.environ['REVIEWHEAD'] or p['base']['sha']!='99ade7798627e67921139697ba1a004fa8a304bb':
+              raise SystemExit('review identity drift')
+          if r['id']!=int(os.environ['REVIEWRUNID']) or r['head_sha']!=os.environ['REVIEWHEAD'] or r['run_attempt']!=1 or r['conclusion']!='success':
+              raise SystemExit('review run drift')
+          PY
+          test "$(git -C control rev-parse "$P:.github/workflows/opac-species-resolver-path-trace-v1.yml")" = "$(git -C control rev-parse "$REVIEWHEAD:.github/recovery-templates/opac-species-resolver-path-trace-v1.yml")"
+          test "$(git -C control rev-parse "$P:review/opac-species-resolver-path-trace-v1/parse_trace.py")" = "$(git -C control rev-parse "$REVIEWHEAD:review/opac-species-resolver-path-trace-v1/parse_trace.py")"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?branch=$GITHUB_REF_NAME&event=push&per_page=100" > runs.json
+          python - <<'PY'
+          import json,os
+          ids=[r['id'] for page in json.load(open('runs.json')) for r in page['workflow_runs'] if r['path']=='.github/workflows/opac-species-resolver-path-trace-v1.yml']
+          if ids != [int(os.environ['GITHUB_RUN_ID'])]:
+              raise SystemExit(f'not one-shot: {ids}')
+          PY
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-path-trace-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Reconstruct exact frozen runtime and OPAC archive
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          command -v strace
+          mkdir evidence
+          mkdir -p trace-runtime/share/libRadtran
+          python control/experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock control/experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/base-runtime.json
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" trace-runtime/share/libRadtran/data
+          curl -L --fail --retry 3 --retry-all-errors --max-time 2700 -o evidence/opac.tar.gz "$SOURCE_URL"
+          git -C control show "$V4_HEAD:review/opac-species-profile-transport-capability-v4/activation_support.py" > v4_activation_support.py
+          PYTHONPATH="$GITHUB_WORKSPACE" python - <<'PY'
+          from pathlib import Path
+          from v4_activation_support import extract_frozen_opac_archive
+          extract_frozen_opac_archive(Path('evidence/opac.tar.gz'),Path('trace-runtime/share/libRadtran'))
+          PY
+          DATA="$GITHUB_WORKSPACE/trace-runtime/share/libRadtran/data"
+          python control/experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$DATA" --atmosphere "$DATA/atmmod/afglus.dat" --runtime-lock control/experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/staged-runtime.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/staged-runtime.json'))
+          assert x['libRadtranDataTreeSha256']=='5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80'
+          assert x['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          PY
+          rm evidence/opac.tar.gz
+      - name: Build exact reviewed v2 LOW input without aliases
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          DATA="$GITHUB_WORKSPACE/trace-runtime/share/libRadtran/data"
+          git -C control show "$V2_HEAD:review/opac-species-profile-transport-capability-v2/build_inputs.py" > trace_input_builder.py
+          test "$(git hash-object trace_input_builder.py)" = "$V2_BUILDER_BLOB"
+          python trace_input_builder.py --atmosphere "$DATA/atmmod/afglus.dat" --data-dir "$DATA" --repository-root "$GITHUB_WORKSPACE/control" --output capability-inputs > evidence/builder.json
+          cp capability-inputs/input-manifest.json evidence/
+          cp capability-inputs/profiles/synthetic-low-inso.dat evidence/
+          cp capability-inputs/inputs/disort-low.inp evidence/
+          test ! -e "$DATA/aerosol/OPAC/optprop/INSO.nc"
+          test ! -e "$DATA/aerosol/OPAC/INSO.nc"
+          timeout 120 uvspec -c < capability-inputs/inputs/disort-low.inp > evidence/disort-low-syntax.out 2> evidence/disort-low-syntax.err
+      - name: Trace exactly one deterministic LOW resolver execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 300 strace -f -yy -s 4096 -e trace=file -o evidence/file-trace.txt uvspec < capability-inputs/inputs/disort-low.inp > evidence/disort-low.out 2> evidence/disort-low.err
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > evidence/uvspec-exit-code.txt
+          test "$rc" -ne 124
+          test -s evidence/file-trace.txt
+          python control/review/opac-species-resolver-path-trace-v1/parse_trace.py --trace evidence/file-trace.txt --stderr evidence/disort-low.err --exit-code-file evidence/uvspec-exit-code.txt --output evidence/trace-report.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/trace-report.json'))
+          assert x['status']=='TRACE_IDENTIFIED_CANDIDATE_OPTICAL_PROPERTY_LOOKUPS', x
+          assert x['scientificOrdinalAllocated'] is False
+          assert x['mysticExecuted'] is False
+          assert x['highProfileSolverExecuted'] is False
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: opac-species-resolver-path-trace-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

@@ -62,6 +62,19 @@ class AvpsStageBFirstReviewFailure(unittest.TestCase):
         self.assertIs(p["scannerBytesMayChange"], False)
         self.assertIs(p["seedCollisionMayBeRetried"], False)
 
+    def test_v2_can_validate_live_surface_but_is_not_activation_ready(self):
+        v2 = self.r["freshReviewV2"]
+        self.assertEqual(v2["branch"], "review/avps-v1-ordinal40-stage-b-science-recovery-control-2")
+        self.assertIs(v2["mustUseFreshPullRequest"], True)
+        self.assertIs(v2["mustUseFreshAttempt1Runs"], True)
+        self.assertIs(v2["genericContractSuccessRequired"], True)
+        self.assertIs(v2["dedicatedLiveSurfaceReviewSuccessRequired"], True)
+        self.assertIs(v2["dedicatedLiveReviewUses429RetryWrapper"], True)
+        self.assertIs(v2["inactiveScienceTransportUses429RetryWrapper"], False)
+        self.assertIs(v2["activationReadyIfBothReviewChecksPass"], False)
+        self.assertIs(v2["activationBeforeBothSuccessesPermitted"], False)
+        self.assertIn("separate Stage-B transport review", v2["nextRequiredReviewAfterGreenV2"])
+
     def test_science_state_remains_unopened(self):
         s = self.r["scienceStateAfterFailedReview"]
         self.assertIs(s["stageAComplete"], True)

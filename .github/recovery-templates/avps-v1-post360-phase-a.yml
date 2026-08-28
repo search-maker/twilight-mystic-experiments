@@ -1,0 +1,208 @@
+name: AVPS v1 post360 Phase A closed aggregation
+run-name: AVPS v1 Phase A closed aggregation ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - status/avps-v1-post360-phase-a-ordinal-40
+    paths:
+      - .github/dispatch-requests/avps-v1-post360-phase-a.json
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v1-post360-phase-a-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  phase-a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact Phase A request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact separately reviewed Phase A identity
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/avps-v1-post360-phase-a-ordinal-40
+          test "$(git -C control rev-parse HEAD)" = "$GITHUB_SHA"
+
+          python - <<'PY' > request.env
+          import json
+          r=json.load(open('control/.github/dispatch-requests/avps-v1-post360-phase-a.json'))
+          if r.get('schemaVersion') != 1: raise SystemExit('request schema drift')
+          if r.get('stageId') != 'aerosol-vertical-profile-sensitivity-v1-post360-phase-a': raise SystemExit('stage drift')
+          if r.get('status') != 'REQUEST_PHASE_A_EXACT360_AGGREGATION_RESULTS_STILL_CLOSED': raise SystemExit('status drift')
+          ints=('scientificOrdinal','phaseAReviewPr','phaseAReviewRunId','protocolReviewPr','sourceRecoveryRunId','gate0MetadataArtifactId')
+          for key in ints:
+              v=r.get(key)
+              if isinstance(v,bool) or not isinstance(v,int) or v<=0: raise SystemExit(f'{key} invalid')
+              print(f'{key.upper()}={v}')
+          shas=('phaseAReviewHead','protocolReviewHead','authorizationParent','authorizationHead','sourceRecoveryHead')
+          for key in shas:
+              v=r.get(key)
+              if not isinstance(v,str) or len(v)!=40 or any(c not in '0123456789abcdef' for c in v): raise SystemExit(f'{key} invalid')
+              print(f'{key.upper()}={v}')
+          for key in ('gate0MetadataArtifactDigest','gate0MetadataInnerSha256'):
+              v=r.get(key)
+              if not isinstance(v,str) or not v: raise SystemExit(f'{key} invalid')
+              print(f'{key.upper()}={v}')
+          PY
+          source request.env
+          export SCIENTIFICORDINAL PHASEAREVIEWPR PHASEAREVIEWRUNID PROTOCOLREVIEWPR SOURCERECOVERYRUNID GATE0METADATAARTIFACTID PHASEAREVIEWHEAD PROTOCOLREVIEWHEAD AUTHORIZATIONPARENT AUTHORIZATIONHEAD SOURCERECOVERYHEAD GATE0METADATAARTIFACTDIGEST GATE0METADATAINNERSHA256
+
+          test "$SCIENTIFICORDINAL" = 40
+          test "$PROTOCOLREVIEWPR" = 579
+          test "$PROTOCOLREVIEWHEAD" = 5e191b1afbdb637e6534c856548af1d79138d6f1
+          test "$AUTHORIZATIONPARENT" = 99ade7798627e67921139697ba1a004fa8a304bb
+          test "$AUTHORIZATIONHEAD" = 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          test "$SOURCERECOVERYRUNID" = 33139545997
+          test "$SOURCERECOVERYHEAD" = 6d0e0e0f1dd1deabaf8bb155ee7e323c5ba8673d
+          test "$GATE0METADATAARTIFACTID" = 9676069031
+          test "$GATE0METADATAARTIFACTDIGEST" = sha256:70dedcd16209dea74a9ed67a1dc7377c123f1a62fd18741b1e15692702011fc8
+          test "$GATE0METADATAINNERSHA256" = 323f458b43a031c50f2c2f74971594801608a5cdf437839c8760b42c19bdb92e
+
+          mapfile -t rp < <(git -C control cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#rp[@]}" = 1
+          CONTROL_HEAD="${rp[0]}"
+          mapfile -t rc < <(git -C control diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#rc[@]}" = 1
+          test "${rc[0]}" = .github/dispatch-requests/avps-v1-post360-phase-a.json
+          mapfile -t cp < <(git -C control cat-file -p "$CONTROL_HEAD" | sed -n 's/^parent //p')
+          test "${#cp[@]}" = 1
+          test "${cp[0]}" = "$AUTHORIZATIONPARENT"
+          mapfile -t cc < <(git -C control diff-tree --no-commit-id --name-only -r "$CONTROL_HEAD")
+          test "${#cc[@]}" = 2
+          printf '%s\n' "${cc[@]}" | sort > control-changed.txt
+          printf '%s\n' '.github/workflows/avps-v1-post360-phase-a.yml' 'review/avps-v1-post360-phase-a-aggregation-control-v1/phase_a.py' | sort > expected-control-changed.txt
+          diff -u expected-control-changed.txt control-changed.txt
+
+          git -C control fetch origin main "$PHASEAREVIEWHEAD" "$PROTOCOLREVIEWHEAD" authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-40
+          test "$(git -C control rev-parse origin/main)" = "$AUTHORIZATIONPARENT"
+          test "$(git -C control rev-parse origin/authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-40)" = "$AUTHORIZATIONHEAD"
+
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PHASEAREVIEWPR}" > phase-a-review-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PHASEAREVIEWRUNID}" > phase-a-review-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PROTOCOLREVIEWPR}" > protocol-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCERECOVERYRUNID}" > recovery-run.json
+          PHASEAREVIEWHEAD="$PHASEAREVIEWHEAD" PHASEAREVIEWRUNID="$PHASEAREVIEWRUNID" PROTOCOLREVIEWHEAD="$PROTOCOLREVIEWHEAD" python - <<'PY'
+          import json,os
+          p=json.load(open('phase-a-review-pr.json')); r=json.load(open('phase-a-review-run.json')); q=json.load(open('protocol-pr.json')); s=json.load(open('recovery-run.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('Phase A review PR must remain Draft/open/unmerged')
+          if (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('Phase A review base drift')
+          if (p.get('head') or {}).get('ref')!='review/avps-v1-post360-phase-a-aggregation-control-v1' or (p.get('head') or {}).get('sha')!=os.environ['PHASEAREVIEWHEAD']: raise SystemExit('Phase A review head drift')
+          if int(r.get('id') or 0)!=int(os.environ['PHASEAREVIEWRUNID']) or r.get('head_sha')!=os.environ['PHASEAREVIEWHEAD'] or int(r.get('run_attempt') or 0)!=1 or r.get('status')!='completed' or r.get('conclusion')!='success': raise SystemExit('Phase A review run not exact attempt-1 success')
+          if q.get('state')!='open' or q.get('draft') is not True or q.get('merged_at') is not None or (q.get('head') or {}).get('sha')!=os.environ['PROTOCOLREVIEWHEAD']: raise SystemExit('post360 protocol review drift')
+          exp={'id':33139545997,'head_sha':'6d0e0e0f1dd1deabaf8bb155ee7e323c5ba8673d','head_branch':'status/avps-v1-stage-b-executor-recovery-ordinal-40','event':'push','run_attempt':1,'status':'completed','conclusion':'success','path':'.github/workflows/avps-v1-stage-b-executor-recovery.yml'}
+          for k,v in exp.items():
+              if s.get(k)!=v: raise SystemExit(f'recovery run drift: {k}')
+          PY
+
+          REVIEW_TEMPLATE_BLOB="$(git -C control rev-parse "$PHASEAREVIEWHEAD:.github/recovery-templates/avps-v1-post360-phase-a.yml")"
+          REVIEW_WRAPPER_BLOB="$(git -C control rev-parse "$PHASEAREVIEWHEAD:review/avps-v1-post360-phase-a-aggregation-control-v1/phase_a.py")"
+          test "$(git -C control rev-parse "$CONTROL_HEAD:.github/workflows/avps-v1-post360-phase-a.yml")" = "$REVIEW_TEMPLATE_BLOB"
+          test "$(git -C control rev-parse "$CONTROL_HEAD:review/avps-v1-post360-phase-a-aggregation-control-v1/phase_a.py")" = "$REVIEW_WRAPPER_BLOB"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${GITHUB_REF_NAME}&event=push&per_page=100" > current-runs.json
+          python - <<'PY'
+          import json,os
+          runs=[r for page in json.load(open('current-runs.json')) for r in page.get('workflow_runs',[]) if r.get('path')=='.github/workflows/avps-v1-post360-phase-a.yml']
+          ids=[int(r.get('id') or 0) for r in runs]
+          if ids != [int(os.environ['GITHUB_RUN_ID'])]: raise SystemExit(f'Phase A activation is not one-shot: {ids}')
+          PY
+
+      - name: Checkout exact frozen authorized science
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          path: science
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Gate-0 metadata and live exact360 surface before case download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir gate0
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9676069031/zip" > gate0.zip
+          test "sha256:$(sha256sum gate0.zip | awk '{print $1}')" = sha256:70dedcd16209dea74a9ed67a1dc7377c123f1a62fd18741b1e15692702011fc8
+          unzip -q gate0.zip -d gate0
+          test "$(find gate0 -type f | wc -l)" = 1
+          test -f gate0/exact360-artifact-metadata.json
+          printf '%s  %s\n' 323f458b43a031c50f2c2f74971594801608a5cdf437839c8760b42c19bdb92e gate0/exact360-artifact-metadata.json | sha256sum -c -
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/33139545997/artifacts?per_page=100" > artifact-pages.json
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          p=Path('control/review/avps-v1-post360-phase-a-aggregation-control-v1/phase_a.py'); s=importlib.util.spec_from_file_location('phase_a_precheck',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          meta=json.load(open('gate0/exact360-artifact-metadata.json')); live=json.load(open('artifact-pages.json')); frozen=m.validate_gate0_metadata(meta); m.validate_live_artifact_surface(frozen,live)
+          PY
+
+      - name: Download and hash-verify exact 360 source case artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p case-artifacts case-zips
+          python - <<'PY' > case-artifacts.tsv
+          import json
+          m=json.load(open('gate0/exact360-artifact-metadata.json'))
+          rows=sorted(m['artifacts'],key=lambda r:r['name'])
+          if len(rows)!=360: raise SystemExit('exact360 drift')
+          for r in rows: print(r['id'],r['name'],r['digest'],sep='\t')
+          PY
+          count=0
+          while IFS=$'\t' read -r aid name digest; do
+            test -n "$aid"; test -n "$name"; test -n "$digest"
+            zip="case-zips/${aid}.zip"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${aid}/zip" > "$zip"
+            actual="sha256:$(sha256sum "$zip" | awk '{print $1}')"
+            test "$actual" = "$digest"
+            mkdir "case-artifacts/$name"
+            unzip -q "$zip" -d "case-artifacts/$name"
+            rm "$zip"
+            count=$((count+1))
+          done < case-artifacts.tsv
+          test "$count" = 360
+
+      - name: Verify exact 360 recovery provenance and run frozen aggregator once
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,sys
+          from pathlib import Path
+          p=Path('control/review/avps-v1-post360-phase-a-aggregation-control-v1/phase_a.py'); s=importlib.util.spec_from_file_location('phase_a_execute',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          receipt=m.run_phase_a(Path('science'),Path('science/experiments/aerosol-vertical-profile-sensitivity-v1/authorization.json'),Path('case-artifacts'),Path('gate0/exact360-artifact-metadata.json'),Path('artifact-pages.json'),Path('phase-a-output'))
+          if receipt.get('status')!='PHASE_A_EXACT360_AGGREGATE_VERIFIED_RESULTS_STILL_CLOSED' or receipt.get('openResultsCalled') is not False or receipt.get('scientificInterpretationPerformed') is not False or receipt.get('resultOpeningAuthorized') is not False: raise SystemExit('Phase A receipt boundary drift')
+          PY
+          rm -rf case-artifacts case-zips
+
+      - name: Persist Phase A verified closed analysis input without opening results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-post360-phase-a-ordinal-40
+          path: phase-a-output/
+          if-no-files-found: error
+          compression-level: 0

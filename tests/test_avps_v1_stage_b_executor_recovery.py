@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RECOVERY = ROOT / "review/avps-v1-ordinal40-stage-b-executor-recovery-v1/recovery_executor.py"
 CONTRACT = ROOT / "review/avps-v1-ordinal40-stage-b-executor-recovery-v1/RECOVERY_CONTRACT.review.json"
+REVIEW_WORKFLOW = ROOT / ".github/workflows/avps-v1-stage-b-executor-recovery-review.yml"
+RECOVERY_TEMPLATE = ROOT / ".github/recovery-templates/avps-v1-stage-b-executor-recovery-v2.yml"
+OLD_TEMPLATE = ROOT / ".github/recovery-templates/avps-v1-stage-b-executor-recovery.yml"
 
 spec = importlib.util.spec_from_file_location("avps_executor_recovery_tested", RECOVERY)
 if spec is None or spec.loader is None:
@@ -66,21 +69,12 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
         transformed = recovery.transformed_original_source(ROOT)
         self.assertNotIn(recovery.OLD_SNIPPET, transformed)
         self.assertEqual(transformed.count(recovery.NEW_SNIPPET), 1)
-        self.assertEqual(
-            transformed.replace(recovery.NEW_SNIPPET, recovery.OLD_SNIPPET, 1),
-            original,
-        )
+        self.assertEqual(transformed.replace(recovery.NEW_SNIPPET, recovery.OLD_SNIPPET, 1), original)
 
     def test_only_four_diagnostic_streams_may_be_empty(self):
-        expected = {
-            "syntax-stdout.txt", "syntax-stderr.txt",
-            "solver-stdout.txt", "solver-stderr.txt",
-        }
+        expected = {"syntax-stdout.txt", "syntax-stderr.txt", "solver-stdout.txt", "solver-stderr.txt"}
         self.assertEqual(set(recovery.EMPTY_ALLOWED_DIAGNOSTIC_MEMBERS), expected)
-        self.assertEqual(
-            set(self.contract["repair"]["diagnosticMembersAllowedEmpty"]),
-            expected,
-        )
+        self.assertEqual(set(self.contract["repair"]["diagnosticMembersAllowedEmpty"]), expected)
         self.assertTrue(self.contract["repair"]["diagnosticMembersStillRequiredToExist"])
         self.assertTrue(self.contract["repair"]["diagnosticMembersStillHashed"])
         self.assertTrue(self.contract["repair"]["allOtherRawMembersRemainRequiredNonEmpty"])
@@ -90,19 +84,9 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
             @staticmethod
             def canonical_sha256(value):
                 import hashlib, json
-                return hashlib.sha256(
-                    json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-                ).hexdigest()
+                return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
-        base = {
-            "status": "COMPLETED",
-            "retryPerformed": False,
-            "resumePerformed": False,
-            "githubRerun": False,
-            "workflowRunAttempt": 1,
-            "workflowRunId": 123,
-            "contentSha256": "old",
-        }
+        base = {"status":"COMPLETED","retryPerformed":False,"resumePerformed":False,"githubRerun":False,"workflowRunAttempt":1,"workflowRunId":123,"contentSha256":"old"}
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "case-result.json"
             p.write_text("{}\n")
@@ -115,9 +99,28 @@ class AvpsStageBExecutorRecovery(unittest.TestCase):
             self.assertFalse(out["caseUniverseChangedByRecovery"])
             self.assertFalse(out["runtimeIdentityChangedByRecovery"])
             self.assertFalse(out["resultOpeningAuthorizedByRecovery"])
-            stored = json.loads(p.read_text())
-            self.assertEqual(stored, out)
+            self.assertEqual(json.loads(p.read_text()), out)
             self.assertNotEqual(out["contentSha256"], "old")
+
+    def test_v2_transport_is_single_unambiguous_reviewed_template(self):
+        self.assertTrue(RECOVERY_TEMPLATE.is_file())
+        self.assertFalse(OLD_TEMPLATE.exists())
+        text = RECOVERY_TEMPLATE.read_text()
+        self.assertIn("status/avps-v1-stage-b-executor-recovery-ordinal-40", text)
+        self.assertIn("33137514692", text)
+        self.assertIn("9672728847", text)
+        self.assertIn("recovery_executor.py", text)
+        self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs"'), 1)
+        self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
+        for forbidden in ("aggregate_results", "open_results", "gh run rerun", "/rerun", "issues/60/comments"):
+            self.assertNotIn(forbidden, text)
+
+    def test_review_workflow_uses_safe_log_capture_and_v2_template(self):
+        text = REVIEW_WORKFLOW.read_text()
+        self.assertIn("avps-v1-stage-b-executor-recovery-v2.yml", text)
+        self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs"'), 1)
+        self.assertEqual(text.count('--allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs"'), 1)
+        self.assertNotIn("gh run rerun", text)
 
     def test_result_opening_stays_closed(self):
         b = self.contract["resultBoundary"]

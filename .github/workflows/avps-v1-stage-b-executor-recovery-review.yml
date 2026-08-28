@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - .github/recovery-templates/avps-v1-stage-b-executor-recovery.yml
+      - .github/recovery-templates/avps-v1-stage-b-executor-recovery-v2.yml
       - .github/workflows/avps-v1-stage-b-executor-recovery-review.yml
       - review/avps-v1-ordinal40-stage-b-executor-recovery-v1/**
       - tests/test_avps_v1_stage_b_executor_recovery.py
@@ -57,8 +57,8 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33137514692/artifacts?per_page=100" > recovery-review-evidence/failed-run-artifacts.json
           gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312" > recovery-review-evidence/failed-job-1.json
           gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322" > recovery-review-evidence/failed-job-2.json
-          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs" > recovery-review-evidence/failed-job-1.log
-          gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs" > recovery-review-evidence/failed-job-2.log
+          gh api --allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943312/logs" > recovery-review-evidence/failed-job-1.log
+          gh api --allow-escape-sequences "repos/${GITHUB_REPOSITORY}/actions/jobs/98741943322/logs" > recovery-review-evidence/failed-job-2.log
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33138196230" > recovery-review-evidence/cancel-run.json
           gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/98742886631" > recovery-review-evidence/cancel-job.json
 
@@ -67,56 +67,39 @@ jobs:
           from pathlib import Path
           e=Path('recovery-review-evidence')
           r=json.load(open(e/'failed-run.json'))
-          expected={
-            'id':33137514692,
-            'head_sha':'79b95f0ee0fafeb07f3785da91e63598035d4ac1',
-            'head_branch':'status/avps-v1-stage-b-science-recovery-ordinal-40',
-            'event':'workflow_dispatch',
-            'run_attempt':1,
-            'path':'.github/workflows/avps-v1-science.yml',
-            'status':'completed',
-            'conclusion':'cancelled',
-          }
+          expected={'id':33137514692,'head_sha':'79b95f0ee0fafeb07f3785da91e63598035d4ac1','head_branch':'status/avps-v1-stage-b-science-recovery-ordinal-40','event':'workflow_dispatch','run_attempt':1,'path':'.github/workflows/avps-v1-science.yml','status':'completed','conclusion':'cancelled'}
           for k,v in expected.items():
               if r.get(k)!=v: raise SystemExit(f'failed-run identity drift {k}: {r.get(k)!r} != {v!r}')
           arts=json.load(open(e/'failed-run-artifacts.json')).get('artifacts',[])
           if len(arts)!=1: raise SystemExit(f'failed run must have exactly one preflight artifact, got {len(arts)}')
           a=arts[0]
-          if int(a.get('id') or 0)!=9672728847 or a.get('name')!='avps-v1-stage-b-preflight-ordinal-40' or a.get('digest')!='sha256:afe5c4c11e7885023b443a49f2babbbe25f763f2486aa4042102c0a300bf16d6' or a.get('expired') is True:
-              raise SystemExit('failed-run preflight artifact identity drift')
-          if any(str(x.get('name') or '').startswith('avps-v1-case-') for x in arts):
-              raise SystemExit('failed run unexpectedly has a valid AVPS case artifact')
-          for jid in (98741943312,98741943322):
-              j=json.load(open(e/f'failed-job-{1 if jid==98741943312 else 2}.json'))
-              if int(j.get('run_id') or 0)!=33137514692 or j.get('status')!='completed' or j.get('conclusion')!='failure':
-                  raise SystemExit(f'exemplar failed job identity drift: {jid}')
-              steps={s.get('name'):s for s in j.get('steps',[])}
-              s=steps.get('Execute exactly one preregistered AVPS case') or {}
-              if s.get('conclusion')!='failure':
-                  raise SystemExit(f'exemplar job did not fail in exact execution step: {jid}')
+          if int(a.get('id') or 0)!=9672728847 or a.get('name')!='avps-v1-stage-b-preflight-ordinal-40' or a.get('digest')!='sha256:afe5c4c11e7885023b443a49f2babbbe25f763f2486aa4042102c0a300bf16d6' or a.get('expired') is True: raise SystemExit('failed-run preflight artifact identity drift')
+          if any(str(x.get('name') or '').startswith('avps-v1-case-') for x in arts): raise SystemExit('failed run unexpectedly has a valid AVPS case artifact')
           needle='required raw output/member missing or empty: syntax-stdout.txt'
-          for name in ('failed-job-1.log','failed-job-2.log'):
-              text=(e/name).read_text(errors='replace')
-              if needle not in text:
-                  raise SystemExit(f'exemplar log lacks exact transport refusal: {name}')
+          for i,jid in enumerate((98741943312,98741943322),1):
+              j=json.load(open(e/f'failed-job-{i}.json'))
+              if int(j.get('run_id') or 0)!=33137514692 or j.get('status')!='completed' or j.get('conclusion')!='failure': raise SystemExit(f'exemplar failed job identity drift: {jid}')
+              steps={s.get('name'):s for s in j.get('steps',[])}
+              if (steps.get('Execute exactly one preregistered AVPS case') or {}).get('conclusion')!='failure': raise SystemExit(f'exemplar job failed at wrong step: {jid}')
+              if needle not in (e/f'failed-job-{i}.log').read_text(errors='replace'): raise SystemExit(f'exemplar log lacks exact transport refusal: {jid}')
           cr=json.load(open(e/'cancel-run.json'))
-          if int(cr.get('id') or 0)!=33138196230 or int(cr.get('run_attempt') or 0)!=1 or cr.get('status')!='completed' or cr.get('conclusion')!='success':
-              raise SystemExit('cancel-control run drift')
+          if int(cr.get('id') or 0)!=33138196230 or int(cr.get('run_attempt') or 0)!=1 or cr.get('status')!='completed' or cr.get('conclusion')!='success': raise SystemExit('cancel-control run drift')
           cj=json.load(open(e/'cancel-job.json'))
-          if int(cj.get('id') or 0)!=98742886631 or cj.get('conclusion')!='success':
-              raise SystemExit('cancel-control job drift')
+          if int(cj.get('id') or 0)!=98742886631 or cj.get('conclusion')!='success': raise SystemExit('cancel-control job drift')
           steps={s.get('name'):s for s in cj.get('steps',[])}
-          if (steps.get('Bind exact failed run and cancel only that run') or {}).get('conclusion')!='success':
-              raise SystemExit('exact cancel step was not successful')
+          if (steps.get('Bind exact failed run and cancel only that run') or {}).get('conclusion')!='success': raise SystemExit('exact cancel step was not successful')
           PY
 
-      - name: Prove inactive recovery transport preserves result boundary
+      - name: Prove inactive v2 recovery transport preserves exact boundary
         shell: bash
         run: |
           set -euo pipefail
-          f=.github/recovery-templates/avps-v1-stage-b-executor-recovery.yml
+          f=.github/recovery-templates/avps-v1-stage-b-executor-recovery-v2.yml
           test -f "$f"
-          grep -F 'avps-v1-stage-b-executor-recovery-ordinal-40' "$f"
+          test ! -e .github/recovery-templates/avps-v1-stage-b-executor-recovery.yml
+          test "$(grep -c -- '--allow-escape-sequences .*98741943312/logs' "$f")" = 1
+          test "$(grep -c -- '--allow-escape-sequences .*98741943322/logs' "$f")" = 1
+          grep -F 'status/avps-v1-stage-b-executor-recovery-ordinal-40' "$f"
           grep -F '33137514692' "$f"
           grep -F '9672728847' "$f"
           grep -F 'recovery_executor.py' "$f"
@@ -135,5 +118,4 @@ jobs:
           compression-level: 0
 
       - name: Prove review performed no solver execution
-        run: |
-          echo 'AVPS_STAGE_B_EXECUTOR_RECOVERY_REVIEW_PASS_NO_SCIENCE_NO_SOLVER'
+        run: echo 'AVPS_STAGE_B_EXECUTOR_RECOVERY_REVIEW_PASS_NO_SCIENCE_NO_SOLVER'

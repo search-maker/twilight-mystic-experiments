@@ -1,8 +1,8 @@
 # STAR VISIBILITY / MYSTIC — LIVE CURRENT HANDOFF
 
-**Live refresh: 2026-08-28 — replacement AVPS v2 is reviewed through #600. PR #601 is preserved as a metadata-fence failure. Fresh recovery PR #602 proved that the unchanged repository-global seed/ordinal audits pass under a write-quiet repository, then failed locally at authorization materialization because `build_authorization.py` computed the repository root with `HERE.parents[2]` instead of `HERE.parents[1]`. No authorization artifact/branch, ordinal allocation, dispatch, solver execution, or result opening occurred. Scientific ordinal 41 remains NOT allocated or reserved.**
+**Live refresh: 2026-08-28 — replacement AVPS v2 is reviewed through authorization-control/materializer PR #603 FULL PASS. The exact proposed ordinal-41 authorization document exists only in the #603 Actions artifact; scientific ordinal 41 is still NOT allocated or reserved, no authorization/dispatch branch exists, no Issue #60 ordinal-41 marker exists, no scientific solver has run, and no result has been opened.**
 
-The filename is historical. This file is the live computational/scientific checkpoint. Update it at safe checkpoints, but **never move this handoff branch while a repository-global snapshot/fence audit is in progress**.
+The filename is historical. This file is the live computational/scientific checkpoint. Update it only at safe checkpoints. **Never move this handoff branch while a snapshot-fenced repository-global audit is in progress.**
 
 ---
 
@@ -10,7 +10,7 @@ The filename is historical. This file is the live computational/scientific check
 
 Repository: `search-maker/twilight-mystic-experiments`
 
-Frozen `main`:
+Frozen main:
 
 `99ade7798627e67921139697ba1a004fa8a304bb`
 
@@ -22,15 +22,15 @@ Do not move `main` merely to continue this lane.
 
 ---
 
-## 2. Ordinal 40 is consumed and scientifically non-informative
+## 2. Ordinal 40 is consumed and retired
 
-AVPS v1 ordinal 40 reached exact 360/360 execution evidence, but its intended state-specific vertical-profile variation did not reach effective solver physics. State-specific profile inputs differed while solver spectra were byte-identical across states.
+AVPS v1 ordinal 40 reached exact 360/360 execution evidence, but the intended state-specific vertical-profile variation did not reach effective solver physics: state-specific profile inputs differed while solver spectra were byte-identical across states.
 
 Authoritative classification:
 
 `EXECUTION/EVIDENCE PIPELINE VALID; SCIENTIFIC VERTICAL-PROFILE CONTRAST NON-INFORMATIVE.`
 
-Retained evidence:
+Key retained evidence:
 
 - recovery science run `33139545997` — SUCCESS, exact 360/360 cases
 - Gate-0 artifact `9676069031`, digest `sha256:70dedcd16209dea74a9ed67a1dc7377c123f1a62fd18741b1e15692702011fc8`
@@ -38,74 +38,22 @@ Retained evidence:
 - Phase B opening `33170855407` — SUCCESS
 - Issue #60 consumed marker `ORDINAL40_AVPS_V1_DISPATCH_CONSUMED`
 
-Never rerun or reuse ordinal 40, its seeds, case IDs, authorization identity, or dispatch identity. Never cite its exact-zero contrast as physical vertical-profile insensitivity.
+Never rerun/reuse ordinal 40, its seeds, case IDs, authorization identity or dispatch identity. Never cite its exact-zero contrast as physical vertical-profile insensitivity.
 
 ---
 
-## 3. Corrected OPAC species-profile transport is established
+## 3. Corrected OPAC transport and renderer are established
 
-Historical capability chain:
+The diagnostic chain #586–#589 proved that the locked libRadtran binary requests no-extension OPAC aliases such as `data/aerosol/OPAC/optprop/INSO`.
 
-- #586 / `33177704575` — FAILURE before MYSTIC
-- #587 / `33180158034` — FAILURE
-- #588 / `33184511183` — FAILURE; artifact `9691137631`
-- #589 syscall trace `33185460954` — SUCCESS; artifact `9691518729`
+Key successful gates:
 
-The trace proved that the locked libRadtran binary requests no-extension OPAC optical-property aliases such as `data/aerosol/OPAC/optprop/INSO`.
-
-### #590 — single-species capability PASS
-
-- head `f0675ec48c637509cd7a5bb9c2a2746507e5bea8`
-- dedicated `33186027699` SUCCESS
-- contract `33186027637` SUCCESS
-- one-shot `33186446347` SUCCESS
-- artifact `9691923455`
-
-### #591 — exact continental-average source audit PASS
-
-`continental_average.dat` columns are `z(km) INSO WASO SOOT SUSO`.
-
-Official optical-property SHA-256 values:
-
-- INSO `fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407`
-- WASO `b6df493b77019bf5e22456e8fb8858c5a7d502bcc02fe6fc697ebd4844f2d4f5`
-- SOOT `44a0d2060101ca52c90ae64f005118dfba256b1f89a3049e1f758c55d634aa02`
-- SUSO `ce0e1bba4219c60af0af14d66a280b0d3d25188276eed0951d31594b947cd472`
-
-### #592 — four-species transport capability PASS
-
-- head `18667797a1dd699b6431a6940bac42974c415733`
-- dedicated `33188868496` SUCCESS
-- contract `33188868323` SUCCESS
-- one-shot `33189268483` SUCCESS
-- artifact `9693056690`
-- status `PASS_FOUR_CONTINENTAL_SPECIES_REACH_DISORT_AND_MYSTIC`
-- four-alias data tree `5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a`
-
-The equal synthetic weights in #592 were transport witnesses only, not a scientific composition rule.
-
----
-
-## 4. RH / NULL calibration and corrected renderer
-
-- #593 exact 550-nm/RH source audit PASS — head `223b592208d3dda24217dabcfca9fd27333e4b84`, run `33190220896`, artifact `9693440701`
-- #594 AFGL-US RH NULL audit PASS — head `e7f968ee70dbecaf5f315bc8b03627ce1628edef`, run `33190680002`, artifact `9693619172`
-- #595 NULL aerosol-tau calibration PASS — head `3fcb6328a18747b5a17d5ae75248c04c288e18f9`, run `33191517143`, contract `33191517521`, artifact `9693948772`
-
-Humidity nodes frozen from OPAC:
-
-- INSO/SOOT `[0]`
-- WASO/SUSO `[0,50,70,80,90,95,98,99] %`
-
-### #596 — four-species AVPS renderer FULL PASS
-
-- head `8adfd4fafa4c039394d12e6f6aff1795b750f4d2`
-- dedicated `33193123594` SUCCESS
-- contract `33193123597` SUCCESS
-- artifact `9694613680`
-- digest `sha256:5e6942d879326ffc2dc8805d7649086cae32ad2e16aeec19a62cd3b0a89e3e27`
-- renderer blob `99f61e1daa03cecef055a3773544574738d65082`
-- status `PASS_FIVE_FROZEN_AVPS_TEMPLATES_RENDERED_AS_COMMON_SCALAR_FOUR_SPECIES_NULL_TAU_SHAPES`
+- #590 single-species capability — head `f0675ec48c637509cd7a5bb9c2a2746507e5bea8`, dedicated `33186027699`, contract `33186027637`, one-shot `33186446347`, artifact `9691923455`
+- #592 four-species transport — head `18667797a1dd699b6431a6940bac42974c415733`, dedicated `33188868496`, contract `33188868323`, one-shot `33189268483`, artifact `9693056690`, four-alias data tree `5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a`
+- #593 exact 550-nm/RH source audit — run `33190220896`, artifact `9693440701`
+- #594 AFGL-US RH NULL audit — run `33190680002`, artifact `9693619172`
+- #595 NULL aerosol-tau calibration — run `33191517143`, contract `33191517521`, artifact `9693948772`
+- #596 four-species AVPS renderer — head `8adfd4fafa4c039394d12e6f6aff1795b750f4d2`, dedicated `33193123594`, contract `33193123597`, artifact `9694613680`, digest `sha256:5e6942d879326ffc2dc8805d7649086cae32ad2e16aeec19a62cd3b0a89e3e27`, renderer blob `99f61e1daa03cecef055a3773544574738d65082`
 
 Validated scientific representation:
 
@@ -116,14 +64,14 @@ aerosol_species_file profiles/<state>.four-species.dat INSO WASO SOOT SUSO
 aerosol_set_tau_at_wvl 550 <AOD550>
 ```
 
-Permanently forbidden old composition:
+Forbidden old representation:
 
 ```text
 aerosol_species_file continental_average
 aerosol_file tau <state>
 ```
 
-Exact rendered profile SHA-256 values:
+Exact #596 four-species profile SHA-256 values:
 
 - continental average `ceed598f7681951cd0e6208b267beb5b41a52ab10311f37ce76f925700caff3d`
 - maritime clean `487b67bd7dbe89d12d032fdf2b33cab545e16a2e0697170648317f1a76362a67`
@@ -133,7 +81,7 @@ Exact rendered profile SHA-256 values:
 
 ---
 
-## 5. #597 — replacement AVPS v2 preregistration FULL PASS
+## 4. Replacement AVPS v2 frozen scientific design — #597 PASS
 
 Stage: `aerosol-vertical-profile-sensitivity-v2`
 
@@ -146,7 +94,7 @@ Stage: `aerosol-vertical-profile-sensitivity-v2`
 
 Frozen design:
 
-- five independently selected OPAC Tables 3/5 vertical templates
+- five independent OPAC Tables 3/5 vertical templates
 - fixed continental-average optical family
 - AOD550 0.10 / 0.30
 - solar depressions 2 / 4 / 6 / 8 deg
@@ -154,32 +102,31 @@ Frozen design:
 - three CRN replicates
 - 20,000,000 photons/case
 - 72 CRN groups / 360 cases
-- fresh `avps-v2-*` case namespace
-- fresh v2 group-seed namespace
+- fresh `avps-v2-*` case namespace and fresh group-seed namespace
 - exact #596 four-species profiles
 - no Taylor/Jerusalem residual-driven selection
 
-The scientific question/screen are unchanged from the intended v1 experiment; only the broken transport representation was corrected.
+The intended scientific question/screen are unchanged from v1; only the broken transport representation was corrected.
 
 ---
 
-## 6. #598 — candidate-seed freshness FULL PASS
+## 5. #598 candidate-seed freshness PASS
 
 - head `64e7d68bd876a99aa5af49d97bcb53718238b39b`
 - dedicated `33194319669` SUCCESS
 - contract `33194319698` SUCCESS
 - artifact `9695260362`
 - digest `sha256:fb4613d654121098c9d247d6ed8b0f0788b26a179b5ff103dc01ed7d50c9f0db`
-- candidate count 72
+- 72 candidate group seeds
 - candidate-set canonical SHA `02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2`
 - candidate-row canonical SHA `41f70d6a0381db6b569d3f4e17d74bb38b05cf212c2f2e432455a502f73dc670`
 - repository-global collision count zero
 
-**Never expose the 72 actual seed values.** They remain artifact/in-memory only and must not appear in Git, PR/Issue prose, this handoff, chat, or user-facing documentation.
+**Never expose the actual 72 seed values.** They remain artifact/in-memory only and must not appear in Git, PR/Issue prose, this handoff, chat, or user-facing documentation.
 
 ---
 
-## 7. #599 — preauthorization/global ordinal surface FULL PASS
+## 6. #599 preauthorization/global ordinal surface PASS
 
 - head `a4e4700babddf0924135f5cc6ec6bfd21d8c9ec2`
 - dedicated `33203372878` SUCCESS attempt 1
@@ -188,21 +135,12 @@ The scientific question/screen are unchanged from the intended v1 experiment; on
 - digest `sha256:b1125375bae24638375853d3724c1c96ba1572dc02e1619eff37d9fdca70b92e`
 - status `PASS_V2_PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED`
 
-Final #599 observation:
-
-- latest exact consumed ordinal = 40
-- maximum authoritative ordinal = 40
-- next available candidate = 41
-- ordinal allocated = false
-- authorization created = false
-- dispatch created = false
-- candidate seeds applied = false
+At #599: latest consumed = 40, authoritative max = 40, next available candidate = 41, and no allocation/authorization/dispatch/seed application existed.
 
 ---
 
-## 8. #600 — disabled v2 control/package FULL PASS
+## 7. #600 disabled v2 control/package PASS
 
-- branch `review/aerosol-vertical-profile-sensitivity-v2-control-v1`
 - head `8a5d73974b02ba21fc2f010bbd911538e6981de2`
 - dedicated `33205661865` SUCCESS attempt 1
 - repository contract `33205661834` SUCCESS attempt 1
@@ -220,128 +158,129 @@ Important reviewed blobs:
 
 ---
 
-## 9. #601 — terminal metadata-fence failure, no boundary crossed
+## 8. Preserved failed control-review identities
 
-- branch `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v2`
+### #601 — metadata-fence failure
+
 - head `c10ec3be3903677c57a0c635e8e9e10658bfbb29`
-- parent main `99ade7798627e67921139697ba1a004fa8a304bb`
-- tree `7f7713a4e2c519fe14e23fb9afcf19812b95a631`
-- dedicated `33213321554` attempt 1 — FAILURE
-- repository contract `33213321502` attempt 1 — SUCCESS
+- dedicated `33213321554` FAILURE attempt 1
+- contract `33213321502` SUCCESS
 
-It passed identity, predecessor, exact-byte, artifact-digest and tracked-tree seed checks, then correctly failed at the two-pass repository-global candidate-seed scan because repository metadata changed between the two complete enumerations.
+The two-pass global scan correctly refused because this handoff branch moved during the fenced window. No materialization or boundary crossing occurred. Do not rerun.
 
-Demonstrated cause: this handoff branch moved via commit `088c0915c2c38ea06d0bda400e01241c563c6839` at `2026-08-28T21:37:46Z`, inside the scan window (~`21:37:08Z`–`21:42:46Z`).
+### #602 — root-binding failure after clean global audits
 
-Therefore #601 proves a **review-time repository metadata mutation**, not a seed collision and not a scanner defect. No live-surface report, materialization, artifact, authorization branch, ordinal marker, seed application, solver or result was produced. Do not rerun `33213321554`.
-
----
-
-## 10. #602 — metadata-stability recovery passed; materializer path bug remains
-
-Draft PR #602:
-
-`Recover AVPS v2 authorization control after metadata-fence failure`
-
-- branch `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v3`
 - head `9f4e3a6d99aa4b8b039de631bc5d3dbfed3a7161`
-- parent main `99ade7798627e67921139697ba1a004fa8a304bb`
-- tree `d644d36faeeed8dbd8c21618a6100cfb3122d586`
-- dedicated run `33214102573`, attempt 1 — **FAILURE**
-- repository contract `33214104529`, attempt 1 — **SUCCESS**
+- dedicated `33214102573` FAILURE attempt 1
+- contract `33214104529` SUCCESS
 
-Important result: after opening #602 the repository was kept write-quiet while the fenced audit ran.
+#602 proved the unchanged two-pass seed scan and fresh ordinal/live-surface audit PASS under write-quiet conditions, then failed locally because `build_authorization.py` used `HERE.parents[2]` instead of repository root `HERE.parents[1]`. No artifact/authorization/allocation/dispatch/science/result boundary was crossed. Do not rerun.
 
-Dedicated steps 1–8 passed, then:
-
-- step 9 `Fresh unchanged two-pass repository-global candidate-seed recheck` — **SUCCESS**
-- step 10 `Build fresh ordinal and seed live surface` — **SUCCESS**
-- step 11 `Materialize and validate authorization candidate in artifact only` — **FAILURE**
-
-This proves that the unchanged two-pass scanner succeeds when the repository remains stable. The #601 failure was therefore correctly diagnosed as metadata movement, and the scanner must not be weakened.
-
-### Exact #602 local defect
-
-`review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v3/build_authorization.py` contains:
-
-```python
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-CONTROL_DIR = ROOT / "review/aerosol-vertical-profile-sensitivity-v2-control-v1"
-```
-
-For a file located at `<repo>/review/<authorization-control-dir>/build_authorization.py`, the repository root is `HERE.parents[1]`, not `HERE.parents[2]`.
-
-Required minimal correction:
-
-```python
-ROOT = HERE.parents[1]
-```
-
-The #600 disabled package itself does contain `candidateSeedValuesIncluded: false`; there is no evidence of a seed leak. The wrong root caused bound-source loading to look one directory above the repository and therefore made the materializer fail before a candidate authorization could be completed.
-
-### #602 boundary outcome
-
-Because materialization failed:
-
-- no authorization-control artifact was uploaded
-- no proposed `authorization.json` is authoritative
-- no authorization branch exists
-- no Issue #60 ordinal-41 marker exists
-- no candidate seed was applied to tracked case state
-- no libRadtran/MYSTIC scientific execution occurred
-- no result was opened
-
-Do not rerun `33214102573`. Preserve #602 as terminal attempt-1 evidence that the global snapshot/ordinal surfaces were clean but the materializer had a local path-binding defect.
+Non-authoritative abandoned branch `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v1` / commit `7d5c945deb3841af790e7c9ef7a46bebe45ba896` must never be used as an authorization parent.
 
 ---
 
-## 11. Non-authoritative abandoned preliminary branch
+## 9. #603 — authorization-control/materializer v4 FULL PASS
 
-Do not use `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v1`.
+Draft PR #603:
 
-Its only new commit is `7d5c945deb3841af790e7c9ef7a46bebe45ba896`. It was mistakenly started from #600 head instead of frozen main and contains only a protocol draft. No PR, ordinal, authorization, dispatch, seed application or solver execution was created.
+`Recover AVPS v2 authorization materializer repo-root binding`
+
+- branch `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4`
+- exact head `b3d562222a38fc9d1ff5d218886afdda72c37fa2`
+- parent `99ade7798627e67921139697ba1a004fa8a304bb`
+- tree `abe2734f001a38c7e114e2da9854c7a5e2e7e0a3`
+- dedicated review `33217110804` — SUCCESS attempt 1
+- repository contract `33217110849` — SUCCESS attempt 1
+- artifact `9703976307`
+- artifact digest `sha256:3c52f6b912e0b9d8743722048af2036626a1c7b1eff1e5f4e39aa106cd8f2dbb`
+- candidate `authorization.json` file SHA-256 `7d4c8197785ce80d589bb67aac353c90266c91f1ed296ed22a7dfbbdc317f978`
+- candidate document internal content hash `0a0e50a78ba8742088e3f13314513dd359ba479f321ed389f8af37affdbda0fa`
+- control-review receipt content SHA `323dba2acc431c3126330b1d3a0527e5d6d5d0c736deab1e230085c72f6ece76`
+- live-surface file SHA-256 `72f8648d5f72c203bdeae31a53d6b1b9070be1baac1ac1d5cc56c17f92a2bee6`
+
+All dedicated steps passed, including:
+
+1. exact main-child Draft identity;
+2. exact #599/#600 PR/run/contract/artifact bindings;
+3. exact reviewed blob bindings;
+4. corrected repo-root import check (`ROOT == repository root`, all bound #600 source paths exist);
+5. exact-head tracked-tree candidate-seed scan;
+6. unchanged two-pass repository-global candidate-seed scan;
+7. fresh global ordinal/live-surface audit;
+8. authorization materialization;
+9. 360-case / 72-group in-memory validation;
+10. proof that no literal candidate seed value appears in `authorization.json`;
+11. receipt freeze and artifact upload;
+12. final global ordinal readback after materialization.
+
+Frozen live surface in the artifact:
+
+- latest consumed scientific ordinal = 40
+- global authoritative max = 40
+- next available candidate = 41
+- repository-global candidate-seed collision count = 0
+- double enumeration stable = true
+- authorization branch exists = false
+- dispatch branch exists = false
+- ordinal-41 Issue #60 marker exists = false
+- scientific ordinal allocated = false
+
+A fresh post-#603 readback immediately before this handoff update also found no ordinal-41 authorization branch, no ordinal-41 dispatch branch, and no `ORDINAL41_` marker in Issue #60.
+
+### What the proposed document authorizes — and does NOT do
+
+The artifact-only proposed document binds ordinal 41 and permits a later in-memory seed application/scientific execution **only after** the separate authorization identity itself passes review. It still has:
+
+- `dispatchAuthorized=false`
+- `automaticDispatch=false`
+- `consumed=false`
+- `resultOpeningAuthorized=false`
+- `productionAuthorized=false`
+- `taylorOrJerusalemFitAuthorized=false`
+- `githubRerunAllowed=false`
+- `retryAllowed=false`
+- `resumeAllowed=false`
+
+The existence of this artifact is **not allocation/reservation** and is **not dispatch**.
 
 ---
 
-## 12. Exact boundary at this checkpoint
+## 10. Exact boundary now
+
+At this checkpoint:
 
 - ordinal 40 = consumed/retired
 - ordinal 41 = **not allocated and not reserved**
 - no `authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41` branch exists
 - no `dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41` branch exists
-- no `ORDINAL41_...` allocation/consumption marker exists in Issue #60
+- no `ORDINAL41_...` marker exists in Issue #60
 - candidate seed values remain artifact/in-memory only
 - no AVPS v2 scientific solver run exists
 - no AVPS v2 result has been opened
 - no Level-B/production mapping from AVPS v2 exists
 
-Issue #60 checkpoint comment `5457950462` records #599/#600 completion and the non-allocation boundary before #601.
+---
+
+## 11. Immediate next safe sequence
+
+1. Recheck the live branch/Issue #60 ordinal surface after this handoff write.
+2. Create `authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41` as **one direct child of exact #603 head `b3d562222a38fc9d1ff5d218886afdda72c37fa2`**.
+3. The child must change exactly one file:
+   `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4/authorization.json`.
+4. That file must be byte-identical to #603 artifact `9703976307`, SHA-256 `7d4c8197785ce80d589bb67aac353c90266c91f1ed296ed22a7dfbbdc317f978`.
+5. Open a Draft authorization PR targeting `review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4`, not `main`.
+6. Once its repository-global seed scan begins, keep GitHub write-quiet until the authorization-review final readback terminates.
+7. Require attempt-1 authorization-review PASS and repository-contract PASS on the same exact authorization head.
+8. The authorization review may exclude only its own exact authorization branch/PR/runs from self-reservation accounting. Every independent ordinal-41 observation is a refusal.
+9. **Do not post an Issue #60 ordinal-41 allocation marker merely because the branch/PR exists.** Allocation remains a later separate transition after authorization review PASS.
+10. Dispatch remains still later. No solver execution may start merely because authorization review passed.
+
+If authorization review fails, preserve that exact attempt-1 identity and correct only the demonstrated defect under a fresh identity. Do not use GitHub Re-run.
 
 ---
 
-## 13. Immediate next safe sequence
-
-1. Preserve #601 and #602 exact failed heads/runs; do not rerun them.
-2. Create a **fresh authorization-control recovery review identity directly from frozen main**.
-3. Keep the #599/#600 reviewed bytes, seed/ordinal scanners and all scientific/control semantics unchanged.
-4. Make the single demonstrated materializer correction `ROOT = HERE.parents[1]`, plus only the fresh branch/path/blob identity updates required for the new review.
-5. Open the fresh Draft PR.
-6. Once its repository-global snapshot/fence scan begins, keep GitHub write-quiet:
-   - do not update this handoff;
-   - do not post Issue/PR comments;
-   - do not create/move branches;
-   - do not otherwise mutate repository metadata until the scan terminates.
-7. Require fresh attempt-1 dedicated review PASS and repository-contract PASS on the same exact head.
-8. Only after full PASS, preserve its artifact ID/digest and proposed authorization SHA in this handoff and re-audit the live ordinal surface.
-9. Only then create a separate one-file Draft ordinal-41 authorization identity as a direct child of the exact reviewed recovery-control head.
-10. Authorization review, Issue #60 allocation, dispatch, science and result opening remain separate later transitions.
-
-If the fresh recovery fails at another local control/materializer defect, preserve that exact identity and correct only the demonstrated defect under another fresh attempt-1 identity. Do not weaken the global scanner.
-
----
-
-## 14. Eventual AVPS v2 scientific/execution invariants
+## 12. Eventual AVPS v2 scientific/execution invariants
 
 Retain:
 
@@ -368,16 +307,17 @@ Retain:
 
 ---
 
-## 15. Hard prohibitions
+## 13. Hard prohibitions
 
 Do not:
 
 - rerun/reuse ordinal 40;
 - expose actual candidate seed values;
-- GitHub-rerun #601 `33213321554` or #602 `33214102573`;
-- create ordinal-41 authorization/dispatch identity before a fresh recovery-control review fully passes;
-- update this handoff or otherwise mutate repository metadata during a repository-global snapshot/fence scan;
+- rerun #601 `33213321554` or #602 `33214102573`;
+- change #603 exact reviewed head;
+- create dispatch before the later allocation/dispatch protocol permits it;
 - post an ordinal-41 allocation marker before authorization review passes;
+- mutate repository metadata during a snapshot-fenced global scan;
 - run MYSTIC/uvspec science from control or authorization review;
 - use Taylor/Jerusalem residual direction or magnitude to select profiles, AODs, geometries, seeds, gates or thresholds;
 - reintroduce `aerosol_file tau` beside `aerosol_species_file`;
@@ -387,23 +327,22 @@ Do not:
 
 ---
 
-## 16. Resume checklist
-
-Before the next transition:
+## 14. Resume checklist
 
 - [ ] confirm `main == 99ade7798627e67921139697ba1a004fa8a304bb`;
-- [ ] confirm #596/#597/#598/#599/#600 remain on their exact reviewed heads;
-- [ ] preserve #601 head `c10ec3be3903677c57a0c635e8e9e10658bfbb29` and #602 head `9f4e3a6d99aa4b8b039de631bc5d3dbfed3a7161` as failed evidence;
-- [ ] do not rerun either failed dedicated review;
-- [ ] create the fresh control recovery from frozen main with only the `parents[2] -> parents[1]` fix and fresh identity bindings;
-- [ ] once its CI begins the global scan, make no GitHub writes until the scan terminates;
-- [ ] if recovery passes, preserve artifact ID/digest and candidate authorization SHA before authorization identity creation;
-- [ ] repeat a live Issue #60/branches/global-ordinal readback before allocation-bearing steps;
+- [ ] preserve #601/#602 failed attempt-1 identities;
+- [ ] confirm #603 remains Draft/open/unmerged at `b3d562222a38fc9d1ff5d218886afdda72c37fa2`;
+- [ ] confirm #603 dedicated `33217110804` and contract `33217110849` remain SUCCESS attempt 1;
+- [ ] confirm artifact `9703976307`, digest `sha256:3c52f6b912e0b9d8743722048af2036626a1c7b1eff1e5f4e39aa106cd8f2dbb`;
+- [ ] confirm candidate authorization SHA-256 `7d4c8197785ce80d589bb67aac353c90266c91f1ed296ed22a7dfbbdc317f978`;
+- [ ] live-recheck branches + Issue #60 before creating authorization identity;
+- [ ] create only the one-file direct child authorization identity;
+- [ ] keep GitHub write-quiet during its fenced global scan;
 - [ ] keep candidate seed values artifact-only;
-- [ ] update this handoff after recovery PASS/FAIL and after every later authorization/allocation/dispatch/Gate-0/result-opening transition.
+- [ ] update this handoff after authorization PASS/FAIL and after every later allocation/dispatch/Gate-0/result-opening transition.
 
 ---
 
-## 17. One-line live status
+## 15. One-line live status
 
-**AVPS v2 is reviewed through #600. #601 is terminal metadata-fence failure evidence. #602 proved the unchanged global seed/ordinal audits pass under write-quiet conditions, then failed locally because the materializer used the wrong repo-root parent index. Ordinal 41 remains unallocated/unreserved. Next: fresh main-child control recovery with the single `HERE.parents[1]` path fix, unchanged scanners, and write-quiet GitHub during the fenced audit.**
+**AVPS v2 authorization-control/materializer #603 is FULL PASS on exact head `b3d56222…`; artifact `9703976307` contains the exact reviewed proposed authorization (`sha256:7d4c8197…`). Ordinal 41 is still unallocated/unreserved and no authorization/dispatch identity or Issue #60 marker exists. Next safe transition: one-file direct-child Draft authorization PR targeting the exact #603 control branch, followed by a fresh write-quiet authorization review.**

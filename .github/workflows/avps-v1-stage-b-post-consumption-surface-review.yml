@@ -1,0 +1,221 @@
+name: AVPS Stage B post-consumption surface review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'review/avps-v1-ordinal40-stage-b-science-recovery-v1/**'
+      - 'tests/test_avps_v1_stage_b_post_consumption_surface.py'
+      - '.github/workflows/avps-v1-stage-b-post-consumption-surface-review.yml'
+      - '.github/recovery-templates/avps-v1-stage-b-*.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-stage-b-surface-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact Stage-B review head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Run Stage-B recovery unit contract
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python -m py_compile review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py
+          python tests/test_avps_v1_stage_b_post_consumption_surface.py
+
+      - name: Checkout exact frozen scientific authorization head separately
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          path: science
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind live main, exact auth/dispatch heads, Stage A and one-use state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_HEAD: 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          AUTH_PARENT: 99ade7798627e67921139697ba1a004fa8a304bb
+          AUTH_BRANCH: authorization/aerosol-vertical-profile-sensitivity-v1-ordinal-40
+          DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-40
+          STAGE_A_RUN: '33123226959'
+          STAGE_A_ARTIFACT: '9667291127'
+          STAGE_A_DIGEST: sha256:0338d418d554c5ceaead8712a1ee860c2ee154d839cfe7c038098607786a0b3f
+        run: |
+          set -euo pipefail
+          test "$(git -C science rev-parse HEAD)" = "$AUTH_HEAD"
+          git -C science fetch origin main "$AUTH_BRANCH" "$DISPATCH_BRANCH"
+          test "$(git -C science rev-parse origin/main)" = "$AUTH_PARENT"
+          test "$(git -C science rev-parse origin/$AUTH_BRANCH)" = "$AUTH_HEAD"
+          test "$(git -C science rev-parse origin/$DISPATCH_BRANCH)" = "$AUTH_HEAD"
+
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/565" > auth-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/570" > recovery-contract-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/573" > stage-a-review-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STAGE_A_RUN}" > stage-a-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STAGE_A_RUN}/jobs?per_page=100" > stage-a-jobs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STAGE_A_RUN}/artifacts?per_page=100" > stage-a-artifacts.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${STAGE_A_ARTIFACT}/zip" > stage-a.zip
+          test "sha256:$(sha256sum stage-a.zip | awk '{print $1}')" = "$STAGE_A_DIGEST"
+          mkdir stage-a-artifact
+          unzip -q stage-a.zip -d stage-a-artifact
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/avps-v1-science.yml/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > prior-science-pages.json
+
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          ah=os.environ['AUTH_HEAD']; ap=os.environ['AUTH_PARENT']; sr=int(os.environ['STAGE_A_RUN']); aid=int(os.environ['STAGE_A_ARTIFACT'])
+          auth=json.load(open('auth-pr.json')); rc=json.load(open('recovery-contract-pr.json')); sa=json.load(open('stage-a-review-pr.json'))
+          if auth.get('number')!=565 or auth.get('state')!='open' or auth.get('draft') is not True or auth.get('merged_at') is not None: raise SystemExit('PR565 identity/state drift')
+          if (auth.get('head') or {}).get('sha')!=ah or (auth.get('base') or {}).get('sha')!=ap: raise SystemExit('PR565 head/base drift')
+          for p,n,h in ((rc,570,'f1588592725fd31c9bf6b653557fd5ce2b108e01'),(sa,573,'352f226d87d570a7338bf2730872a7733179da74')):
+              if p.get('number')!=n or p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None or (p.get('head') or {}).get('sha')!=h: raise SystemExit(f'PR{n} review identity drift')
+          run=json.load(open('stage-a-run.json'))
+          if run.get('id')!=sr or int(run.get('run_attempt') or 0)!=1 or run.get('status')!='completed' or run.get('conclusion')!='success' or run.get('head_sha')!='14a2d1272d8e81383e0fb4f830fceef5647d985c': raise SystemExit('Stage-A run drift')
+          jobs=json.load(open('stage-a-jobs.json')).get('jobs',[])
+          if len(jobs)!=1 or int(jobs[0].get('id') or 0)!=98695045355 or jobs[0].get('conclusion')!='success': raise SystemExit('Stage-A job drift')
+          arts=json.load(open('stage-a-artifacts.json')).get('artifacts',[])
+          good=[a for a in arts if int(a.get('id') or 0)==aid and a.get('name')=='avps-v1-dispatch-publisher-ordinal-40' and not a.get('expired',False)]
+          if len(good)!=1 or good[0].get('digest')!=os.environ['STAGE_A_DIGEST']: raise SystemExit('Stage-A artifact metadata drift')
+          publisher=json.load(open(next(Path('stage-a-artifact').rglob('dispatch-publisher.json'))))
+          recovery=json.load(open(next(Path('stage-a-artifact').rglob('post-consumption-stage-a-recovery.json'))))
+          if publisher.get('status')!='DISPATCH_PUBLISHED_ZERO_RUNTIME' or publisher.get('runId')!=sr or publisher.get('runAttempt')!=1 or publisher.get('conclusion')!='success': raise SystemExit('Stage-A publisher receipt drift')
+          if publisher.get('authorizationHead')!=ah or publisher.get('authorizationParent')!=ap or publisher.get('dispatchBranchHeadSha')!=ah: raise SystemExit('Stage-A publisher identity drift')
+          for key in ('actualGitPushPerformedByThisRun','currentConsumedMarkerPostedByThisRun','scienceWorkflowDispatchPerformed','scientificRuntimeSetupPerformed','scientificExecutionPerformed','solverExecutionPerformed'):
+              if publisher.get(key) is not False: raise SystemExit(f'Stage-A publisher forbidden flag drift: {key}')
+          if recovery.get('status')!='POST_CONSUMPTION_PUBLISHER_RECOVERY_PASS_NO_SECOND_CONSUMPTION_NO_SCIENCE_TRIGGER': raise SystemExit('Stage-A recovery receipt drift')
+          if recovery.get('allocationMarkerCount')!=1 or recovery.get('consumedMarkerCount')!=1 or recovery.get('dispatchPushRepeated') is not False or recovery.get('consumedMarkerRepeated') is not False or recovery.get('scienceRunCountBeforeAndDuringStageA')!=0: raise SystemExit('Stage-A one-consumption receipt drift')
+          pages=json.load(open('issue60-pages.json')); bodies=[str(r.get('body') or '').strip() for p in pages for r in p]
+          allocation=f'ORDINAL40_AVPS_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit={ah} parent={ap} pr=565'
+          consumed='ORDINAL40_AVPS_V1_DISPATCH_CONSUMED'
+          if sum(b==allocation for b in bodies)!=1 or sum(b==consumed for b in bodies)!=1: raise SystemExit('live marker cardinality drift')
+          sp=json.load(open('prior-science-pages.json')); science=[r for p in sp for r in p.get('workflow_runs',[])]
+          if science: raise SystemExit(f'AVPS science already exists before Stage-B review: {[r.get("id") for r in science]}')
+          PY
+
+      - name: Run live 72-seed authorization recheck against exact dispatch head
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUTH_HEAD: 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-40
+        run: |
+          set -euo pipefail
+          mkdir -p live-preflight
+          git -C science ls-files -z > live-preflight/tracked-files.nul
+          (
+            cd science
+            python - <<'PY' > ../live-preflight/candidate-seed-ledger.json
+          import importlib.util,json,sys
+          from pathlib import Path
+          p=Path('experiments/aerosol-vertical-profile-sensitivity-v1/seed_ledger.py')
+          s=importlib.util.spec_from_file_location('stage_b_review_seed_ledger',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          print(json.dumps(m.validate_ledger(),indent=2,sort_keys=True))
+          PY
+          )
+          printf '%s\n' '{"schemaVersion":2,"requiredTrackedSelfLedgerPaths":[],"futureEvidenceSelfLedgerPaths":[]}' > live-preflight/empty-self-ledger-policy.json
+          python science/experiments/aerosol-vertical-profile-sensitivity-v1/tracked_tree_seed_scan.py \
+            --repo-root science \
+            --file-list live-preflight/tracked-files.nul \
+            --candidate-seed-ledger live-preflight/candidate-seed-ledger.json \
+            --allow-self-ledger-json live-preflight/empty-self-ledger-policy.json \
+            --output live-preflight/tracked-seed-scan.json
+          python science/experiments/aerosol-vertical-profile-sensitivity-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger live-preflight/candidate-seed-ledger.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "$DISPATCH_BRANCH" \
+            --expected-repo-head "$AUTH_HEAD" \
+            --output live-preflight/repository-global-seed-scan.json
+          python science/experiments/aerosol-vertical-profile-sensitivity-v1/build_seed_authorization_proof.py \
+            --stage-dir science/experiments/aerosol-vertical-profile-sensitivity-v1 \
+            --tracked-tree-report live-preflight/tracked-seed-scan.json \
+            --repository-global-report live-preflight/repository-global-seed-scan.json \
+            --expected-main-head "$AUTH_HEAD" \
+            --output live-preflight/live-seed-authorization-proof.json
+          python - <<'PY'
+          import json
+          p=json.load(open('live-preflight/live-seed-authorization-proof.json'))
+          if p.get('candidateSeedCanonicalSha256')!='a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e': raise SystemExit('live candidate seed hash drift')
+          if p.get('candidateRowsCanonicalSha256')!='f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683': raise SystemExit('live candidate row hash drift')
+          PY
+
+      - name: Build live recovered post-dispatch freshness surface with unchanged validator
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUTH_HEAD: 338ee82c8e088e929f45782b1f7ac1c3aaaaa533
+          AUTH_PARENT: 99ade7798627e67921139697ba1a004fa8a304bb
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          hp=Path('review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py')
+          hs=importlib.util.spec_from_file_location('stage_b_live_surface',hp); h=importlib.util.module_from_spec(hs); sys.modules[hs.name]=h; hs.loader.exec_module(h)
+          pp=Path('science/experiments/aerosol-vertical-profile-sensitivity-v1/preauthorization_surface.py')
+          ps=importlib.util.spec_from_file_location('stage_b_live_collect',pp); p=importlib.util.module_from_spec(ps); sys.modules[ps.name]=p; ps.loader.exec_module(p)
+          payload=p.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          surface=h.build_post_consumption_surface(
+              Path('science'),payload,40,os.environ['AUTH_HEAD'],os.environ['AUTH_PARENT'],
+              current_pr=565,current_run_id=int(os.environ['GITHUB_RUN_ID']),
+              candidate_seed_authorization_recheck_passed=True,
+          )
+          if surface.get('originalFreshnessValidateDispatchPassed') is not True: raise SystemExit('unchanged freshness validator did not pass')
+          if surface.get('recoveryRepairScope')!='FAILED_AUTHORIZATION_HISTORY_SUBPROOF_ONLY': raise SystemExit('recovery scope drift')
+          Path('live-preflight/recovered-freshness.json').write_text(json.dumps(surface,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Persist review evidence only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-stage-b-post-consumption-surface-review
+          path: |
+            live-preflight/
+            stage-a-run.json
+            stage-a-jobs.json
+            stage-a-artifacts.json
+            auth-pr.json
+            recovery-contract-pr.json
+            stage-a-review-pr.json
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Prove review ended before scientific execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-40
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/avps-v1-science.yml/runs?branch=${DISPATCH_BRANCH}&event=workflow_dispatch&per_page=100" > post-review-science-pages.json
+          python - <<'PY'
+          import json
+          pages=json.load(open('post-review-science-pages.json')); runs=[r for p in pages for r in p.get('workflow_runs',[])]
+          if runs: raise SystemExit(f'Stage-B review crossed science boundary: {[r.get("id") for r in runs]}')
+          print('STAGE_B_RECOVERY_SURFACE_REVIEW_PASS_NO_SCIENCE_NO_SOLVER')
+          PY

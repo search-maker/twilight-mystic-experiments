@@ -1,0 +1,137 @@
+name: OPAC NULL AOD table calibration v1
+
+on:
+  pull_request:
+    paths:
+      - review/opac-null-aod-table-calibration-v1/**
+      - .github/workflows/opac-null-aod-table-calibration-v1.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  calibration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      RH_PR: '594'
+      RH_HEAD: e7f968ee70dbecaf5f315bc8b03627ce1628edef
+      RH_RUN_ID: '33190680002'
+      RH_ARTIFACT_ID: '9693619172'
+      RH_ARTIFACT_DIGEST: sha256:74813789c2bf2842788de16aba6f3269c9f4efec675f6ee758903e4f6c52f9da
+      RH_CONTRACT_RUN_ID: '33190679858'
+      RH_DEPENDENCY_BLOB: 095ff86f12a79dc312a51f734b0a03bd318f2337
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact review identity and #594 evidence
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-null-aod-table-calibration-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}" > pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$RH_PR" > rh-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RH_RUN_ID" > rh-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RH_RUN_ID/artifacts" > rh-artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RH_CONTRACT_RUN_ID" > rh-contract.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None: raise SystemExit('calibration PR must remain Draft/open/unmerged')
+          if p['head']['ref']!='review/opac-null-aod-table-calibration-v1' or p['head']['sha']!=os.environ['PR_HEAD']: raise SystemExit('calibration head drift')
+          if p['base']['ref']!='main' or p['base']['sha']!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('calibration base drift')
+          rp=json.load(open('rh-pr.json')); rr=json.load(open('rh-run.json')); ra=json.load(open('rh-artifacts.json'))['artifacts']; rc=json.load(open('rh-contract.json'))
+          if rp['state']!='open' or rp['draft'] is not True or rp['merged_at'] is not None or rp['head']['sha']!=os.environ['RH_HEAD']: raise SystemExit('#594 PR drift')
+          if rr['id']!=int(os.environ['RH_RUN_ID']) or rr['head_sha']!=os.environ['RH_HEAD'] or rr['run_attempt']!=1 or rr['conclusion']!='success': raise SystemExit('#594 audit run drift')
+          rm=[a for a in ra if a['id']==int(os.environ['RH_ARTIFACT_ID'])]
+          if len(rm)!=1 or rm[0].get('digest')!=os.environ['RH_ARTIFACT_DIGEST'] or rm[0].get('expired'): raise SystemExit('#594 artifact drift')
+          if rc['id']!=int(os.environ['RH_CONTRACT_RUN_ID']) or rc['head_sha']!=os.environ['RH_HEAD'] or rc['run_attempt']!=1 or rc['conclusion']!='success': raise SystemExit('#594 contract drift')
+          PY
+          git fetch origin "$RH_HEAD"
+          test "$(git rev-parse HEAD:review/opac-null-aod-table-calibration-v1/rh_audit_dependency.py)" = "$RH_DEPENDENCY_BLOB"
+          test "$(git rev-parse "$RH_HEAD:review/opac-afgl-rh-selection-null-audit-v1/audit.py")" = "$RH_DEPENDENCY_BLOB"
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-null-aod-calibration-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify locked runtime and parser/control surface
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence runtime/share/libRadtran
+          python -m py_compile review/opac-null-aod-table-calibration-v1/calibrate.py review/opac-null-aod-table-calibration-v1/rh_audit_dependency.py
+          python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/base-runtime.json
+          python - <<'PY'
+          import json,os
+          x=json.load(open('evidence/base-runtime.json'))
+          if x['uvspecSha256']!=os.environ['EXPECTED_UVSPEC_SHA256']: raise SystemExit('uvspec SHA drift')
+          if x['libRadtranDataTreeSha256']!=os.environ['EXPECTED_BASE_DATA_SHA256']: raise SystemExit('base data-tree drift')
+          if x['scientificSolverExecuted'] is not False or x['syntaxCheckExecuted'] is not False: raise SystemExit('runtime probe boundary crossed')
+          PY
+          python - <<'PY'
+          import importlib.util,tempfile
+          from pathlib import Path
+          p=Path('review/opac-null-aod-table-calibration-v1/calibrate.py')
+          s=importlib.util.spec_from_file_location('cal',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          assert m.TARGET_SUM_ABS_TOL==2.1e-6 and m.ROW_SUM_VS_SUM_LINE_TOL==7e-5 and m.SHAPE_MAX_ABS_TOL==6e-5 and m.SHAPE_L1_TOL==1.5e-3
+          rows=[]
+          for i in range(49): rows.append(f'{i:5d} | {115-i:9.4f} | 1e-3 |  {0.001 if i==48 else 0.0:.6f}  0.000000 0.700 | 0 0 0 | 0 0 0 | 0')
+          sample='*** optical_properties()\n'+'\n'.join(rows)+'\n  sum | -nan | 0 |  0.001000  0.000000 -nan | 0 0 -nan | 0 0 -nan | 0\n*** last solver call: 0\n'
+          with tempfile.TemporaryDirectory() as td:
+              f=Path(td)/'v.err'; f.write_text(sample); x=m.parse_optical_properties(f); assert x['layerCount']==49 and abs(x['sumLine']['aerosolTau']-0.001)<1e-12
+          print('calibration parser control: PASS')
+          PY
+      - name: Reconstruct exact OPAC runtime and calibration inputs
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" runtime/share/libRadtran/data
+          curl -L --fail --retry 3 --retry-all-errors --max-time 2700 -o opac.tar.gz "$SOURCE_URL"
+          python review/opac-null-aod-table-calibration-v1/calibrate.py prepare --archive opac.tar.gz --runtime-root "$GITHUB_WORKSPACE/runtime" --repo-root "$GITHUB_WORKSPACE" --output calibration-inputs --dependency review/opac-null-aod-table-calibration-v1/rh_audit_dependency.py > evidence/prepare.json
+          cp calibration-inputs/input-manifest.json calibration-inputs/*.inp evidence/
+          rm opac.tar.gz
+          for f in calibration-inputs/*.inp; do
+            grep -Fx 'rte_solver null' "$f"
+            ! grep -Eiq 'rte_solver[[:space:]]+(disort|mystic|montecarlo|twostr|sdisort|fdisort|sos)' "$f"
+          done
+          test "$(grep -Fc 'aerosol_set_tau_at_wvl 550' calibration-inputs/baseline.inp)" = 0
+          grep -Fx 'aerosol_set_tau_at_wvl 550 0.100000' calibration-inputs/aod010.inp
+          grep -Fx 'aerosol_set_tau_at_wvl 550 0.300000' calibration-inputs/aod030.inp
+      - name: Syntax and NULL-only calibration execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          for name in baseline aod010 aod030; do
+            timeout 120 uvspec -c < calibration-inputs/$name.inp > evidence/$name-syntax.out 2> evidence/$name-syntax.err
+            timeout 180 uvspec < calibration-inputs/$name.inp > evidence/$name.out 2> evidence/$name.verbose.err
+            test -s evidence/$name.verbose.err
+          done
+          python review/opac-null-aod-table-calibration-v1/calibrate.py freeze --evidence evidence --manifest calibration-inputs/input-manifest.json > evidence/freeze.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/calibration-report.json'))
+          want='PASS_VERBOSE_AEROSOL_SCATTER_PLUS_ABS_IS_LAYER_TAU_AND_AOD_RESCALE_PRESERVES_SHAPE'
+          if x['status']!=want: raise SystemExit('NULL AOD table calibration did not pass')
+          if x['rteSolver']!='null' or x['scientificRadiativeTransferSolved'] is not False or x['mysticExecuted'] is not False or x['scientificOrdinalAllocated'] is not False or x['rendererAuthorized'] is not False: raise SystemExit('calibration boundary crossed')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-null-aod-table-calibration-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

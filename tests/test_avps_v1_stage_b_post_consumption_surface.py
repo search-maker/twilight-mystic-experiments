@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HELPER_PATH = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py"
 CONTRACT_PATH = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/RECOVERY_CONTROL_CONTRACT.review.json"
+REVIEW_WORKFLOW_PATH = ROOT / ".github/workflows/avps-v1-stage-b-post-consumption-surface-review.yml"
 
 spec = importlib.util.spec_from_file_location("avps_stage_b_surface_tested", HELPER_PATH)
 if spec is None or spec.loader is None:
@@ -137,6 +138,25 @@ class AvpsStageBPostConsumptionSurface(unittest.TestCase):
             "actions/workflows/avps-v1-science.yml/dispatches",
         ):
             self.assertNotIn(forbidden, text)
+
+    def test_review_retry_is_bounded_and_transport_only(self):
+        text = REVIEW_WORKFLOW_PATH.read_text()
+        self.assertIn("scan_attempt=1", text)
+        self.assertIn('if [ "$scan_attempt" -ge 3 ]', text)
+        self.assertIn("HTTP Error 5[0-9]{2}", text)
+        for token in (
+            "urllib.error.URLError",
+            "TimeoutError",
+            "RemoteDisconnected",
+            "ConnectionResetError",
+            "Temporary failure in name resolution",
+        ):
+            self.assertIn(token, text)
+        self.assertIn("repository-global seed scan failed for non-transport reason; refusing retry", text)
+        self.assertIn("repository-global-seed-scan-success-attempt.txt", text)
+        self.assertNotIn("GITHUB_RUN_ATTEMPT\" -gt 1", text)
+        self.assertNotIn("gh run rerun", text)
+        self.assertNotIn("/rerun", text)
 
     def test_scientific_identity_and_result_boundary_are_frozen(self):
         s = self.contract["frozenScientificExperiment"]

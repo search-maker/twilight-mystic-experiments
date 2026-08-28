@@ -62,7 +62,7 @@ def main() -> None:
             disort = (out / f"inputs/disort-{state}.inp").read_text()
             mystic = (out / f"inputs/mystic-{state}.inp").read_text()
             assert "aerosol_species_library OPAC" in disort
-            assert f"aerosol_species_file " in disort and " INSO" in disort
+            assert "aerosol_species_file " in disort and " INSO" in disort
             assert "aerosol_file tau" not in disort
             assert "aerosol_file tau" not in mystic
             assert "aerosol_set_tau_at_wvl 550 0.100000" in mystic
@@ -85,8 +85,10 @@ def main() -> None:
             assert required in low_mystic and required in high_mystic
 
     source = MODULE_PATH.read_text()
-    assert "taylor" not in source.lower()
-    assert "jerusalem" not in source.lower()
+    sanitized = source.replace("taylorOrJerusalemUsed", "")
+    assert "taylor" not in sanitized.lower()
+    assert "jerusalem" not in sanitized.lower()
+    assert '"taylorOrJerusalemUsed": False' in source
     assert "aerosol_file tau" in source  # only in an explicit refusal string/test guard
     assert "corrected capability must not combine aerosol_file with aerosol_species_file" in source
     print("OPAC species-profile transport capability v2 static tests: PASS")

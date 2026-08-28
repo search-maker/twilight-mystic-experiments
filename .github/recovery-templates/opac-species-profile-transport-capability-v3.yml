@@ -1,0 +1,118 @@
+name: OPAC species-profile transport capability v3
+on:
+  push:
+    branches: [status/opac-species-profile-transport-capability-v3]
+    paths: [.github/dispatch-requests/opac-species-profile-transport-capability-v3.json]
+permissions: {actions: read, contents: read, pull-requests: read}
+concurrency: {group: opac-species-profile-transport-capability-v3, cancel-in-progress: false}
+jobs:
+  capability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {path: control, fetch-depth: 0, persist-credentials: false}
+      - name: Bind exact reviewed one-shot identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push; test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = status/opac-species-profile-transport-capability-v3
+          python - <<'PY' > req.env
+          import json
+          r=json.load(open('control/.github/dispatch-requests/opac-species-profile-transport-capability-v3.json'))
+          if (r.get('schemaVersion'),r.get('stageId'),r.get('status'))!=(1,'opac-species-profile-transport-capability-v3','REQUEST_ONE_SHOT_OPAC_SPECIES_PROFILE_RESOLVER_ALIAS_CAPABILITY_V3'): raise SystemExit('request drift')
+          for k in ('reviewPr','reviewRunId'): print(f'{k.upper()}={int(r[k])}')
+          for k in ('reviewHead','baseMain'):
+            v=r[k]
+            if len(v)!=40 or any(c not in '0123456789abcdef' for c in v): raise SystemExit(f'{k} invalid')
+            print(f'{k.upper()}={v}')
+          PY
+          source req.env; export REVIEWPR REVIEWRUNID REVIEWHEAD BASEMAIN
+          test "$BASEMAIN" = 99ade7798627e67921139697ba1a004fa8a304bb
+          P="$(git -C control rev-parse HEAD^)"; test "$(git -C control diff-tree --no-commit-id --name-only -r HEAD)" = .github/dispatch-requests/opac-species-profile-transport-capability-v3.json
+          test "$(git -C control rev-parse "$P^")" = "$BASEMAIN"
+          test "$(git -C control diff-tree --no-commit-id --name-only -r "$P" | sort | tr '\n' ' ')" = ".github/workflows/opac-species-profile-transport-capability-v3.yml review/opac-species-profile-transport-capability-v3/activation_support.py review/opac-species-profile-transport-capability-v3/build_inputs.py "
+          git -C control fetch origin main "$REVIEWHEAD"; test "$(git -C control rev-parse origin/main)" = "$BASEMAIN"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$REVIEWPR" > pr.json; gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEWRUNID" > run.json
+          REVIEWHEAD="$REVIEWHEAD" REVIEWRUNID="$REVIEWRUNID" python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json')); r=json.load(open('run.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['ref']!='review/opac-species-profile-transport-capability-v3' or p['head']['sha']!=os.environ['REVIEWHEAD'] or p['base']['sha']!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('review PR drift')
+          if r['id']!=int(os.environ['REVIEWRUNID']) or r['head_sha']!=os.environ['REVIEWHEAD'] or r['run_attempt']!=1 or r['conclusion']!='success': raise SystemExit('review run drift')
+          PY
+          test "$(git -C control rev-parse "$P:.github/workflows/opac-species-profile-transport-capability-v3.yml")" = "$(git -C control rev-parse "$REVIEWHEAD:.github/recovery-templates/opac-species-profile-transport-capability-v3.yml")"
+          test "$(git -C control rev-parse "$P:review/opac-species-profile-transport-capability-v3/build_inputs.py")" = "$(git -C control rev-parse "$REVIEWHEAD:review/opac-species-profile-transport-capability-v3/build_inputs.py")"
+          test "$(git -C control rev-parse "$P:review/opac-species-profile-transport-capability-v3/activation_support.py")" = "$(git -C control rev-parse "$REVIEWHEAD:review/opac-species-profile-transport-capability-v3/activation_support.py")"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?branch=$GITHUB_REF_NAME&event=push&per_page=100" > runs.json
+          python - <<'PY'
+          import json,os
+          ids=[r['id'] for p in json.load(open('runs.json')) for r in p['workflow_runs'] if r['path']=='.github/workflows/opac-species-profile-transport-capability-v3.yml']
+          if ids!=[int(os.environ['GITHUB_RUN_ID'])]: raise SystemExit(f'not one-shot: {ids}')
+          PY
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-v3
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Reconstruct frozen runtime and OPAC archive
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail; mkdir evidence; mkdir -p capability-runtime/share/libRadtran
+          python control/experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock control/experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/base.json
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" capability-runtime/share/libRadtran/data
+          curl -L --fail --retry 3 --retry-all-errors --max-time 2700 -o evidence/opac.tar.gz "$SOURCE_URL"
+          PYTHONPATH=control/review/opac-species-profile-transport-capability-v3 python - <<'PY'
+          from pathlib import Path
+          from activation_support import extract_frozen_opac_archive
+          extract_frozen_opac_archive(Path('evidence/opac.tar.gz'),Path('capability-runtime/share/libRadtran'))
+          PY
+          DATA="$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data"; test -f "$DATA/aerosol/OPAC/optprop/inso.mie.cdf"; test ! -e "$DATA/aerosol/OPAC/optprop/INSO.nc"
+          python control/experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$DATA" --atmosphere "$DATA/atmmod/afglus.dat" --runtime-lock control/experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/pre-alias-runtime-report.json
+          rm evidence/opac.tar.gz
+      - name: Build exact profiles and byte-identical resolver alias
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail; DATA="$GITHUB_WORKSPACE/capability-runtime/share/libRadtran/data"
+          python control/review/opac-species-profile-transport-capability-v3/build_inputs.py --atmosphere "$DATA/atmmod/afglus.dat" --data-dir "$DATA" --repository-root "$GITHUB_WORKSPACE/control" --output capability-inputs > evidence/builder.json
+          cp capability-inputs/input-manifest.json evidence/; cp capability-inputs/profiles/* evidence/; cp capability-inputs/inputs/* evidence/
+          cmp "$DATA/aerosol/OPAC/optprop/inso.mie.cdf" "$DATA/aerosol/OPAC/optprop/INSO.nc"
+          python control/experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$DATA" --atmosphere "$DATA/atmmod/afglus.dat" --runtime-lock control/experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/post-alias-runtime-report.json
+          PYTHONPATH=control/review/opac-species-profile-transport-capability-v3 python - <<'PY'
+          import json
+          from activation_support import validate_runtime_reports
+          validate_runtime_reports(json.load(open('evidence/base.json')),json.load(open('evidence/pre-alias-runtime-report.json')),json.load(open('evidence/post-alias-runtime-report.json')),json.load(open('evidence/input-manifest.json'))['resolverAlias'])
+          PY
+      - name: Syntax and DISORT profile transport
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          for m in disort mystic; do for s in low high; do timeout 120 uvspec -c < capability-inputs/inputs/$m-$s.inp > evidence/$m-$s-syntax.out 2> evidence/$m-$s-syntax.err; done; done
+          for s in low high; do timeout 300 uvspec < capability-inputs/inputs/disort-$s.inp > evidence/disort-$s.out 2> evidence/disort-$s.err; test -s evidence/disort-$s.out; done
+          test "$(sha256sum evidence/disort-low.out|cut -d' ' -f1)" != "$(sha256sum evidence/disort-high.out|cut -d' ' -f1)"
+      - name: Paired spherical MYSTIC profile transport
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          for s in low high; do timeout 2400 uvspec < capability-inputs/inputs/mystic-$s.inp > evidence/mystic-$s.out 2> evidence/mystic-$s.err; test -s capability-inputs/runs/mystic-$s/mc.rad.spc; test -s capability-inputs/runs/mystic-$s/mc.rad.std.spc; cp capability-inputs/runs/mystic-$s/mc.rad.spc evidence/mystic-$s-mc.rad.spc; cp capability-inputs/runs/mystic-$s/mc.rad.std.spc evidence/mystic-$s-mc.rad.std.spc; done
+          test "$(sha256sum evidence/mystic-low-mc.rad.spc|cut -d' ' -f1)" != "$(sha256sum evidence/mystic-high-mc.rad.spc|cut -d' ' -f1)"
+      - name: Freeze report
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          mkdir -p evidence
+          PYTHONPATH=control/review/opac-species-profile-transport-capability-v3 python - <<'PY'
+          import os
+          from pathlib import Path
+          from activation_support import freeze_capability_report
+          freeze_capability_report(Path('evidence'),int(os.environ['GITHUB_RUN_ID']))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with: {name: opac-species-profile-transport-capability-v3, path: evidence/, if-no-files-found: error, compression-level: 0}
+      - name: Require terminal PASS
+        run: python -c "import json; assert json.load(open('evidence/capability-report.json'))['status']=='PASS_CORRECTED_EXPLICIT_SPECIES_PROFILE_REACHES_DISORT_AND_MYSTIC'"

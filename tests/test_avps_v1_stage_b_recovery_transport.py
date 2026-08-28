@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -8,9 +9,17 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLISHER = ROOT / ".github/recovery-templates/avps-v1-stage-b-science-recovery-publisher.yml"
 SCIENCE = ROOT / ".github/recovery-templates/avps-v1-stage-b-science-recovery.yml"
 HELPER = ROOT / "review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py"
+GUARD = ROOT / "experiments/aerosol-vertical-profile-sensitivity-v1/science_guard.py"
 PT = PUBLISHER.read_text()
 ST = SCIENCE.read_text()
 HT = HELPER.read_text()
+GT = GUARD.read_text()
+EXPECTED_GUARD_BLOB = "c774be7ea8655854bb85071a9fb260e21498beda"
+
+
+def git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
 
 
 class AvpsStageBRecoveryTransport(unittest.TestCase):
@@ -62,18 +71,24 @@ class AvpsStageBRecoveryTransport(unittest.TestCase):
         self.assertIn("ref: ${{ needs.preflight.outputs.auth_head }}", ST)
         self.assertIn("338ee82c8e088e929f45782b1f7ac1c3aaaaa533", ST)
         self.assertIn("55f48bbdf99aac58a96bd96f6735a4e56b8b466a", ST)
-        self.assertIn("c774be7ea8655854bb85071a9fb260e21498beda", ST)
+        self.assertIn(EXPECTED_GUARD_BLOB, ST)
+        self.assertEqual(git_blob_sha1(GUARD), EXPECTED_GUARD_BLOB)
         self.assertIn("build_post_consumption_surface", ST)
         self.assertIn("sg.evaluate(Path('science')", ST)
         self.assertIn("EXACT_ONE_USE_AVPS_V1_DISPATCH_AUTHORIZED", ST)
         self.assertIn("FAILED_AUTHORIZATION_HISTORY_SUBPROOF_ONLY", HT)
         self.assertIn("freshness.validate_dispatch(surface, ordinal, head_sha, post_dispatch=True)", HT)
 
-    def test_exact_science_identity_is_frozen(self):
-        self.assertIn("candidateSeedCanonicalSha256", ST)
+    def test_exact_science_identity_is_frozen_by_live_seed_proof_and_unchanged_guard(self):
+        self.assertIn("live-seed-authorization-proof.json", ST)
         self.assertIn("repository_global_seed_scan.py", ST)
         self.assertIn("--audit-mode authorization-recheck", ST)
         self.assertIn("--expected-branch-name \"dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-${ORDINAL}\"", ST)
+        self.assertIn("sg.evaluate(Path('science')", ST)
+        self.assertIn("candidateSeedCanonicalSha256", GT)
+        self.assertIn("candidateRowsCanonicalSha256", GT)
+        self.assertIn("live_seed_proof.get(\"candidateSeedCanonicalSha256\") == authorization.get(\"candidateSeedCanonicalSha256\")", GT)
+        self.assertIn("live_seed_proof.get(\"candidateRowsCanonicalSha256\") == authorization.get(\"candidateRowsCanonicalSha256\")", GT)
         self.assertIn("rubin-libradtran=2.0.6=py312pl5321he9373c2_1", ST)
         self.assertIn("11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e", ST)
         self.assertIn("5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80", ST)

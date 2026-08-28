@@ -1,615 +1,305 @@
-# STAR VISIBILITY / MYSTIC — CURRENT NEW-WORKER HANDOFF
+# STAR VISIBILITY / MYSTIC — LIVE CURRENT HANDOFF
 
-**Current status: 2026-08-27/28 — AVPS scientific ordinal 40 is allocated and consumed; Stage A recovery is complete; Stage B review is now fully green on exact head `30522faddb0a76b3767652da94ddc41a4cd24ab2`; activation/science has NOT yet been triggered. No AVPS MYSTIC result exists yet.**
+**Live refresh: 2026-08-28 — this file name is historical, but the content below is the current computational/scientific state.**
 
-This file is the current standalone handoff for the non-observation computational/scientific work. It supersedes earlier checkpoints on this handoff branch.
+**Bottom line:** the old handoff checkpoint saying “Stage B is next / no AVPS result exists” is obsolete. AVPS ordinal 40 was executed through a controlled recovery, its results were opened, and the exact-zero contrast was shown to be scientifically non-informative because the intended vertical-profile state never reached effective solver physics. A corrected solver-capability lane (#586) was then reviewed and activated once; that one-shot capability run failed before any MYSTIC execution because the custom `aerosol_species_file ... INSO` input could not resolve the OPAC optical-property file at runtime. Do not rerun either ordinal 40 or the failed #586 activation identity.
 
----
-
-# 0. EXACT LIVE CHECKPOINT — READ FIRST
-
-Repository:
-
-- `search-maker/twilight-mystic-experiments`
-
-Frozen live `main`:
-
-- `99ade7798627e67921139697ba1a004fa8a304bb`
-
-**Do not move main while the ordinal-40 authorization/recovery chain remains tied to this exact parent.**
-
-## AVPS authorization identity
-
-Authorization PR:
-
-- PR #565 — Draft/open/unmerged
-- authorization head `338ee82c8e088e929f45782b1f7ac1c3aaaaa533`
-- authorization parent `99ade7798627e67921139697ba1a004fa8a304bb`
-- authorization JSON Git blob `91c2fcfe0536f7289b9da3c597428c546523571a`
-- authorization JSON SHA-256 `bec00d3a5609794fbb1078abb2c8ec6cf901318f5e9e80f38c387fab886dae97`
-- authorization review run `33113256151`, attempt 1, SUCCESS
-- review artifact `9663887142`
-- digest `sha256:3edff7740ca35832bbca0cfcba096aa3d9963d9b6c19044d867a2b3c9f09a47c`.
-
-Preauthorization:
-
-- exact-main run `33111875371`, attempt 1, SUCCESS
-- artifact `9663132186`
-- digest `sha256:1253612ffe4ba228e319f6b063256abd7340d11eec76981db4cc39a3619b2df6`
-- frozen 72 candidate seeds.
-
-Issue 60 contains exactly one allocation marker:
-
-`ORDINAL40_AVPS_V1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=338ee82c8e088e929f45782b1f7ac1c3aaaaa533 parent=99ade7798627e67921139697ba1a004fa8a304bb pr=565`
-
-and exactly one consumed marker:
-
-`ORDINAL40_AVPS_V1_DISPATCH_CONSUMED`
-
-Therefore:
-
-> **Ordinal 40 is already allocated and consumed. Never reuse, reallocate, retire-as-unused, or consume it again.**
-
-Logical dispatch branch:
-
-- `dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-40`
-- immutable head `338ee82c8e088e929f45782b1f7ac1c3aaaaa533`.
-
-At this checkpoint:
-
-- no AVPS science workflow has yet run on the logical dispatch identity;
-- no AVPS MYSTIC/uvspec scientific case has yet executed;
-- no AVPS result has been opened.
+This handoff is intentionally updated in place so a new worker can start from the repository’s actual state rather than replaying the historical Stage-B plan.
 
 ---
 
-# 0A. STAGE A — PUBLISHER EVIDENCE RECOVERY COMPLETE
+## 1. Immutable baseline still in force
 
-The original publisher consumed the identity successfully but then failed during post-dispatch verification because generic failed-authorization-history logic rejected the newly legitimate consumed marker.
+Repository: `search-maker/twilight-mystic-experiments`
 
-Original publisher failure:
+Frozen `main` remains:
 
-- run `33114653044`, attempt 1, failure
-- request/status head `8708a0f8a2fa86c5c13b27c94517552b0bf7dc2a`
-- no science.
+`99ade7798627e67921139697ba1a004fa8a304bb`
 
-It had already:
+Do **not** move `main` merely to continue this lane.
 
-1. passed pre-dispatch controls;
-2. created the logical dispatch branch at the authorization head;
-3. posted the consumed marker exactly once.
+The already-consumed AVPS authorization identity remains:
 
-Then it failed with:
+- scientific ordinal: `40`
+- authorization PR: #565
+- authorization head: `338ee82c8e088e929f45782b1f7ac1c3aaaaa533`
+- authorization parent / frozen main: `99ade7798627e67921139697ba1a004fa8a304bb`
+- authorization PR remains Draft / open / unmerged
+- dispatch branch remains `dispatch/aerosol-vertical-profile-sensitivity-v1-ordinal-40`
+- dispatch branch remains pinned to `338ee82c8e088e929f45782b1f7ac1c3aaaaa533`
+- Issue #60 still contains exactly one ordinal-40 allocation marker and exactly one ordinal-40 consumed marker
 
-`GlobalOrdinalRefusal: ordinal 40 already has consumed marker`
-
-This was control-plane-only after consumption.
-
-Final Stage A review:
-
-- PR #573 — Draft/open/unmerged
-- review head `352f226d87d570a7338bf2730872a7733179da74`
-- reviewed Stage-A template blob `821cd234ffd1253905839834d1afeafa91bdcdfd`
-- review run `33122607199`, attempt 1, SUCCESS.
-
-Final Stage A activation:
-
-- control commit `c580002b0b30c9ee48a4bf7f88edd83c930e0044`
-- request/status head `14a2d1272d8e81383e0fb4f830fceef5647d985c`
-- successful publisher-evidence run `33123226959`, attempt 1
-- job `98695045355`
-- conclusion SUCCESS.
-
-Stage A artifact:
-
-- id `9667291127`
-- name `avps-v1-dispatch-publisher-ordinal-40`
-- digest `sha256:0338d418d554c5ceaead8712a1ee860c2ee154d839cfe7c038098607786a0b3f`.
-
-Receipt:
-
-- `DISPATCH_PUBLISHED_ZERO_RUNTIME`
-
-Recovery receipt:
-
-- `POST_CONSUMPTION_PUBLISHER_RECOVERY_PASS_NO_SECOND_CONSUMPTION_NO_SCIENCE_TRIGGER`
-
-Proved:
-
-- no second dispatch push;
-- no second allocation or consumed marker;
-- no science trigger;
-- no scientific runtime;
-- no solver.
-
-**Stage A is closed. Do not reopen it.**
+No fresh scientific ordinal may be allocated merely to “retry” ordinal 40.
 
 ---
 
-# 0B. STAGE B — FINAL REVIEW NOW FULLY GREEN
+## 2. Historical Stage A / Stage B checkpoint is complete, not pending
 
-PR:
+The old handoff stopped after Stage-B review PR #574 and incorrectly left activation as the next step. That activation has already occurred.
 
-- PR #574 — `Review AVPS Stage B consumed-state science recovery`
-- Draft/open/unmerged
-- branch `review/avps-v1-ordinal40-stage-b-science-recovery-control-1`
-- exact final green review head `30522faddb0a76b3767652da94ddc41a4cd24ab2`
-- base `99ade7798627e67921139697ba1a004fa8a304bb`.
+Stage-B activation identity that was actually used:
 
-## Narrow repair scope
+- activation/control commit: `37bd2210f05380187c7805563c69737686f53825`
+- activation request/status head: `79b95f0ee0fafeb07f3785da91e63598035d4ac1`
+- status branch: `status/avps-v1-stage-b-science-recovery-ordinal-40`
+- publisher run: `33137501439` — SUCCESS
+- publisher artifact: `9672590338`
+- publisher artifact digest: `sha256:071310c18d8f504addcc7fe1decadc2b9eea2b00cbc267a1778fffb89a2fb41d`
 
-The frozen science workflow's generic post-dispatch surface builder called failed-authorization reuse logic before the downstream validator could recognize the legitimate one-consumed-marker state.
+The first Stage-B science run was:
 
-Stage B repairs **only** that failed-history subproof:
+- run `33137514692`
+- attempt `1`
+- preflight passed
+- case execution then failed/cancelled
+- only same-run artifact at that point was preflight artifact `9672728847`
+- preflight digest: `sha256:afe5c4c11e7885023b443a49f2babbbe25f763f2486aa4042102c0a300bf16d6`
 
-1. prove preserved failed authorization head `67844e1dd2523963f2682f186387280dfb930760`;
-2. prove #561 was closed/unmerged;
-3. prove auth-review run `33109014744` was attempt-1 failure;
-4. prove the failed head itself was never allocated and never ran science;
-5. temporarily substitute only that subproof while using the original bound control-surface builder;
-6. immediately restore the original helper;
-7. call unchanged `freshness.validate_dispatch(..., post_dispatch=True)`;
-8. feed the recovered surface to unchanged frozen `science_guard.py` blob `c774be7ea8655854bb85071a9fb260e21498beda`.
+The demonstrated defect was in the raw-evidence contract, not in ordinal allocation or the frozen science identity: the AVPS executor required diagnostic `syntax-stdout.txt` to be non-empty even when `uvspec` legitimately returned exit 0 with an empty diagnostic stdout stream. Prior repository executors require such diagnostic streams to exist but do not require them to be non-empty; the spectral scientific members remain subject to non-empty checks.
 
-The recovery does NOT change scientific inputs, seeds, cases, runtime, F, analysis, or result-opening semantics.
-
-## First live Stage-B review failure — transient GitHub transport only
-
-Old review head:
-
-- `9a3390d27963359c7c39b1762a1b8eec90e24185`.
-
-Run:
-
-- `33130501045`, attempt 1, failure.
-
-Failure occurred while repository-global seed scanning fetched Actions metadata:
-
-`urllib.error.HTTPError: HTTP Error 502: Bad Gateway`
-
-Not a seed collision or scientific refusal.
-
-No GitHub rerun attempt 2 was used.
-
-## Bounded transport retry
-
-The Stage-B **review workflow only** was hardened:
-
-- at most 3 complete scan attempts inside one workflow run attempt;
-- retry only HTTP 5xx / network transport exceptions;
-- semantic refusal, collision or snapshot failure remains immediately terminal;
-- no `gh run rerun` and no workflow run attempt 2.
-
-## Old corrected head proved the science/control logic
-
-Head:
-
-- `8d9bd70d1c666b84588a1e33fff14dd71c81a46e`.
-
-Dedicated review:
-
-- run `33132159457`, attempt 1, SUCCESS.
-
-It passed live 72-seed global recheck + recovered surface + unchanged validator + zero-science proof.
-
-Its repository-wide contract failed only one brittle regression assertion requiring the seed-hash field name literally inside the inactive YAML template, even though the exact frozen `science_guard.py` already performs both canonical hash comparisons.
-
-The regression was corrected to test the **actual enforcement chain**, without changing the science/recovery templates or helper.
-
-## FINAL SAME-HEAD REVIEW RESULTS
-
-Exact head:
-
-- `30522faddb0a76b3767652da94ddc41a4cd24ab2`.
-
-Changes from `8d9bd70d...`:
-
-- test files only;
-- no recovery template/helper/contract/scientific source change.
-
-Repository-wide contract:
-
-- run `33132860787`
-- attempt 1
-- exact head `30522faddb0a76b3767652da94ddc41a4cd24ab2`
-- conclusion **SUCCESS**.
-
-Dedicated Stage-B live review:
-
-- run `33132860780`
-- attempt 1
-- exact head `30522faddb0a76b3767652da94ddc41a4cd24ab2`
-- job `98727147108`
-- conclusion **SUCCESS**.
-
-Every dedicated-review step passed:
-
-1. Stage-B unit contract;
-2. exact frozen authorization checkout;
-3. live main/auth/dispatch/Stage-A binding;
-4. live 72-seed authorization recheck;
-5. recovered post-dispatch freshness surface;
-6. unchanged original freshness validator;
-7. immutable evidence upload;
-8. terminal proof that science still had not started.
-
-Stage-B review artifact:
-
-- id `9671228507`
-- name `avps-v1-stage-b-post-consumption-surface-review`
-- GitHub digest `sha256:e81157d0e4cf30bd0974013ddf42eee18eb6d576706bd783950d0cb5ae658c15`
-- downloaded ZIP SHA-256 independently rechecked equal to the GitHub digest.
-
-The live seed scan required the bounded transport retry because the first internal scan attempt again received GitHub HTTP 502. Internal scan attempt 2 succeeded **within the same workflow run attempt 1**.
-
-Verified artifact evidence:
-
-- successful internal scan attempt = `2`;
-- candidate seed count = 72;
-- candidate seed canonical SHA-256 = `a2e22b526dfad84d4f23c0ca8b143d028fddc7e55f78deb93a43e194ebd6c35e`;
-- candidate row canonical SHA-256 = `f22de8a9e30ba106759effb1170a5ca1d1e747cb2ac68293fa232dc7ed6ca683`;
-- repository-global collision count = 0;
-- repository-global collision scan passed;
-- repository-global double enumeration stable = true;
-- post-fence candidate-seed collision count = 0;
-- audited branch = logical dispatch branch;
-- audited dispatch head matched `338ee82c...`;
-- no post-fence arrivals in any audited surface.
-
-Recovered freshness evidence:
-
-- `latestPriorConsumedScientificOrdinal = 39`
-- `nextAvailableScientificOrdinal = 40`
-- `candidatePriorScientificRunCount = 0`
-- `candidateExecutionKeyPriorUseCount = 0`
-- `positiveCandidateClaimsExcludingCurrent = 0`
-- authorization branch/head exact
-- dispatch branch/head exact
-- matching authorization markers = 1
-- consumed marker count = 1
-- candidate seed authorization recheck passed = true
-- `originalFreshnessValidateDispatchPassed = true`
-- `recoveryRepairScope = FAILED_AUTHORIZATION_HISTORY_SUBPROOF_ONLY`.
-
-**Stage B review is now closed green and activation may be prepared.**
-
-Do not merge #574 merely for activation.
+Do **not** GitHub-rerun run `33137514692`.
 
 ---
 
-# 0C. EXACT REVIEWED STAGE-B ACTIVATION BYTES
+## 3. Ordinal-40 execution recovery was completed successfully
 
-These bytes are unchanged by the final test-only review fix:
+A separately reviewed executor-contract recovery (#576) was used rather than rerunning the failed Stage-B identity.
 
-- inactive recovery publisher template blob:
-  `042727fc6efae85bf34b0a6868cb7e2e86a662e6`
-- inactive recovery science template blob:
-  `cb3735ab0529de79bd75bdb22d3391b8cf92e9f5`
-- post-consumption helper blob:
-  `efe771b21bd8c8ebbf9e4e998faff39b125af377`.
+Authoritative recovery/opening facts currently recorded in master closure PR #539:
 
-Activation control commit must be a direct child of frozen main and change exactly three files:
+- recovery science run `33139545997`, attempt 1 — SUCCESS
+- exact `360/360` case artifacts were produced
+- Gate-0 metadata artifact `9676069031`
+- Gate-0 digest `sha256:70dedcd16209dea74a9ed67a1dc7377c123f1a62fd18741b1e15692702011fc8`
+- Gate-0 froze the exact 360 artifact universe before case contents/results were opened
 
-1. `.github/workflows/avps-v1-dispatch-publisher.yml` -> exact reviewed publisher blob
-2. `.github/workflows/avps-v1-science.yml` -> exact reviewed recovery-science blob
-3. `review/avps-v1-ordinal40-stage-b-science-recovery-v1/post_consumption_surface.py` -> exact reviewed helper blob.
+Post-360 protocol was frozen separately under #579 before opening.
 
-Then a child request commit must change exactly one file:
+Phase A:
 
-- `.github/dispatch-requests/avps-v1-stage-b.json`.
+- review PR #584
+- exact reviewed head `b93c284c8a24296dff9d8aedc265f7a3bdec465a`
+- dedicated review run `33169583131` — SUCCESS
+- repository contract run `33169583043` — SUCCESS
+- one-shot Phase-A run `33170006532`, attempt 1 — SUCCESS
+- all 360 ZIP digests matched Gate-0
+- frozen aggregator ran exactly once
+- results still remained closed at the end of Phase A
+- Phase-A artifact `9685308839`
+- artifact digest `sha256:68216d6a4982618d8cf9238948f0cbeb651bc9cde7ce53e688b5b1b11d204148`
+- analysis-input content hash `c58907c2f838396417edcfe87d306c130b92374b649790ff25537f3ac049bdc8`
 
-No main merge is required or allowed for activation.
+Phase B:
 
-The recovery publisher:
+- review PR #585
+- exact reviewed head `31c09366aafd12ef666f5c747e416df6ba4ead52`
+- dedicated review run `33170557531` — SUCCESS
+- repository contract run `33170557454` — SUCCESS
+- one-shot result-opening run `33170855407`, attempt 1 — SUCCESS
+- result artifact `9685531261`
+- artifact digest `sha256:e2db9625387a4102cccc616bc2aa351b64aa1df0b14cb22978a810b352e47f04`
 
-- does not create a new ordinal;
-- does not push a second logical dispatch ref;
-- does not post another Issue-60 marker;
-- proves all current state and Stage-A/Stage-B review evidence;
-- uploads pre-dispatch Stage-B publisher evidence;
-- then makes exactly one `workflow_dispatch` call to the active recovery science workflow on the recovery status ref.
-
-The recovery science workflow:
-
-- preserves logical dispatch identity at the original authorization head;
-- performs a fresh repository-global 72-seed recheck before solver;
-- builds the reviewed post-consumption freshness surface;
-- passes it through the unchanged frozen science guard;
-- executes only the exact frozen 360 cases if the guard passes.
-
-Recovery science remains **result-closed**:
-
-- no `aggregate_results`;
-- no `open_results`;
-- no Level-B result opening;
-- terminal target is exact 360 raw case artifacts + metadata-only closure.
-
-A later separate reviewed gate is required to aggregate/open scientific results.
+Phase B did **not** perform Taylor/Jerusalem residual fitting, Level-B production routing, or production activation.
 
 ---
 
-# 0D. STAGE-B ACTIVATION REQUEST FIELDS
+## 4. Critical scientific postmortem: ordinal 40 is NOT a physical null result
 
-Frozen request must bind:
+The opened primary result contains:
 
-- `schemaVersion = 1`
-- `stageId = aerosol-vertical-profile-sensitivity-v1-stage-b-science-recovery`
-- `status = REQUEST_ONE_SHOT_STAGE_B_SCIENCE_RECOVERY_RAW_CASES_ONLY`
-- `scientificOrdinal = 40`
-- `authorizationPr = 565`
-- `authorizationHead = 338ee82c8e088e929f45782b1f7ac1c3aaaaa533`
-- `authorizationParent = 99ade7798627e67921139697ba1a004fa8a304bb`
-- `recoveryContractPr = 570`
-- `recoveryContractHead = f1588592725fd31c9bf6b653557fd5ce2b108e01`
-- `recoveryContractRunId = 33120120487`
-- `stageAReviewPr = 573`
-- `stageAReviewHead = 352f226d87d570a7338bf2730872a7733179da74`
-- `stageAReviewRunId = 33122607199`
-- `stageAPublisherRunId = 33123226959`
-- `stageAArtifactId = 9667291127`
-- `stageAArtifactDigest = sha256:0338d418d554c5ceaead8712a1ee860c2ee154d839cfe7c038098607786a0b3f`
-- `stageBReviewPr = 574`
-- `stageBReviewHead = 30522faddb0a76b3767652da94ddc41a4cd24ab2`
-- `stageBReviewRunId = 33132860780`.
-
-Before status-ref activation, re-read live state and require:
-
-- main still `99ade779...`;
-- #565, #570, #573, #574 Draft/open/unmerged at exact heads;
-- one allocation marker;
-- one consumed marker;
-- logical dispatch head = authorization head;
-- zero prior AVPS science runs;
-- reviewed template/helper blobs exact.
-
----
-
-# 1. AVPS SCIENTIFIC DESIGN — FROZEN
-
-Experiment:
-
-- Aerosol Vertical-Profile Sensitivity v1 (AVPS v1)
-- scientific ordinal 40.
-
-Question:
-
-> At fixed total AOD550 and fixed coherent OPAC rich optical family, how much does independently specified normalized aerosol vertical optical-depth shape change twilight radiance and the derived Level-B limiting-magnitude endpoint?
-
-This is **not** a Taylor-fitting experiment.
-
-Vertical states:
-
-1. continental average
-2. maritime clean
-3. desert
-4. arctic
-5. antarctic.
-
-All five use the same OPAC `continental_average` rich optical family.
-
-Frozen design:
-
-- AFGL-US
-- observer 0 m
-- surface albedo 0.15
-- 380–780 nm
-- reviewed 1-nm grid
-- MYSTIC spherical 1D
-- VROOM
-- MC standard-deviation evidence
-- 20,000,000 photons/case
-- Sun depression 2°, 4°, 6°, 8°
-- AOD550 0.10, 0.30
-- geometries 10°/30°, 30°/90°, 45°/180°
-- 3 CRN replicates
-- 5 vertical states.
-
-Cardinality:
-
-- 72 CRN groups
-- 360 cases
 - 24 analysis cells
-- four 90-case shards
-- max parallel 2 per shard
-- max 8 concurrent case jobs.
+- 3 primary channels
+- 4 alternative-vs-reference contrasts
+- 288 summary contrasts total
 
-Primary endpoints:
+Every mean contrast was exactly `0.0`; every replicate contrast was exactly `0.0`; every summary sample SD/SE was exactly `0.0`.
 
-- photopic luminance
-- scotopic luminance
-- Johnson-V effective radiance.
+**This must not be reported as evidence that aerosol vertical profile is immaterial.**
 
-Secondary:
+Raw matched-group audit showed:
 
-- paired Level-B limiting-magnitude delta through frozen Crumey Eq.34 with `F=3.14`.
+- state-specific `case.inp` files really differed at the intended custom tau-profile path;
+- the normalized `.tau` files themselves really differed substantially;
+- nevertheless `mc.rad.spc`, `mc.rad.std.spc`, `mc.flx.spc`, `mc.flx.std.spc`, and solver stdout were byte-identical between the vertical-profile states;
+- all 72 CRN replicate groups showed the same cross-state identity, while different replicates differed from each other, demonstrating that seeds were functioning but the profile state was not affecting solver physics.
 
-No adaptive post-result cases and no universal minute conversion.
+Root-cause direction is the aerosol directive composition used by ordinal 40:
 
----
+```text
+aerosol_species_library OPAC
+aerosol_species_file continental_average
+aerosol_file tau profiles/<state>.tau
+aerosol_set_tau_at_wvl 550 <AOD>
+```
 
-# 2. MERGED AVPS FOUNDATIONS — DO NOT REBUILD
+The intended custom `aerosol_file tau` profile did not survive into effective solver physics when combined with the fixed higher-level species-profile mixture surface.
 
-- #549 vertical-profile transport — `76e232523f29cfc64d3c50c0b3e922aa59d1dfe7`
-- #550 OPAC + custom tau capability — `2be138d96d4e6d04b1e58dede27bb3f0130fc42e`
-- #551 preregistration — `b882034629894d2629ec60ef15f46e83635d6f7e`
-- #552 unseeded 360-case skeleton — `79fd4605e02068f0d798181e2b05459d708bfebc`
-- #557 disabled execution package — `d206a098ad6fee1bf6513460d29c949eadb695d1`
-- #558 authorization controls
-- #559 execution/publisher/science controls — `107d63a01de96bc359af0ecd8f0129b7232ddcf1`
-- #562 failed-auth recovery/stabilization — `cd56db1e823a75d617c026fecf359a80e8c64cb7`
-- #563 frozen main — `99ade7798627e67921139697ba1a004fa8a304bb`.
+**Authoritative ordinal-40 classification:**
 
-Exact normalized tau SHA-256:
+`EXECUTION/EVIDENCE PIPELINE VALID; SCIENTIFIC VERTICAL-PROFILE CONTRAST NON-INFORMATIVE.`
 
-- continental average `e6c296951dfae376bf77948aa92828062ba95d7b1e9c28703befa9cffb5bf198`
-- maritime clean `5cbaf5f81f3f36bfcf9b365eaa5d892889da83453c18d58e705b3de9273adc8c`
-- desert `3d8891b3b67fa8c8c6fd66861d49e9bfad8c937a176b7001c6c47a5571de21ad`
-- arctic `61eed1e73ac8cc6f044b89870a6874f1d21500008c7747830a2a812bbd87919a`
-- antarctic `a14460a04afd5154d931b77e55b7adce2ab41aae2e8e4c13afaa0de459aff164`.
+Never reuse ordinal 40 as:
 
-Exact AFGL bundle:
-
-- artifact `9658061526`
-- digest `sha256:2061136f069e9a16fa5c5b3d0991121bb04d7a268d1b7c7f93c60d734d537b48`.
+- a PASS for vertical-profile insensitivity;
+- a null scientific result;
+- evidence for or against profile materiality;
+- a basis for Taylor/Jerusalem correction;
+- an identity to rerun after silently changing directives.
 
 ---
 
-# 3. OPERATIONAL ATMOSPHERE STATE V2 — MERGED FOUNDATION
+## 5. Corrective capability lane #586 — reviewed and consumed once
 
-- #120 design — `0ef878a78f792edc7a484de8ace8a196be1543cb`
-- #121 foundation — `e0da52eb0a2d5bac333da6572f51df52ea7e676e`.
+Current corrective PR:
 
-Supports provenance, provider/source separation, spectral AOD, vertical profiles, SSA/phase/g/classification containers, explicit missing/rejected/conflict states and physical QC.
+- PR #586 — `Review corrected OPAC species-profile transport capability`
+- Draft / open / unmerged
+- branch `review/opac-species-profile-transport-capability-v2`
+- exact review head `d90d3bca966d566d328fc1d91fb44f65c58d12b4`
 
-Important:
+The review froze a **solver capability diagnostic only**, not a scientific sensitivity experiment:
 
-> Rich v2 atmosphere is represented, but arbitrary rich fields are not yet universally consumed by production Level-B.
+- no scientific ordinal
+- no Taylor/Jerusalem scoring
+- no production mutation
+- one synthetic OPAC species: `INSO`
+- deliberately different LOW/HIGH synthetic mass-density profiles on exact AFGL-US levels
+- LOW: `exp(-z/0.55 km)`
+- HIGH: Gaussian centered 8 km, sigma 0.75 km
+- same AOD550 `0.10`
+- deterministic DISORT first
+- only if deterministic transport passed, paired spherical MYSTIC at SZA 96°
+- same MYSTIC seed `730194613`
+- `500000` photons/profile
+- no minimum physical/materiality threshold
 
-AVPS informs whether/how vertical profile needs an explicit fast-model dimension.
+Review gates on exact #586 head passed:
 
----
+- repository-wide contract run `33172089150` — SUCCESS
+- dedicated capability review run `33172089158` — SUCCESS
 
-# 4. TAYLOR — AUTHORITATIVE INTERPRETATION
+The one-shot activation was then performed:
 
-Taylor Ann Arbor remains a direct-MYSTIC validation case, not a fitting target.
+- status branch `status/opac-species-profile-transport-capability-v2`
+- status/request head `5362c7fc17a051baa65fe51c0d2f4f33ea98affe`
+- parent/control commit `77d85fe5eb0b83b676ea27f75127513606dba684`
+- one-shot execution run `33177704575`, attempt 1 — FAILURE
+- evidence artifact `9688346720`
+- evidence artifact digest `sha256:adb10217279e27e2ca9101ab92b7a4467805c113438f6c7dc7552d0354938b21`
 
-At Sun depression about `−5.808°`:
-
-- old residual `+0.393 mag`
-- independently obtained CAMS-profile run `+0.087 mag`.
-
-At `−6.134°`:
-
-- old residual `+0.388 mag`
-- CAMS-profile run `+0.031 mag`.
-
-No AOD or SQM offset was fitted.
-
-Conclusion:
-
-> Aerosol vertical distribution materially affects twilight radiance; the old ~6° discrepancy was not clean evidence of a gross MYSTIC failure.
-
-Do not claim exact Taylor atmosphere knowledge and do not choose an AVPS profile based on Taylor residuals.
-
-CAMS forecast00 vertical extinction returned 137 exact zeros despite nonzero AOD; treat that as invalid profile data, not real aerosol-free air.
-
-Taylor AOD finite-difference derivative remains unresolved.
-
----
-
-# 5. OTHER ACTIVE/OPEN WORK
-
-Separate Taylor atmosphere archival worker owns EarthCARE/ATLID, lidar/ceilometer, AERONET and other independent archives. Do not duplicate.
-
-Closed aerosol-optics scientific ordinals:
-
-- AOPS 37
-- AFPF 38
-- ASIV 39
-- AVPS 40.
-
-Do not restart generic SSA/g/full-phase/family work already covered by 37–39.
-
-Transient adaptation:
-
-- #119 merged diagnostic
-- #116 open/do not merge
-- #117 physical mapping unresolved.
-
-Keep `F=3.14`.
-
-Moon #459 / Natural #460 remain incomplete; artificial skyglow directional provider still needed; total-sky compositor #112 already merged.
+Do **not** rerun run `33177704575` and do not reuse its one-shot activation identity.
 
 ---
 
-# 6. MASTER CLOSURE PR #539
+## 6. Exact diagnosis of #586 failure from its preserved artifact
 
-#539 remains the intended long-term source of truth.
+The #586 runtime/setup and all `uvspec -c` syntax checks passed.
 
-After the Stage-B activation/science step reaches a stable terminal checkpoint, refresh #539 with:
+The failure occurred in the first non-syntax deterministic DISORT LOW execution. MYSTIC was never reached.
 
-- Stage A success
-- Stage-B initial 502 failure
-- bounded transport retry
-- final same-head Stage-B dual-green reviews
-- Stage-B review artifact `9671228507`
-- science run identity/status if science starts
-- later exact-360/result-opening gate status.
+Preserved `disort-low-stderr.txt` says:
 
-Do not mutate #539 during any live repository-global seed scan.
+```text
+Error, found neither netcdf nor ASCII optical property files.
+Check your aerosol properties and retry!
+Error -1 in (function 'read_caoth_prop', file 'cloud.c', line 2854)
+Error -1 in (function 'aerosol_species_to_optical_properties', file 'aerosol.c', line 2338)
+Error -1 in (function 'setup_aerosol', file 'aerosol.c', line 747)
+Error -1 in (function 'uvspec', file 'uvspec.c', line 114)
+Error -1 during execution of uvspec
+```
 
----
+The failing aerosol surface was exactly:
 
-# 7. IMMEDIATE NEXT ACTIONS
+```text
+aerosol_default
+aerosol_species_library OPAC
+aerosol_species_file <absolute synthetic-low-inso.dat> INSO
+aerosol_set_tau_at_wvl 550 0.100000
+```
 
-## P0-A — build Stage-B activation chain atomically
+Therefore the current demonstrated blocker is **OPAC single-species optical-property resolution for a custom species-profile file**, not LOW/HIGH profile construction and not MYSTIC numerical equality.
 
-From exact frozen main `99ade779...`:
+Important associated runtime evidence already frozen elsewhere in the repository:
 
-1. create direct-child control commit changing exactly the three reviewed files to blobs `042727fc...`, `cb3735ab...`, `efe771b2...`;
-2. verify compare is exactly those three files;
-3. create child request commit changing exactly `.github/dispatch-requests/avps-v1-stage-b.json` with the frozen request fields above;
-4. verify compare from control->request is exactly one file;
-5. create/move only the intended Stage-B status ref after final live-state recheck.
+- the exact staged OPAC tree really contains the expected INSO optical-property member at `data/aerosol/OPAC/optprop/inso.mie.cdf`;
+- that member SHA-256 is `fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407`;
+- exact staged OPAC data-tree identity remains `5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80`;
+- exact locked `uvspec` SHA-256 remains `2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3`.
 
-## P0-B — before status-ref activation
-
-Re-prove:
-
-- frozen main exact;
-- #565/#570/#573/#574 Draft/open/unmerged at exact heads;
-- one allocation marker;
-- one consumed marker;
-- dispatch head = authorization head;
-- zero AVPS science runs;
-- Stage A artifact exact;
-- Stage B review run/artifact exact;
-- reviewed activation blobs exact.
-
-## P0-C — publisher/science
-
-Publisher should create pre-dispatch evidence and issue one workflow-dispatch call only.
-
-If science workflow starts:
-
-- no GitHub rerun/retry/resume of the scientific run;
-- live seed global recheck must pass pre-solver;
-- recovered freshness must pass unchanged science guard;
-- execute exactly frozen 360 cases.
-
-## P0-D — recovery result boundary
-
-Even if all 360 cases finish, do **not** open/interpret results in Stage B.
-
-First terminal science target:
-
-> exact 360 immutable raw case artifacts + metadata-only closure.
-
-Then create a separate reviewed aggregate/result-opening gate.
+The official libRadtran semantics and the repository’s exact archive naming must now be reconciled before another solver capability attempt. In particular, do not assume that passing `uvspec -c` proves the custom species token resolves its runtime optical-property member.
 
 ---
 
-# 8. ABSOLUTE DO-NOT LIST
+## 7. Current active next step
+
+The correct next task is **not** a new 360-case scientific experiment yet.
+
+Required sequence from this checkpoint:
+
+1. preserve #586 as the terminal failed one-shot capability identity;
+2. determine the exact libRadtran runtime mapping from a custom `aerosol_species_file <profile> <species-token>` to the staged OPAC `optprop/*.cdf` basename;
+3. freeze a fresh solver-capability review identity that corrects only this demonstrated optical-property-resolution defect;
+4. require a deterministic LOW/HIGH run to reach real solver output and prove nonidentity at the raw transport level;
+5. only after that, require the paired MYSTIC LOW/HIGH raw `mc.rad.spc` outputs to differ on an identical wavelength grid;
+6. do not infer any scientific effect size from this capability diagnostic;
+7. after a capability PASS, preregister a **replacement vertical-profile sensitivity experiment under a fresh scientific ordinal and fresh immutable seed/case identity**;
+8. only after that replacement scientific experiment passes its preregistered gates may vertical-profile Phase-C / Level-B mapping resume.
+
+A historical branch named `review/opac-custom-tau-composition-capability-v1` exists, but it is old and is already behind current `main`; it must not be mistaken for a post-#586 recovery branch.
+
+---
+
+## 8. Hard prohibitions at this checkpoint
 
 Do not:
 
-- move live main during this authorization lifecycle;
-- reuse/reallocate ordinal 40;
-- post second allocation/consumed markers;
-- recreate logical dispatch identity;
-- create new AVPS seeds;
-- alter case universe, CRN pairing, vertical profiles, AOD, OPAC optics, geometry, wavelengths, photons, runtime or F;
-- tune anything from Taylor/Jerusalem residuals;
-- weaken the repository-global 72-seed audit;
-- convert bounded 5xx transport retry into semantic retry;
-- use GitHub scientific rerun/retry/resume;
-- open partial results;
-- aggregate or interpret Stage-B raw outputs inside the recovery run;
-- merge Draft review PRs merely for activation;
-- merge #116 before #117 is scientifically resolved.
+- rerun ordinal 40;
+- reuse ordinal 40 with patched input;
+- GitHub-rerun the failed #586 capability execution;
+- amend the consumed #586 activation identity and pretend it is the same reviewed run;
+- claim the exact-zero ordinal-40 result is physical;
+- proceed to Level-B profile mapping from ordinal 40;
+- choose a vertical profile/provider/cycle from Taylor or Jerusalem residual fit;
+- use target residual direction or magnitude to choose the corrected libRadtran representation;
+- move `main` simply to make the recovery easier;
+- treat syntax-only `uvspec -c` success as proof of non-syntax runtime optical-property resolution;
+- create a production authorization from a capability diagnostic.
 
 ---
 
-# 9. ONE-LINE LIVE STATUS
+## 9. Broader retained project state
 
-> **AVPS ordinal 40 is allocated+consumed; Stage A is complete; Stage B is now fully reviewed and dual-green on exact head `30522fad...`, with fresh 72-seed global proof and zero collisions; no AVPS science has run yet, and the next action is the exact three-file + one-request activation chain that may trigger the first frozen 360-case MYSTIC recovery run while keeping results closed.**
+From the master closure record (#539), still relevant:
+
+- `starsvisibility` #114, #118, #119 are merged;
+- `starsvisibility` #116 remains not merge-ready pending #117 transient science;
+- old Draft #48 must not be replayed wholesale;
+- Operational Atmosphere State v2 design/foundation (#120/#121) are merged, but richer vertical/SSA/phase fields do not automatically affect Level-B;
+- generic SSA/g sensitivity (AOPS ordinal 37), full aerosol family/phase-function sensitivity (AFPF ordinal 38), and scalar/derived aerosol scenario transport (ASIV ordinal 39 + `starsvisibility` #100) remain closed for their stated scopes and should not be duplicated;
+- Taylor #508 remains evidence that independently constrained aerosol vertical structure can materially alter direct-MYSTIC twilight radiance;
+- Taylor atmosphere provenance/uncertainty boundaries #535/#529/#536 remain authoritative;
+- acquisition of better independent Taylor-night atmosphere data remains a separate lane and must not be used to select model profiles from residual fit.
+
+Anti-fitting rules remain binding throughout.
+
+---
+
+## 10. Resume checklist for the next worker
+
+Before any write or run:
+
+- [ ] confirm `main == 99ade7798627e67921139697ba1a004fa8a304bb` unless a later handoff explicitly documents an intentional change;
+- [ ] confirm #565 remains Draft/open/unmerged and dispatch remains pinned to `338ee82...`;
+- [ ] confirm no one has created a newer post-#586 recovery branch/PR while this handoff was being written;
+- [ ] read #539 and #586 current bodies/statuses;
+- [ ] inspect run `33177704575` artifact `9688346720` rather than rerunning it;
+- [ ] keep the next fix capability-only and ordinal-free;
+- [ ] prove the exact OPAC property-file resolution path before any scientific preregistration;
+- [ ] update this handoff again immediately after a new reviewed recovery identity, activation, PASS/FAIL, or fresh scientific preregistration is created.
+
+---
+
+## 11. Current one-line status
+
+**Ordinal 40 completed but is scientifically non-informative because its vertical-profile contrast never reached solver physics; corrected capability #586 passed review but its one-shot deterministic run failed because custom `INSO` optical properties were not resolved at runtime; next work is a fresh, ordinal-free OPAC species-token/property-path capability correction — not another scientific run yet.**

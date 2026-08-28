@@ -1,0 +1,147 @@
+name: Review OPAC species-profile transport capability v2
+
+on:
+  pull_request:
+    paths:
+      - review/opac-species-profile-transport-capability-v2/**
+      - .github/recovery-templates/opac-species-profile-transport-capability-v2.yml
+      - .github/workflows/opac-species-profile-transport-capability-v2-review.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review-only identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-species-profile-transport-capability-v2
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" > pr.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('review PR must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('ref')!='review/opac-species-profile-transport-capability-v2' or (p.get('head') or {}).get('sha')!=os.environ['PR_HEAD']: raise SystemExit('review head drift')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('review base/main drift')
+          PY
+
+      - name: Run static capability-input tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/opac-species-profile-transport-capability-v2/build_inputs.py
+          python review/opac-species-profile-transport-capability-v2/test_build_inputs.py
+
+      - name: Prove review remains solver-free and activation inactive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/opac-species-profile-transport-capability-v2.yml
+          python - <<'PY'
+          from pathlib import Path
+          builder=Path('review/opac-species-profile-transport-capability-v2/build_inputs.py').read_text()
+          protocol=Path('review/opac-species-profile-transport-capability-v2/PROTOCOL.md').read_text()
+          template=Path('.github/recovery-templates/opac-species-profile-transport-capability-v2.yml').read_text()
+          sanitized=builder.replace('taylorOrJerusalemUsed','')
+          if 'taylor' in sanitized.lower() or 'jerusalem' in sanitized.lower(): raise SystemExit('target residual surface leaked into input builder')
+          if '"taylorOrJerusalemUsed": False' not in builder: raise SystemExit('target-governance false marker missing')
+          required_builder=(
+              'SPECIES = "INSO"',
+              'AOD550 = 0.10',
+              'MYSTIC_PHOTONS = 500_000',
+              'MYSTIC_SEED = 730_194_613',
+              'aerosol_species_library OPAC',
+              'aerosol_species_file',
+              'aerosol_set_tau_at_wvl 550',
+              'corrected capability must not combine aerosol_file with aerosol_species_file',
+          )
+          missing=[x for x in required_builder if x not in builder]
+          if missing: raise SystemExit(f'builder freeze missing: {missing}')
+          required_protocol=(
+              'NO SCIENTIFIC ORDINAL',
+              'INSO',
+              'exp(-z / 0.55 km)',
+              '8.0 km',
+              '500000',
+              '730194613',
+              'no scientific materiality threshold',
+          )
+          missing=[x for x in required_protocol if x.lower() not in protocol.lower()]
+          if missing: raise SystemExit(f'protocol freeze missing: {missing}')
+          required_template=(
+              'status/opac-species-profile-transport-capability-v2',
+              'REQUEST_ONE_SHOT_CORRECTED_SPECIES_PROFILE_TRANSPORT_CAPABILITY',
+              'EXPECTED_UVSPEC_SHA256',
+              'EXPECTED_STAGED_DATA_SHA256',
+              'disortOutputsDiffer',
+              'mysticRadianceOutputsDiffer',
+              'scientificOrdinalAllocated',
+              'taylorOrJerusalemUsed',
+              'productionAuthorized',
+          )
+          missing=[x for x in required_template if x not in template]
+          if missing: raise SystemExit(f'inactive workflow freeze missing: {missing}')
+          if 'workflow_dispatch:' in template: raise SystemExit('manual dispatch forbidden; future activation must be one-shot bound request')
+          PY
+
+      - name: Freeze review receipt without libRadtran execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir review-receipt
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def blob(path):
+              b=Path(path).read_bytes()
+              return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          out={
+            'schemaVersion':1,
+            'stageId':'opac-species-profile-transport-capability-v2-review',
+            'status':'REVIEW_PASS_ACTIVATION_STILL_INACTIVE_NO_LIBRADTRAN_EXECUTION',
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'builderGitBlobSha1':blob('review/opac-species-profile-transport-capability-v2/build_inputs.py'),
+            'protocolGitBlobSha1':blob('review/opac-species-profile-transport-capability-v2/PROTOCOL.md'),
+            'inactiveWorkflowGitBlobSha1':blob('.github/recovery-templates/opac-species-profile-transport-capability-v2.yml'),
+            'libRadtranExecuted':False,
+            'mysticExecuted':False,
+            'scientificOrdinalAllocated':False,
+            'taylorOrJerusalemUsed':False,
+            'productionAuthorized':False,
+            'activationAuthorizedByReview':False,
+          }
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          out['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('review-receipt/review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-species-profile-transport-capability-v2-review
+          path: review-receipt/
+          if-no-files-found: error
+          compression-level: 0

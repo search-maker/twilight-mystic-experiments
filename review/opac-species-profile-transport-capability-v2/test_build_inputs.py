@@ -89,7 +89,7 @@ def main() -> None:
     assert "taylor" not in sanitized.lower()
     assert "jerusalem" not in sanitized.lower()
     assert '"taylorOrJerusalemUsed": False' in source
-    assert "aerosol_file tau" in source  # only in an explicit refusal string/test guard
+    assert 'line.startswith("aerosol_file ")' in source
     assert "corrected capability must not combine aerosol_file with aerosol_species_file" in source
     print("OPAC species-profile transport capability v2 static tests: PASS")
 

@@ -1,0 +1,121 @@
+name: OPAC continental_average species-profile source audit v1
+
+on:
+  pull_request:
+    paths:
+      - review/opac-continental-average-species-profile-audit-v1/**
+      - .github/workflows/opac-continental-average-species-profile-audit-v1.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact review identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-continental-average-species-profile-audit-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}" > pr.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None: raise SystemExit('audit PR must remain Draft/open/unmerged')
+          if p['head']['ref']!='review/opac-continental-average-species-profile-audit-v1' or p['head']['sha']!=os.environ['PR_HEAD']: raise SystemExit('audit head drift')
+          if p['base']['ref']!='main' or p['base']['sha']!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('audit base drift')
+          PY
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-mixture-source-audit-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify locked runtime without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/runtime-report.json
+          python - <<'PY'
+          import json,os
+          x=json.load(open('evidence/runtime-report.json'))
+          if x['uvspecSha256']!=os.environ['EXPECTED_UVSPEC_SHA256']: raise SystemExit('uvspec SHA drift')
+          if x['libRadtranDataTreeSha256']!=os.environ['EXPECTED_BASE_DATA_SHA256']: raise SystemExit('base data-tree drift')
+          if x['scientificSolverExecuted'] is not False or x['syntaxCheckExecuted'] is not False: raise SystemExit('runtime probe crossed no-solver boundary')
+          PY
+      - name: Freeze exact continental_average source file
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          SRC="$CONDA_PREFIX/share/libRadtran/data/aerosol/OPAC/standard_aerosol_files/continental_average.dat"
+          test -s "$SRC"
+          cp "$SRC" evidence/continental_average.dat
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          p=Path('evidence/continental_average.dat')
+          raw=p.read_bytes(); text=raw.decode('utf-8')
+          comments=[]; rows=[]
+          for n,line in enumerate(text.splitlines(),1):
+              s=line.strip()
+              if not s: continue
+              if s.startswith('#'):
+                  comments.append({'line':n,'text':line})
+                  continue
+              vals=s.split()
+              try: nums=[float(v) for v in vals]
+              except ValueError as e: raise SystemExit(f'non-numeric data row {n}: {line}') from e
+              rows.append({'line':n,'values':nums})
+          if not rows: raise SystemExit('no numeric mixture rows')
+          widths=sorted({len(r['values']) for r in rows})
+          if len(widths)!=1: raise SystemExit(f'inconsistent numeric column counts: {widths}')
+          report={
+            'schemaVersion':1,
+            'stageId':'opac-continental-average-species-profile-source-audit-v1',
+            'status':'PASS_EXACT_LOCKED_CONTINENTAL_AVERAGE_SOURCE_FROZEN',
+            'repository':os.environ['GITHUB_REPOSITORY'],
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'sourceRuntimePath':'data/aerosol/OPAC/standard_aerosol_files/continental_average.dat',
+            'sha256':hashlib.sha256(raw).hexdigest(),
+            'byteCount':len(raw),
+            'lineCount':len(text.splitlines()),
+            'numericRowCount':len(rows),
+            'numericColumnCount':widths[0],
+            'commentLines':comments,
+            'numericRows':rows,
+            'uvspecInvoked':False,
+            'syntaxCheckExecuted':False,
+            'scientificSolverExecuted':False,
+            'scientificOrdinalAllocated':False,
+            'taylorOrJerusalemUsed':False,
+            'productionAuthorized':False,
+          }
+          canonical=json.dumps(report,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); report['contentSha256']=hashlib.sha256(canonical).hexdigest()
+          Path('evidence/source-audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({k:report[k] for k in ('status','sha256','byteCount','lineCount','numericRowCount','numericColumnCount')},indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-continental-average-species-profile-source-audit-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

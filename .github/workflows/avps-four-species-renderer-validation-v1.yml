@@ -1,0 +1,184 @@
+name: Review AVPS four-species renderer validation v1
+
+on:
+  pull_request:
+    paths:
+      - review/avps-four-species-renderer-validation-v1/**
+      - .github/workflows/avps-four-species-renderer-validation-v1.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  renderer-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      BASE_MAIN: 99ade7798627e67921139697ba1a004fa8a304bb
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      PREDECESSOR_595_HEAD: 3fcb6328a18747b5a17d5ae75248c04c288e18f9
+      PREDECESSOR_595_RUN: '33191517143'
+      PREDECESSOR_595_ARTIFACT: '9693948772'
+      PREDECESSOR_595_DIGEST: sha256:97d431fe31724731a24697233c2154b836159a29299f8f42ea1853ebdf9d266a
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      EXPECTED_FOUR_ALIAS_TREE_SHA256: 5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      DEPENDENCY_BLOB: 095ff86f12a79dc312a51f734b0a03bd318f2337
+      TEMPLATE_BLOB: 8e8175ae771438b91fc9543b329175c193a215a4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact review identity and predecessor calibration
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/avps-four-species-renderer-validation-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          test "$(git rev-parse HEAD:review/avps-four-species-renderer-validation-v1/rh_audit_dependency.py)" = "$DEPENDENCY_BLOB"
+          test "$(git rev-parse "$BASE_MAIN:experiments/aerosol-vertical-profile-sensitivity-v1/opac_vertical_templates.py")" = "$TEMPLATE_BLOB"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}" > current-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/595" > predecessor-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREDECESSOR_595_RUN" > predecessor-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREDECESSOR_595_RUN/artifacts" > predecessor-artifacts.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('current-pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['PR_HEAD'] or p['base']['sha']!=os.environ['BASE_MAIN']:
+              raise SystemExit('current renderer review PR drift')
+          pp=json.load(open('predecessor-pr.json')); rr=json.load(open('predecessor-run.json'))
+          if pp['state']!='open' or pp['draft'] is not True or pp['merged_at'] is not None or pp['head']['sha']!=os.environ['PREDECESSOR_595_HEAD']:
+              raise SystemExit('#595 predecessor PR drift')
+          if rr['id']!=int(os.environ['PREDECESSOR_595_RUN']) or rr['head_sha']!=os.environ['PREDECESSOR_595_HEAD'] or rr['run_attempt']!=1 or rr['conclusion']!='success':
+              raise SystemExit('#595 calibration run drift')
+          arts=json.load(open('predecessor-artifacts.json'))['artifacts']
+          hit=[a for a in arts if a['id']==int(os.environ['PREDECESSOR_595_ARTIFACT'])]
+          if len(hit)!=1 or hit[0].get('digest')!=os.environ['PREDECESSOR_595_DIGEST'] or hit[0].get('expired'):
+              raise SystemExit('#595 artifact drift')
+          PY
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/branches?per_page=100" > branches.json
+          python - <<'PY'
+          import json
+          names=[x['name'] for page in json.load(open('branches.json')) for x in page]
+          bad=[n for n in names if 'ordinal-41' in n or 'ordinal41' in n]
+          if bad: raise SystemExit(f'ordinal 41 unexpectedly allocated in branch namespace: {bad}')
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: avps-renderer-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Reconstruct exact locked runtime and frozen OPAC archive
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          mkdir -p renderer-runtime/share/libRadtran
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help --output evidence/base-runtime.json
+          python - <<'PY'
+          import json,os
+          x=json.load(open('evidence/base-runtime.json'))
+          assert x['libRadtranDataTreeSha256']==os.environ['EXPECTED_BASE_DATA_SHA256']
+          assert x['uvspecSha256']==os.environ['EXPECTED_UVSPEC_SHA256']
+          PY
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" renderer-runtime/share/libRadtran/data
+          curl -L --fail --retry 3 --retry-all-errors --max-time 2700 -o evidence/opac.tar.gz "$SOURCE_URL"
+          python review/avps-four-species-renderer-validation-v1/renderer.py prepare \
+            --archive evidence/opac.tar.gz \
+            --runtime-root "$GITHUB_WORKSPACE/renderer-runtime" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output evidence/bundle \
+            --dependency review/avps-four-species-renderer-validation-v1/rh_audit_dependency.py \
+            > evidence/prepare.json
+          DATA="$GITHUB_WORKSPACE/renderer-runtime/share/libRadtran/data"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" --data-dir "$DATA" --atmosphere "$DATA/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help \
+            --output evidence/post-alias-runtime.json
+          python - <<'PY'
+          import json,os
+          x=json.load(open('evidence/post-alias-runtime.json'))
+          assert x['libRadtranDataTreeSha256']==os.environ['EXPECTED_FOUR_ALIAS_TREE_SHA256']
+          assert x['uvspecSha256']==os.environ['EXPECTED_UVSPEC_SHA256']
+          PY
+          rm evidence/opac.tar.gz
+
+      - name: Prove lower-bound standard-mixture expansion against locked runtime
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          B=evidence/bundle
+          for n in baseline-builtin-aod010 baseline-expanded-aod010; do
+            timeout 120 uvspec -c < "$B/inputs/$n.inp" > "$B/$n.syntax.out" 2> "$B/$n.syntax.err"
+            timeout 180 uvspec < "$B/inputs/$n.inp" > "$B/$n.out" 2> "$B/$n.verbose.err"
+            test -s "$B/$n.verbose.err"
+          done
+          DATA="$GITHUB_WORKSPACE/renderer-runtime/share/libRadtran/data"
+          python review/avps-four-species-renderer-validation-v1/renderer.py render \
+            --bundle "$B" --repo-root "$GITHUB_WORKSPACE" --data-dir "$DATA" > evidence/render.json
+
+      - name: Validate all five frozen AVPS templates at AOD 0.10 and 0.30
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          B=evidence/bundle
+          for state in opac-profile-continental-average opac-profile-maritime-clean opac-profile-desert opac-profile-arctic opac-profile-antarctic; do
+            for tag in 010 030; do
+              n="$state-aod$tag"
+              timeout 120 uvspec -c < "$B/inputs/$n.inp" > "$B/$n.syntax.out" 2> "$B/$n.syntax.err"
+              timeout 180 uvspec < "$B/inputs/$n.inp" > "$B/$n.out" 2> "$B/$n.verbose.err"
+              test -s "$B/$n.verbose.err"
+            done
+          done
+          python review/avps-four-species-renderer-validation-v1/renderer.py freeze --bundle "$B" > evidence/freeze.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/bundle/renderer-validation-report.json'))
+          assert x['status']=='PASS_FIVE_FROZEN_AVPS_TEMPLATES_RENDERED_AS_COMMON_SCALAR_FOUR_SPECIES_NULL_TAU_SHAPES'
+          assert x['scientificOrdinalAllocated'] is False
+          assert x['mysticExecuted'] is False
+          assert x['scientificRadiativeTransferSolved'] is False
+          PY
+
+      - name: Solver-free code and scope checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/avps-four-species-renderer-validation-v1/renderer.py review/avps-four-species-renderer-validation-v1/rh_audit_dependency.py
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('review/avps-four-species-renderer-validation-v1/renderer.py').read_text()
+          protocol=Path('review/avps-four-species-renderer-validation-v1/PROTOCOL.md').read_text()
+          assert 'aerosol_file tau' not in text
+          assert 'rte_solver mystic' not in text and 'rte_solver disort' not in text
+          assert 'scientificOrdinalAllocated' in text
+          assert 'ordinal 41 remains unallocated' in protocol.lower()
+          assert 'Taylor/Jerusalem' in protocol
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: avps-four-species-renderer-validation-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

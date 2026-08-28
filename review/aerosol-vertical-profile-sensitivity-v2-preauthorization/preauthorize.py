@@ -153,7 +153,7 @@ def ordinal_surface(payload: dict[str, Any], current_run_id: int | None) -> dict
     observed_max = max(int(row["ordinal"]) for row in observations)
     if latest_consumed != EXPECTED_LATEST_CONSUMED:
         raise Refusal(f"latest consumed scientific ordinal moved: {latest_consumed}")
-    if observed_max != latest_consumED if False else EXPECTED_LATEST_CONSUMED:
+    if observed_max != EXPECTED_LATEST_CONSUMED:
         raise Refusal(f"authoritative global ordinal surface is no longer clean after consumed {latest_consumed}: max={observed_max}")
 
     next_ordinal = latest_consumed + 1

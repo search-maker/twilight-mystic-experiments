@@ -1,0 +1,146 @@
+name: Review AVPS post360 Phase B primary opening
+
+on:
+  pull_request:
+    paths:
+      - review/avps-v1-post360-phase-b-opening-control-v1/**
+      - .github/recovery-templates/avps-v1-post360-phase-b.yml
+      - .github/workflows/avps-v1-post360-phase-b-review.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review-only Phase B identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/avps-v1-post360-phase-b-opening-control-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" > phase-b-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/579" > protocol-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/584" > phase-a-review-pr.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33169583131" > phase-a-review-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/33170006532" > phase-a-run.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('phase-b-pr.json')); q=json.load(open('protocol-pr.json')); a=json.load(open('phase-a-review-pr.json')); ar=json.load(open('phase-a-review-run.json')); s=json.load(open('phase-a-run.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('Phase B review must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('sha')!=os.environ['PR_HEAD'] or (p.get('head') or {}).get('ref')!='review/avps-v1-post360-phase-b-opening-control-v1': raise SystemExit('Phase B review head drift')
+          if (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('Phase B review base drift')
+          if q.get('state')!='open' or q.get('draft') is not True or q.get('merged_at') is not None or (q.get('head') or {}).get('sha')!='5e191b1afbdb637e6534c856548af1d79138d6f1': raise SystemExit('protocol PR #579 drift')
+          if a.get('state')!='open' or a.get('draft') is not True or a.get('merged_at') is not None or (a.get('head') or {}).get('sha')!='b93c284c8a24296dff9d8aedc265f7a3bdec465a': raise SystemExit('Phase A review PR drift')
+          if int(ar.get('id') or 0)!=33169583131 or ar.get('head_sha')!='b93c284c8a24296dff9d8aedc265f7a3bdec465a' or int(ar.get('run_attempt') or 0)!=1 or ar.get('status')!='completed' or ar.get('conclusion')!='success': raise SystemExit('Phase A review run drift')
+          exp={'id':33170006532,'head_sha':'17537a2a5d60d7836eb9a1e01169a5bab5c70ea2','head_branch':'status/avps-v1-post360-phase-a-ordinal-40','event':'push','run_attempt':1,'status':'completed','conclusion':'success','path':'.github/workflows/avps-v1-post360-phase-a.yml'}
+          for k,v in exp.items():
+              if s.get(k)!=v: raise SystemExit(f'Phase A run drift: {k}')
+          PY
+
+      - name: Run Phase B unit/static tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/avps-v1-post360-phase-b-opening-control-v1/phase_b.py
+          python review/avps-v1-post360-phase-b-opening-control-v1/test_phase_b.py
+          python - <<'PY'
+          from pathlib import Path
+          wrapper=Path('review/avps-v1-post360-phase-b-opening-control-v1/phase_b.py').read_text()
+          template=Path('.github/recovery-templates/avps-v1-post360-phase-b.yml').read_text()
+          combined=wrapper+'\n'+template
+          required=(
+              '9685308839',
+              'sha256:68216d6a4982618d8cf9238948f0cbeb651bc9cde7ce53e688b5b1b11d204148',
+              'c14ef76e6280bdd34172202c63e8a319b4044cdb647e348926c02d03160198e4',
+              'c58907c2f838396417edcfe87d306c130b92374b649790ff25537f3ac049bdc8',
+              'b1c2d82e53c91606854c6ae0fea4d6e08d959dd3ee26ac080d0ee62ad4a4096b',
+              '4a6842e83cbd1525bf603c5e09e92317a63b6af9',
+              'dd2b7fb9cd4cc660338f1694841a0be5b4bf4a4d',
+              'COMPLETED_PREREGISTERED_AVPS_V1_PRIMARY_ANALYSIS_AFTER_EXACT_360_GATE',
+              'PHASE_B_PREREGISTERED_PRIMARY_RESULTS_OPENED_NO_TAYLOR_OR_JERUSALEM_SCORING',
+          )
+          missing=[x for x in required if x not in combined]
+          if missing: raise SystemExit(f'Phase B binding missing: {missing}')
+          forbidden=('level_b_runner.mjs','level_b_analysis.mjs','production routing','universalSunDepressionToMinutesConversionPermitted\": True','taylorOrJerusalemScoringPerformed\": True')
+          bad=[x for x in forbidden if x.lower() in combined.lower()]
+          if bad: raise SystemExit(f'Phase B forbidden behavior token present: {bad}')
+          PY
+
+      - name: Verify exact Phase A artifact receipt only; do not read analysis input
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/9685308839/zip" > phase-a.zip
+          test "sha256:$(sha256sum phase-a.zip | awk '{print $1}')" = sha256:68216d6a4982618d8cf9238948f0cbeb651bc9cde7ce53e688b5b1b11d204148
+          unzip -Z1 phase-a.zip | sort > files.txt
+          printf '%s\n' acquisition-audit.json analysis-input.json phase-a-receipt.json | sort > expected.txt
+          diff -u expected.txt files.txt
+          unzip -p phase-a.zip phase-a-receipt.json > phase-a-receipt.json
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          p=Path('review/avps-v1-post360-phase-b-opening-control-v1/phase_b.py'); s=importlib.util.spec_from_file_location('phase_b_receipt_review',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          m.validate_phase_a_receipt(json.load(open('phase-a-receipt.json')))
+          PY
+          test ! -e analysis-input.json
+          test ! -e acquisition-audit.json
+
+      - name: Freeze Phase B review receipt with results still unopened by review
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir review-receipt
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def blob(p):
+              b=Path(p).read_bytes(); return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          out={
+            'schemaVersion':1,
+            'status':'AVPS_POST360_PHASE_B_REVIEW_PASS_PRIMARY_RESULTS_NOT_OPENED_BY_REVIEW',
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'phaseBWrapperGitBlobSha1':blob('review/avps-v1-post360-phase-b-opening-control-v1/phase_b.py'),
+            'inactivePhaseBTemplateGitBlobSha1':blob('.github/recovery-templates/avps-v1-post360-phase-b.yml'),
+            'phaseAArtifactId':9685308839,
+            'phaseAArtifactDigest':'sha256:68216d6a4982618d8cf9238948f0cbeb651bc9cde7ce53e688b5b1b11d204148',
+            'phaseAReceiptContentSha256':'c14ef76e6280bdd34172202c63e8a319b4044cdb647e348926c02d03160198e4',
+            'analysisInputReadByReview':False,
+            'openResultsCalledByReview':False,
+            'scientificInterpretationPerformed':False,
+            'activationAuthorizedByReview':False,
+          }
+          out['contentSha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          Path('review-receipt/phase-b-review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v1-post360-phase-b-review
+          path: review-receipt/
+          if-no-files-found: error
+          compression-level: 0

@@ -1,6 +1,6 @@
 # STAR VISIBILITY / MYSTIC — LIVE CURRENT HANDOFF
 
-**Live refresh: 2026-08-28 — PR #596 is the active four-species renderer gate. Initial head `510581558a7cebefd1cba642892160f5d3da69b0` failed closed before reconstruction because `mkdir evidence` was non-idempotent; no renderer/NULL validation ran. The only correction is `mkdir -p evidence` on fresh head `ff8c1eeea0b0307fb799be1d20f6ba836f232331`; fresh review `33192854324` and repo contract `33192854366` are active. Ordinal 41 remains unallocated.**
+**Live refresh: 2026-08-28 — corrected four-species AVPS renderer (#596) has PASSED. Replacement scientific preregistration AVPS v2 (#597) has passed its dedicated review on fresh head `2bba54c6e78ed99d169887eef51d0c88d812b6f1`; repository contract `33193778174` is still active. No scientific seed is tracked/applied and ordinal 41 remains unallocated.**
 
 The filename is historical. This content is the current computational/scientific checkpoint.
 
@@ -22,29 +22,29 @@ Do not move `main` merely to continue this lane.
 
 AVPS ordinal 40 is consumed and must never be reused/rerun.
 
-Ordinal-40 recovery reached exact 360/360 cases, but state-specific vertical-profile files differed while solver outputs were byte-identical. Therefore the intended vertical state never reached effective solver physics.
+Ordinal-40 recovery reached exact 360/360 cases, but state-specific vertical-profile files differed while solver outputs were byte-identical. Therefore the intended vertical state did not reach effective solver physics.
 
 Authoritative classification:
 
 `EXECUTION/EVIDENCE PIPELINE VALID; SCIENTIFIC VERTICAL-PROFILE CONTRAST NON-INFORMATIVE.`
 
-Never cite ordinal-40 zero contrast as physical profile insensitivity.
+Never cite ordinal-40 zero contrast as physical vertical-profile insensitivity.
 
 Retained ordinal-40 evidence:
 
-- recovered science run `33139545997` SUCCESS, 360/360 cases
+- recovery science run `33139545997` SUCCESS, 360/360 cases
 - Gate-0 artifact `9676069031`, digest `sha256:70dedcd16209dea74a9ed67a1dc7377c123f1a62fd18741b1e15692702011fc8`
 - Phase A `33170006532` SUCCESS
 - Phase B opening `33170855407` SUCCESS
 
-Fresh branch/Issue-60 audits before the replacement work found no ordinal-41 allocation. **Ordinal 41 remains deliberately unallocated.** Re-audit Issue #60 and all branch namespaces immediately before any later allocation.
+Fresh audits before replacement work found no ordinal-41 allocation. **Ordinal 41 remains deliberately unallocated.** Re-audit Issue #60 and branch namespace immediately before any later allocation.
 
 ## 3. Resolver diagnosis chain — consumed identities, never rerun
 
-- v2 / PR #586 — run `33177704575` FAILURE: unresolved OPAC property before MYSTIC.
-- v3 / PR #587 — tested `aerosol/OPAC/optprop/INSO.nc`; run `33180158034` FAILURE.
-- v4 / PR #588 — tested `aerosol/OPAC/INSO.nc`; run `33184511183` FAILURE; artifact `9691137631`, digest `sha256:b538b58a44873eca3eebd64493edf3d9b88991e73ccb48f0d5e71ff1c9f2aee4`.
-- syscall trace / PR #589 — run `33185460954` SUCCESS; artifact `9691518729`, digest `sha256:07fb60de7bef96253eaf29cb9303a83bab7f3f1952431c73a26499357b4d572a`.
+- PR #586 / v2 run `33177704575` FAILURE: unresolved OPAC property before MYSTIC.
+- PR #587 / v3 run `33180158034` FAILURE after testing `aerosol/OPAC/optprop/INSO.nc`.
+- PR #588 / v4 run `33184511183` FAILURE after testing `aerosol/OPAC/INSO.nc`; artifact `9691137631`, digest `sha256:b538b58a44873eca3eebd64493edf3d9b88991e73ccb48f0d5e71ff1c9f2aee4`.
+- PR #589 syscall trace run `33185460954` SUCCESS; artifact `9691518729`, digest `sha256:07fb60de7bef96253eaf29cb9303a83bab7f3f1952431c73a26499357b4d572a`.
 
 The trace directly observed the locked binary requesting:
 
@@ -52,7 +52,7 @@ The trace directly observed the locked binary requesting:
 .../data/aerosol/OPAC/optprop/INSO
 ```
 
-with **no extension**. That is the actual resolver representation.
+with **no extension**.
 
 ## 4. PR #590 — single-species corrected transport PASS
 
@@ -62,19 +62,19 @@ PR #590 remains Draft/open/unmerged on head:
 
 - dedicated review `33186027699` SUCCESS
 - repo contract `33186027637` SUCCESS
-- one-shot run `33186446347` attempt 1 SUCCESS
+- one-shot `33186446347` attempt 1 SUCCESS
 - artifact `9691923455`
 - digest `sha256:fed6bb961088232e593159c4f50911758802e9209aed86e2a0eef4b403e4d9b7`
 - report content SHA `da6d7f66625b63cb5ff4f69845c2953f2a509b3693c82d1f0203900dc7bd21d2`
 - status `PASS_TRACE_OBSERVED_ALIAS_REACHES_DISORT_AND_MYSTIC`
 
-Correct representation:
+Correct INSO representation:
 
 - source `aerosol/OPAC/optprop/inso.mie.cdf`
 - byte-identical alias `aerosol/OPAC/optprop/INSO`
 - SHA `fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407`
 
-This proves explicit INSO mass-profile transport only. Do not infer scientific effect size or realistic continental composition. Do not rerun v5.
+This is transport evidence only; do not infer scientific effect size or realistic composition. Do not rerun v5.
 
 ## 5. PR #591 — locked `continental_average` source audit PASS
 
@@ -82,207 +82,109 @@ PR #591 remains Draft/open/unmerged on head:
 
 `2bfae9341075eb04fe4621f4f53d4ab56262c22b`
 
-- audit run `33187119926` SUCCESS
+- audit `33187119926` SUCCESS
 - repo contract `33187119866` SUCCESS
 - artifact `9692162280`
 - digest `sha256:cdcb0041a5197e31ff24520b3e653119d11c5d4a1c1b4f727e392ba7e719101e`
-- exact source `data/aerosol/OPAC/standard_aerosol_files/continental_average.dat`
+- source `data/aerosol/OPAC/standard_aerosol_files/continental_average.dat`
 - SHA `fc39fda0f8ada2d0a0a872b8b62d684cfccd74f7b0655b5af2dcdec51115e469`
-- 1075 bytes; 14 numeric rows; 5 columns
+- 14 numeric rows; exact columns `z(km) inso waso soot suso`
 
-Exact species columns:
-
-```text
-z(km)  inso  waso  soot  suso
-```
-
-Thus the replacement AVPS cannot silently substitute INSO-only if it intends to preserve the frozen `continental_average` family.
-
-Official optical-property asset hashes:
+Official optical-property source hashes:
 
 - INSO `fe10348cbe585315d6e1db382563fdc054204ad35846f371dc9d8abeead36407`
 - WASO `b6df493b77019bf5e22456e8fb8858c5a7d502bcc02fe6fc697ebd4844f2d4f5`
 - SOOT `44a0d2060101ca52c90ae64f005118dfba256b1f89a3049e1f758c55d634aa02`
 - SUSO `ce0e1bba4219c60af0af14d66a280b0d3d25188276eed0951d31594b947cd472`
 
+Thus a scientific replacement that claims fixed `continental_average` may not silently substitute INSO-only.
+
 ## 6. PR #592 — four-species transport capability PASS
 
 PR #592 remains Draft/open/unmerged:
 
 - review head `18667797a1dd699b6431a6940bac42974c415733`
-- dedicated review `33188868496` SUCCESS
+- dedicated `33188868496` SUCCESS
 - review artifact `9692863411`, digest `sha256:7417f68ad2cbc1e77bcf109bc34dd996d27bdf866d73e64c9666e43bc2c13c6e`
 - repo contract `33188868323` SUCCESS
-- control `d504ec4c6c1e0943e53de6d0038f88104a49c131`
-- request head `3e76e70ae81771e10477689df32085da1193659c`
-- one push run `33189268483` attempt 1 SUCCESS
+- one-shot `33189268483` attempt 1 SUCCESS
 - artifact `9693056690`
 - digest `sha256:f1a2cd69420c63d5214f5082ee0844ec822b9aa2f9f8f13a4b52958ee59ae507`
 - report content SHA `6f191c0011c67bc3aeb27add17c25f9c81fd356bb47f42141e7783f6ac52e973`
 - status `PASS_FOUR_CONTINENTAL_SPECIES_REACH_DISORT_AND_MYSTIC`
 
-Four byte-identical no-extension aliases are proven:
+Four no-extension aliases are proven together. Pre-alias tree `5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80`; post-four-alias tree `5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a`.
 
-- `INSO` 1,595,764 bytes
-- `WASO` 7,236,612 bytes
-- `SOOT` 163,972 bytes
-- `SUSO` 13,693,828 bytes
-
-Pre-alias tree `5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80`; post-four-alias tree `5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a`.
-
-DISORT and MYSTIC LOW/HIGH were finite, same-grid and non-identical. The equal 0.25 species weights used in this capability were synthetic transport witnesses only and **must never become the scientific composition rule**.
-
-Do not rerun #592.
+The equal-0.25 species weights used by this capability were synthetic transport witnesses only and **must never become the scientific composition rule**. Do not rerun #592.
 
 ## 7. PR #593 — exact OPAC 550-nm/RH source evidence PASS
 
-PR #593 remains Draft/open/unmerged on final head:
+PR #593 final head:
 
 `223b592208d3dda24217dabcfca9fd27333e4b84`
 
-Historical initial structure audit on old head `7bb03785...`:
-
-- run `33189832700` SUCCESS
-- artifact `9693279123`, digest `sha256:c1de8e1a7cc1ab55a4b8044e5d433a00ac2f579a02c5667714903ae31405e803`
-- never rerun it
-
-Final-head evidence:
-
-- generic source audit `33190220721` SUCCESS
-- artifact `9693427186`, digest `sha256:ee80b71e8bdb0cd9aaacc29890162fb903f89f6ef6c5ace615094fe94ac60a36`
 - exact-550 audit `33190220896` SUCCESS
 - artifact `9693440701`, digest `sha256:7d8fa290b74f4e15538cd6ff2609f5491caad63258d0aefb8be689f1ce5f8e33`
-- exact-values report content SHA `7ade25bf8be7c906a5a520fb1c2a13f974ac8ea0fd01e02e35560f2fb1b79a98`
+- report content SHA `7ade25bf8be7c906a5a520fb1c2a13f974ac8ea0fd01e02e35560f2fb1b79a98`
 - repo contract `33190220864` SUCCESS
-
-All four NetCDFs have:
-
-- wavelength variable `wavelen`, 61 values, units `micrometer`
-- exact 0.55 micrometer coordinate at index 6
-- extinction variable `ext`, dimensions `[nlam, nhum]`
-- extinction units exactly `km^-1 / (g/m^3)`
-- `ssa` and `rho` on the same dimensions; `rho` units `g/cm^3`
 
 Humidity nodes:
 
 - INSO/SOOT: `[0]`
 - WASO/SUSO: `[0,50,70,80,90,95,98,99] %`
 
-Exact 550-nm extinction coefficients needed by any analytic cross-check:
+Exact 550-nm extinction anchors:
 
-- INSO RH0: `237.13107624931422`
-- SOOT RH0: `9269.498363511553`
-- WASO RH0/50: `2911.796533737995` / `3184.312159473288`
-- SUSO RH0/50: `3120.3899717768004` / `3005.9625237729356`
+- INSO RH0 `237.13107624931422`
+- SOOT RH0 `9269.498363511553`
+- WASO RH0/50 `2911.796533737995` / `3184.312159473288`
+- SUSO RH0/50 `3120.3899717768004` / `3005.9625237729356`
 
-Full exact RH-node values remain in artifact `9693440701`.
+AFGL-US source SHA `dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5`.
 
-AFGL-US source SHA remains `dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5`.
+#593 invoked no solver.
 
-#593 did not invoke `uvspec` or any solver.
-
-## 8. PR #594 — AFGL-US OPAC RH NULL-solver audit PASS
-
-PR #594 remains Draft/open/unmerged:
+## 8. PR #594 — AFGL-US OPAC RH NULL audit PASS
 
 - head `e7f968ee70dbecaf5f315bc8b03627ce1628edef`
-- NULL audit run `33190680002` attempt 1 SUCCESS
+- run `33190680002` attempt 1 SUCCESS
 - artifact `9693619172`
 - digest `sha256:74813789c2bf2842788de16aba6f3269c9f4efec675f6ee758903e4f6c52f9da`
 - report content SHA `fd4e691f14f9cab427f7992acfc0435f50442e65e519520e6edae55c250a7f14`
 - repo contract `33190679858` SUCCESS
 - status `PASS_RUNTIME_AFGL_RH_AND_NEAREST_OPAC_NODE_PROFILE_FROZEN`
 
-This used `rte_solver null`, not DISORT/MYSTIC. The NULL solver built optical properties/postprocessing only; no scientific RTE solution was produced.
+NULL solver only; no scientific RTE. Runtime nearest OPAC RH behavior is now directly evidenced. INSO/SOOT are non-swelling here; WASO/SUSO use humidity-dependent records.
 
-Runtime AFGL RH around the aerosol domain:
+## 9. PR #595 — NULL aerosol-tau calibration PASS
 
-- 15 km 2.055% -> nearest OPAC 0%
-- 14 km 2.851% -> 0%
-- 13 km 6.107% -> 0%
-- 12 km 12.552% -> 0%
-- 11 km 27.500% -> 50%
-- 10 km 28.744% -> 50%
-- 9 km 37.131% -> 50%
-- 8 km 50.586% -> 50%
-- 7 km 48.185% -> 50%
-- 6 km 49.197% -> 50%
-- 5 km 48.380% -> 50%
-- 4 km 50.052% -> 50%
-- 3 km 50.735% -> 50%
-- 2 km 51.992% -> 50%
-- 1 km 49.042% -> 50%
-- 0 km 45.907% -> 50%
-
-The preserved verbose output also directly printed libRadtran's internal `rh(atmos)` vs `rh(aerofile)` selection for soluble species, confirming the runtime nearest-RH behavior rather than merely our external nearest-node calculation.
-
-INSO/SOOT are non-swelling in this representation. WASO/SUSO use the humidity-dependent OPAC records.
-
-## 9. PR #595 — NULL verbose aerosol-tau calibration PASS
-
-PR #595 remains Draft/open/unmerged on final head:
+Final head:
 
 `3fcb6328a18747b5a17d5ae75248c04c288e18f9`
 
-Initial head `b3df9abe4219a40a4f86d9385754afa677e5f07b` produced review run `33191270535` which failed **before runtime calibration** because the synthetic parser fixture used an invalid altitude sequence ending at 67 km. No archive reconstruction or calibration cases ran on that failed head. The correction changed only the synthetic unit fixture from 115->67 to 48->0; parser, tolerances, protocol and NULL cases remained frozen.
-
-Final-head runs:
-
-- calibration `33191517143` attempt 1 SUCCESS
+- calibration `33191517143` SUCCESS
 - artifact `9693948772`
 - digest `sha256:97d431fe31724731a24697233c2154b836159a29299f8f42ea1853ebdf9d266a`
-- calibration report content SHA `b3787ecc5baaf0d95ffc1851aad45dbc03a00cded9f5cabb2f3ccb397fa5e709`
-- repo contract `33191517521` attempt 1 SUCCESS
+- report content SHA `b3787ecc5baaf0d95ffc1851aad45dbc03a00cded9f5cabb2f3ccb397fa5e709`
+- repo contract `33191517521` SUCCESS
 - status `PASS_VERBOSE_AEROSOL_SCATTER_PLUS_ABS_IS_LAYER_TAU_AND_AOD_RESCALE_PRESERVES_SHAPE`
 
-Preregistered tolerances were unchanged before runtime:
+Frozen print-precision tolerances:
 
-- target sum abs `2.1e-6`
-- row-sum vs printed sum line `7e-5`
+- target AOD sum abs `2.1e-6`
+- row-sum vs sum line `7e-5`
 - normalized-shape max abs `6e-5`
 - normalized-shape L1 `1.5e-3`
 
-Results:
-
-### baseline `continental_average`
-
-- printed aerosol scatter sum `0.108353`
-- printed aerosol absorption sum `0.012354`
-- printed `scatter+abs = 0.120707`
-- sum of six-decimal layer rows `0.120703`
-
-### forced AOD550 = 0.10
-
-- printed scatter `0.089765`
-- printed absorption `0.010235`
-- printed `scatter+abs = 0.100000`
-- layer-row sum `0.100003`
-
-### forced AOD550 = 0.30
-
-- printed scatter `0.269296`
-- printed absorption `0.030704`
-- printed `scatter+abs = 0.300000`
-- layer-row sum `0.299995`
-- exact printed 0.30/0.10 ratio `3.0`
-
-Normalized layer-shape differences under rescale:
-
-- baseline vs 0.10: max `2.6935887780132894e-05`, L1 `0.0001694896254676023`
-- baseline vs 0.30: max `9.13422512677231e-06`, L1 `8.641326649441662e-05`
-- 0.10 vs 0.30: max `2.532712898428713e-05`, L1 `0.00011262316508073799`
-
-Therefore, for this locked 550-nm NULL verbose table, **aerosol `scatter + abs` is calibrated as layer aerosol optical depth**, and `aerosol_set_tau_at_wvl` rescales the column while preserving normalized vertical shape to within the preregistered print-precision tolerances.
-
-This is calibration evidence only. It does not by itself validate any custom AVPS renderer.
+`scatter + abs` in the locked 550-nm verbose NULL table is calibrated as layer aerosol optical depth, and `aerosol_set_tau_at_wvl` preserves normalized vertical shape within these limits.
 
 ## 10. Frozen scientific question and five vertical templates
 
-The scientific question remains exactly the independently preregistered one:
+Scientific question, unchanged from the original preregistration:
 
 > At fixed total AOD550 and fixed OPAC `continental_average` wavelength-dependent aerosol optical properties/phase function, how much does independently specified normalized aerosol vertical optical-depth shape change twilight radiance and derived Level-B?
 
-The fixed optical family stays **continental_average in every state**. The labels maritime/desert/arctic/antarctic provide vertical-template parameters only; they do not switch aerosol microphysics.
+The fixed optical family stays `continental_average` in every state. Maritime/desert/arctic/antarctic labels supply vertical-template parameters only; they do not switch aerosol microphysics.
 
 Frozen states:
 
@@ -292,16 +194,7 @@ Frozen states:
 4. `opac-profile-arctic`: total 0.063; H=2; Z=99; first 0.045; free 0.013; stratosphere 0.005.
 5. `opac-profile-antarctic`: total 0.072; H=10; Z=8; first 0.054; free 0.013; stratosphere 0.005.
 
-Shared profile rules:
-
-- first layer: state H/Z exponential
-- free troposphere from H to12 km: tau 0.013, scale 8 km
-- stratosphere 12–35 km: tau 0.005, scale 99 km
-- above35 km: zero
-- normalize to unit column shape before case AOD is imposed separately
-- target grid: exact AFGL-US atmosphere levels
-
-Original template generator remains frozen:
+Original target generator remains frozen:
 
 - `experiments/aerosol-vertical-profile-sensitivity-v1/opac_vertical_templates.py`
 - Git blob `8e8175ae771438b91fc9543b329175c193a215a4`
@@ -318,126 +211,197 @@ aerosol_species_file continental_average
 aerosol_file tau <state>
 ```
 
-because ordinal 40 proved the custom tau state lost the intended solver-physics contrast.
+## 11. PR #596 — corrected four-species renderer validation PASS
 
-## 11. Current gate — PR #596 explicit four-species renderer validation, still no ordinal
+PR #596 remains Draft/open/unmerged on final head:
 
-PR #596 is Draft/open/unmerged:
+`8adfd4fafa4c039394d12e6f6aff1795b750f4d2`
 
-- branch `review/avps-four-species-renderer-validation-v1`
-- initial head `510581558a7cebefd1cba642892160f5d3da69b0`
-- initial review run `33192621988` attempt 1 — FAILURE before runtime reconstruction
-- failed step: `Reconstruct exact locked runtime and frozen OPAC archive`
-- exact cause: `mkdir: cannot create directory ‘evidence’: File exists`
-- failure artifact `9694407319`, digest `sha256:78673b59a68b78893898638da243740b2ea904c2bfea72b565dae101f0202cf2`
-- no lower-bound baseline validation, five-state renderer validation, DISORT or MYSTIC ran on that head
-- do not rerun the failed head/run
+Failure history is retained and must not be rerun:
 
-Fresh correction:
+- initial head `510581558a7cebefd1cba642892160f5d3da69b0`, run `33192621988` failed before reconstruction because `mkdir evidence` was non-idempotent; artifact `9694407319`, digest `sha256:78673b59a68b78893898638da243740b2ea904c2bfea72b565dae101f0202cf2`.
+- second head `ff8c1eeea0b0307fb799be1d20f6ba836f232331`, run `33192854324` reached and passed all runtime renderer validation but failed only in a static scope check that matched the forbidden-token wording inside its own prose/check; artifact `9694507494`, digest `sha256:9b0e2d636a29bfa171e1feace58ab2bef4e9803b95efb196b5acc381ac25872c`.
 
-- current head `ff8c1eeea0b0307fb799be1d20f6ba836f232331`
-- only change from the failed head: `mkdir evidence` -> `mkdir -p evidence`
-- renderer code, protocol, exact #595 dependency blob, original AVPS template blob and all tolerances are unchanged
-- fresh renderer review `33192854324` is active
-- fresh repo contract `33192854366` is active
-- ordinal 41 remains unallocated
+Final head changed only that static check. Renderer/protocol/tolerances were unchanged.
 
-Frozen renderer representation under test:
+Final evidence:
 
-- expand exact `continental_average.dat` onto the exact AFGL grid using lower-bound layer semantics, zero at/above35 km;
-- first require the explicit expanded four-species profile at AOD550=0.10 to reproduce built-in `aerosol_species_file continental_average` normalized NULL layer-tau shape within the already-frozen #595 print-precision limits;
-- only after that baseline gate, use for each active layer `common_scalar = frozen_target_layer_tau_fraction / expanded_standard_layer_tau_fraction`;
-- multiply INSO/WASO/SOOT/SUSO in that layer by the same finite nonnegative scalar, preserving the local standard species ratios;
-- emit one explicit four-species `aerosol_species_file` profile per frozen AVPS state;
-- never use `aerosol_file tau`;
-- keep `aerosol_set_tau_at_wvl 550 0.10/0.30` as separate column normalization;
-- validate all five states at AOD550 0.10 and0.30 with actual NULL/verbose layer-tau output.
+- renderer source blob `99f61e1daa03cecef055a3773544574738d65082`
+- dedicated review `33193123594` attempt 1 SUCCESS
+- repository contract `33193123597` attempt 1 SUCCESS
+- artifact `9694613680`
+- digest `sha256:5e6942d879326ffc2dc8805d7649086cae32ad2e16aeec19a62cd3b0a89e3e27`
+- report content SHA `20f26c65ce1d01e4514ceea36f2c95ecbf421d05a805b0a3d23e58f1fc9dda24`
+- status `PASS_FIVE_FROZEN_AVPS_TEMPLATES_RENDERED_AS_COMMON_SCALAR_FOUR_SPECIES_NULL_TAU_SHAPES`
 
-Frozen PASS tolerances are unchanged from #595:
+Validated representation:
 
-- AOD sum abs <= `2.1e-6`
-- row-sum vs printed sum line <= `7e-5`
-- target normalized-shape max abs <= `6e-5`
-- target normalized-shape L1 <= `1.5e-3`
-- the same shape limits for 0.10 vs0.30 rescale comparison
+```text
+aerosol_default
+aerosol_species_library OPAC
+aerosol_species_file profiles/<state>.four-species.dat INSO WASO SOOT SUSO
+aerosol_set_tau_at_wvl 550 <AOD550>
+```
 
-If the lower-bound/common-scalar construction fails the actual runtime NULL table, do **not** relax tolerances or clip scientific states post hoc. Preserve the failure and fall back to the already-preregistered 29x29 NULL response-matrix construction below. If it passes, the matrix is unnecessary complexity and the simpler runtime-validated representation becomes the renderer evidence.
+`aerosol_file tau` is forbidden.
 
-### Frozen fallback only if the simple runtime gate fails scientifically
+The renderer first expands locked `continental_average.dat` onto the AFGL grid with lower-bound layer semantics. Explicit expanded four-species baseline versus built-in `continental_average` had exactly:
 
-A response-matrix renderer may then:
+- max normalized layer-fraction difference `0.0`
+- L1 difference `0.0`
 
-1. build 29 NULL/verbose local-standard-mixture basis profiles over the active below-35-km nodes;
-2. parse layer tau with the already calibrated `scatter+abs` parser;
-3. solve the deterministic square response system for each frozen target vector;
-4. require finite nonnegative solutions and a preregistered condition-number/numerical-zero policy;
-5. validate all five rendered states again at AOD550 0.10 and0.30 against the unchanged target/tolerances.
+It then multiplies all four local species by one common finite nonnegative scalar per layer to reach the independently frozen target layer-tau shape. All five states passed at AOD550 0.10 and 0.30 within the already-frozen #595 tolerances. Worst target error was about `3.92e-5` max layer fraction and `2.79e-4` L1, well inside `6e-5` / `1.5e-3`.
 
-This fallback may be selected only because the simple representation fails its independent runtime validation, never from Taylor/Jerusalem residual behavior.
+Therefore the previously frozen 29x29 response-matrix fallback is **not needed**.
 
-## 12. Original scientific screen to preserve unless independently changed before seeds/results
+Exact rendered profile SHA-256 values:
 
-- AFGL-US, observer 0 m, albedo 0.15
-- wavelengths 380–780 nm; 1-nm calculation grid
-- MYSTIC spherical1D, VROOM, MC standard-deviation output
-- 20M photons/case
-- sun depression 2/4/6/8 deg
+- continental average `ceed598f7681951cd0e6208b267beb5b41a52ab10311f37ce76f925700caff3d`
+- maritime clean `487b67bd7dbe89d12d032fdf2b33cab545e16a2e0697170648317f1a76362a67`
+- desert `2b4d2e03c6ae3143d9bb05d2da49f57f75172dc1f24d34f7d4a4939bf9952fef`
+- arctic `98f2fa5428c830764252fd0a2662b0f5c957fc027ffcb7bdc0a5e500dfd7d3d6`
+- antarctic `ee063c6dca68cf9a31d8bb9d993f1fed5cb34c8bb056ac180c97171b5d6b4f19`
+
+#596 is renderer/NULL evidence only. It does not quantify twilight effect size and allocates no ordinal.
+
+## 12. PR #597 — replacement scientific preregistration AVPS v2
+
+A new scientific identity is required because ordinal 40 cannot be repaired in place.
+
+Stage ID:
+
+`aerosol-vertical-profile-sensitivity-v2`
+
+PR #597 is Draft/open/unmerged on branch:
+
+`review/aerosol-vertical-profile-sensitivity-v2-prereg`
+
+Initial reviewed head:
+
+`7ccf942a47d74a4db9afc8e490d600d08c6caed4`
+
+- dedicated run `33193624797` failed **only** in the final static no-solver check because the check searched the workflow for forbidden strings that appeared inside that same assertion.
+- all earlier gates on that failed head passed: exact #596 identity/artifact binding, five exact profile-byte hashes, 360-case skeleton construction, fresh case-ID namespace, disjointness from v1/ordinal-40 case IDs, seed count zero.
+- no solver, seed allocation or ordinal allocation occurred.
+- do not rerun `33193624797`.
+
+Fresh corrected head:
+
+`2bba54c6e78ed99d169887eef51d0c88d812b6f1`
+
+The only change from the failed head is the static review check: it now validates the actual allowed GitHub Actions set and the generated skeleton boundary instead of searching its own text for a solver token. `PROTOCOL.md`, `protocol.review.json` and `build_skeleton.py` remain unchanged.
+
+Fresh dedicated review:
+
+- run `33193778176` attempt 1 — **SUCCESS**
+- artifact `9694863701`
+- digest `sha256:7de79aa4d8d9b51ad8ca4b1bdaceedae7ee5df17b3dd79c43c21cdaf9ae9a171`
+- review receipt content SHA `717411c68c48f34f79c93da3ae8024e3d99a32c78ebe63935d262b3548e62c61`
+- skeleton canonical SHA `a8d2d8f59aec01d82d8d98672152d00c11261660b0a69a59e2716c2edabd2b02`
+- skeleton file SHA `a1a41d4b5ee07e08dc63d1b1c0eeda963706ca7b1adca8a6d89ffbd036d47bf4`
+- 360 cases / 72 CRN groups / 5 states per group
+- 120 distinct pre-seed science surfaces
+- all case IDs begin `avps-v2-` and are disjoint from v1
+- seed count `0`
+- scientific ordinal `null`
+- solver executed `false`
+- scientific execution authorized `false`
+
+Fresh repository contract:
+
+- run `33193778174` on the same head — **currently active**
+
+The scientific question/screen is intentionally unchanged from v1. Only scientific identity and transport representation are replaced.
+
+Fresh future seed namespace is frozen but **not evaluated/applied yet**:
+
+`aerosol-vertical-profile-sensitivity-v2|group-seed|sha256-v1`
+
+No candidate seed literal is tracked by #597.
+
+## 13. Frozen scientific screen for AVPS v2
+
+Unless independently changed before any seed/result allocation, preserve:
+
+- AFGL-US; observer 0 m; albedo 0.15
+- wavelengths 380–780 nm; frozen 1-nm calculation grid
+- MYSTIC spherical 1D, VROOM, `mc_std`
+- 20,000,000 photons/case
+- Sun depression 2/4/6/8 deg
 - AOD550 0.10/0.30
-- geometries: alt/azrel 10/30, 30/90, 45/180
+- geometries alt/azrel 10/30, 30/90, 45/180
 - 3 replicates
-- 24 cells; 72 CRN groups; 5 states/group; 360 cases
+- 24 analysis cells; 72 CRN groups; 5 states/group; 360 cases
 - same **fresh** seed across five states within each CRN group
 - primary photopic, scotopic and Johnson-V channels
 - paired log alternative/reference contrasts
-- retain all 3 paired replicates; mean/sample SD/SE; no p-values/CIs/epsilon substitution
+- retain all three paired replicates; mean/sample SD/SE; no p-values/CIs/epsilon substitution
 - no adaptive case addition or post-result rule changes
 - full raw spectra retained as evidence; no arbitrary production full-spectrum interpolation claim
 
-No scientific seeds or ordinal may be allocated while the corrected representation is still under validation.
+## 14. Next permitted gate
 
-## 13. Hard prohibitions
+Do **not** allocate ordinal 41 merely because #597 dedicated review is green.
+
+Required order:
+
+1. require #597 repository contract `33193778174` to finish SUCCESS on exact head `2bba54c6...`;
+2. then create a separate review-only v2 candidate-seed gate;
+3. deterministically derive exactly 72 fresh candidate group seeds from the new v2 namespace/group IDs;
+4. keep those seeds artifact-only/unapplied during review;
+5. scan the exact tracked tree for candidate literals/collisions;
+6. run the repository-global two-pass collision audit including branches, workflow metadata, artifacts, PR/issue bodies/comments and Issue #60;
+7. require zero collisions and preserve authorization-time recheck requirement;
+8. only after seed freshness review, re-audit Issue #60 and branch namespace for latest allocated/consumed ordinal;
+9. only then consider a separate authorization review. If 40 is still latest, 41 is the expected next ordinal — but it is not allocated by #597 or the seed review.
+
+The v1 seed derivation safety properties may be reused (signed-32-bit compatible domain, within-ledger uniqueness, repository-global collision scan), but **v1 namespace and seed values may not be reused**.
+
+## 15. Hard prohibitions
 
 Do not:
 
 - rerun/reuse ordinal 40;
 - allocate ordinal 41 yet;
-- reuse ordinal-40 case/seed identities;
-- GitHub-rerun v2/v3/v4/trace/v5/#592 consumed one-shot identities;
-- GitHub-rerun #596 failed run `33192621988`;
+- reuse ordinal-40 case IDs, group IDs or seeds;
+- GitHub-rerun consumed v2/v3/v4/trace/v5/#592 identities;
+- GitHub-rerun #596 failed runs `33192621988` or `33192854324`;
+- GitHub-rerun #597 failed run `33193624797`;
 - infer scientific materiality/effect size from capability/NULL audits;
 - use #592 equal-0.25 mass weights scientifically;
 - replace `continental_average` with INSO-only;
-- reintroduce competing `aerosol_file tau` beside the explicit species profile;
+- reintroduce `aerosol_file tau` beside explicit species profiles;
 - use failed `.nc` aliases;
-- change the five template states from Taylor/Jerusalem residual direction or magnitude;
-- choose mixture/RH/AOD/geometry/provider/cycle from those residuals;
+- alter five template states/AOD/geometry/provider/cycle from Taylor/Jerusalem residual direction or magnitude;
+- use ordinal-40 zero contrast to change v2 design;
 - proceed to Level-B profile mapping before fresh replacement scientific evidence;
 - move `main` for convenience;
-- create production authorization from capability/NULL evidence.
+- create production authorization from capability/NULL/preregistration evidence alone.
 
-## 14. Broader retained project state
+## 16. Broader retained project state
 
 - AOPS ordinal 37, AFPF ordinal 38 and ASIV ordinal 39 remain closed for their stated scopes and should not be duplicated.
-- Taylor #508 remains evidence that independently constrained aerosol vertical structure can materially change direct-MYSTIC twilight radiance.
+- Taylor #508 remains evidence that independently constrained aerosol vertical structure can materially alter direct-MYSTIC twilight radiance.
 - Taylor atmosphere provenance/uncertainty boundaries #535/#529/#536 remain authoritative.
 - Better independent Taylor-night atmospheric acquisition is a separate lane and must not be used to fit residuals.
 - Anti-fitting rules remain binding.
 
-## 15. Resume checklist
+## 17. Resume checklist
 
 - [ ] confirm frozen `main == 99ade7798627e67921139697ba1a004fa8a304bb`;
-- [ ] confirm PRs #590–#596 remain Draft/open/unmerged on their final/current evidence heads;
-- [ ] preserve #595 artifact `9693948772`, digest `sha256:97d431fe31724731a24697233c2154b836159a29299f8f42ea1853ebdf9d266a`;
-- [ ] preserve #596 failed attempt `33192621988` and artifact `9694407319`; never rerun it;
-- [ ] inspect fresh #596 review `33192854324` and contract `33192854366` on exact head `ff8c1eee...`;
-- [ ] if #596 PASS, freeze its artifact/report and rewrite/review the 360-case execution skeleton to use exact explicit four-species profiles and no `aerosol_file tau`;
-- [ ] if #596 fails on runtime renderer physics, preserve that head/results and move to the frozen 29x29 NULL response-matrix fallback without relaxing target/tolerances;
-- [ ] only after tracked-tree science freeze re-audit Issue #60 and branches;
-- [ ] allocate 72 fresh CRN group seeds with repository-global collision audit;
-- [ ] allocate the fresh scientific ordinal only in a separate authorization review;
-- [ ] keep Taylor/Jerusalem residuals closed throughout design/execution/result opening;
-- [ ] update this handoff after renderer review/result, execution-package review, seed freeze, ordinal allocation, authorization, dispatch, Gate-0 and result opening.
+- [ ] preserve #596 final artifact `9694613680`, digest `sha256:5e6942d879326ffc2dc8805d7649086cae32ad2e16aeec19a62cd3b0a89e3e27`;
+- [ ] preserve #596 failed attempts `33192621988` and `33192854324`; never rerun them;
+- [ ] preserve #597 failed run `33193624797`; never rerun it;
+- [ ] require #597 contract `33193778174` to PASS on exact head `2bba54c6...`;
+- [ ] preserve #597 review artifact `9694863701`, receipt SHA `717411c6...`, skeleton SHA `a8d2d8f5...`;
+- [ ] only after #597 fully passes, open a separate seed-freshness review with new v2 namespace and no ordinal;
+- [ ] keep candidate seeds artifact-only/unapplied during freshness review;
+- [ ] perform tracked-tree + repository-global collision audit;
+- [ ] re-audit Issue #60/branches immediately before ordinal allocation;
+- [ ] allocate ordinal only in a separate authorization review;
+- [ ] keep Taylor/Jerusalem residuals closed through design, execution and primary result opening;
+- [ ] update this handoff after #597 contract, seed review, ordinal audit/allocation, authorization, dispatch, Gate-0 and result opening.
 
-## 16. One-line live status
+## 18. One-line live status
 
-**Source, four-species transport, exact 550-nm/RH behavior and NULL layer-tau calibration are proven through #595. PR #596 is now testing the corrected explicit four-species renderer against the actual runtime NULL table. Its initial head failed only on non-idempotent `mkdir evidence` before any renderer validation; the fresh head changes only that control-plane line and is under review. Ordinal 41 remains unallocated and no replacement scientific MYSTIC run is authorized yet.**
+**The vertical-profile transport defect is now corrected and runtime-validated: #596 proves all five independently frozen AVPS templates can be represented with explicit INSO/WASO/SOOT/SUSO profiles while preserving the locked continental_average family and target layer-tau shapes. #597 has frozen a fresh 360-case AVPS v2 scientific identity with exact profile hashes, new case namespace and zero seeds/zero ordinal; its dedicated review is SUCCESS and its repository contract is still active. No replacement scientific MYSTIC run is authorized yet.**

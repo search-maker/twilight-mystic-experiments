@@ -1,0 +1,161 @@
+name: Review AVPS v2 postconsumption implementation generator v1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1/generate_recovery_workflows.py
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1/PROTOCOL.md
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-postconsumption-implementation-generator-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BASE_MAIN: 83ee3dba1ddf371cd0dd30a3e6436ca5049b22b0
+      BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1
+      GENERATOR: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1/generate_recovery_workflows.py
+      DELTA: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/execution-delta.review.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Prove exact review-only scope and source bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.head.ref }}" = "$BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git diff --name-only "$BASE_MAIN...HEAD" | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1-review.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1/PROTOCOL.md
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1/generate_recovery_workflows.py
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          test "$(git rev-parse "$BASE_MAIN:$DELTA")" = 96e0a83f9b00bdfaff0f41170ddb61bb33761211
+          test "$(git rev-parse "$BASE_MAIN:.github/workflows/avps-v2-science.yml")" = 9970540d122a6feecbc19a34ec3e204e3aae10d9
+          test "$(git rev-parse "$BASE_MAIN:.github/workflows/avps-v2-dispatch-publisher.yml")" = ce572e89bc6ea67757190cd60bd515d457833450
+          test "$(git rev-parse "$BASE_MAIN:.github/workflows/avps-v2-publisher-recovery2-trigger-bridge.yml")" = 75653db52ef4f0046efa44a4ac416ef8baf72944
+          test -z "$(command -v uvspec || true)"
+
+      - name: Generate and validate candidate recovery workflows without activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$GENERATOR"
+          rm -rf generated-avps-v2-recovery1
+          python "$GENERATOR"
+          test -s generated-avps-v2-recovery1/avps-v2-postconsumption-recovery1-science.yml
+          test -s generated-avps-v2-recovery1/avps-v2-postconsumption-recovery1-dispatch-publisher.yml
+          test -s generated-avps-v2-recovery1/avps-v2-postconsumption-recovery1-publisher-trigger-bridge.yml
+          test -s generated-avps-v2-recovery1/MANIFEST.tsv
+          python - <<'PY'
+          import hashlib,json,re,subprocess
+          from pathlib import Path
+          root=Path('generated-avps-v2-recovery1')
+          science=(root/'avps-v2-postconsumption-recovery1-science.yml').read_text()
+          publisher=(root/'avps-v2-postconsumption-recovery1-dispatch-publisher.yml').read_text()
+          bridge=(root/'avps-v2-postconsumption-recovery1-publisher-trigger-bridge.yml').read_text()
+          alltext='\n'.join([science,publisher,bridge])
+          required=[
+            'authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42',
+            'e627a689ada0493a8a5b9cdafc4aba0198fbabec',
+            'a68f603d6da21cd28ab8324da080cc8ad27f9094',
+            'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1:numerical:42',
+            'ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED',
+            'a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7',
+            '491d1b6653bea0fcc5275269723a76aa1af52300',
+          ]
+          for x in required:
+              if x not in alltext: raise SystemExit(f'missing recovery binding: {x}')
+          forbidden=[
+            'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'ORDINAL41_AVPS_V2_DISPATCH_CONSUMED',
+            '02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2',
+          ]
+          for x in forbidden:
+              if x in alltext: raise SystemExit(f'consumed identity leaked into candidate: {x}')
+          if 'resultOpeningAuthorized' not in science or "auth.get('resultOpeningAuthorized') is not False" not in science:
+              raise SystemExit('science result-opening refusal not preserved')
+          if 'productionAuthorized' not in science or "auth.get('productionAuthorized') is not False" not in science:
+              raise SystemExit('science production refusal not preserved')
+          if '20_000_000' not in science and '20000000' not in science:
+              raise SystemExit('20M/case frozen budget evidence missing')
+          if 'len(cases)!=360' not in science or 'len(v)!=90' not in science:
+              raise SystemExit('360-case/four-shard cardinality guards missing')
+          if 'GITHUB_RUN_ATTEMPT" = 1' not in alltext:
+              raise SystemExit('attempt-1 guard missing')
+          if 'githubRerun' not in science or 'retryAllowed' not in science or 'resumeAllowed' not in science:
+              raise SystemExit('no-rerun/retry/resume evidence missing')
+          # The review does not execute generated YAML; it only freezes bytes.
+          rows=root.joinpath('MANIFEST.tsv').read_text().splitlines()
+          if len(rows)!=4: raise SystemExit('manifest must contain exactly three generated workflows')
+          receipt={
+            'schemaVersion':1,
+            'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_GENERATED_IMPLEMENTATION_REVIEW_DISPATCH_NOT_CREATED',
+            'baseMain':'83ee3dba1ddf371cd0dd30a3e6436ca5049b22b0',
+            'scientificOrdinal':42,
+            'authorizationHead':'e627a689ada0493a8a5b9cdafc4aba0198fbabec',
+            'caseCount':360,
+            'groupCount':72,
+            'statesPerGroup':5,
+            'photonHistoriesPerCase':20000000,
+            'generatedManifestSha256':hashlib.sha256(root.joinpath('MANIFEST.tsv').read_bytes()).hexdigest(),
+            'scientificRuntimeSetupPerformed':False,
+            'solverExecutionPerformed':False,
+            'dispatchCreated':False,
+            'resultOpeningPerformed':False,
+            'levelBOpened':False,
+            'productionAuthorized':False,
+            'taylorOrJerusalemUsed':False,
+          }
+          Path('review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Prove review workflow itself has no runtime or mutation path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ toJson(github.event.pull_request.draft) }}" != "null"
+          ! grep -E '^[[:space:]]+(uvspec|mystic)[[:space:]]' "$GITHUB_WORKFLOW_REF" 2>/dev/null || exit 1
+          if git diff --name-only "$BASE_MAIN...HEAD" | grep -E '^(.github/workflows/avps-v2-postconsumption-recovery1-|dispatch-triggers/)'; then
+            echo 'generated executable workflow or activation marker was tracked in review PR' >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-postconsumption-implementation-generator-v1-review
+          path: |
+            generated-avps-v2-recovery1/
+            review-receipt.json
+            changed.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

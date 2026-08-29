@@ -24,4 +24,15 @@ The lunar source is treated as a collimated external source:
 - elevated sites use the same reviewed Level-B `atm_z_grid` plus local `zout 0` semantics;
 - finite lunar-disk angular extent is not yet modeled.
 
-Before this component may enter the default total-sky compositor it still requires independent source-spectrum cross-checks, atmospheric scattered-moonlight validation against measured moonlit skies, uncertainty calibration, and a separately reviewed production decision.
+## Independent Air-LUSI source cross-check
+
+The public NIST Air-LUSI 2022 dataset is preregistered as the independent TOA cross-check before atmospheric-scattering validation. The exact NIST repository commit, Git-LFS object identity and official example-notebook blob are frozen. The official notebook semantics and the open NIST metadata corrections are also bound before any model/reference residual calculation.
+
+The validation is now separated into two non-overlapping arms:
+
+1. **Direct disk-reflectance arm.** The official notebook identifies `Lunar_Disk_Reflectance` as the quantity compatible with ROLO/GIRO. The frozen ROLO Eq. 10 disk-equivalent reflectance is compared only at original ROLO effective wavelengths, with a deterministic bracketing interpolation of the high-resolution Air-LUSI channel-centroid reflectance. This arm needs no separately downloaded solar spectrum and no distance correction. It therefore isolates the coefficient/geometry reflectance calculation from Eq. 7/8 source conversion.
+2. **Full TOA irradiance arm.** This separately checks Eq. 7/8 and the full source conversion. It remains blocked until the exact TSIS-1 Hybrid Solar Reference Spectrum Version 2 artifact named by the NIST notebook is byte-hash-bound. Standard-distance and true-distance comparisons are separate modes; true-distance Air-LUSI irradiance follows the NIST correction and is obtained by dividing by `distance_correction_factor`.
+
+Neither arm permits scale, tilt, phase or libration fitting, and neither has a post-hoc pass/fail threshold. Air-LUSI used ROLO for relative within-flight normalization, so even a good comparison is not represented as fully independent validation of ROLO phase evolution.
+
+Before this component may enter the default total-sky compositor it still requires exact Air-LUSI binary admission, the preregistered TOA comparisons, atmospheric scattered-moonlight validation against measured moonlit skies, uncertainty calibration, and a separately reviewed production decision.

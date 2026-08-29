@@ -1,0 +1,159 @@
+name: AVPS v2 publisher trigger bridge
+run-name: AVPS v2 ordinal 41 publisher trigger bridge
+
+on:
+  push:
+    branches:
+      - dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-v1
+    paths:
+      - dispatch-triggers/avps-v2-ordinal41-publisher-v1.txt
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: avps-v2-ordinal-41-publisher-trigger-bridge
+  cancel-in-progress: false
+
+env:
+  ACTIVATION_BRANCH: dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-v1
+  ACTIVATION_MARKER: dispatch-triggers/avps-v2-ordinal41-publisher-v1.txt
+  PUBLISHER_WORKFLOW: avps-v2-dispatch-publisher.yml
+  PUBLISHER_SHA256: e702518a88cdf9f88e00ec9b1021ea9d023dbb2e90dbe48443bfd667b2319478
+  SCIENTIFIC_ORDINAL: '41'
+
+jobs:
+  trigger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-use activation identity and untouched publisher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test -f "$ACTIVATION_MARKER"
+
+          git fetch origin main
+          test "$(git rev-list --count HEAD^..HEAD)" = 1
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          MAIN_SHA="$(git rev-parse origin/main)"
+          test "${PARENTS[0]}" = "$MAIN_SHA"
+
+          git diff --name-only HEAD^ HEAD | sort > activation-changed-paths.txt
+          test "$(wc -l < activation-changed-paths.txt | tr -d ' ')" = 1
+          test "$(cat activation-changed-paths.txt)" = "$ACTIVATION_MARKER"
+
+          python - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          marker = Path(os.environ['ACTIVATION_MARKER']).read_text(encoding='utf-8').splitlines()
+          values = {}
+          for line in marker:
+              if '=' not in line:
+                  raise SystemExit(f'invalid activation line: {line!r}')
+              k, v = line.split('=', 1)
+              if k in values:
+                  raise SystemExit(f'duplicate activation key: {k}')
+              values[k] = v
+          required = {
+              'schema': 'AVPS_V2_PUBLISHER_TRIGGER_V1',
+              'main': os.popen('git rev-parse origin/main').read().strip(),
+              'publisher': os.environ['PUBLISHER_WORKFLOW'],
+              'publisherSha256': os.environ['PUBLISHER_SHA256'],
+              'scientificOrdinal': os.environ['SCIENTIFIC_ORDINAL'],
+          }
+          if values != required:
+              raise SystemExit(f'activation marker mismatch: {values!r} != {required!r}')
+          publisher = Path('.github/workflows') / os.environ['PUBLISHER_WORKFLOW']
+          got = hashlib.sha256(publisher.read_bytes()).hexdigest()
+          if got != os.environ['PUBLISHER_SHA256']:
+              raise SystemExit(f'publisher byte drift: {got}')
+          PY
+
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > publisher-run-ids.txt
+          if test -s publisher-run-ids.txt; then
+            echo "publisher workflow already has a workflow_dispatch run; bridge refuses duplicate request" >&2
+            cat publisher-run-ids.txt >&2
+            exit 1
+          fi
+
+          mkdir -p trigger-evidence
+          cp activation-changed-paths.txt publisher-run-ids.txt trigger-evidence/
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          main = subprocess.check_output(['git','rev-parse','origin/main'], text=True).strip()
+          out = {
+              'schemaVersion': 1,
+              'status': 'PRE_TRIGGER_BRIDGE_PASS_ZERO_RUNTIME',
+              'scientificOrdinal': 41,
+              'activationCommit': os.environ['GITHUB_SHA'],
+              'activationParentMain': main,
+              'publisherWorkflow': os.environ['PUBLISHER_WORKFLOW'],
+              'publisherSha256': hashlib.sha256((Path('.github/workflows') / os.environ['PUBLISHER_WORKFLOW']).read_bytes()).hexdigest(),
+              'publisherDispatchAlreadyPresent': False,
+              'scientificRuntimeSetupPerformed': False,
+              'scientificExecutionPerformed': False,
+              'solverExecutionPerformed': False,
+              'dispatchRefCreatedByBridge': False,
+              'consumedMarkerPostedByBridge': False,
+              'scienceWorkflowDispatchedByBridge': False,
+              'publisherWorkflowDispatchRequested': False,
+          }
+          Path('trigger-evidence/pre-trigger-receipt.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Upload pre-trigger zero-runtime evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-publisher-trigger-bridge-v1-pre
+          path: trigger-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Request only the reviewed publisher workflow on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/dispatches" -f ref=main
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = {
+              'schemaVersion': 1,
+              'status': 'PUBLISHER_WORKFLOW_DISPATCH_REQUESTED_BY_ZERO_RUNTIME_BRIDGE',
+              'scientificOrdinal': 41,
+              'activationCommit': os.environ['GITHUB_SHA'],
+              'publisherWorkflow': os.environ['PUBLISHER_WORKFLOW'],
+              'publisherWorkflowDispatchRequested': True,
+              'scientificRuntimeSetupPerformed': False,
+              'scientificExecutionPerformed': False,
+              'solverExecutionPerformed': False,
+              'dispatchRefCreatedByBridge': False,
+              'consumedMarkerPostedByBridge': False,
+              'scienceWorkflowDispatchedByBridge': False,
+          }
+          Path('post-trigger-receipt.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Upload post-trigger transport receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-publisher-trigger-bridge-v1-post
+          path: post-trigger-receipt.json
+          if-no-files-found: error
+          compression-level: 0

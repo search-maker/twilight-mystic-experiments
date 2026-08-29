@@ -1,0 +1,111 @@
+name: AVPS v2 publisher recovery1 trigger bridge
+run-name: AVPS v2 ordinal 41 publisher recovery1 trigger bridge
+
+on:
+  push:
+    branches:
+      - dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-recovery1
+    paths:
+      - dispatch-triggers/avps-v2-ordinal41-publisher-recovery1.txt
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: avps-v2-ordinal-41-publisher-recovery1-trigger-bridge
+  cancel-in-progress: false
+
+env:
+  ACTIVATION_BRANCH: dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-recovery1
+  ACTIVATION_MARKER: dispatch-triggers/avps-v2-ordinal41-publisher-recovery1.txt
+  PUBLISHER_WORKFLOW: avps-v2-dispatch-publisher-recovery1.yml
+  PUBLISHER_BLOB: e3037a032e0e739efa7c80524f8f3597201b28b2
+  SCIENTIFIC_ORDINAL: '41'
+
+jobs:
+  trigger-recovery1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-use recovery1 activation identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test -f "$ACTIVATION_MARKER"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          MAIN_SHA="$(git rev-parse origin/main)"
+          test "${PARENTS[0]}" = "$MAIN_SHA"
+          git diff --name-only HEAD^ HEAD | sort > activation-changed-paths.txt
+          test "$(wc -l < activation-changed-paths.txt | tr -d ' ')" = 1
+          test "$(cat activation-changed-paths.txt)" = "$ACTIVATION_MARKER"
+          test "$(git show origin/main:.github/workflows/$PUBLISHER_WORKFLOW | git hash-object --stdin)" = "$PUBLISHER_BLOB"
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          values={}
+          for line in Path(os.environ['ACTIVATION_MARKER']).read_text(encoding='utf-8').splitlines():
+              if '=' not in line: raise SystemExit(f'invalid activation line: {line!r}')
+              k,v=line.split('=',1)
+              if k in values: raise SystemExit(f'duplicate activation key: {k}')
+              values[k]=v
+          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
+          required={'schema':'AVPS_V2_PUBLISHER_RECOVERY1_TRIGGER_V1','main':main,'publisher':os.environ['PUBLISHER_WORKFLOW'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'scientificOrdinal':os.environ['SCIENTIFIC_ORDINAL']}
+          if values!=required: raise SystemExit(f'activation marker mismatch: {values!r} != {required!r}')
+          PY
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > recovery1-publisher-run-ids.txt
+          if test -s recovery1-publisher-run-ids.txt; then
+            echo 'recovery1 publisher already has a workflow_dispatch run; refusing duplicate request' >&2
+            cat recovery1-publisher-run-ids.txt >&2
+            exit 1
+          fi
+          mkdir -p trigger-recovery1-evidence
+          cp activation-changed-paths.txt recovery1-publisher-run-ids.txt trigger-recovery1-evidence/
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'RECOVERY1_PRE_TRIGGER_BRIDGE_PASS_ZERO_RUNTIME','scientificOrdinal':41,'activationCommit':os.environ['GITHUB_SHA'],'activationParentMain':subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip(),'publisherWorkflow':os.environ['PUBLISHER_WORKFLOW'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'publisherDispatchAlreadyPresent':False,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,'publisherWorkflowDispatchRequested':False}
+          Path('trigger-recovery1-evidence/pre-trigger-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload recovery1 pre-trigger evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-publisher-recovery1-trigger-bridge-pre
+          path: trigger-recovery1-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Request only reviewed recovery1 publisher workflow on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/dispatches" -f ref=main
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'RECOVERY1_PUBLISHER_WORKFLOW_DISPATCH_REQUESTED_BY_ZERO_RUNTIME_BRIDGE','scientificOrdinal':41,'activationCommit':os.environ['GITHUB_SHA'],'publisherWorkflow':os.environ['PUBLISHER_WORKFLOW'],'publisherWorkflowDispatchRequested':True,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False}
+          Path('post-trigger-recovery1-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload recovery1 post-trigger transport receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-publisher-recovery1-trigger-bridge-post
+          path: post-trigger-recovery1-receipt.json
+          if-no-files-found: error
+          compression-level: 0

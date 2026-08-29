@@ -1,0 +1,154 @@
+name: Review AVPS v2 pre-consumption publisher recovery1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/avps-v2-dispatch-publisher-recovery1.yml
+      - .github/workflows/avps-v2-publisher-recovery1-trigger-bridge.yml
+      - .github/workflows/avps-v2-predispatch-recovery1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-predispatch-recovery1/**
+      - review/aerosol-vertical-profile-sensitivity-v2-prereg/protocol.review.json
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: review-avps-v2-predispatch-recovery1-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact additive recovery scope and frozen blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = e3ab0b7c7dae02773fc4756325dcc4d15efabd65
+          test "${{ github.event.pull_request.head.ref }}" = review/aerosol-vertical-profile-sensitivity-v2-predispatch-recovery1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = e3ab0b7c7dae02773fc4756325dcc4d15efabd65
+          git diff --name-only e3ab0b7c7dae02773fc4756325dcc4d15efabd65...$GITHUB_SHA | sort > changed-paths.txt
+          python - <<'PY'
+          from pathlib import Path
+          got={x for x in Path('changed-paths.txt').read_text().splitlines() if x}
+          expected={
+            '.github/workflows/avps-v2-dispatch-publisher-recovery1.yml',
+            '.github/workflows/avps-v2-publisher-recovery1-trigger-bridge.yml',
+            '.github/workflows/avps-v2-predispatch-recovery1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-predispatch-recovery1/PROTOCOL.md',
+            'review/aerosol-vertical-profile-sensitivity-v2-prereg/protocol.review.json',
+          }
+          if got!=expected: raise SystemExit(f'exact five-file recovery scope required: got {sorted(got)}')
+          PY
+          test "$(git hash-object review/aerosol-vertical-profile-sensitivity-v2-prereg/protocol.review.json)" = d790fb3fa2d214d1f430f4417b17212a8e5038a8
+          test "$(git hash-object .github/workflows/avps-v2-dispatch-publisher-recovery1.yml)" = e3037a032e0e739efa7c80524f8f3597201b28b2
+          test "$(git hash-object .github/workflows/avps-v2-publisher-recovery1-trigger-bridge.yml)" = d084569371aa34c8cab97630d368ad1b06840b2a
+          test "$(git show e3ab0b7c7dae02773fc4756325dcc4d15efabd65:.github/workflows/avps-v2-science.yml | git hash-object --stdin)" = 9970540d122a6feecbc19a34ec3e204e3aae10d9
+          test "$(git show e3ab0b7c7dae02773fc4756325dcc4d15efabd65:.github/workflows/avps-v2-dispatch-publisher.yml | git hash-object --stdin)" = ce572e89bc6ea67757190cd60bd515d457833450
+
+      - name: Static recovery publisher and bridge review
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          pub=Path('.github/workflows/avps-v2-dispatch-publisher-recovery1.yml').read_text()
+          bridge=Path('.github/workflows/avps-v2-publisher-recovery1-trigger-bridge.yml').read_text()
+          required_pub=[
+            "ORIGINAL_PUBLISHER_RUN: '33231924719'",
+            "ORIGINAL_PUBLISHER_JOB: '99046120701'",
+            'RESTORED_PREREG_BLOB: d790fb3fa2d214d1f430f4417b17212a8e5038a8',
+            'SCIENCE_WORKFLOW_BLOB: 9970540d122a6feecbc19a34ec3e204e3aae10d9',
+            'ORIGINAL_PUBLISHER_BLOB: ce572e89bc6ea67757190cd60bd515d457833450',
+            'candidateSeedCount',
+            'repository_global_seed_scan.py',
+            'tracked_tree_seed_scan.py',
+            'Create exact dispatch ref and consumed marker once under recovery1',
+            'Upload recovery1 zero-runtime publisher evidence before science dispatch',
+            'Explicitly dispatch exact science workflow from main under recovery1',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'ORDINAL41_AVPS_V2_DISPATCH_CONSUMED',
+          ]
+          for token in required_pub:
+              if token not in pub: raise SystemExit(f'missing recovery publisher token: {token}')
+          if pub.count('actions/workflows/avps-v2-science.yml/dispatches')!=1: raise SystemExit('recovery publisher must target science workflow exactly once')
+          if 'uvspec ' in pub or 'rubin-libradtran' in pub: raise SystemExit('recovery publisher must remain zero-runtime before science dispatch')
+          required_bridge=[
+            'dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-recovery1',
+            'dispatch-triggers/avps-v2-ordinal41-publisher-recovery1.txt',
+            'PUBLISHER_WORKFLOW: avps-v2-dispatch-publisher-recovery1.yml',
+            'PUBLISHER_BLOB: e3037a032e0e739efa7c80524f8f3597201b28b2',
+            'recovery1 publisher already has a workflow_dispatch run; refusing duplicate request',
+            'actions/workflows/$PUBLISHER_WORKFLOW/dispatches',
+          ]
+          for token in required_bridge:
+              if token not in bridge: raise SystemExit(f'missing recovery bridge token: {token}')
+          forbidden_bridge=['git/refs','issues/60/comments','avps-v2-science.yml/dispatches','ORDINAL41_AVPS_V2_DISPATCH_CONSUMED','uvspec ','rubin-libradtran','contents: write','issues: write']
+          for token in forbidden_bridge:
+              if token.lower() in bridge.lower(): raise SystemExit(f'forbidden recovery bridge token: {token}')
+          if bridge.count('--method POST')!=1: raise SystemExit('recovery bridge must contain exactly one POST')
+          PY
+
+      - name: Rebind live pre-consumption state read-only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/33231924719" > original-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/99046120701" > original-job.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-science.yml/runs?event=workflow_dispatch&per_page=100" > science-runs.json
+          python - <<'PY'
+          import json
+          r=json.load(open('original-run.json')); j=json.load(open('original-job.json'))
+          if r.get('id')!=33231924719 or r.get('run_attempt')!=1 or r.get('event')!='workflow_dispatch' or r.get('conclusion')!='failure': raise SystemExit('original publisher terminal identity drift')
+          steps={s.get('name'):s.get('conclusion') for s in j.get('steps',[])}
+          for name,want in {
+            'Fresh zero-runtime pre-dispatch fence':'failure',
+            'Create exact dispatch ref and consumed marker once':'skipped',
+            'Upload zero-runtime publisher evidence before science dispatch':'skipped',
+            'Explicitly dispatch exact science workflow from main':'skipped',
+          }.items():
+              if steps.get(name)!=want: raise SystemExit(f'pre-consumption proof drift: {name}={steps.get(name)!r}')
+          pages=json.load(open('issue60-pages.json')); bodies=[str(c.get('body') or '').strip() for p in pages for c in p]
+          alloc='ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604'
+          if sum(b==alloc for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if sum(b.startswith('ORDINAL41_AVPS_V2_DISPATCH_CONSUMED') for b in bodies)!=0: raise SystemExit('ordinal already consumed')
+          pages=json.load(open('science-runs.json')); runs=[x for p in pages for x in p.get('workflow_runs',[])]
+          if runs: raise SystemExit(f'AVPS v2 science run already exists: {[x.get("id") for x in runs]}')
+          PY
+          if git ls-remote --exit-code --heads origin dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41 >/dev/null 2>&1; then echo 'dispatch branch already exists' >&2; exit 1; fi
+
+      - name: Emit solver-free recovery review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p recovery-review
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_PRECONSUMPTION_RECOVERY1_REVIEW_NO_DISPATCH','reviewHead':os.environ['GITHUB_SHA'],'base':'e3ab0b7c7dae02773fc4756325dcc4d15efabd65','restoredPreregBlob':'d790fb3fa2d214d1f430f4417b17212a8e5038a8','recoveryPublisherBlob':'e3037a032e0e739efa7c80524f8f3597201b28b2','recoveryBridgeBlob':'d084569371aa34c8cab97630d368ad1b06840b2a','originalPublisherRun':33231924719,'originalFailedPreConsumption':True,'scientificOrdinal':41,'dispatchCreated':False,'consumedMarkerPosted':False,'scienceDispatchRequested':False,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False}
+          Path('recovery-review/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-predispatch-recovery1-review
+          path: recovery-review/
+          if-no-files-found: error
+          compression-level: 0

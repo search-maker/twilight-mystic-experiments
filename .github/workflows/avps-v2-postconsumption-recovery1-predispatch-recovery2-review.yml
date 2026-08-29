@@ -52,13 +52,14 @@ jobs:
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
           EVENT_DRAFT: ${{ github.event.pull_request.draft }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = pull_request
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$EVENT_BASE" = "$EXPECTED_BASE"
           test "$EVENT_BRANCH" = "$EXPECTED_BRANCH"
-          test "$EVENT_DRAFT" = true
+          case "$EVENT_DRAFT" in true|false) ;; *) echo 'invalid carrier Draft state' >&2; exit 1;; esac
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
 
           git diff --name-only "$EXPECTED_BASE"..."$EXPECTED_HEAD" | sort > changed-paths.txt
@@ -90,6 +91,7 @@ jobs:
               if token not in protocol: raise SystemExit(f'protocol omission: {token}')
           PY
 
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$EVENT_PR" > carrier-pr.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" > failed-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN/jobs" > failed-jobs.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > auth-pr.json
@@ -99,6 +101,9 @@ jobs:
 
           python - <<'PY'
           import json, os
+          carrier=json.load(open('carrier-pr.json'))
+          if carrier.get('number')!=int(os.environ['EVENT_PR']) or carrier.get('state')!='open' or carrier.get('merged_at') is not None or carrier['head']['sha']!=os.environ['EXPECTED_HEAD'] or carrier['base']['sha']!=os.environ['EXPECTED_BASE'] or carrier.get('draft')!=(os.environ['EVENT_DRAFT']=='true'):
+              raise SystemExit('carrier PR identity/state drift')
           r=json.load(open('failed-run.json')); jobs=json.load(open('failed-jobs.json'))['jobs']
           if r.get('id')!=int(os.environ['FAILED_PUBLISHER_RUN']) or r.get('run_attempt')!=1 or r.get('conclusion')!='failure': raise SystemExit('failed publisher identity drift')
           hit=[j for j in jobs if j.get('id')==int(os.environ['FAILED_PUBLISHER_JOB'])]
@@ -117,12 +122,12 @@ jobs:
           PY
 
           mkdir -p review-evidence
-          cp changed-paths.txt failed-run.json failed-jobs.json auth-pr.json review-evidence/
+          cp changed-paths.txt carrier-pr.json failed-run.json failed-jobs.json auth-pr.json review-evidence/
           export RECEIPT_HEAD="$EXPECTED_HEAD"
           python - <<'PY'
           import json, os
           from pathlib import Path
-          out={'schemaVersion':1,'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PREDISPATCH_RECOVERY2_SOLVER_FREE','headSha':os.environ['RECEIPT_HEAD'],'baseSha':os.environ['EXPECTED_BASE'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'triggerBlob':os.environ['TRIGGER_BLOB'],'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),'failedPublisherPreConsumption':True,'scientificOrdinal':42,'authorizationHead':os.environ['AUTH_HEAD'],'dispatchPresent':False,'scienceRunPresent':False,'scientificRuntime':False,'solver':False,'results':False,'levelB':False,'production':False,'taylorOrJerusalem':False}
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PREDISPATCH_RECOVERY2_SOLVER_FREE','headSha':os.environ['RECEIPT_HEAD'],'baseSha':os.environ['EXPECTED_BASE'],'carrierPr':int(os.environ['EVENT_PR']),'carrierDraft':os.environ['EVENT_DRAFT']=='true','publisherBlob':os.environ['PUBLISHER_BLOB'],'triggerBlob':os.environ['TRIGGER_BLOB'],'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),'failedPublisherPreConsumption':True,'scientificOrdinal':42,'authorizationHead':os.environ['AUTH_HEAD'],'dispatchPresent':False,'scienceRunPresent':False,'scientificRuntime':False,'solver':False,'results':False,'levelB':False,'production':False,'taylorOrJerusalem':False}
           Path('review-evidence/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
           PY
 

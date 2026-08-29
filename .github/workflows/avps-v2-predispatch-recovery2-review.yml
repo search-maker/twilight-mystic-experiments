@@ -1,0 +1,99 @@
+name: AVPS v2 predispatch recovery2 review
+run-name: AVPS v2 ordinal 41 recovery2 solver-free review
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+      - .github/workflows/avps-v2-publisher-recovery2-trigger-bridge.yml
+      - .github/workflows/avps-v2-predispatch-recovery2-review.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review-recovery2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact recovery2 scope and pre-consumption state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_BASE: 7818581eed9075084e6e013402a884b6432b5b5d
+          EXPECTED_PUBLISHER_BLOB: 79317065f4a6019c19fdbf8ab81ea4b4952ef868
+          EXPECTED_BRIDGE_BLOB: 75653db52ef4f0046efa44a4ac416ef8baf72944
+          ORIGINAL_RUN: '33231924719'
+          RECOVERY1_RUN: '33233273077'
+          CONSUMED_MARKER: ORDINAL41_AVPS_V2_DISPATCH_CONSUMED
+          ALLOCATION_MARKER: ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.sha }}" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git diff --name-only "$EXPECTED_BASE" HEAD | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+          .github/workflows/avps-v2-predispatch-recovery2-review.yml
+          .github/workflows/avps-v2-publisher-recovery2-trigger-bridge.yml
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          test "$(git hash-object .github/workflows/avps-v2-dispatch-publisher-recovery2.yml)" = "$EXPECTED_PUBLISHER_BLOB"
+          test "$(git hash-object .github/workflows/avps-v2-publisher-recovery2-trigger-bridge.yml)" = "$EXPECTED_BRIDGE_BLOB"
+          grep -Eq '^[[:space:]]+GH_TOKEN:' .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+          grep -Eq '^[[:space:]]+GITHUB_TOKEN:' .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+          grep -Fq "RECOVERY1_PUBLISHER_RUN: '33233273077'" .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+          grep -Fq 'repository_global_seed_scan.py' .github/workflows/avps-v2-dispatch-publisher-recovery2.yml
+          if grep -Eq '(^|[[:space:]])(uvspec|mystic|libRadtran)([[:space:]]|$)' .github/workflows/avps-v2-dispatch-publisher-recovery2.yml; then
+            echo 'recovery2 publisher contains direct solver/runtime invocation' >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41" >/dev/null 2>&1; then
+            echo 'ordinal-41 dispatch ref already exists' >&2
+            exit 1
+          fi
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-science.yml/runs?event=workflow_dispatch&per_page=100" > science-run-pages.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORIGINAL_RUN/jobs" > original-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY1_RUN/jobs" > recovery1-jobs.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          pages=json.load(open('issue60-pages.json'))
+          bodies=[str(c.get('body') or '').strip() for p in pages for c in p]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=0: raise SystemExit('consumed marker already exists')
+          pages=json.load(open('science-run-pages.json'))
+          runs=[r for p in pages for r in p.get('workflow_runs',[])]
+          if runs: raise SystemExit(f'science run already exists: {[r.get("id") for r in runs]}')
+          checks=[('original-jobs.json','Fresh zero-runtime pre-dispatch fence',['Create exact dispatch ref and consumed marker once','Upload zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main']),('recovery1-jobs.json','Fresh recovery1 pre-dispatch fence',['Create exact dispatch ref and consumed marker once under recovery1','Upload recovery1 zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main under recovery1'])]
+          for path,failed,skipped in checks:
+              jobs=json.load(open(path)).get('jobs',[])
+              if len(jobs)!=1 or jobs[0].get('conclusion')!='failure': raise SystemExit(f'{path} job identity drift')
+              steps={s.get('name'):s.get('conclusion') for s in jobs[0].get('steps',[])}
+              if steps.get(failed)!='failure': raise SystemExit(f'{path} pre-consumption failure not preserved')
+              for name in skipped:
+                  if steps.get(name)!='skipped': raise SystemExit(f'{path} post-failure step was not skipped: {name}')
+          out={'schemaVersion':1,'status':'PASS_RECOVERY2_SOLVER_FREE_REVIEW_PRECONSUMPTION','headSha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'baseSha':os.environ['EXPECTED_BASE'],'publisherBlob':subprocess.check_output(['git','hash-object','.github/workflows/avps-v2-dispatch-publisher-recovery2.yml'],text=True).strip(),'triggerBridgeBlob':subprocess.check_output(['git','hash-object','.github/workflows/avps-v2-publisher-recovery2-trigger-bridge.yml'],text=True).strip(),'bothTokenEnvironmentNamesPresent':True,'bothPriorPublisherFailuresPreConsumption':True,'dispatchRefPresent':False,'consumedMarkerPresent':False,'scienceRunPresent':False,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False}
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload recovery2 review receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-predispatch-recovery2-review
+          path: review-receipt.json
+          if-no-files-found: error
+          compression-level: 0

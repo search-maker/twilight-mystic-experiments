@@ -26,6 +26,8 @@ jobs:
       EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-seed-freshness-v1
       CONSUMED_RUN_41: '33236295233'
       CONSUMED_RUN_42: '33259899524'
+      ORDINAL42_AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+      ORDINAL42_LEDGER_BLOB: 491d1b6653bea0fcc5275269723a76aa1af52300
       TRANSPORT_PROTOCOL_BLOB: 7ba4104338bbfda2f04417a66486ef2cedd142b0
       NEW_SEED_CANONICAL: 38c074fe01bd6d09fa7dc78af1ad323e2f42b606ca992c2950b8fc1f5b343a9f
       NEW_ROWS_CANONICAL: a88b28dcfaaeb354f294d1705a0f8ddbcd061083f277a038ab8c9dace44d9954
@@ -76,9 +78,18 @@ jobs:
           test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-science-transport-v1/PROTOCOL.md)" = "$TRANSPORT_PROTOCOL_BLOB"
           test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py)" = b4a4ab6917ad28f08d4980194f7b68f3961d5d59
           test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py)" = c757507b05074340507df1ca6e76d35b44cf6090
-          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = 491d1b6653bea0fcc5275269723a76aa1af52300
           test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py)" = 3aa311db5c49c5dcf2bd12446f5e96b347080e96
           test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+
+          git cat-file -e "$ORDINAL42_AUTH_HEAD^{commit}"
+          ORDINAL42_WORKTREE="$RUNNER_TEMP/avps-ordinal42-auth-native"
+          rm -rf "$ORDINAL42_WORKTREE"
+          git worktree add --detach "$ORDINAL42_WORKTREE" "$ORDINAL42_AUTH_HEAD"
+          test "$(git -C "$ORDINAL42_WORKTREE" rev-parse HEAD)" = "$ORDINAL42_AUTH_HEAD"
+          test "$(git -C "$ORDINAL42_WORKTREE" rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = "$ORDINAL42_LEDGER_BLOB"
+          test "$(git -C "$ORDINAL42_WORKTREE" rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py)" = b4a4ab6917ad28f08d4980194f7b68f3961d5d59
+          test "$(git -C "$ORDINAL42_WORKTREE" rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py)" = c757507b05074340507df1ca6e76d35b44cf6090
+          echo "AVPS_ORDINAL42_LEDGER_PATH=$ORDINAL42_WORKTREE/review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py" >> "$GITHUB_ENV"
 
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN_41" > consumed-run-41.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN_41/jobs" > consumed-jobs-41.json
@@ -146,7 +157,8 @@ jobs:
           if x['consumedOrdinal41SeedCanonicalSha256']!=os.environ['ORDINAL41_SEED_CANONICAL']: raise SystemExit('ordinal-41 consumed seed binding drift')
           if x['consumedOrdinal42SeedCanonicalSha256']!=os.environ['ORDINAL42_SEED_CANONICAL']: raise SystemExit('ordinal-42 consumed seed binding drift')
           if x['overlapWithConsumedOrdinal41SeedCount']!=0 or x['overlapWithConsumedOrdinal42SeedCount']!=0: raise SystemExit('fresh recovery2 candidate set reuses consumed seed')
-          if not x['allCollisionCountersZero']: raise SystemExit('unexpected within-ledger collision counter')
+          if not x['allCollisionCountersZero'] or not x['historicalOrdinal42LedgerValidatedAtNativePath']:
+              raise SystemExit('native historical ledger validation or collision invariant failed')
           for key in ('candidateSeedsAppliedToCases','scientificOrdinalAllocated','authorizationCreated','dispatchCreated','solverExecutionAuthorized','resultOpeningAuthorized','productionAuthorized'):
               if x[key]: raise SystemExit(f'candidate ledger crossed review boundary: {key}')
           Path('seed-evidence/candidate-seed-ledger.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
@@ -219,6 +231,7 @@ jobs:
             'consumedOrdinal42SeedCanonicalSha256':os.environ['ORDINAL42_SEED_CANONICAL'],
             'overlapWithConsumedOrdinal41SeedCount':0,
             'overlapWithConsumedOrdinal42SeedCount':0,
+            'historicalOrdinal42LedgerValidatedAtNativePath':True,
             'trackedTreeExternalCollisionCount':t.get('trackedTreeExternalCollisionCount'),
             'repositoryGlobalCollisionCount':g.get('repositoryGlobalCollisionCount'),
             'repositoryGlobalDoubleEnumerationStable':g.get('repositoryGlobalDoubleEnumerationStable'),
@@ -247,3 +260,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Remove historical detached worktree
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree remove --force "$RUNNER_TEMP/avps-ordinal42-auth-native" 2>/dev/null || true

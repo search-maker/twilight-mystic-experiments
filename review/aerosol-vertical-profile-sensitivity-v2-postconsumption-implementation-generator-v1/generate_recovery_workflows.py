@@ -40,8 +40,6 @@ def must(text: str, old: str, new: str) -> str:
 
 
 def identity(text: str) -> str:
-    # Replace composite values before their component SHAs so exact-source
-    # assertions remain deterministic rather than becoming self-invalidating.
     pairs = [
         (OLD_ALLOCATION, NEW_ALLOCATION),
         (OLD_AUTH_BRANCH, NEW_AUTH_BRANCH),
@@ -131,15 +129,21 @@ def bridge(publisher_blob: str) -> str:
         ('79317065f4a6019c19fdbf8ab81ea4b4952ef868', publisher_blob),
         ('dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-recovery2', 'dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42-publisher'),
         ('dispatch-triggers/avps-v2-ordinal41-publisher-recovery2.txt', 'dispatch-triggers/avps-v2-postconsumption-recovery1-ordinal42-publisher.txt'),
+        ('group: avps-v2-ordinal-41-publisher-recovery2-trigger-bridge', 'group: avps-v2-postconsumption-recovery1-ordinal-42-publisher-trigger-bridge'),
         ("SCIENTIFIC_ORDINAL: '41'", "SCIENTIFIC_ORDINAL: '42'"),
         ("'scientificOrdinal':41", "'scientificOrdinal':42"),
+        ('AVPS_V2_PUBLISHER_RECOVERY2_TRIGGER_V1', 'AVPS_V2_POSTCONSUMPTION_RECOVERY1_ORDINAL42_PUBLISHER_TRIGGER_V1'),
+        ('RECOVERY2_PRE_TRIGGER_BRIDGE_PASS_ZERO_RUNTIME', 'POSTCONSUMPTION_RECOVERY1_ORDINAL42_PRE_TRIGGER_BRIDGE_PASS_ZERO_RUNTIME'),
+        ('RECOVERY2_PUBLISHER_WORKFLOW_DISPATCH_REQUESTED_BY_ZERO_RUNTIME_BRIDGE', 'POSTCONSUMPTION_RECOVERY1_ORDINAL42_PUBLISHER_WORKFLOW_DISPATCH_REQUESTED_BY_ZERO_RUNTIME_BRIDGE'),
     ]
     for old, new in replacements:
         t = must(t, old, new)
     t = t.replace('ordinal 41', 'postconsumption recovery1 ordinal 42')
     t = t.replace('recovery2', 'postconsumption-recovery1-ordinal42')
-    if 'ordinal 41' in t or 'recovery2' in t or "SCIENTIFIC_ORDINAL: '41'" in t:
-        raise SystemExit('old bridge identity remains')
+    forbidden = ['ordinal 41', 'ordinal-41', 'recovery2', 'RECOVERY2', "SCIENTIFIC_ORDINAL: '41'", 'AVPS_V2_PUBLISHER_RECOVERY2_TRIGGER_V1']
+    for token in forbidden:
+        if token in t:
+            raise SystemExit(f'old bridge identity remains: {token}')
     return t
 
 

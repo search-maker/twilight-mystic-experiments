@@ -114,7 +114,7 @@ def publisher() -> str:
     t = must(t, "p=Path('review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py')", "p=Path('dispatch-evidence/recovery-seed-ledger.py')")
     t = must(t, 'actions/workflows/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1-review.yml/runs', 'actions/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-implementation-generator-v1-review.yml/runs')
     t = must(t, '-n avps-v2-science-workflow-v1-review', '-n avps-v2-postconsumption-implementation-generator-v1-review')
-    t = must(t, "'status':'PASS_SOLVER_FREE_SCIENCE_WORKFLOW_AND_ZERO_RUNTIME_PUBLISHER_REVIEW_DISPATCH_NOT_CREATED'", "'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_GENERATED_IMPLEMENTATION_REVIEW_DISPATCH_NOT_CREATED'")
+    t = must(t, 'PASS_SOLVER_FREE_SCIENCE_WORKFLOW_AND_ZERO_RUNTIME_PUBLISHER_REVIEW_DISPATCH_NOT_CREATED', 'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_GENERATED_IMPLEMENTATION_REVIEW_DISPATCH_NOT_CREATED')
     t = must(t, 'name: avps-v2-dispatch-publisher-ordinal-41', 'name: avps-v2-postconsumption-recovery1-dispatch-publisher-ordinal-42')
     t = must(t, 'actions/workflows/avps-v2-science.yml/dispatches', f'actions/workflows/{SCIENCE_OUT}/dispatches')
     forbidden = [OLD_AUTH_BRANCH, OLD_DISPATCH, OLD_CONSUMED, OLD_SEED, "'scientificOrdinal':41"]

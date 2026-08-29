@@ -1,0 +1,177 @@
+name: Review AVPS v2 postconsumption execution control v1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/execution-delta.review.json
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/PROTOCOL.md
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-postconsumption-execution-control-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BASE_MAIN: d21e4e0f5d982ef1eb82b9e95078449fe08cdb45
+      BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1
+      AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+      AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
+      AUTH_PR: '629'
+      AUTH_REVIEW_RUN: '33250602685'
+      AUTH_REVIEW_ARTIFACT: '9714316591'
+      AUTH_REVIEW_DIGEST: sha256:083d7127a1591810870875d1b6c15f795c1fee0996c1dadaec5838b785bce8c2
+      ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
+      CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+      CONTRACT: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/execution-delta.review.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Prove exact three-file review-only scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          case "${{ github.event.action }}" in opened|synchronize) ;; *) exit 1 ;; esac
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.head.ref }}" = "$BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git merge-base --is-ancestor "$BASE_MAIN" "$HEAD_SHA"
+          test -z "$(git rev-list --merges "$BASE_MAIN..$HEAD_SHA")"
+          git diff --name-only "$BASE_MAIN...$HEAD_SHA" | sort > changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          expected={
+            '.github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/execution-delta.review.json',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/PROTOCOL.md',
+          }
+          got={x for x in Path('changed.txt').read_text().splitlines() if x}
+          if got!=expected: raise SystemExit(f'exact three-file review scope required; got {sorted(got)}')
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > current-pr.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('current-pr.json'))
+          if p['state']!='open' or p['merged_at'] is not None or p['head']['sha']!=os.environ['HEAD_SHA']:
+              raise SystemExit('review PR identity/state drift')
+          PY
+          test -z "$(command -v uvspec || true)"
+          mkdir -p review-evidence
+
+      - name: Verify frozen contract and byte bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          c=json.load(open(os.environ['CONTRACT']))
+          required={
+            'status':'REVIEW_ONLY_RECOVERY_EXECUTION_DELTA_FROZEN_DISPATCH_NOT_AUTHORIZED',
+            'sourceMain':os.environ['BASE_MAIN'],
+            'scientificDesignChanged':False,
+            'scientificOrdinal':42,
+            'executionKey':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1:numerical:42',
+          }
+          for k,v in required.items():
+              if c.get(k)!=v: raise SystemExit(f'contract drift: {k}')
+          a=c['authorization']; d=c['dispatch']; s=c['freshSeedIdentity']; f=c['frozenScientificContract']; r=c['requiredRecoveryImplementation']; o=c['resultOpeningBoundary']
+          if a['head']!=os.environ['AUTH_HEAD'] or a['parent']!=os.environ['AUTH_PARENT'] or a['pr']!=629 or a['reviewRunId']!=33250602685 or a['reviewArtifactId']!=9714316591:
+              raise SystemExit('authorization binding drift')
+          if a['allocationMarker']!=os.environ['ALLOCATION_MARKER'] or d['branch']!=os.environ['DISPATCH_BRANCH'] or d['expectedConsumedMarker']!=os.environ['CONSUMED_MARKER']:
+              raise SystemExit('dispatch/marker binding drift')
+          if s['count']!=72 or s['canonicalSha256']!='a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7' or s['overlapWithConsumedOrdinal41']!=0:
+              raise SystemExit('fresh seed identity drift')
+          if f['caseCount']!=360 or f['commonRandomNumberGroupCount']!=72 or f['statesPerGroup']!=5 or f['photonHistoriesPerCase']!=20000000:
+              raise SystemExit('scientific design drift')
+          if r['newScienceWorkflowRequired'] is not True or r['scientificMatrixGeometryWavelengthsProfilesPhotonBudgetStoppingAnalysisMayChange'] is not False:
+              raise SystemExit('recovery implementation boundary weakened')
+          for k in ('resultOpeningAuthorized','levelBOpeningAuthorized','protectedHoldoutOpeningAuthorized','productionAuthorized'):
+              if o[k] is not False: raise SystemExit(f'closed gate drift: {k}')
+          if o['taylorOrJerusalemScoringPermitted'] is not False: raise SystemExit('anti-fitting drift')
+          PY
+          test "$(git rev-parse "$BASE_MAIN:review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/execution-contract.review.json")" = 383db5619849cb499104826801ed82227e6a2ddf
+          test "$(git rev-parse "$BASE_MAIN:.github/workflows/avps-v2-science.yml")" = 9970540d122a6feecbc19a34ec3e204e3aae10d9
+          test "$(git rev-parse "$BASE_MAIN:review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py")" = bb1e4276d6383127a6b7e820fc2568d87d5de4b0
+          test "$(git rev-parse "$BASE_MAIN:review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py")" = ef24a0d30af3dfb46a6b764f3e426465da870fbe
+          test "$(git rev-parse "$BASE_MAIN:review/aerosol-vertical-profile-sensitivity-v2-control-v1/rh_audit_dependency.py")" = 095ff86f12a79dc312a51f734b0a03bd318f2337
+          test "$(git rev-parse "$AUTH_PARENT:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py")" = 491d1b6653bea0fcc5275269723a76aa1af52300
+
+      - name: Verify live authorization allocation and closed dispatch state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > review-evidence/auth-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$AUTH_REVIEW_RUN" > review-evidence/auth-review-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AUTH_REVIEW_ARTIFACT" > review-evidence/auth-review-artifact.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > review-evidence/issue60-pages.json
+          python - <<'PY'
+          import json,os,subprocess
+          p=json.load(open('review-evidence/auth-pr.json')); r=json.load(open('review-evidence/auth-review-run.json')); a=json.load(open('review-evidence/auth-review-artifact.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['AUTH_HEAD'] or p['base']['sha']!=os.environ['AUTH_PARENT']:
+              raise SystemExit('authorization PR drift')
+          if r['id']!=int(os.environ['AUTH_REVIEW_RUN']) or r['head_sha']!=os.environ['AUTH_HEAD'] or r['run_attempt']!=1 or r['conclusion']!='success':
+              raise SystemExit('authorization review run drift')
+          if a['id']!=int(os.environ['AUTH_REVIEW_ARTIFACT']) or a.get('digest')!=os.environ['AUTH_REVIEW_DIGEST'] or a.get('expired'):
+              raise SystemExit('authorization review artifact drift')
+          pages=json.load(open('review-evidence/issue60-pages.json')); bodies=[str(c.get('body') or '').strip() for page in pages for c in page]
+          if sum(x==os.environ['ALLOCATION_MARKER'] for x in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if any(x.startswith(os.environ['CONSUMED_MARKER']) for x in bodies): raise SystemExit('recovery identity already consumed')
+          cp=subprocess.run(['git','ls-remote','--heads','origin',os.environ['DISPATCH_BRANCH']],capture_output=True,text=True,check=True)
+          if cp.stdout.strip(): raise SystemExit('dispatch branch already exists')
+          PY
+
+      - name: Freeze review receipt
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          paths=[
+            '.github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/execution-delta.review.json',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1/PROTOCOL.md',
+          ]
+          out={'schemaVersion':1,'stageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1','status':'PASS_RECOVERY_EXECUTION_DELTA_REVIEW_DISPATCH_NOT_AUTHORIZED','head':os.environ['HEAD_SHA'],'baseMain':os.environ['BASE_MAIN'],'scientificOrdinal':42,'authorizationHead':os.environ['AUTH_HEAD'],'authorizationReviewRunId':33250602685,'authorizationReviewArtifactId':9714316591,'fileSha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths},'dispatchCreated':False,'scientificRuntimeSetupPerformed':False,'solverExecutionPerformed':False,'resultOpeningPerformed':False,'levelBOpened':False,'productionAuthorized':False,'taylorOrJerusalemUsed':False}
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); out['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('review-evidence/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: aerosol-vertical-profile-sensitivity-v2-postconsumption-execution-control-v1
+          path: review-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

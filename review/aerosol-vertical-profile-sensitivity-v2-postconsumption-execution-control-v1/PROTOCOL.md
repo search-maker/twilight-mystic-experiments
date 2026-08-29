@@ -1,0 +1,11 @@
+# AVPS v2 post-consumption recovery execution-control v1
+
+This package is review-only. It does not create a dispatch branch, consumed marker, workflow dispatch, runtime environment, solver execution, result opening, Level-B mapping, protected holdout opening, Taylor/Jerusalem scoring, or production transition.
+
+The scientific design remains the already-reviewed AVPS v2 design: 360 cases in 72 common-random-number groups, five vertical-profile states per group, 20,000,000 photon histories per case, fixed AOD550 within each group, unchanged geometry/wavelength/derived-channel/analysis rules, and attempt-1-only execution.
+
+Ordinal 41, run 33236295233 and its candidate seeds are permanently consumed. The fresh reviewed recovery authorization is ordinal 42 at `e627a689ada0493a8a5b9cdafc4aba0198fbabec`, with 72 new CRN-group seeds and zero overlap with the ordinal-41 set. The authorization-review evidence is run `33250602685`, attempt 1, artifact `9714316591`, digest `sha256:083d7127a1591810870875d1b6c15f795c1fee0996c1dadaec5838b785bce8c2`.
+
+The currently published `.github/workflows/avps-v2-science.yml` is intentionally hard-bound to consumed ordinal 41. It must not be reused, rerun, edited in place to reinterpret ordinal 41, or used as a recovery identity. A later separately reviewed implementation may add a new recovery-specific science workflow whose changes relative to the reviewed ordinal-41 transport are limited to fresh execution identity/provenance and loading the byte-exact fresh recovery seed ledger from the authorization lineage. Executor, aggregator, scientific matrix, transport physics, photon budget, stopping and analysis semantics remain unchanged unless a distinct preregistered scientific review authorizes otherwise.
+
+Before any later publisher may create the recovery dispatch ref, it must freshly prove the exact authorization review evidence, exactly one ordinal-42 allocation marker, absence of the recovery consumed marker and dispatch ref, zero prior recovery science workflow_dispatch runs/execution-key use, fresh repository-global seed cleanliness, exact implementation bytes, and attempt 1. Result opening remains a separate closed gate even after a successful scientific run.

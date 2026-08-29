@@ -1,0 +1,20 @@
+# AVPS v2 post-consumption recovery2 authorization control
+
+This package is a solver-free authorization-control gate after two permanently consumed AVPS v2 identities failed before any scientific solver execution.
+
+- Ordinal 41 / run `33236295233` attempt 1 failed before runtime because a previously reviewed `rh_audit_dependency.py` support byte was omitted from transported main.
+- Ordinal 42 / run `33259899524` attempt 1 passed the one-use identity gate but failed in preflight because the authorization-bound recovery1 `seed_ledger.py` was copied out of its native repository path; its `HERE.parents[1]` root then resolved outside the checkout. No profile recovery, OPAC acquisition, case job, `uvspec`, MYSTIC, aggregation or result opening occurred.
+
+Both ordinals, their seed sets, dispatch identities and run identities are permanently consumed and non-reusable. Neither failure is numerical evidence about aerosol vertical-profile sensitivity.
+
+Recovery2 preserves the frozen scientific design unchanged: 360 cases, 72 CRN groups, five independently selected OPAC profile states, AOD550 0.10/0.30, four solar depressions, three geometries, three CRN replicates, 20,000,000 photon histories per case, fixed `continental_average` optical family, exact four-species OPAC transport, and the existing frozen analysis/result-opening rules. No Taylor/Jerusalem residual is used to select any profile, seed, ordinal, mapping or physics.
+
+The immutable recovery2 candidate identity was independently reviewed in merged PR #639: seed namespace `aerosol-vertical-profile-sensitivity-v2|postconsumption-recovery2|group-seed|sha256-v1`, 72 candidates, seed canonical SHA-256 `38c074fe01bd6d09fa7dc78af1ad323e2f42b606ca992c2950b8fc1f5b343a9f`, row canonical SHA-256 `a88b28dcfaaeb354f294d1705a0f8ddbcd061083f277a038ab8c9dace44d9954`, with zero overlap against consumed ordinal-41 and ordinal-42 seeds. Dedicated seed review run `33260810647` attempt 1 succeeded; artifact `9717283554`, digest `sha256:0295c1e76e68f4436430a7b01bce5fa1138c15cb4a4061cd227c56620a00b89a`.
+
+The fresh dynamic preauthorization proof is PR #640 exact head `0b5bbdc01275d6024809e2cf0f819712db766150`, run `33263522378` attempt 1 SUCCESS, artifact `9718106095`, digest `sha256:b5f76ba795d6b8208e596dd8a66e2fbd65fc6a7d16ed95c4ebba1269b939ed60`. Its frozen artifact proves a stable two-pass repository-global seed scan, zero candidate collisions, occupied scientific ordinals 1..42, and dynamically derives successor ordinal 43 with `nextOrdinalHardCoded=false`. This control must not trust that proposal blindly: it repeats a fresh tracked-tree seed scan, fresh snapshot-fenced repository-global seed scan, and fresh global ordinal readback under a new exact-head review identity.
+
+The recovery2 seed ledger must be executed only with the consumed ordinal-42 recovery1 ledger available at its native historical path in a detached exact authorization-head worktree. Copying that ledger to another path is forbidden. The control review therefore recreates the historical worktree and binds the exact historical ledger blob before deriving the recovery2 candidates.
+
+Only if all fresh checks remain clean may the control review materialize a proposed `authorization.json` as an Actions artifact. The control PR itself allocates no ordinal, creates no authorization or dispatch ref, applies no seed to a scientific case, installs no scientific runtime, runs no solver, opens no AVPS result, admits no Level-B mapping, opens no protected holdout, changes no production behavior, and authorizes no Taylor/Jerusalem fitting.
+
+A later one-file authorization child must be a direct child of the reviewed control head and byte-equal to the successful control artifact. Its own attempt-1 review must repeat the live seed/global-ordinal/identity fence before any Issue #60 allocation marker. Dispatch and science remain separately reviewed later transitions. GitHub Re-run/retry/resume is forbidden for consumed or protected scientific identities.

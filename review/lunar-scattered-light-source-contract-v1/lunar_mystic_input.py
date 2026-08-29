@@ -51,6 +51,76 @@ def write_lunar_source_file(path: Path, wavelengths_nm: Iterable[float], lunar_t
         'dayOfYearDistanceScalingApplied': False,
     }
 
+def finite_disk_direction_samples(*,
+    moon_zenith_deg: float,
+    target_altitude_deg: float,
+    target_relative_azimuth_to_moon_deg: float,
+    lunar_angular_radius_deg: float,
+) -> tuple[dict, ...]:
+    """Return the frozen 33-direction finite-disk sensitivity geometry.
+
+    This is a directional transfer-kernel sampling plan, not a physical lunar
+    brightness model. Every returned direction is intended to be run with the
+    same full disk-integrated ROLO irradiance. The original Moon-center azimuth
+    is defined as 0 deg. Ring position angle 0 deg points along the tangent
+    toward local zenith; 90 deg points toward increasing astronomical azimuth.
+    The target direction remains fixed in that original local frame, so the
+    target relative azimuth is recomputed for every offset source direction.
+    """
+    moon_zenith = _finite('moon_zenith_deg', moon_zenith_deg, 0.0, 120.0)
+    target_alt = _finite('target_altitude_deg', target_altitude_deg, 0.0, 90.0)
+    target_rel_az = _finite('target_relative_azimuth_to_moon_deg', target_relative_azimuth_to_moon_deg, 0.0, 360.0)
+    angular_radius = _finite('lunar_angular_radius_deg', lunar_angular_radius_deg, 0.0, 1.0)
+    if angular_radius <= 0.0:
+        raise LunarMysticInputError('lunar_angular_radius_deg must be > 0')
+
+    theta = math.radians(moon_zenith)
+    center = (math.sin(theta), 0.0, math.cos(theta))
+    # Unit tangent vectors at center azimuth=0. Position angle 0 is zenithward;
+    # +90 degrees is toward increasing azimuth.
+    zenithward = (-math.cos(theta), 0.0, math.sin(theta))
+    azimuthward = (0.0, 1.0, 0.0)
+
+    def sample_at(radius_fraction: float, position_angle_deg: float, sample_id: str) -> dict:
+        delta = math.radians(angular_radius * radius_fraction)
+        alpha = math.radians(position_angle_deg)
+        tangent = tuple(
+            math.cos(alpha) * zenithward[i] + math.sin(alpha) * azimuthward[i]
+            for i in range(3)
+        )
+        direction = tuple(
+            math.cos(delta) * center[i] + math.sin(delta) * tangent[i]
+            for i in range(3)
+        )
+        norm = math.sqrt(sum(v * v for v in direction))
+        x, y, z = (v / norm for v in direction)
+        sample_zenith = math.degrees(math.acos(max(-1.0, min(1.0, z))))
+        sample_azimuth = math.degrees(math.atan2(y, x)) % 360.0
+        target_relative = (target_rel_az - sample_azimuth) % 360.0
+        dot = max(-1.0, min(1.0, sum(center[i] * direction[i] / norm for i in range(3))))
+        actual_offset = math.degrees(math.acos(dot))
+        return {
+            'sampleId': sample_id,
+            'radiusFraction': radius_fraction,
+            'positionAngleDeg': position_angle_deg,
+            'angularOffsetDeg': actual_offset,
+            'sourceZenithDeg': sample_zenith,
+            'sourceAzimuthInCenterFrameDeg': sample_azimuth,
+            'targetAltitudeDeg': target_alt,
+            'targetRelativeAzimuthToSampleSourceDeg': target_relative,
+            'sameFullDiskIntegratedRoloIrradianceRequired': True,
+            'physicalResolvedDiskWeight': None,
+        }
+
+    samples = [sample_at(0.0, 0.0, 'center')]
+    for radius_fraction, ring_label in ((0.5, 'r050'), (1.0, 'r100')):
+        for index in range(16):
+            position_angle = 22.5 * index
+            samples.append(sample_at(radius_fraction, position_angle, f'{ring_label}-pa{index:02d}'))
+    if len(samples) != 33:
+        raise LunarMysticInputError('finite-disk sampling plan must contain exactly 33 directions')
+    return tuple(samples)
+
 def render_lunar_mystic_input(*,
     data_dir: Path,
     atmosphere_file: Path,

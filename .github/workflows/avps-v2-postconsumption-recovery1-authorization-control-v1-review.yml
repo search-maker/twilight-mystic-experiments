@@ -1,0 +1,149 @@
+name: Review AVPS v2 recovery1 authorization control v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-postconsumption-recovery1-authorization-control-v1-review.yml
+      - .github/workflows/avps-v2-postconsumption-recovery1-authorization-review-v1.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-authorization-control-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-recovery1-auth-control-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_MAIN: 6f0b3f3c73b23f84951bd7b6a2bad58d00854982
+      CONTROL_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-authorization-control-v1
+      SEED_HEAD: 3f9a03b913125077a37a3eb56d1c031127bdfd60
+      SEED_RUN: '33242753388'
+      SEED_ARTIFACT: '9711902664'
+      SEED_DIGEST: sha256:12934972f2a533c006a11012d2f2374e76873d9982dae0b1d5db656e6097b460
+      PREAUTH_HEAD: 752e7c55740cdc0c6033deda71db9bc0dbb7fdf4
+      PREAUTH_RUN: '33245550336'
+      PREAUTH_CONTRACT_RUN: '33245550340'
+      PREAUTH_ARTIFACT: '9712820519'
+      PREAUTH_DIGEST: sha256:5768dca0f4507c3a345f611ee4a71e1c955d3b1a6c95083add6f7030e55993de
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Bind exact branch/base and immutable predecessors
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.head.ref }}" = "$CONTROL_BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          test "${{ github.event.pull_request.draft }}" = true
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch origin main "$PREAUTH_HEAD" "$SEED_HEAD"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          git merge-base --is-ancestor "$PREAUTH_HEAD" HEAD
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-control-v1/rh_audit_dependency.py)" = 095ff86f12a79dc312a51f734b0a03bd318f2337
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = 491d1b6653bea0fcc5275269723a76aa1af52300
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py)" = 7ca8efd17ae9e7ec2baa32fe935e5173ca6d173f
+          test -z "$(command -v uvspec || true)"
+          mkdir -p control-evidence preauth-artifact
+          git ls-files -z > control-evidence/tracked-files.nul
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SEED_RUN" > seed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREAUTH_RUN" > preauth-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREAUTH_CONTRACT_RUN" > preauth-contract.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SEED_ARTIFACT" > seed-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PREAUTH_ARTIFACT" > preauth-artifact-meta.json
+          python - <<'PY'
+          import json,os
+          for path,run,head in [('seed-run.json',int(os.environ['SEED_RUN']),os.environ['SEED_HEAD']),('preauth-run.json',int(os.environ['PREAUTH_RUN']),os.environ['PREAUTH_HEAD']),('preauth-contract.json',int(os.environ['PREAUTH_CONTRACT_RUN']),os.environ['PREAUTH_HEAD'])]:
+              x=json.load(open(path))
+              if x['id']!=run or x['head_sha']!=head or x['run_attempt']!=1 or x['status']!='completed' or x['conclusion']!='success': raise SystemExit(f'predecessor run drift: {path}')
+          for path,aid,digest in [('seed-artifact.json',int(os.environ['SEED_ARTIFACT']),os.environ['SEED_DIGEST']),('preauth-artifact-meta.json',int(os.environ['PREAUTH_ARTIFACT']),os.environ['PREAUTH_DIGEST'])]:
+              x=json.load(open(path))
+              if x['id']!=aid or x.get('digest')!=digest or x.get('expired'): raise SystemExit(f'predecessor artifact drift: {path}')
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PREAUTH_ARTIFACT/zip" > preauth.zip
+          test "sha256:$(sha256sum preauth.zip | awk '{print $1}')" = "$PREAUTH_DIGEST"
+          unzip -q preauth.zip -d preauth-artifact
+          test -f preauth-artifact/preauthorization.json
+          cp preauth-artifact/preauthorization.json control-evidence/preauthorization.json
+      - name: Regenerate fresh candidate ledger and repeat tracked/global seed checks
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py')
+          s=importlib.util.spec_from_file_location('ledger_control',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          x=m.validate_ledger()
+          assert x['candidateSeedCount']==72 and len(set(x['candidateSeeds']))==72
+          assert x['candidateSeedCanonicalSha256']=='a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7'
+          assert x['candidateRowsCanonicalSha256']=='8213e65782b62d0e1a0ea51d620016fdcaa24b348e726f5570c54f7f1155a895'
+          assert x['overlapWithConsumedOrdinal41SeedCount']==0
+          Path('control-evidence/candidate-seed-ledger.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          Path('control-evidence/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py --repo-root . --file-list control-evidence/tracked-files.nul --candidate-seed-ledger control-evidence/candidate-seed-ledger.json --allow-self-ledger-json control-evidence/empty-self-ledger-policy.json --output control-evidence/tracked-seed-scan.json
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger control-evidence/candidate-seed-ledger.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name "$CONTROL_BRANCH" --expected-repo-head "$HEAD_SHA" --output control-evidence/repository-global-seed-recheck.json
+          python - <<'PY'
+          import json
+          t=json.load(open('control-evidence/tracked-seed-scan.json')); g=json.load(open('control-evidence/repository-global-seed-recheck.json'))
+          assert t['trackedTreeExternalCollisionCount']==0 and t['selfLedgerHitCount']==0 and t['exactHeadTrackedTreeByteScanPassed'] is True
+          assert g['repositoryGlobalCollisionCount']==0 and g['repositoryGlobalDoubleEnumerationStable'] is True and g['repositoryGlobalPostFenceCandidateSeedCollisionCount']==0
+          PY
+      - name: Fresh global ordinal readback and materialize artifact-only authorization candidate
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-authorization-control-v1/live_surface.py --repository "$GITHUB_REPOSITORY" --mode control --current-run-id "$GITHUB_RUN_ID" --output control-evidence/live-surface.json
+          python - <<'PY'
+          import json
+          p='control-evidence/live-surface.json'; x=json.load(open(p)); g=json.load(open('control-evidence/repository-global-seed-recheck.json'))
+          x['candidateSeedCollisionCount']=g['repositoryGlobalCollisionCount']
+          open(p,'w').write(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          PY
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-authorization-control-v1/build_authorization.py --control-head "$HEAD_SHA" --preauthorization control-evidence/preauthorization.json --live-surface control-evidence/live-surface.json --output control-evidence/authorization.json
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          a=json.load(open('control-evidence/authorization.json'))
+          assert a['scientificOrdinal']==42 and a['status']=='AUTHORIZED_PENDING_SEPARATE_DISPATCH'
+          assert a['candidateSeedValuesIncluded'] is False and a['dispatchAuthorized'] is False and a['resultOpeningAuthorized'] is False and a['productionAuthorized'] is False
+          receipt={'schemaVersion':1,'stageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-authorization-control-v1-review','status':'PASS_RECOVERY1_AUTHORIZATION_CANDIDATE_MATERIALIZED_NOT_ALLOCATED','reviewHead':os.environ['HEAD_SHA'],'workflowRunId':int(os.environ['GITHUB_RUN_ID']),'workflowRunAttempt':1,'scientificOrdinal':42,'authorizationJsonSha256':hashlib.sha256(Path('control-evidence/authorization.json').read_bytes()).hexdigest(),'authorizationDocumentContentSha256':a['authorizationDocumentContentSha256'],'scientificOrdinalAllocated':False,'authorizationCreated':False,'dispatchCreated':False,'solverExecutionPerformed':False,'resultOpeningPerformed':False}
+          raw=json.dumps(receipt,sort_keys=True,separators=(',',':')).encode(); receipt['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('control-evidence/control-review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-postconsumption-recovery1-authorization-control-v1
+          path: control-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

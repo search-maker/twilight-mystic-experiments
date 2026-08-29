@@ -1,0 +1,205 @@
+name: Review AVPS v2 execution-control v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41
+    paths:
+      - review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/**
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-execution-control-v1-review.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_HEAD_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1
+      EXPECTED_BASE_BRANCH: authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41
+      EXPECTED_AUTH_HEAD: d5f5e4d9d19d7ede573fecae68565a92baabbec3
+      EXPECTED_AUTH_PARENT: b3d562222a38fc9d1ff5d218886afdda72c37fa2
+      EXPECTED_AUTH_PR: '604'
+      EXPECTED_AUTH_REVIEW_RUN: '33218101573'
+      EXPECTED_AUTH_REVIEW_ARTIFACT: '9704345296'
+      EXPECTED_AUTH_REVIEW_DIGEST: sha256:fdabe0425c3de893866c25f14b0da1e0038a8e6498b83a281fcae0e773e605d4
+      EXPECTED_AUTH_JSON_BLOB: dcfbd39081abe8e98604eedd48a1d934cea5483a
+      EXPECTED_MARKER: ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604
+      CONSUMED_MARKER: ORDINAL41_AVPS_V2_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41
+      CONTRACT: review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/execution-contract.review.json
+      PROTOCOL: review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/PROTOCOL.md
+
+    steps:
+      - name: Checkout exact review head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact Draft PR and three-file review scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$HEAD_BRANCH" = "$EXPECTED_HEAD_BRANCH"
+          test "$BASE_BRANCH" = "$EXPECTED_BASE_BRANCH"
+          test "$BASE_SHA" = "$EXPECTED_AUTH_HEAD"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch origin "$EXPECTED_BASE_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_AUTH_HEAD"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > current-pr.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('current-pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('execution-control PR must remain Draft/open/unmerged')
+          if p['head']['ref']!=os.environ['EXPECTED_HEAD_BRANCH'] or p['head']['sha']!=os.environ['HEAD_SHA']:
+              raise SystemExit('execution-control head identity drift')
+          if p['base']['ref']!=os.environ['EXPECTED_BASE_BRANCH'] or p['base']['sha']!=os.environ['EXPECTED_AUTH_HEAD']:
+              raise SystemExit('execution-control base identity drift')
+          PY
+          mapfile -t changed < <(git diff --name-only "$EXPECTED_AUTH_HEAD"..HEAD | sort)
+          printf '%s\n' "${changed[@]}" > changed-paths.txt
+          expected=(
+            ".github/workflows/aerosol-vertical-profile-sensitivity-v2-execution-control-v1-review.yml"
+            "review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/PROTOCOL.md"
+            "review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/execution-contract.review.json"
+          )
+          printf '%s\n' "${expected[@]}" | sort > expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+
+      - name: Rebind authorization PR, attempt-1 review and evidence artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$EXPECTED_AUTH_PR" > auth-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXPECTED_AUTH_REVIEW_RUN" > auth-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXPECTED_AUTH_REVIEW_RUN/artifacts" > auth-artifacts.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('auth-pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('authorization PR no longer Draft/open/unmerged')
+          if p['head']['sha']!=os.environ['EXPECTED_AUTH_HEAD'] or p['head']['ref']!=os.environ['EXPECTED_BASE_BRANCH']:
+              raise SystemExit('authorization PR head/branch drift')
+          if p['base']['sha']!=os.environ['EXPECTED_AUTH_PARENT']:
+              raise SystemExit('authorization control parent drift')
+          r=json.load(open('auth-run.json'))
+          if r['id']!=int(os.environ['EXPECTED_AUTH_REVIEW_RUN']) or r['head_sha']!=os.environ['EXPECTED_AUTH_HEAD'] or r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='success':
+              raise SystemExit('authorization review identity/result drift')
+          arts=json.load(open('auth-artifacts.json'))['artifacts']
+          hit=[a for a in arts if a['id']==int(os.environ['EXPECTED_AUTH_REVIEW_ARTIFACT'])]
+          if len(hit)!=1 or hit[0].get('digest')!=os.environ['EXPECTED_AUTH_REVIEW_DIGEST'] or hit[0].get('expired'):
+              raise SystemExit('authorization review artifact drift')
+          PY
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4/authorization.json)" = "$EXPECTED_AUTH_JSON_BLOB"
+
+      - name: Prove exact allocation and still-unconsumed dispatch surface
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --slurp > issue60-pages.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/branches?per_page=100" --slurp > branch-pages.json
+          python - <<'PY'
+          import json, os
+          pages=json.load(open('issue60-pages.json'))
+          comments=[row for page in pages for row in page]
+          bodies=[str(row.get('body') or '').strip() for row in comments]
+          marker=os.environ['EXPECTED_MARKER']
+          consumed=os.environ['CONSUMED_MARKER']
+          if bodies.count(marker)!=1:
+              raise SystemExit(f'exact allocation marker count is {bodies.count(marker)}, expected 1')
+          if any(body==consumed or body.startswith(consumed+' ') for body in bodies):
+              raise SystemExit('ordinal 41 consumed marker already exists')
+          branches=[row for page in json.load(open('branch-pages.json')) for row in page]
+          names=[str(row.get('name') or '') for row in branches]
+          if os.environ['DISPATCH_BRANCH'] in names:
+              raise SystemExit('ordinal 41 dispatch branch already exists')
+          json.dump({
+              'status':'PASS_ALLOCATED_REVIEWED_NOT_DISPATCHED',
+              'scientificOrdinal':41,
+              'allocationMarkerCount':1,
+              'consumedMarkerCount':0,
+              'dispatchBranchExists':False,
+          }, open('allocation-surface.json','w'), indent=2, sort_keys=True)
+          PY
+
+      - name: Validate frozen contract and reviewed source byte bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          python - <<'PY'
+          import json, os, subprocess
+          c=json.load(open(os.environ['CONTRACT']))
+          def req(cond,msg):
+              if not cond: raise SystemExit(msg)
+          req(c['status']=='REVIEW_ONLY_EXECUTION_CONTROL_FROZEN_DISPATCH_NOT_AUTHORIZED','contract status drift')
+          req(c['scientificOrdinal']==41 and c['executionKey']=='aerosol-vertical-profile-sensitivity-v2:numerical:41','scientific identity drift')
+          req(c['authorizationHead']==os.environ['EXPECTED_AUTH_HEAD'] and c['authorizationParent']==os.environ['EXPECTED_AUTH_PARENT'],'authorization binding drift')
+          req(c['authorizationReviewRunId']==int(os.environ['EXPECTED_AUTH_REVIEW_RUN']) and c['authorizationReviewRunAttempt']==1,'authorization review binding drift')
+          req(c['authorizationReviewArtifactId']==int(os.environ['EXPECTED_AUTH_REVIEW_ARTIFACT']) and c['authorizationReviewArtifactDigest']==os.environ['EXPECTED_AUTH_REVIEW_DIGEST'],'authorization artifact binding drift')
+          req(c['exactAllocationMarker']==os.environ['EXPECTED_MARKER'],'allocation marker contract drift')
+          req(c['dispatchCreated'] is False and c['dispatchAuthorized'] is False and c['scientificExecutionPerformed'] is False and c['resultOpeningPerformed'] is False,'review crossed disabled boundary')
+          d=c['caseDesign']
+          req((d['expectedCaseCount'],d['expectedGroupCount'],d['expectedAnalysisCellCount'],d['expectedStatesPerGroup'],d['expectedPrimaryContrastCount'])==(360,72,24,5,4),'case cardinality drift')
+          req(d['caseIdPrefix']=='avps-v2-' and d['photonHistoriesPerCase']==20000000 and d['attemptRequired']==1,'case identity/budget drift')
+          req(d['retryPermitted'] is False and d['resumePermitted'] is False and d['githubRerunPermitted'] is False,'rerun boundary weakened')
+          t=c['transportRepresentation']
+          req(t['aerosolSpecies']==['INSO','WASO','SOOT','SUSO'],'species set drift')
+          req(t['competingAerosolFileTauForbidden'] is True and t['insoOnlyForbidden'] is True,'vertical transport refusal weakened')
+          expected=c['reviewedV2SourceBindings']
+          for path_key, blob_key in [
+              ('protocolPath','protocolGitBlobSha1'),('controlPackagePath','controlPackageGitBlobSha1'),
+              ('adapterPath','adapterGitBlobSha1'),('rendererPath','rendererGitBlobSha1'),
+              ('runtimeStagePath','runtimeStageGitBlobSha1'),('seedLedgerPath','seedLedgerGitBlobSha1'),
+              ('authorizationGuardPath','authorizationGuardGitBlobSha1')]:
+              path=expected[path_key]; want=expected[blob_key]
+              got=subprocess.check_output(['git','hash-object',path], text=True).strip()
+              req(got==want,f'bound source byte drift: {path}: {got} != {want}')
+          req(c['candidateReusableV1Mechanics']['status']=='BYTE_IDENTITIES_RECORDED_FOR_LATER_PARITY_REVIEW_NOT_YET_EXECUTION_AUTHORIZED','v1 reuse boundary weakened')
+          req(c['candidateReusableV1Mechanics']['reuseRequiresExplicitV2CaseIdProfileArtifactAndTransportParityReview'] is True,'v1 reuse parity gate missing')
+          req(c['externalLevelBBinding']['expectedGitBlobSha1']=='bb4cd0ff02159ecffe276022cec9d292c7a434a3' and c['externalLevelBBinding']['fieldFactor']==3.14 and c['externalLevelBBinding']['branch']=='full','Level-B binding drift')
+          json.dump({
+              'status':'PASS_SOLVER_FREE_EXECUTION_CONTROL_REVIEW',
+              'scientificOrdinal':41,
+              'authorizationHead':c['authorizationHead'],
+              'caseCount':360,
+              'groupCount':72,
+              'statesPerGroup':5,
+              'dispatchCreated':False,
+              'solverExecuted':False,
+              'resultsOpened':False,
+              'productionAuthorized':False,
+          }, open('execution-control-review.json','w'), indent=2, sort_keys=True)
+          PY
+
+      - name: Upload solver-free review evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: avps-v2-execution-control-v1-review-evidence
+          path: |
+            allocation-surface.json
+            execution-control-review.json
+            changed-paths.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,97 @@
+name: AVPS v2 postconsumption recovery1 publisher recovery2 trigger bridge
+run-name: AVPS v2 postconsumption recovery1 ordinal 42 publisher recovery2 trigger bridge
+
+on:
+  push:
+    branches:
+      - dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42-publisher-recovery2
+    paths:
+      - dispatch-triggers/avps-v2-postconsumption-recovery1-ordinal42-publisher-recovery2.txt
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: avps-v2-postconsumption-recovery1-ordinal-42-publisher-recovery2-trigger-bridge
+  cancel-in-progress: false
+
+env:
+  ACTIVATION_BRANCH: dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42-publisher-recovery2
+  ACTIVATION_MARKER: dispatch-triggers/avps-v2-postconsumption-recovery1-ordinal42-publisher-recovery2.txt
+  PUBLISHER_WORKFLOW: avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml
+  PUBLISHER_BLOB: d253313d6dbe047c69408e53ad63f5990def66a5
+  SCIENTIFIC_ORDINAL: '42'
+
+jobs:
+  trigger-recovery2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-use recovery2 activation identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test -f "$ACTIVATION_MARKER"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          MAIN_SHA="$(git rev-parse origin/main)"
+          test "${PARENTS[0]}" = "$MAIN_SHA"
+          git diff --name-only HEAD^ HEAD | sort > activation-changed-paths.txt
+          test "$(wc -l < activation-changed-paths.txt | tr -d ' ')" = 1
+          test "$(cat activation-changed-paths.txt)" = "$ACTIVATION_MARKER"
+          test "$(git show origin/main:.github/workflows/$PUBLISHER_WORKFLOW | git hash-object --stdin)" = "$PUBLISHER_BLOB"
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          values={}
+          for line in Path(os.environ['ACTIVATION_MARKER']).read_text(encoding='utf-8').splitlines():
+              if '=' not in line: raise SystemExit(f'invalid activation line: {line!r}')
+              k,v=line.split('=',1)
+              if k in values: raise SystemExit(f'duplicate activation key: {k}')
+              values[k]=v
+          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
+          required={'schema':'AVPS_V2_POSTCONSUMPTION_RECOVERY1_ORDINAL42_PUBLISHER_RECOVERY2_TRIGGER_V1','main':main,'publisher':os.environ['PUBLISHER_WORKFLOW'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'scientificOrdinal':os.environ['SCIENTIFIC_ORDINAL']}
+          if values!=required: raise SystemExit(f'activation marker mismatch: {values!r} != {required!r}')
+          PY
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > recovery2-publisher-run-ids.txt
+          if test -s recovery2-publisher-run-ids.txt; then
+            echo 'recovery2 publisher already has a workflow_dispatch run; refusing duplicate request' >&2
+            cat recovery2-publisher-run-ids.txt >&2
+            exit 1
+          fi
+          mkdir -p trigger-recovery2-evidence
+          cp activation-changed-paths.txt recovery2-publisher-run-ids.txt trigger-recovery2-evidence/
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'POSTCONSUMPTION_RECOVERY1_ORDINAL42_PUBLISHER_RECOVERY2_PRE_TRIGGER_BRIDGE_PASS_ZERO_RUNTIME','scientificOrdinal':42,'activationCommit':os.environ['GITHUB_SHA'],'activationParentMain':subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip(),'publisherWorkflow':os.environ['PUBLISHER_WORKFLOW'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'publisherDispatchAlreadyPresent':False,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,'publisherWorkflowDispatchRequested':False}
+          Path('trigger-recovery2-evidence/pre-trigger-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload recovery2 pre-trigger evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-postconsumption-recovery1-ordinal42-publisher-recovery2-trigger-pre
+          path: trigger-recovery2-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Request only reviewed recovery2 publisher workflow on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/dispatches" -f ref=main

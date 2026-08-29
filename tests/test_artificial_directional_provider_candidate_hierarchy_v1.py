@@ -18,19 +18,41 @@ class ArtificialDirectionalProviderCandidateHierarchyV1Test(unittest.TestCase):
         self.assertFalse(q['viirsDnbAloneMayDefineVisibleSpectrum'])
         self.assertFalse(q['zenithOnlyQuantityMayBeUsedForArbitraryTarget'])
 
-    def test_kocifaj_candidate_is_directional_but_not_automatically_admitted(self):
+    def test_illumina_is_primary_high_fidelity_evaluation_candidate_but_unadmitted(self):
+        i = self.c['candidateHierarchy']['ILLUMINA_CURRENT_UPSTREAM']
+        self.assertEqual(i['doi'], '10.1016/j.jqsrt.2018.02.033')
+        self.assertEqual(i['role'], 'PRIMARY_HIGH_FIDELITY_DIRECTIONAL_RESEARCH_CANDIDATE_AFTER_EXACT_VERSION_RUNTIME_AND_INPUT_FREEZE')
+        self.assertEqual(i['currentPublicRepository'], 'aubema/illumina')
+        self.assertEqual(i['currentPublicRepositoryLicense'], 'GPL-3.0')
+        self.assertEqual(i['currentObservedVersion'], '2.2.4')
+        self.assertEqual(i['currentObservedMasterSha'], 'cadadca86beaed20d8569147a968be27089ec27d')
+        self.assertEqual(i['currentObservedMasterCommitMessage'], 'important correction to the terrain blocking scheme')
+        self.assertIn('hyperspectral_modeling', i['publishedCapabilities'])
+        self.assertIn('terrain_and_subgrid_obstacle_treatment', i['publishedCapabilities'])
+        self.assertIn('OPAC_aerosol_optics', i['currentRepositoryContains'])
+        self.assertFalse(i['currentUpstreamShaIsAutomaticallyEquivalentToPublished2018Configuration'])
+        self.assertFalse(i['currentUpstreamBytesMirroredAndHashBoundInProject'])
+        self.assertFalse(i['runtimeReproducedByProject'])
+        self.assertFalse(i['sameAtmosphereAdapterValidated'])
+        self.assertFalse(i['automaticProviderAdmission'])
+        self.assertIn('freeze_atmosphere_parameter_mapping_to_project_operational_atmosphere', i['requiredBeforeImplementation'])
+        self.assertIn('preregister_independent_directional_ground_validation', i['requiredBeforeImplementation'])
+
+    def test_kocifaj_candidate_is_fast_directional_baseline_not_final_accuracy_solution(self):
         k = self.c['candidateHierarchy']['KOCIFAJ_BARA_FALCHI_2022_ALL_SKY_KERNEL']
         self.assertEqual(k['doi'], '10.1093/mnrasl/slac029')
-        self.assertEqual(k['role'], 'PRIMARY_RESEARCH_CANDIDATE_FOR_DIRECTIONAL_TRANSFER_KERNEL')
+        self.assertEqual(k['role'], 'FAST_SEMI_ANALYTIC_DIRECTIONAL_RESEARCH_BASELINE_NOT_HIGH_ACCURACY_FINAL_PROVIDER')
+        self.assertEqual(k['publishedOverallDirectionalRadianceDeviationPercent'], [15, 25])
+        self.assertEqual(k['publishedExampleWavelengthsNm'], [450, 550])
+        self.assertFalse(k['terrainAndObstaclesIncludedInPublishedExamples'])
+        self.assertTrue(k['twoParameterShapeFunctionRequiresNumericalCorroborationOrCalibration'])
+        self.assertFalse(k['accuracyAdequateForFinalStarVisibilityProviderAlreadyEstablished'])
         self.assertFalse(k['automaticProviderAdmission'])
         self.assertIn('bind_upward_angular_emission_function', k['requiredBeforeImplementation'])
         self.assertIn('map_atmosphere_parameters_to_frozen_project_atmosphere_without_residual_tuning', k['requiredBeforeImplementation'])
 
     def test_other_models_keep_their_actual_scope(self):
         c = self.c['candidateHierarchy']
-        self.assertEqual(c['ILLUMINA_V2']['doi'], '10.1016/j.jqsrt.2018.02.033')
-        self.assertTrue(c['ILLUMINA_V2']['supportsHyperspectralModeling'])
-        self.assertFalse(c['ILLUMINA_V2']['automaticProviderAdmission'])
         self.assertEqual(c['KOLLATH_ET_AL_2021_MONTE_CARLO_VIIRS']['doi'], '10.3390/rs13183653')
         self.assertEqual(c['DURISCOE_ET_AL_2018_SIMPLIFIED_VIIRS']['doi'], '10.1016/j.jqsrt.2018.04.028')
         self.assertFalse(c['DURISCOE_ET_AL_2018_SIMPLIFIED_VIIRS']['eligibleForArbitraryTargetDirection'])
@@ -69,6 +91,7 @@ class ArtificialDirectionalProviderCandidateHierarchyV1Test(unittest.TestCase):
     def test_claims_remain_closed(self):
         c = self.c['claimBoundary']
         self.assertTrue(c['physicalDirectionalCandidateIdentified'])
+        self.assertTrue(c['preferredHighFidelityCandidateSelectedForEvaluationOnly'])
         self.assertFalse(c['implementationFrozen'])
         self.assertFalse(c['sameAtmosphereAdapterValidated'])
         self.assertFalse(c['empiricallyValidatedByThisProject'])

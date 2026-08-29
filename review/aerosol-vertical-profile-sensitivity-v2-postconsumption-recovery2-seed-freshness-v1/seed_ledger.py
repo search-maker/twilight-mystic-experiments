@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 SKELETON_PATH = ROOT / "review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py"
 ORDINAL41_LEDGER_PATH = ROOT / "review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py"
-ORDINAL42_LEDGER_PATH = ROOT / "review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py"
 EXPECTED_SKELETON_BLOB = "b4a4ab6917ad28f08d4980194f7b68f3961d5d59"
 EXPECTED_SKELETON_CANONICAL = "a8d2d8f59aec01d82d8d98672152d00c11261660b0a69a59e2716c2edabd2b02"
 EXPECTED_ORDINAL41_LEDGER_BLOB = "c757507b05074340507df1ca6e76d35b44cf6090"
@@ -50,14 +50,25 @@ def load_module(path: Path, name: str):
     return module
 
 
+def historical_ordinal42_ledger_path() -> Path:
+    raw = os.environ.get("AVPS_ORDINAL42_LEDGER_PATH", "").strip()
+    if not raw:
+        raise Refusal("AVPS_ORDINAL42_LEDGER_PATH is required; consumed ordinal-42 ledger must be validated at its native historical worktree path")
+    path = Path(raw).resolve()
+    if not path.is_file():
+        raise Refusal(f"historical ordinal-42 seed ledger not found at native path: {path}")
+    return path
+
+
 def consumed_seed_sets() -> tuple[set[int], set[int]]:
     if git_blob_sha1(ORDINAL41_LEDGER_PATH) != EXPECTED_ORDINAL41_LEDGER_BLOB:
         raise Refusal("ordinal-41 seed-ledger byte drift")
-    if git_blob_sha1(ORDINAL42_LEDGER_PATH) != EXPECTED_ORDINAL42_LEDGER_BLOB:
-        raise Refusal("ordinal-42 seed-ledger byte drift")
+    ordinal42_path = historical_ordinal42_ledger_path()
+    if git_blob_sha1(ordinal42_path) != EXPECTED_ORDINAL42_LEDGER_BLOB:
+        raise Refusal("ordinal-42 historical seed-ledger byte drift")
 
     ordinal41 = load_module(ORDINAL41_LEDGER_PATH, "avps_v2_consumed_ordinal41_seed_ledger").validate_ledger()
-    ordinal42 = load_module(ORDINAL42_LEDGER_PATH, "avps_v2_consumed_ordinal42_seed_ledger").validate_ledger()
+    ordinal42 = load_module(ordinal42_path, "avps_v2_consumed_ordinal42_seed_ledger_native_history").validate_ledger()
     if ordinal41.get("candidateSeedCanonicalSha256") != EXPECTED_ORDINAL41_SEED_CANONICAL:
         raise Refusal("ordinal-41 consumed seed canonical drift")
     if ordinal42.get("candidateSeedCanonicalSha256") != EXPECTED_ORDINAL42_SEED_CANONICAL:
@@ -144,6 +155,7 @@ def validate_ledger() -> dict[str, Any]:
         "overlapWithConsumedOrdinal41SeedCount": 0,
         "overlapWithConsumedOrdinal42SeedCount": 0,
         "allCollisionCountersZero": True,
+        "historicalOrdinal42LedgerValidatedAtNativePath": True,
         "trackedCandidateSeedLedger": False,
         "candidateSeedFreshnessProven": False,
         "candidateSeedsAppliedToCases": False,
@@ -165,4 +177,5 @@ if __name__ == "__main__":
         "candidateRowsCanonicalSha256": x["candidateRowsCanonicalSha256"],
         "overlapWithConsumedOrdinal41SeedCount": x["overlapWithConsumedOrdinal41SeedCount"],
         "overlapWithConsumedOrdinal42SeedCount": x["overlapWithConsumedOrdinal42SeedCount"],
+        "historicalOrdinal42LedgerValidatedAtNativePath": x["historicalOrdinal42LedgerValidatedAtNativePath"],
     }, sort_keys=True))

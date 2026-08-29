@@ -1,0 +1,165 @@
+name: Review AVPS v2 aggregator parity v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1
+    paths:
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/**
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact review head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Bind exact Draft PR, base and four-file scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1
+          test "$GITHUB_BASE_REF" = review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "${{ github.event.pull_request.draft }}" = true
+          test "${{ github.event.pull_request.state }}" = open
+          test "${{ github.event.pull_request.merged }}" = false
+          test "${{ github.event.pull_request.base.sha }}" = c5354ff5aa95669cefbd96c41c54d78e7a6a2f6f
+          git fetch origin "$GITHUB_BASE_REF"
+          test "$(git rev-parse origin/$GITHUB_BASE_REF)" = c5354ff5aa95669cefbd96c41c54d78e7a6a2f6f
+          mapfile -t CHANGED < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          test "${#CHANGED[@]}" = 4
+          printf '%s\n' "${CHANGED[@]}" | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1-review.yml
+          review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/PROTOCOL.md
+          review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py
+          review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/test_aggregator.py
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+
+      - name: Prove ordinal 41 remains allocated and undispatched
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/60/comments?per_page=100" > issue60.jsonl
+          python - <<'PY'
+          import json
+          rows=[]
+          for line in open('issue60.jsonl'):
+              value=json.loads(line)
+              rows.extend(value if isinstance(value,list) else [value])
+          bodies=[str(r.get('body') or '').strip() for r in rows]
+          allocation='ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604'
+          consumed='ORDINAL41_AVPS_V2_DISPATCH_CONSUMED'
+          if sum(b==allocation for b in bodies)!=1: raise SystemExit('expected exactly one ordinal-41 allocation marker')
+          if sum(b==consumed for b in bodies)!=0: raise SystemExit('ordinal 41 already consumed')
+          PY
+          if git ls-remote --exit-code --heads origin dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41 >/dev/null 2>&1; then
+            echo 'dispatch ref unexpectedly exists' >&2; exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100" > dispatch-runs.json
+          python - <<'PY'
+          import json
+          runs=json.load(open('dispatch-runs.json')).get('workflow_runs',[])
+          hits=[]
+          for r in runs:
+              text=' '.join(str(r.get(k) or '') for k in ('name','display_title','head_branch','head_sha'))
+              if 'aerosol-vertical-profile-sensitivity-v2' in text or 'avps v2' in text.lower(): hits.append(r)
+          if hits: raise SystemExit(f'unexpected prior AVPS v2 workflow_dispatch runs: {[r.get("id") for r in hits]}')
+          PY
+
+      - name: Run aggregator parity and refusal tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q pytest
+          python -m pytest -q review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/test_aggregator.py
+          python review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py > aggregator-review.json
+          python - <<'PY'
+          import json
+          r=json.load(open('aggregator-review.json'))
+          assert r['status']=='REVIEW_ONLY_V2_AGGREGATOR_PARITY_PASS_NO_SOLVER_RESULTS_CLOSED'
+          assert r['scientificOrdinal']==41 and r['caseCount']==360 and r['groupCount']==72
+          assert r['explicitFourSpeciesProfileRequiredPerCase'] is True
+          assert r['partialResultsMayBeInterpreted'] is False
+          assert r['resultOpeningAuthorized'] is False
+          assert r['solverExecutionPerformed'] is False
+          assert r['dispatchCreated'] is False
+          assert r['productionAuthorized'] is False
+          PY
+
+      - name: Static zero-runtime and boundary audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1
+          ! grep -R -n -E 'subprocess\.|Popen\(|os\.system\(|workflow_dispatch|gh api --method POST|git push' "$ROOT"/*.py
+          ! grep -R -n -E 'Taylor|Jerusalem|residual fit|productionAuthorized.: True|resultOpeningAuthorized.: True' "$ROOT"/aggregator.py
+          grep -q 'four-species.dat' "$ROOT"/aggregator.py
+          grep -q 'INSO WASO SOOT SUSO' "$ROOT"/aggregator.py
+          grep -q 'legacy aerosol_file transport present' "$ROOT"/aggregator.py
+          grep -q 'exact unique 360-case artifact universe required' "$ROOT"/aggregator.py
+
+      - name: Prove review itself is zero-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.load(open('aggregator-review.json'))
+          out={
+            'schemaVersion':1,
+            'status':'REVIEW_ONLY_V2_AGGREGATOR_PARITY_PASS_NO_SOLVER_RESULTS_CLOSED',
+            'headSha':os.environ['GITHUB_SHA'],
+            'baseSha':'c5354ff5aa95669cefbd96c41c54d78e7a6a2f6f',
+            'scientificOrdinal':41,
+            'authorizationHead':'d5f5e4d9d19d7ede573fecae68565a92baabbec3',
+            'caseCount':r['caseCount'],
+            'groupCount':r['groupCount'],
+            'explicitFourSpeciesProfileRequiredPerCase':True,
+            'resultOpeningAuthorized':False,
+            'dispatchCreated':False,
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+            'candidateSeedsSerialized':False,
+            'taylorOrJerusalemScoringPerformed':False,
+          }
+          Path('aggregator-parity-review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload aggregator parity review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-aggregator-parity-v1-review
+          path: |
+            aggregator-review.json
+            aggregator-parity-review.json
+            changed.txt
+          if-no-files-found: error
+          compression-level: 0

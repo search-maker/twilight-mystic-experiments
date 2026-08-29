@@ -1,0 +1,431 @@
+name: Review AVPS v2 recovery2 post-transport authorization control recovery
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - review/avps-v2-recovery2-posttransport-preauthorization-v1
+    paths:
+      - .github/workflows/avps-v2-recovery2-posttransport-authorization-control-recovery-v1-review.yml
+      - review/avps-v2-recovery2-posttransport-authorization-control-recovery-v1/PROTOCOL.md
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-recovery2-posttransport-auth-control-recovery-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_MAIN: e0f632013a5ded92203b3eeb3df083f5ea5d40fc
+      BASE_BRANCH: review/avps-v2-recovery2-posttransport-preauthorization-v1
+      BASE_HEAD: 318eb6e133650244c396c930c0d498c935ea3857
+      CONTROL_BRANCH: review/avps-v2-recovery2-posttransport-authorization-control-recovery-v1
+      FENCE_TOKEN: AVPS_V2_RECOVERY2_POSTTRANSPORT_AUTH_CONTROL_RECOVERY_GLOBAL_SCAN_V1
+      FAILED_CONTROL_PR: '645'
+      FAILED_CONTROL_HEAD: 06ad291093e5179d17981d6a8b89c7e7ecc6100d
+      FAILED_CONTROL_RUN: '33266397565'
+      SEED_PR: '639'
+      SEED_HEAD: 12b6b80853b41d768e220772d3a93cf5a7a6ed54
+      SEED_RUN: '33260810647'
+      SEED_ARTIFACT: '9717283554'
+      SEED_DIGEST: sha256:0295c1e76e68f4436430a7b01bce5fa1138c15cb4a4061cd227c56620a00b89a
+      PREAUTH_PR: '644'
+      PREAUTH_HEAD: 318eb6e133650244c396c930c0d498c935ea3857
+      PREAUTH_RUN: '33265595046'
+      PREAUTH_ARTIFACT: '9718710154'
+      PREAUTH_DIGEST: sha256:e0eb535df7780308404a79736d9c2a42bcb3af9e0dcf9bc5431cd1757eaa28d6
+      PREAUTH_GENERIC_RUN: '33265595019'
+      TRANSPORT_PR: '643'
+      TRANSPORT_HEAD: 6f22ffa543e31cc9de6f3245e3bd1bd1db8e9534
+      TRANSPORT_MERGE: e0f632013a5ded92203b3eeb3df083f5ea5d40fc
+      TRANSPORT_HELPER_BLOB: 2df2c3fd1ffa78e16f44e6825d67b3e82e903c1e
+      ORDINAL41_RUN: '33236295233'
+      ORDINAL42_RUN: '33259899524'
+      ORDINAL42_AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+      ORDINAL42_LEDGER_BLOB: 491d1b6653bea0fcc5275269723a76aa1af52300
+      CANDIDATE_SEED_CANONICAL: 38c074fe01bd6d09fa7dc78af1ad323e2f42b606ca992c2950b8fc1f5b343a9f
+      CANDIDATE_ROWS_CANONICAL: a88b28dcfaaeb354f294d1705a0f8ddbcd061083f277a038ab8c9dace44d9954
+      ORDINAL41_SEED_CANONICAL: 02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2
+      ORDINAL42_SEED_CANONICAL: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact recovery identity and immutable prerequisites
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.action }}" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$CONTROL_BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = "$BASE_BRANCH"
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_HEAD"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git fetch origin main "$BASE_BRANCH"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          test "$(git rev-parse origin/$BASE_BRANCH)" = "$BASE_HEAD"
+          git merge-base --is-ancestor "$BASE_HEAD" "$PR_HEAD"
+          test -z "$(command -v uvspec || true)"
+
+          git diff --name-only "$BASE_HEAD...$PR_HEAD" | sort > changed-paths.txt
+          python - <<'PY'
+          from pathlib import Path
+          expected={
+            '.github/workflows/avps-v2-recovery2-posttransport-authorization-control-recovery-v1-review.yml',
+            'review/avps-v2-recovery2-posttransport-authorization-control-recovery-v1/PROTOCOL.md',
+          }
+          got={x for x in Path('changed-paths.txt').read_text().splitlines() if x}
+          if got != expected:
+              raise SystemExit(f'exact two-file recovery scope required; got {sorted(got)}')
+          PY
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > current-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$FAILED_CONTROL_PR" > failed-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_CONTROL_RUN" > failed-run.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('current-pr.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None:
+              raise SystemExit('recovery control PR must remain Draft/open/unmerged')
+          if p['head']['sha']!=os.environ['PR_HEAD'] or p['base']['sha']!=os.environ['BASE_HEAD']:
+              raise SystemExit('recovery control PR identity drift')
+          fp=json.load(open('failed-pr.json')); fr=json.load(open('failed-run.json'))
+          if fp['head']['sha']!=os.environ['FAILED_CONTROL_HEAD']:
+              raise SystemExit('failed predecessor PR head drift')
+          if fr['id']!=int(os.environ['FAILED_CONTROL_RUN']) or fr['head_sha']!=os.environ['FAILED_CONTROL_HEAD'] or fr['run_attempt']!=1 or fr['status']!='completed' or fr['conclusion']!='failure':
+              raise SystemExit('failed predecessor run identity drift')
+          PY
+
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-science-transport-v1/native_authorization_seed_transport.py)" = "$TRANSPORT_HELPER_BLOB"
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-seed-freshness-v1/seed_ledger.py)" = d4bdc95e9ed576fa6c70711c81d8097ddab33dbf
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-seed-freshness-v1/repository_global_seed_scan.py)" = 0f28c2f242c99736089f74c47b43853fa8ccd8eb
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+          test "$(git rev-parse HEAD:review/avps-v2-recovery2-posttransport-preauthorization-v1/preauthorize.py)" = 7220b9c52cb23a66b6b93320f37b6fc2d55bf986
+
+          for spec in \
+            "$SEED_PR:$SEED_HEAD:$SEED_RUN:$SEED_ARTIFACT:$SEED_DIGEST" \
+            "$PREAUTH_PR:$PREAUTH_HEAD:$PREAUTH_RUN:$PREAUTH_ARTIFACT:$PREAUTH_DIGEST"; do
+            IFS=: read -r pr head run artifact digest_algo digest_hex <<< "$spec"
+            digest="$digest_algo:$digest_hex"
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" > proof-pr.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" > proof-run.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" > proof-artifact.json
+            WANT_HEAD="$head" WANT_RUN="$run" WANT_ARTIFACT="$artifact" WANT_DIGEST="$digest" python - <<'PY'
+          import json,os
+          p=json.load(open('proof-pr.json')); r=json.load(open('proof-run.json')); a=json.load(open('proof-artifact.json'))
+          if p['head']['sha']!=os.environ['WANT_HEAD']: raise SystemExit('proof PR head drift')
+          if r['id']!=int(os.environ['WANT_RUN']) or r['head_sha']!=os.environ['WANT_HEAD'] or r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='success': raise SystemExit('proof run drift')
+          if a['id']!=int(os.environ['WANT_ARTIFACT']) or a.get('digest')!=os.environ['WANT_DIGEST'] or a.get('expired') is not False: raise SystemExit('proof artifact drift')
+          PY
+          done
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREAUTH_GENERIC_RUN" > preauth-generic.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$TRANSPORT_PR" > transport-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL41_RUN" > ordinal41-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL42_RUN" > ordinal42-run.json
+          python - <<'PY'
+          import json,os
+          g=json.load(open('preauth-generic.json')); t=json.load(open('transport-pr.json'))
+          r41=json.load(open('ordinal41-run.json')); r42=json.load(open('ordinal42-run.json'))
+          if g['id']!=int(os.environ['PREAUTH_GENERIC_RUN']) or g['head_sha']!=os.environ['PREAUTH_HEAD'] or g['run_attempt']!=1 or g['conclusion']!='success': raise SystemExit('preauthorization generic contract drift')
+          if not t.get('merged') or t['head']['sha']!=os.environ['TRANSPORT_HEAD'] or t.get('merge_commit_sha')!=os.environ['TRANSPORT_MERGE']: raise SystemExit('native transport merge drift')
+          for r,n in ((r41,41),(r42,42)):
+              if r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='failure': raise SystemExit(f'consumed ordinal-{n} identity drift')
+          PY
+          mkdir -p control-evidence
+          git ls-files -z > control-evidence/tracked-files.nul
+
+      - name: Rebuild candidate ledger at native historical ordinal-42 path
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$ORDINAL42_AUTH_HEAD^{commit}"
+          HIST="$RUNNER_TEMP/avps-ordinal42-native-recovery"
+          rm -rf "$HIST"
+          git worktree add --detach "$HIST" "$ORDINAL42_AUTH_HEAD"
+          test "$(git -C "$HIST" rev-parse HEAD)" = "$ORDINAL42_AUTH_HEAD"
+          test "$(git -C "$HIST" rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = "$ORDINAL42_LEDGER_BLOB"
+          AVPS_ORDINAL42_LEDGER_PATH="$HIST/review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py"
+          export AVPS_ORDINAL42_LEDGER_PATH
+          echo "AVPS_ORDINAL42_LEDGER_PATH=$AVPS_ORDINAL42_LEDGER_PATH" >> "$GITHUB_ENV"
+
+          python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-seed-freshness-v1/seed_ledger.py')
+          s=importlib.util.spec_from_file_location('avps_recovery2_control_recovery_seed_ledger',p)
+          if s is None or s.loader is None: raise SystemExit('cannot import recovery2 seed ledger')
+          m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          x=m.validate_ledger()
+          expected={
+            'candidateSeedCount':72,
+            'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['CANDIDATE_ROWS_CANONICAL'],
+            'consumedOrdinal41SeedCanonicalSha256':os.environ['ORDINAL41_SEED_CANONICAL'],
+            'consumedOrdinal42SeedCanonicalSha256':os.environ['ORDINAL42_SEED_CANONICAL'],
+            'overlapWithConsumedOrdinal41SeedCount':0,
+            'overlapWithConsumedOrdinal42SeedCount':0,
+            'historicalOrdinal42LedgerValidatedAtNativePath':True,
+          }
+          for k,v in expected.items():
+              if x.get(k)!=v: raise SystemExit(f'recovery2 candidate ledger drift {k}: {x.get(k)!r} != {v!r}')
+          if len(set(int(v) for v in x.get('candidateSeeds',[]))) != 72: raise SystemExit('candidate seed uniqueness/cardinality drift')
+          Path('candidate-ledger.TEMP.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          Path('empty-policy.TEMP.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list control-evidence/tracked-files.nul \
+            --candidate-seed-ledger candidate-ledger.TEMP.json \
+            --allow-self-ledger-json empty-policy.TEMP.json \
+            --output control-evidence/tracked-seed-scan.json
+          python - <<'PY'
+          import json
+          x=json.load(open('control-evidence/tracked-seed-scan.json'))
+          if x.get('trackedTreeExternalCollisionCount') != 0 or x.get('exactHeadTrackedTreeByteScanPassed') is not True:
+              raise SystemExit('control-head tracked-tree seed collision/refusal')
+          PY
+
+      - name: Require write-quiet fence and exact-head sibling quiescence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('issue60-pages.json')); rows=[r for page in pages for r in page]
+          wanted=f"WRITE_QUIET_BEGIN | {os.environ['FENCE_TOKEN']} | branch={os.environ['CONTROL_BRANCH']} | head={os.environ['PR_HEAD']}"
+          matches=[r for r in rows if str(r.get('body') or '').startswith(wanted)]
+          if len(matches)!=1: raise SystemExit(f'exact recovery write-quiet begin required once; found {len(matches)}')
+          end=f"WRITE_QUIET_END | {os.environ['FENCE_TOKEN']}"
+          if any(str(r.get('body') or '').startswith(end) and f"head={os.environ['PR_HEAD']}" in str(r.get('body') or '') for r in rows):
+              raise SystemExit('recovery fence already ended before review')
+          PY
+
+          settled=0
+          for _ in $(seq 1 60); do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$PR_HEAD&per_page=100" > sibling-runs.json
+            if python - <<'PY'
+          import json,os,sys
+          current=int(os.environ['GITHUB_RUN_ID'])
+          rows=json.load(open('sibling-runs.json')).get('workflow_runs',[])
+          pending=[(r.get('id'),r.get('name'),r.get('status')) for r in rows if int(r.get('id') or 0)!=current and r.get('status')!='completed']
+          if pending:
+              print('pending exact-head sibling workflows:',pending); sys.exit(1)
+          PY
+            then settled=1; break; fi
+            sleep 10
+          done
+          test "$settled" = 1
+          sleep 20
+          git fetch origin main "$BASE_BRANCH"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          test "$(git rev-parse origin/$BASE_BRANCH)" = "$BASE_HEAD"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+
+      - name: Fresh repository-global seed and dynamic global-ordinal fences
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-seed-freshness-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger candidate-ledger.TEMP.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "$CONTROL_BRANCH" \
+            --expected-repo-head "$PR_HEAD" \
+            --output control-evidence/repository-global-seed-recheck.json
+
+          python - <<'PY'
+          import importlib.util,json,os,re,sys
+          from pathlib import Path
+          seed=json.load(open('control-evidence/repository-global-seed-recheck.json'))
+          expected={
+            'auditMode':'authorization-recheck','candidateSeedCount':72,'repositoryGlobalCollisionCount':0,
+            'repositoryGlobalCollisionSurfaceScanPassed':True,'repositoryGlobalDoubleEnumerationStable':True,
+            'auditedBranchName':os.environ['CONTROL_BRANCH'],'repositoryHeadExpected':os.environ['PR_HEAD'],
+            'auditedBranchHeadShaObserved':os.environ['PR_HEAD'],'auditedBranchHeadMatchesRepositoryHead':True,
+            'repositoryGlobalPostFenceCandidateSeedCollisionCount':0,
+          }
+          for k,v in expected.items():
+              if seed.get(k)!=v: raise SystemExit(f'authorization-control recovery seed surface drift {k}: {seed.get(k)!r} != {v!r}')
+          for k in ('repositoryGlobalStableContextSha256','repositoryGlobalSnapshotFenceSha256'):
+              if re.fullmatch(r'[0-9a-f]{64}',str(seed.get(k) or '')) is None: raise SystemExit(f'malformed {k}')
+
+          p=Path('review/avps-v2-recovery2-posttransport-preauthorization-v1/preauthorize.py')
+          s=importlib.util.spec_from_file_location('avps_recovery2_posttransport_control_recovery_preauth',p)
+          if s is None or s.loader is None: raise SystemExit('cannot import post-transport preauthorization module')
+          m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          m.PREAUTH_BRANCH=os.environ['CONTROL_BRANCH']; m.BASE_MAIN=os.environ['BASE_MAIN']
+          _,payload=m.collect_payload(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
+          ordinal=m.ordinal_surface(payload,int(os.environ['GITHUB_RUN_ID']))
+          observations=ordinal.pop('observations')
+          if ordinal['latestConsumedScientificOrdinal'] != 42: raise SystemExit('latest consumed ordinal drift')
+          if ordinal['occupiedMaxScientificOrdinal'] < 42: raise SystemExit('occupied ordinal surface regressed')
+          if ordinal['nextAvailableScientificOrdinal'] != ordinal['occupiedMaxScientificOrdinal'] + 1: raise SystemExit('dynamic successor rule failed')
+          if ordinal['nextAvailableScientificOrdinal'] <= 42: raise SystemExit('fresh successor is not newer than consumed ordinal 42')
+          Path('control-evidence/ordinal-surface.json').write_text(json.dumps(ordinal,indent=2,sort_keys=True)+'\n')
+          Path('control-evidence/ordinal-observations.json').write_text(json.dumps(observations,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Materialize fresh authorization proposal as artifact only
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          seed=json.load(open('control-evidence/repository-global-seed-recheck.json'))
+          ordinal=json.load(open('control-evidence/ordinal-surface.json'))
+          n=int(ordinal['nextAvailableScientificOrdinal'])
+          auth_branch=str(ordinal['authorizationBranch']); dispatch_branch=str(ordinal['dispatchBranch'])
+          expected_auth=f'authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-ordinal-{n}'
+          expected_dispatch=f'dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-ordinal-{n}'
+          if auth_branch!=expected_auth or dispatch_branch!=expected_dispatch: raise SystemExit('derived ref-name drift')
+          profiles={
+            'opac-profile-antarctic':'ee063c6dca68cf9a31d8bb9d993f1fed5cb34c8bb056ac180c97171b5d6b4f19',
+            'opac-profile-arctic':'98f2fa5428c830764252fd0a2662b0f5c957fc027ffcb7bdc0a5e500dfd7d3d6',
+            'opac-profile-continental-average':'ceed598f7681951cd0e6208b267beb5b41a52ab10311f37ce76f925700caff3d',
+            'opac-profile-desert':'2b4d2e03c6ae3143d9bb05d2da49f57f75172dc1f24d34f7d4a4939bf9952fef',
+            'opac-profile-maritime-clean':'487b67bd7dbe89d12d032fdf2b33cab545e16a2e0697170648317f1a76362a67',
+          }
+          a={
+            'schemaVersion':3,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2',
+            'recoveryStageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2',
+            'status':'AUTHORIZED_POSTCONSUMPTION_RECOVERY2_PENDING_SEPARATE_ALLOCATION_AND_DISPATCH',
+            'scientificOrdinal':n,
+            'nextOrdinalHardCoded':False,
+            'consumedPredecessors':[
+              {'scientificOrdinal':41,'runId':33236295233,'runAttempt':1,'failureClass':'PRE_SOLVER_RUNTIME_SUPPORT_TRANSPORT_OMISSION_NO_SCIENTIFIC_RESULT','reusable':False},
+              {'scientificOrdinal':42,'runId':33259899524,'runAttempt':1,'failureClass':'PRE_SOLVER_RELOCATED_SEED_LEDGER_PATH_CONTEXT_NO_SCIENTIFIC_RESULT','reusable':False},
+            ],
+            'authorizationBranch':auth_branch,
+            'dispatchBranch':dispatch_branch,
+            'executionKey':f'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2:numerical:{n}',
+            'exactAuthorizationParentCommit':os.environ['PR_HEAD'],
+            'exactAuthorizationCommit':None,
+            'reviewPackageMainSha':os.environ['BASE_MAIN'],
+            'seedReviewPr':int(os.environ['SEED_PR']),'seedReviewHead':os.environ['SEED_HEAD'],'seedReviewRunId':int(os.environ['SEED_RUN']),'seedReviewArtifactId':int(os.environ['SEED_ARTIFACT']),'seedReviewArtifactDigest':os.environ['SEED_DIGEST'],
+            'postTransportPreauthorizationPr':int(os.environ['PREAUTH_PR']),'postTransportPreauthorizationHead':os.environ['PREAUTH_HEAD'],'postTransportPreauthorizationRunId':int(os.environ['PREAUTH_RUN']),'postTransportPreauthorizationArtifactId':int(os.environ['PREAUTH_ARTIFACT']),'postTransportPreauthorizationArtifactDigest':os.environ['PREAUTH_DIGEST'],'postTransportPreauthorizationGenericContractRunId':int(os.environ['PREAUTH_GENERIC_RUN']),
+            'nativeScienceTransportPr':int(os.environ['TRANSPORT_PR']),'nativeScienceTransportHead':os.environ['TRANSPORT_HEAD'],'nativeScienceTransportMergeCommit':os.environ['TRANSPORT_MERGE'],'nativeScienceTransportHelperGitBlobSha1':os.environ['TRANSPORT_HELPER_BLOB'],
+            'failedControlPr':int(os.environ['FAILED_CONTROL_PR']),'failedControlHead':os.environ['FAILED_CONTROL_HEAD'],'failedControlRunId':int(os.environ['FAILED_CONTROL_RUN']),
+            'scienceTransportImplementationRequiredBeforeDispatch':False,
+            'nativeHistoricalOrdinal42LedgerRequired':True,
+            'candidateSeedCount':72,
+            'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['CANDIDATE_ROWS_CANONICAL'],
+            'consumedOrdinal41SeedCanonicalSha256':os.environ['ORDINAL41_SEED_CANONICAL'],
+            'consumedOrdinal42SeedCanonicalSha256':os.environ['ORDINAL42_SEED_CANONICAL'],
+            'candidateSeedValuesIncluded':False,
+            'candidateSeedsAppliedToTrackedCases':False,
+            'candidateSeedsAuthorizedForLaterInMemoryApplication':True,
+            'freshAuthorizationSeedStableContextSha256':seed['repositoryGlobalStableContextSha256'],
+            'freshAuthorizationSeedSnapshotFenceSha256':seed['repositoryGlobalSnapshotFenceSha256'],
+            'freshAuthorizationOrdinalObservationsCanonicalSha256':ordinal['ordinalObservationsCanonicalSha256'],
+            'exactFourSpeciesProfileSha256':profiles,
+            'fourAliasDataTreeSha256':'5e1814dd36cf861fd85477a97607299248f8272268df7bf428d31bbb6aa4354a',
+            'lockedLibRadtranPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'baseDataTreeSha256':'ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7',
+            'archiveStagedDataTreeSha256':'5d8bbf8e6b91ec3d405dee36f21a94afbb6e5ec6cd67da2dd5dd541738199d80',
+            'officialOptpropArchiveSha256':'11daa1f1f4be0fd4ddf7e881ec2005498049674a1540d37b4b1e8f5e16052c7e',
+            'afglUsSha256':'dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5',
+            'restoredRhAuditDependencyGitBlobSha1':'095ff86f12a79dc312a51f734b0a03bd318f2337',
+            'caseCount':360,'commonRandomNumberGroupCount':72,'statesPerGroup':5,'photonHistoriesPerCase':20000000,
+            'frozenScientificDesignChanged':False,
+            'scientificExecutionAuthorized':True,'solverExecutionAuthorized':True,
+            'dispatchAuthorized':False,'automaticDispatch':False,'consumed':False,
+            'resultOpeningAuthorized':False,'levelBOpeningAuthorized':False,'protectedHoldoutOpeningAuthorized':False,
+            'productionAuthorized':False,'taylorOrJerusalemFitAuthorized':False,
+            'githubRerunAllowed':False,'retryAllowed':False,'resumeAllowed':False,'workflowRunAttemptRequired':1,
+          }
+          raw=json.dumps(a,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          a['authorizationDocumentContentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('control-evidence/authorization.json').write_text(json.dumps(a,indent=2,sort_keys=True)+'\n')
+          receipt={
+            'schemaVersion':1,
+            'status':'PASS_RECOVERY2_POSTTRANSPORT_AUTHORIZATION_CONTROL_RECOVERY_PROPOSAL_NOT_ALLOCATED_NOT_DISPATCHED',
+            'controlHead':os.environ['PR_HEAD'],
+            'scientificOrdinalProposed':n,
+            'nextOrdinalHardCoded':False,
+            'authorizationBranchProposed':auth_branch,
+            'dispatchBranchProposed':dispatch_branch,
+            'authorizationJsonSha256':hashlib.sha256(Path('control-evidence/authorization.json').read_bytes()).hexdigest(),
+            'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['CANDIDATE_ROWS_CANONICAL'],
+            'failedControlRunId':int(os.environ['FAILED_CONTROL_RUN']),
+            'scientificOrdinalAllocated':False,'authorizationBranchCreated':False,'dispatchCreated':False,
+            'scientificRuntimeSetupPerformed':False,'solverExecutionPerformed':False,'resultOpeningPerformed':False,
+            'levelBOpened':False,'protectedHoldoutOpened':False,'productionAuthorized':False,'taylorOrJerusalemUsed':False,
+          }
+          raw=json.dumps(receipt,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          receipt['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('control-evidence/control-review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+          rm -f candidate-ledger.TEMP.json empty-policy.TEMP.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-recovery2-posttransport-authorization-control-recovery-v1
+          path: control-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Final refusal-boundary check
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main "$BASE_BRANCH"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          test "$(git rev-parse origin/$BASE_BRANCH)" = "$BASE_HEAD"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test -z "$(command -v uvspec || true)"
+          python - <<'PY'
+          import json
+          r=json.load(open('control-evidence/control-review-receipt.json'))
+          for k in ('scientificOrdinalAllocated','authorizationBranchCreated','dispatchCreated','scientificRuntimeSetupPerformed','solverExecutionPerformed','resultOpeningPerformed','levelBOpened','protectedHoldoutOpened','productionAuthorized','taylorOrJerusalemUsed'):
+              if r.get(k) is not False: raise SystemExit('control boundary crossed: '+k)
+          PY
+
+      - name: Remove historical detached worktree
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree remove --force "$RUNNER_TEMP/avps-ordinal42-native-recovery" 2>/dev/null || true

@@ -37,18 +37,26 @@ class LunarTopocentricGeometryAndFiniteDiskSensitivityV1Test(unittest.TestCase):
         self.assertTrue(d['resolvedLunarRadianceMapRequiredForPhysicalDiskIntegration'])
         self.assertFalse(d['uniformDiskMayBeUsedAsPhysicalTruthWithoutSeparateJustification'])
 
-    def test_primary_sources_distinguish_irradiance_from_experimental_resolved_model(self):
+    def test_primary_sources_distinguish_operational_irradiance_from_unqualified_resolved_models(self):
         p = self.c['primarySourceEvidence']
         self.assertEqual(p['kiefferStone2005']['doi'], '10.1086/430185')
         self.assertEqual(p['stoneKiefferBecker2003']['doi'], '10.1117/12.506117')
+        self.assertEqual(p['satoEtAl2014LrocWac']['doi'], '10.1002/2013JE004580')
         self.assertIn('disk-integrated irradiance', p['kiefferStone2005']['relevance'])
         self.assertIn('experimental', p['stoneKiefferBecker2003']['relevance'])
+        self.assertIn('reliable radiance model is operational', p['usgsInstrumentTeamsCurrent']['relevance'])
+        self.assertIn('seven bands', p['satoEtAl2014LrocWac']['relevance'])
 
     def test_result_blind_33_direction_sensitivity_grid_is_frozen(self):
         q = self.c['preregisteredSensitivitySampling']
         self.assertEqual(q['sampleRadiiInLunarRadius'], [0.0, 0.5, 1.0])
         self.assertEqual(q['azimuthSamplesPerNonzeroRing'], 16)
         self.assertEqual(q['azimuthStepDeg'], 22.5)
+        self.assertEqual(q['azimuthOriginDefinition'], 'tangent direction from Moon center toward local zenith')
+        self.assertTrue(q['targetDirectionHeldFixedInOriginalMoonCenterLocalFrame'])
+        self.assertTrue(q['targetRelativeAzimuthRecomputedForEveryOffsetSource'])
+        self.assertTrue(q['sourceAzimuthRotatedBackToZeroBeforeMYSTICRendering'])
+        self.assertTrue(q['angularRadiusInputMustBeDerivedFromFrozenObserverMoonDistanceBeforeSampling'])
         self.assertEqual(q['totalDirectionalRunsPerAtmosphereTargetWavelengthConfiguration'], 33)
         self.assertTrue(q['sameAtmosphereTargetAndSpectralSourceRequiredAcrossAllDirections'])
         self.assertTrue(q['samePhotonBudgetPerDirectionRequired'])
@@ -68,8 +76,21 @@ class LunarTopocentricGeometryAndFiniteDiskSensitivityV1Test(unittest.TestCase):
         self.assertIn('min_disk(K)', k['exactContinuousSupportBoundIfKernelExtremaKnown'])
         self.assertIn('max_disk(K)', k['exactContinuousSupportBoundIfKernelExtremaKnown'])
 
-    def test_resolved_disk_candidate_can_only_supply_normalized_angular_weights(self):
+    def test_resolved_disk_model_remains_unadmitted_and_may_only_supply_qualified_normalized_weights(self):
         r = self.c['resolvedDiskWeightingPath']
+        self.assertIsNone(r['currentAdmittedResolvedBrightnessModel'])
+        self.assertEqual(
+            r['historicalUsgsRoloResolvedRadianceClassification'],
+            'EXPERIMENTAL_NOT_ADMITTED_AS_PHYSICAL_DISK_TRUTH',
+        )
+        self.assertFalse(r['historicalUsgsRoloResolvedRadianceOperational'])
+        self.assertIn('experimental', r['historicalUsgsRoloResolvedRadianceReason'])
+        self.assertIn('reliable operational radiance model', r['historicalUsgsRoloResolvedRadianceReason'])
+        self.assertEqual(
+            r['lrocWacSato2014Classification'],
+            'RESEARCH_CANDIDATE_REQUIRES_SPECTRAL_GEOMETRIC_AND_ABSOLUTE_NORMALIZATION_QUALIFICATION',
+        )
+        self.assertFalse(r['lrocWacSato2014MayBeUsedAsPhysicalWeightsWithoutQualification'])
         self.assertFalse(r['candidateAbsoluteScaleMayReplaceDiskIntegratedRolo'])
         self.assertTrue(r['candidateUsedForRelativeAngularWeightsOnly'])
         self.assertFalse(r['negativeResolvedWeightsAllowed'])

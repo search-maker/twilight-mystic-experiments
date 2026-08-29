@@ -1,0 +1,194 @@
+name: Review AVPS v2 publisher trigger bridge v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/avps-v2-publisher-trigger-bridge.yml
+      - .github/workflows/avps-v2-publisher-trigger-bridge-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-publisher-trigger-bridge-v1/**
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: review-avps-v2-publisher-trigger-bridge-v1-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact review identity and three-file scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = 38bb4ec95f35a44478976c6d6434f88bd83419cb
+          test "${{ github.event.pull_request.head.ref }}" = review/aerosol-vertical-profile-sensitivity-v2-publisher-trigger-bridge-v1
+          test "${{ github.event.pull_request.draft }}" = true
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = 38bb4ec95f35a44478976c6d6434f88bd83419cb
+          git diff --name-only 38bb4ec95f35a44478976c6d6434f88bd83419cb...$GITHUB_SHA | sort > changed-paths.txt
+          python - <<'PY'
+          from pathlib import Path
+          got={x for x in Path('changed-paths.txt').read_text().splitlines() if x}
+          expected={
+            '.github/workflows/avps-v2-publisher-trigger-bridge.yml',
+            '.github/workflows/avps-v2-publisher-trigger-bridge-v1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-publisher-trigger-bridge-v1/PROTOCOL.md',
+          }
+          if got != expected:
+              raise SystemExit(f'exact three-file bridge scope required: got {sorted(got)}')
+          PY
+
+      - name: Static review bridge as zero-runtime single-target transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          p=Path('.github/workflows/avps-v2-publisher-trigger-bridge.yml')
+          text=p.read_text(encoding='utf-8')
+          required=[
+            'dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-ordinal-41-publisher-v1',
+            'dispatch-triggers/avps-v2-ordinal41-publisher-v1.txt',
+            'PUBLISHER_WORKFLOW: avps-v2-dispatch-publisher.yml',
+            'PUBLISHER_SHA256: e702518a88cdf9f88e00ec9b1021ea9d023dbb2e90dbe48443bfd667b2319478',
+            'actions: write',
+            'contents: read',
+            'publisher workflow already has a workflow_dispatch run; bridge refuses duplicate request',
+            'actions/workflows/$PUBLISHER_WORKFLOW/dispatches',
+            '-f ref=main',
+            'persist-credentials: false',
+          ]
+          for token in required:
+              if token not in text:
+                  raise SystemExit(f'missing required bridge token: {token}')
+          if text.count('--method POST') != 1:
+              raise SystemExit('bridge must contain exactly one POST')
+          post_lines=[line.strip() for line in text.splitlines() if '--method POST' in line]
+          if len(post_lines)!=1 or 'actions/workflows/$PUBLISHER_WORKFLOW/dispatches' not in post_lines[0]:
+              raise SystemExit(f'POST target drift: {post_lines}')
+          forbidden=[
+            'git/refs',
+            'issues/60/comments',
+            'avps-v2-science.yml/dispatches',
+            'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'ORDINAL41_AVPS_V2_DISPATCH_CONSUMED',
+            'rubin-libradtran',
+            'optprop_v2.1.tar.gz',
+            'uvspec ',
+            'uvspec\n',
+            'mystic',
+            'contents: write',
+            'issues: write',
+          ]
+          low=text.lower()
+          for token in forbidden:
+              if token.lower() in low:
+                  raise SystemExit(f'forbidden direct science/publisher-bypass token in bridge: {token}')
+          if not re.search(r'on:\s*\n\s*push:', text):
+              raise SystemExit('bridge must be push-triggered only')
+          if 'workflow_dispatch:' in text:
+              raise SystemExit('bridge itself must not expose workflow_dispatch')
+          PY
+
+      - name: Rebind live authorization and publisher state without mutation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = 38bb4ec95f35a44478976c6d6434f88bd83419cb
+          python - <<'PY'
+          import hashlib, subprocess
+          raw=subprocess.check_output(['git','show','origin/main:.github/workflows/avps-v2-dispatch-publisher.yml'])
+          got=hashlib.sha256(raw).hexdigest()
+          want='e702518a88cdf9f88e00ec9b1021ea9d023dbb2e90dbe48443bfd667b2319478'
+          if got!=want:
+              raise SystemExit(f'publisher SHA-256 drift: {got}')
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/pulls/604" > auth-pr.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-dispatch-publisher.yml/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > publisher-run-ids.txt
+          python - <<'PY'
+          import json
+          p=json.load(open('auth-pr.json'))
+          if p['number']!=604 or p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('authorization PR #604 state drift')
+          if p['head']['sha']!='d5f5e4d9d19d7ede573fecae68565a92baabbec3' or p['base']['sha']!='b3d562222a38fc9d1ff5d218886afdda72c37fa2':
+              raise SystemExit('authorization PR #604 identity drift')
+          pages=json.load(open('issue60-pages.json'))
+          bodies=[str(c.get('body') or '').strip() for page in pages for c in page]
+          allocation='ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604'
+          if sum(b==allocation for b in bodies)!=1:
+              raise SystemExit('ordinal-41 allocation marker cardinality drift')
+          if any(b.startswith('ORDINAL41_AVPS_V2_DISPATCH_CONSUMED') for b in bodies):
+              raise SystemExit('ordinal 41 already consumed')
+          PY
+          if git ls-remote --exit-code --heads origin dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41 >/dev/null 2>&1; then
+            echo 'ordinal-41 dispatch ref already exists' >&2
+            exit 1
+          fi
+          if test -s publisher-run-ids.txt; then
+            echo 'publisher workflow already has a workflow_dispatch run' >&2
+            cat publisher-run-ids.txt >&2
+            exit 1
+          fi
+
+      - name: Emit solver-free bridge review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-publisher-trigger-bridge-v1',
+            'status':'PASS_ZERO_RUNTIME_SINGLE_TARGET_PUBLISHER_TRIGGER_BRIDGE_NOT_ACTIVATED',
+            'reviewHead':os.environ['GITHUB_SHA'],
+            'reviewBase':'38bb4ec95f35a44478976c6d6434f88bd83419cb',
+            'scientificOrdinal':41,
+            'authorizationHead':'d5f5e4d9d19d7ede573fecae68565a92baabbec3',
+            'publisherWorkflow':'avps-v2-dispatch-publisher.yml',
+            'publisherSha256':'e702518a88cdf9f88e00ec9b1021ea9d023dbb2e90dbe48443bfd667b2319478',
+            'bridgeSha256':hashlib.sha256(Path('.github/workflows/avps-v2-publisher-trigger-bridge.yml').read_bytes()).hexdigest(),
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+            'publisherWorkflowDispatchRequested':False,
+            'dispatchRefCreated':False,
+            'consumedMarkerPosted':False,
+            'scienceWorkflowDispatched':False,
+            'resultsOpened':False,
+            'levelBOpened':False,
+            'productionAuthorized':False,
+          }
+          Path('bridge-review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-publisher-trigger-bridge-v1-review
+          path: |
+            bridge-review-receipt.json
+            changed-paths.txt
+            publisher-run-ids.txt
+          if-no-files-found: error
+          compression-level: 0

@@ -52,6 +52,28 @@ class NightBackgroundSourceAdmissionV1Test(unittest.TestCase):
         self.assertFalse(a['mayTuneFromTaylorOrJerusalemResiduals'])
         self.assertTrue(a['validationRequiresMoonlessDirectionalMeasurementsAcrossMultipleNights'])
 
+    def test_palace_is_dynamic_spectral_paranal_airglow_not_global_or_toa_truth(self):
+        p = self.c['naturalNight']['sourceSemantics']['palace2025']
+        self.assertIn('10.5194/gmd-18-4353-2025', p['citation'])
+        self.assertEqual(p['releaseDoi'], '10.5281/zenodo.14064022')
+        self.assertEqual(p['validWavelengthRangeUm'], [0.3, 2.5])
+        self.assertEqual(p['modelContents']['chemicalSpecies'], 9)
+        self.assertEqual(p['modelContents']['emissionLines'], 26541)
+        self.assertEqual(p['modelContents']['continuumComponents'], 3)
+        self.assertEqual(p['modelContents']['variabilityClasses'], 23)
+        self.assertEqual(p['xshooterCentered27DayF107TrainingRangeSfu'], [67, 166])
+        self.assertEqual(set(p['dynamicInputs']), {'month', 'local_mean_solar_time', 'centered_27_day_F10_7', 'zenith_angle', 'pwv'})
+        self.assertTrue(p['providesResidualVariability'])
+        self.assertTrue(p['atmosphericAbsorptionAndScatteringOptional'])
+        self.assertTrue(p['doubleAtmosphericAttenuationForbidden'])
+        self.assertTrue(p['emissionLayerGeometryMustBePreserved'])
+        self.assertFalse(p['mayBeTreatedAsTopOfAtmospherePointSource'])
+        self.assertFalse(p['sameSessionMeasuredAirglowState'])
+        self.assertFalse(p['mayBeSilentlyAppliedOutsideParanal'])
+        self.assertIn('ESO Sky Model', p['validationIndependenceBoundary'])
+        self.assertTrue(p['exactReleaseAssetsMustBeFrozenBeforeImplementation'])
+        self.assertFalse(p['automaticPromotionFromPaperOrRelease'])
+
     def test_band_only_natural_model_cannot_claim_spectral_total_sky(self):
         s = self.c['naturalNight']['spectralTotalSkyRule']
         self.assertFalse(s['bandOnlyProviderMayClaimSpectralChannel'])

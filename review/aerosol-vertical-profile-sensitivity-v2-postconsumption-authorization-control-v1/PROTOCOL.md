@@ -1,0 +1,11 @@
+# AVPS v2 post-consumption recovery1 authorization control
+
+This package is a solver-free authorization-control gate after the permanently consumed ordinal-41 execution failed before any AVPS scientific solver call because one already-reviewed runtime support byte was omitted from default-branch transport.
+
+It does not reinterpret ordinal 41 as scientific evidence and never permits its identity, seeds, dispatch ref, or workflow run to be reused. The repaired default branch is fixed at `6f0b3f3c73b23f84951bd7b6a2bad58d00854982`, which restores only the already-reviewed `rh_audit_dependency.py` blob `095ff86f12a79dc312a51f734b0a03bd318f2337`.
+
+The recovery binds the immutable fresh-seed proof from PR #622 and dynamic global-ordinal preauthorization proof from PR #623. It preserves the frozen AVPS v2 design exactly: 360 cases, 72 common-random-number groups, five profile states, 20,000,000 photon histories per case, the same OPAC/AFGL/runtime/profile identities, the same analysis and result-opening rules, and the same anti-fitting boundaries. The fresh seed set is represented only by canonical hashes; literal candidate seed values must remain workflow/artifact-only until a reviewed authorization is consumed by a separately reviewed execution path.
+
+The control review repeats a fresh repository-global seed scan and a fresh global ordinal readback. Only if ordinal 41 remains the latest consumed identity, the dynamically available successor is still 42, the proposed recovery authorization/dispatch refs are absent, and all 72 recovery seeds remain collision-free may it materialize an `authorization.json` proposal as an Actions artifact. The control PR itself allocates no ordinal, creates no authorization/dispatch ref or Issue marker, installs no scientific runtime, executes no solver, opens no result, and authorizes no Level-B/holdout/production transition.
+
+A later one-file Draft authorization child must be an exact direct child of the reviewed control head and must contain bytes exactly equal to the successful control artifact. Its own attempt-1 review repeats the seed/global-ordinal fence while excluding only its exact self identity. Allocation/dispatch/science remain later separate transitions.

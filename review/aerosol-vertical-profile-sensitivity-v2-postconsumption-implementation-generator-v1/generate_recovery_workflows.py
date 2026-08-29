@@ -75,6 +75,8 @@ def science() -> str:
     t = must(t, "'scientificOrdinal':41", "'scientificOrdinal':42")
     t = must(t, "'authorizationPr':604", "'authorizationPr':629")
     t = must(t, "'status':'EXACT_ONE_USE_AVPS_V2_DISPATCH_AUTHORIZED'", "'status':'EXACT_ONE_USE_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_AUTHORIZED'")
+    t = must(t, 'name: avps-v2-preflight-ordinal-41', 'name: avps-v2-postconsumption-recovery1-preflight-ordinal-42')
+    t = must(t, 'name: avps-v2-complete-ordinal-41', 'name: avps-v2-postconsumption-recovery1-complete-ordinal-42')
     marker = "git ls-files -z > execution-preflight/tracked-files.nul\n          python - <<'PY'"
     inserted = (
         "git ls-files -z > execution-preflight/tracked-files.nul\n"
@@ -84,7 +86,7 @@ def science() -> str:
     )
     t = must(t, marker, inserted)
     t = must(t, "path=Path('review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py')", "path=Path('execution-preflight/recovery-seed-ledger.py')")
-    forbidden = [OLD_AUTH_BRANCH, OLD_DISPATCH, OLD_CONSUMED, OLD_SEED, "'scientificOrdinal':41"]
+    forbidden = [OLD_AUTH_BRANCH, OLD_DISPATCH, OLD_CONSUMED, OLD_SEED, "'scientificOrdinal':41", 'ordinal-41']
     for token in forbidden:
         if token in t:
             raise SystemExit(f'old science identity remains: {token}')
@@ -115,7 +117,7 @@ def publisher() -> str:
     t = must(t, 'PASS_SOLVER_FREE_SCIENCE_WORKFLOW_AND_ZERO_RUNTIME_PUBLISHER_REVIEW_DISPATCH_NOT_CREATED', 'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_GENERATED_IMPLEMENTATION_REVIEW_DISPATCH_NOT_CREATED')
     t = must(t, 'name: avps-v2-dispatch-publisher-ordinal-41', 'name: avps-v2-postconsumption-recovery1-dispatch-publisher-ordinal-42')
     t = must(t, 'actions/workflows/avps-v2-science.yml/dispatches', f'actions/workflows/{SCIENCE_OUT}/dispatches')
-    forbidden = [OLD_AUTH_BRANCH, OLD_DISPATCH, OLD_CONSUMED, OLD_SEED, "'scientificOrdinal':41"]
+    forbidden = [OLD_AUTH_BRANCH, OLD_DISPATCH, OLD_CONSUMED, OLD_SEED, "'scientificOrdinal':41", 'ordinal-41']
     for token in forbidden:
         if token in t:
             raise SystemExit(f'old publisher identity remains: {token}')

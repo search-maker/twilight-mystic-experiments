@@ -4,7 +4,9 @@ export const SF_A_TIMING_SUN_DEPRESSION_DEG = Object.freeze(Array.from({ length:
 
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
-const SIDEREAL_RATE_DEG_PER_HOUR = 15;
+// Controlled SF-A kinematic convention: solar hour angle advances at 15 deg per mean-solar hour.
+// This is a synthetic timing arm, not an ephemeris claim for a named observing date.
+const HOUR_ANGLE_RATE_DEG_PER_HOUR = 15;
 const SECONDS_PER_HOUR = 3600;
 
 function finite(v) { return typeof v === 'number' && Number.isFinite(v); }
@@ -34,7 +36,7 @@ export function buildTimingArm({ latitudeDeg, declinationDeg }) {
     }
     hourAngleDeg.push(H);
   }
-  const secondsPerHourAngleDeg = SECONDS_PER_HOUR / SIDEREAL_RATE_DEG_PER_HOUR;
+  const secondsPerHourAngleDeg = SECONDS_PER_HOUR / HOUR_ANGLE_RATE_DEG_PER_HOUR;
   const t0 = hourAngleDeg[0];
   const timeSeconds = hourAngleDeg.map(H => (H - t0) * secondsPerHourAngleDeg);
   for (let i = 1; i < timeSeconds.length; i += 1) {

@@ -39,9 +39,7 @@ jobs:
       AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
       ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
       CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
-      DISPATCH_REF: refs/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
       EXECUTION_KEY: aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1:numerical:42
-      SEED_CANONICAL: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
       SCIENCE_PATH: .github/workflows/avps-v2-postconsumption-recovery1-science.yml
       PUBLISHER_PATH: .github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher.yml
       BRIDGE_PATH: .github/workflows/avps-v2-postconsumption-recovery1-publisher-trigger-bridge.yml
@@ -55,6 +53,7 @@ jobs:
       BRIDGE_BLOB: 52d60be9c3f219f7fcbc0e692b9c8423cce3a95f
       BRIDGE_BYTES: '6583'
       MANIFEST_SHA256: b93edadc594a9321d00e2b9b6dc0f04f21d68ce20478eb0f0280a88ea33f5f16
+      SEED_CANONICAL: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -62,7 +61,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Prove exact publication-only scope
+      - name: Prove exact publication-only scope and review safety
         shell: bash
         run: |
           set -euo pipefail
@@ -83,24 +82,41 @@ jobs:
           PATHS
           sort -o expected.txt expected.txt
           diff -u expected.txt changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-publication-v1-review.yml')
+          lines=p.read_text().splitlines()
+          def block(name):
+              i=next(i for i,x in enumerate(lines) if x==name+':')
+              out=[]
+              for x in lines[i+1:]:
+                  if x and not x.startswith(' '): break
+                  out.append(x)
+              return out
+          on=block('on'); perms=block('permissions')
+          if not any(x.startswith('  pull_request:') for x in on): raise SystemExit('pull_request trigger missing')
+          if any(x.startswith(('  workflow_dispatch:','  repository_dispatch:','  push:')) for x in on): raise SystemExit('unsafe trigger')
+          if any(x.strip().endswith(': write') for x in perms): raise SystemExit('write permission in review gate')
+          text='\n'.join(lines)
+          if 'setup-micromamba' in text or 'rubin-libradtran' in text: raise SystemExit('runtime install leaked into review gate')
+          PY
 
-      - name: Verify exact source artifact and published bytes
+      - name: Verify exact reviewed artifact bytes
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
-          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
-          curl -fsSL "${auth[@]}" "$api/actions/artifacts/$SOURCE_ARTIFACT" -o artifact.json
+          H=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsSL "${H[@]}" "$api/actions/artifacts/$SOURCE_ARTIFACT" -o artifact.json
           test "$(jq -r .id artifact.json)" = "$SOURCE_ARTIFACT"
           test "$(jq -r .name artifact.json)" = avps-v2-postconsumption-implementation-generator-v1-review
           test "$(jq -r .expired artifact.json)" = false
           test "$(jq -r .workflow_run.id artifact.json)" = "$SOURCE_RUN"
           test "$(jq -r .digest artifact.json)" = "$SOURCE_ARTIFACT_DIGEST"
-          curl -fsSL "${auth[@]}" -L "$api/actions/artifacts/$SOURCE_ARTIFACT/zip" -o source.zip
-          rm -rf source-artifact && mkdir source-artifact
-          unzip -q source.zip -d source-artifact
+          curl -fsSL "${H[@]}" -L "$api/actions/artifacts/$SOURCE_ARTIFACT/zip" -o source.zip
+          rm -rf source-artifact && mkdir source-artifact && unzip -q source.zip -d source-artifact
           test "$(sha256sum source-artifact/generated-avps-v2-recovery1/MANIFEST.tsv | cut -d' ' -f1)" = "$MANIFEST_SHA256"
           cmp -s "$SCIENCE_PATH" source-artifact/generated-avps-v2-recovery1/avps-v2-postconsumption-recovery1-science.yml
           cmp -s "$PUBLISHER_PATH" source-artifact/generated-avps-v2-recovery1/avps-v2-postconsumption-recovery1-dispatch-publisher.yml
@@ -115,140 +131,80 @@ jobs:
           test "$(git hash-object "$BRIDGE_PATH")" = "$BRIDGE_BLOB"
           test "$(wc -c < "$BRIDGE_PATH" | tr -d ' ')" = "$BRIDGE_BYTES"
 
-      - name: Recheck source and authorization identities live
+      - name: Recheck source, authorization, allocation and one-use fence
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
-          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
-          curl -fsSL "${auth[@]}" "$api/pulls/$SOURCE_PR" -o source-pr.json
+          H=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsSL "${H[@]}" "$api/pulls/$SOURCE_PR" -o source-pr.json
           test "$(jq -r .state source-pr.json)" = open
           test "$(jq -r .draft source-pr.json)" = true
           test "$(jq -r .merged source-pr.json)" = false
           test "$(jq -r .head.sha source-pr.json)" = "$SOURCE_HEAD"
-          curl -fsSL "${auth[@]}" "$api/actions/runs/$SOURCE_RUN" -o source-run.json
-          test "$(jq -r .run_attempt source-run.json)" = 1
-          test "$(jq -r .status source-run.json)" = completed
-          test "$(jq -r .conclusion source-run.json)" = success
-          test "$(jq -r .head_sha source-run.json)" = "$SOURCE_HEAD"
-          curl -fsSL "${auth[@]}" "$api/actions/runs/$SOURCE_GENERIC_RUN" -o generic-run.json
-          test "$(jq -r .run_attempt generic-run.json)" = 1
-          test "$(jq -r .status generic-run.json)" = completed
-          test "$(jq -r .conclusion generic-run.json)" = success
-          test "$(jq -r .head_sha generic-run.json)" = "$SOURCE_HEAD"
-          curl -fsSL "${auth[@]}" "$api/pulls/$AUTH_PR" -o auth-pr.json
+          for row in "$SOURCE_RUN:$SOURCE_HEAD" "$SOURCE_GENERIC_RUN:$SOURCE_HEAD"; do
+            id="${row%%:*}"; sha="${row#*:}"
+            curl -fsSL "${H[@]}" "$api/actions/runs/$id" -o run.json
+            test "$(jq -r .run_attempt run.json)" = 1
+            test "$(jq -r .status run.json)" = completed
+            test "$(jq -r .conclusion run.json)" = success
+            test "$(jq -r .head_sha run.json)" = "$sha"
+          done
+          curl -fsSL "${H[@]}" "$api/pulls/$AUTH_PR" -o auth-pr.json
           test "$(jq -r .state auth-pr.json)" = open
           test "$(jq -r .draft auth-pr.json)" = true
           test "$(jq -r .merged auth-pr.json)" = false
           test "$(jq -r .head.sha auth-pr.json)" = "$AUTH_HEAD"
           test "$(jq -r .base.sha auth-pr.json)" = "$AUTH_PARENT"
-
-      - name: Recheck allocation, non-consumption, no dispatch, no science run
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
-          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
           : > comments.txt
-          page=1
-          while :; do
-            curl -fsSL "${auth[@]}" "$api/issues/60/comments?per_page=100&page=$page" -o page.json
-            n="$(jq 'length' page.json)"
+          for page in $(seq 1 30); do
+            curl -fsSL "${H[@]}" "$api/issues/60/comments?per_page=100&page=$page" -o page.json
             jq -r '.[].body' page.json >> comments.txt
-            test "$n" -gt 0 || break
-            test "$n" -eq 100 || break
-            page=$((page+1))
-            test "$page" -le 30
+            test "$(jq length page.json)" = 100 || break
           done
           test "$(grep -Fxc "$ALLOCATION_MARKER" comments.txt)" = 1
           test "$(grep -Fxc "$CONSUMED_MARKER" comments.txt || true)" = 0
-          code="$(curl -sS -o dispatch-ref.json -w '%{http_code}' "${auth[@]}" "$api/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42")"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' "${H[@]}" "$api/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42")"
           test "$code" = 404
           : > runs.ndjson
-          page=1
-          while :; do
-            curl -fsSL "${auth[@]}" "$api/actions/runs?event=workflow_dispatch&per_page=100&page=$page" -o runs.json
+          for page in $(seq 1 30); do
+            curl -fsSL "${H[@]}" "$api/actions/runs?event=workflow_dispatch&per_page=100&page=$page" -o runs.json
             jq -c '.workflow_runs[]' runs.json >> runs.ndjson
-            n="$(jq '.workflow_runs|length' runs.json)"
-            test "$n" -eq 100 || break
-            page=$((page+1))
-            test "$page" -le 30
+            test "$(jq '.workflow_runs|length' runs.json)" = 100 || break
           done
           if grep -Fq 'avps-v2-postconsumption-recovery1-science' runs.ndjson || grep -Fq "$EXECUTION_KEY" runs.ndjson; then
-            echo 'recovery science workflow_dispatch already exists' >&2
-            exit 1
+            echo 'recovery science workflow_dispatch already exists' >&2; exit 1
           fi
 
-      - name: Prove frozen identity and scientific-design invariants
+      - name: Prove frozen identity and scientific-design boundaries
         shell: bash
         run: |
           set -euo pipefail
-          all=published-workflows.txt
-          cat "$SCIENCE_PATH" "$PUBLISHER_PATH" "$BRIDGE_PATH" > "$all"
-          for x in \
-            'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1:numerical:42' \
-            'ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED' \
-            'a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7'; do
-            grep -Fq "$x" "$all"
-          done
+          cat "$SCIENCE_PATH" "$PUBLISHER_PATH" "$BRIDGE_PATH" > published-workflows.txt
+          grep -Fq "$EXECUTION_KEY" published-workflows.txt
+          grep -Fq "$CONSUMED_MARKER" published-workflows.txt
+          grep -Fq "$SEED_CANONICAL" published-workflows.txt
           grep -Eq '20_000_000|20000000' "$SCIENCE_PATH"
           grep -Fq 'len(cases)!=360' "$SCIENCE_PATH"
           grep -Fq 'len(v)!=90' "$SCIENCE_PATH"
-          grep -Fq 'resultOpeningAuthorized' "$SCIENCE_PATH"
           grep -Fq "auth.get('resultOpeningAuthorized') is not False" "$SCIENCE_PATH"
-          grep -Fq 'productionAuthorized' "$SCIENCE_PATH"
           grep -Fq "auth.get('productionAuthorized') is not False" "$SCIENCE_PATH"
           grep -Fq 'githubRerun' "$SCIENCE_PATH"
           grep -Fq 'retryAllowed' "$SCIENCE_PATH"
           grep -Fq 'resumeAllowed' "$SCIENCE_PATH"
-          if grep -Eq 'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41|dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41|ORDINAL41_AVPS_V2_DISPATCH_CONSUMED|ordinal-41|02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2' "$all"; then
-            echo 'consumed ordinal-41 identity leaked into publication' >&2
-            exit 1
+          grep -Fq "SCIENTIFIC_ORDINAL: '42'" published-workflows.txt
+          if grep -Eq 'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41|dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41|ORDINAL41_AVPS_V2_DISPATCH_CONSUMED|ordinal-41|02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2' published-workflows.txt; then
+            echo 'consumed ordinal-41 identity leaked into publication' >&2; exit 1
           fi
-          test "$(grep -Fc 'SCIENTIFIC_ORDINAL' "$all")" -ge 1
-          grep -Fq "SCIENTIFIC_ORDINAL: '42'" "$all"
-
-      - name: Prove review workflow is zero-runtime and read-only
-        shell: bash
-        run: |
-          set -euo pipefail
-          self=.github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-publication-v1-review.yml
-          ! grep -E '^[[:space:]]+(uvspec|mystic)[[:space:]]' "$self"
-          ! grep -E 'permissions:.*write|contents:[[:space:]]*write|actions:[[:space:]]*write|pull-requests:[[:space:]]*write|issues:[[:space:]]*write' "$self"
-          ! grep -E 'workflow_dispatch:|repository_dispatch:|push:' "$self"
 
       - name: Emit publication-only review receipt
         shell: bash
         run: |
           set -euo pipefail
           cat > publication-review-receipt.json <<EOFJSON
-          {
-            "schemaVersion": 1,
-            "status": "PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PUBLICATION_REVIEW_ONLY",
-            "baseMain": "$BASE_MAIN",
-            "publicationHead": "${{ github.event.pull_request.head.sha }}",
-            "sourcePr": $SOURCE_PR,
-            "sourceHead": "$SOURCE_HEAD",
-            "sourceReviewRun": $SOURCE_RUN,
-            "sourceArtifact": $SOURCE_ARTIFACT,
-            "sourceArtifactDigest": "$SOURCE_ARTIFACT_DIGEST",
-            "scientificOrdinal": 42,
-            "scienceWorkflowSha256": "$SCIENCE_SHA256",
-            "publisherWorkflowSha256": "$PUBLISHER_SHA256",
-            "triggerBridgeWorkflowSha256": "$BRIDGE_SHA256",
-            "publicationOnly": true,
-            "scientificRuntime": false,
-            "solver": false,
-            "dispatch": false,
-            "results": false,
-            "levelB": false,
-            "production": false,
-            "taylorOrJerusalem": false
-          }
+          {"schemaVersion":1,"status":"PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PUBLICATION_REVIEW_ONLY","baseMain":"$BASE_MAIN","publicationHead":"${{ github.event.pull_request.head.sha }}","sourcePr":$SOURCE_PR,"sourceHead":"$SOURCE_HEAD","sourceReviewRun":$SOURCE_RUN,"sourceArtifact":$SOURCE_ARTIFACT,"sourceArtifactDigest":"$SOURCE_ARTIFACT_DIGEST","scientificOrdinal":42,"scienceWorkflowSha256":"$SCIENCE_SHA256","publisherWorkflowSha256":"$PUBLISHER_SHA256","triggerBridgeWorkflowSha256":"$BRIDGE_SHA256","publicationOnly":true,"scientificRuntime":false,"solver":false,"dispatch":false,"results":false,"levelB":false,"production":false,"taylorOrJerusalem":false}
           EOFJSON
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

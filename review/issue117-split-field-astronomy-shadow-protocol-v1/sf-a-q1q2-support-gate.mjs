@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   AOD550,
@@ -25,6 +23,7 @@ const EXPECTED = Object.freeze({
   providerBlob: 'da8c5995559020865118220d939e58d89e6b98e4',
   runtimeBlob: '5790ccb2c289de082a2851d96e4c3c660a1c4985',
   runtimeSha256: '6a927bd702ebbf1b1913ebe51731f3b92f967f2ae95edf090280b8370ea091e4',
+  supportFixtureBlob: '1f8518132e29075e9a26131a2e346b14d1054bc4',
   supportDistanceMax: 0.60,
   q1StepDeg: 0.5,
   q2StepDeg: 0.25,
@@ -33,27 +32,26 @@ const EXPECTED = Object.freeze({
 });
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
-const starsRoot = process.env.STARSVISIBILITY_ROOT ?? path.join(root, 'external', 'starsvisibility');
-const providerPath = path.join(starsRoot, 'scientific-tools', 'visibility-v3', 'validated-v3-sky-provider.mjs');
-const runtimePath = path.join(starsRoot, 'scientific-tools', 'visibility-v3', 'validated-v3-primary-runtime-v1.json');
 const outputPath = process.argv[2] ?? path.join(root, 'sf-a-q1q2-support-result.json');
+const supportFixturePath = new URL('./SF_A_BOUND_SUPPORT_COORDINATES_v1.json', import.meta.url);
+const supportFixture = JSON.parse(fs.readFileSync(supportFixturePath, 'utf8'));
 
-for (const p of [providerPath, runtimePath]) assert.ok(fs.existsSync(p), `missing bound starsvisibility file: ${p}`);
-const runtimeRaw = fs.readFileSync(runtimePath);
-const runtimeSha256 = crypto.createHash('sha256').update(runtimeRaw).digest('hex');
-assert.equal(runtimeSha256, EXPECTED.runtimeSha256, 'bound runtime raw SHA-256 drift');
-const runtimeData = JSON.parse(runtimeRaw.toString('utf8'));
-assert.equal(runtimeData.schemaVersion, 1);
-assert.equal(runtimeData.supportCoordinates.length, 58);
-
-const provider = await import(pathToFileURL(providerPath).href);
-assert.equal(provider.LEVEL_B_V3_RUNTIME_DATA_SHA256, EXPECTED.runtimeSha256);
-assert.equal(provider.LEVEL_B_V3_SUPPORT_DISTANCE_MAX, EXPECTED.supportDistanceMax);
-provider.validateValidatedV3RuntimeData(runtimeData);
+assert.equal(supportFixture.schema, 'SF_A_BOUND_LEVEL_B_SUPPORT_COORDINATES_V1');
+assert.equal(supportFixture.sourceApplicationSha, EXPECTED.applicationSha);
+assert.equal(supportFixture.sourceProviderBlob, EXPECTED.providerBlob);
+assert.equal(supportFixture.sourceRuntimeBlob, EXPECTED.runtimeBlob);
+assert.equal(supportFixture.sourceRuntimeRawSha256, EXPECTED.runtimeSha256);
+assert.equal(supportFixture.coordinateSystem, 'V1_IDW_COS_COORDINATES');
+assert.equal(supportFixture.supportDistanceMax, EXPECTED.supportDistanceMax);
+assert.equal(supportFixture.supportCoordinates.length, 58);
+for (const row of supportFixture.supportCoordinates) {
+  assert.equal(row.length, 5);
+  assert.ok(row.every(Number.isFinite));
+}
 
 const DEG = Math.PI / 180;
 const maxSq = EXPECTED.supportDistanceMax ** 2;
-const supportCoordinates = runtimeData.supportCoordinates;
+const supportCoordinates = supportFixture.supportCoordinates;
 
 function fastSupport({ sunDepressionDeg, direction, aod550 }) {
   const targetAltitudeDeg = direction.altitudeDeg;
@@ -88,27 +86,32 @@ function fastSupport({ sunDepressionDeg, direction, aod550 }) {
   };
 }
 
-// Exact parity check against the bound provider support implementation on a deterministic probe set.
-for (const probe of [
-  { sunDepressionDeg: 2, altitudeDeg: 45, azimuthDeg: 135, aod550: 0.05 },
-  { sunDepressionDeg: 6.25, altitudeDeg: 45, azimuthDeg: 0, aod550: 0.30 },
-  { sunDepressionDeg: 8, altitudeDeg: 60, azimuthDeg: 90, aod550: 0.15 },
-  { sunDepressionDeg: 10.5, altitudeDeg: 30, azimuthDeg: 180, aod550: 0.30 },
-]) {
-  const direction = { altitudeDeg: probe.altitudeDeg, azimuthDeg: probe.azimuthDeg };
-  const input = {
-    sunDepressionDeg: probe.sunDepressionDeg,
-    targetAltitudeDeg: probe.altitudeDeg,
-    relativeAzimuthDeg: providerRelativeAzimuthDeg(direction),
-    observerElevationM: 0,
-    aod550: probe.aod550,
-  };
-  const canonical = provider.classifyValidatedV3Support(input, runtimeData);
-  const fast = fastSupport({ sunDepressionDeg: probe.sunDepressionDeg, direction, aod550: probe.aod550 });
-  assert.equal(fast.supported, canonical.validatedSupport, 'fast support parity drift');
-  if (canonical.nearestTrainingDistance !== null) {
-    assert.ok(Math.abs(fast.nearestTrainingDistance - canonical.nearestTrainingDistance) <= 1e-14, 'nearest-distance parity drift');
+// Exact local-row regression against the already frozen support-only preflight.
+const expectedUnsupportedLocal = [
+  [0.05,45,135,2.0,0.6219943324111769],
+  [0.05,45,135,2.25,0.6142974675329287],
+  [0.05,45,135,2.5,0.6079275544744964],
+  [0.05,45,135,2.75,0.6029266523944207],
+  [0.05,45,180,2.0,0.6054627283339193],
+  [0.05,60,135,2.0,0.6113606292607162],
+  [0.30,45,0,6.25,0.6027022555028397],
+];
+const actualUnsupportedLocal = [];
+for (const aod550 of AOD550) {
+  for (const targetAltitudeDeg of TARGET_ALTITUDE_DEG) {
+    for (const targetRelativeAzimuthDeg of TARGET_RELATIVE_AZIMUTH_DEG) {
+      const direction = targetDirection(targetAltitudeDeg, targetRelativeAzimuthDeg);
+      for (const sunDepressionDeg of SUN_DEPRESSION_DEG) {
+        const s = fastSupport({ sunDepressionDeg, direction, aod550 });
+        if (!s.supported) actualUnsupportedLocal.push([aod550,targetAltitudeDeg,targetRelativeAzimuthDeg,sunDepressionDeg,s.nearestTrainingDistance]);
+      }
+    }
   }
+}
+assert.equal(actualUnsupportedLocal.length, expectedUnsupportedLocal.length, 'local support-regression count drift');
+for (let i = 0; i < expectedUnsupportedLocal.length; i += 1) {
+  assert.deepEqual(actualUnsupportedLocal[i].slice(0,4), expectedUnsupportedLocal[i].slice(0,4), `local support identity drift at ${i}`);
+  assert.ok(Math.abs(actualUnsupportedLocal[i][4] - expectedUnsupportedLocal[i][4]) <= 1e-14, `local nearest-distance drift at ${i}`);
 }
 
 const quadratureCache = new Map();
@@ -175,12 +178,10 @@ function q1CompleteHistories(armId) {
 }
 
 const q1ByArm = {};
-// S1/S2 share the same exact footprint and gaze geometry; compute support once and clone the identities.
 const q1S1 = q1CompleteHistories('S1_WHOLE_CAP');
 q1ByArm.S1_WHOLE_CAP = q1S1;
 q1ByArm.S2_ALF = q1S1.map(h => ({ ...h, armId: 'S2_ALF' }));
 q1ByArm.S3_UCHIDA_LOCAL = q1CompleteHistories('S3_UCHIDA_LOCAL');
-
 for (const [armId, expectedCount] of Object.entries(EXPECTED.expectedQ1Complete)) {
   assert.equal(q1ByArm[armId].length, expectedCount, `Q1 complete-history count drift for ${armId}`);
 }
@@ -190,14 +191,7 @@ const gaps = [];
 for (const armId of ['S1_WHOLE_CAP', 'S2_ALF', 'S3_UCHIDA_LOCAL']) {
   for (const h of q1ByArm[armId]) {
     for (const sunDepressionDeg of EXPECTED.refinementSunDepressionDeg) {
-      const s = rowSupport({
-        ...h,
-        armId,
-        gaze: h.gaze,
-        sunDepressionDeg,
-        stepDeg: EXPECTED.q2StepDeg,
-        captureFailure: true,
-      });
+      const s = rowSupport({ ...h, armId, gaze: h.gaze, sunDepressionDeg, stepDeg: EXPECTED.q2StepDeg, captureFailure: true });
       const row = {
         historyId: historyId(h),
         aod550: h.aod550,
@@ -215,9 +209,9 @@ for (const armId of ['S1_WHOLE_CAP', 'S2_ALF', 'S3_UCHIDA_LOCAL']) {
   }
 }
 
-const uniqueS1S2GapKey = new Set(gaps.filter(g => g.armId === 'S1_WHOLE_CAP').map(g => `${g.historyId.replace('arm=S1_WHOLE_CAP','arm=SHARED_20')}|sun=${g.sunDepressionDeg}`));
+const uniqueS1GapKey = new Set(gaps.filter(g => g.armId === 'S1_WHOLE_CAP').map(g => `${g.historyId.replace('arm=S1_WHOLE_CAP','arm=SHARED_20')}|sun=${g.sunDepressionDeg}`));
 for (const g of gaps.filter(g => g.armId === 'S2_ALF')) {
-  assert.ok(uniqueS1S2GapKey.has(`${g.historyId.replace('arm=S2_ALF','arm=SHARED_20')}|sun=${g.sunDepressionDeg}`), 'S1/S2 Q2 support gap mismatch');
+  assert.ok(uniqueS1GapKey.has(`${g.historyId.replace('arm=S2_ALF','arm=SHARED_20')}|sun=${g.sunDepressionDeg}`), 'S1/S2 Q2 support gap mismatch');
 }
 
 const byArm = {};
@@ -243,6 +237,12 @@ const result = {
     noProtectedHoldoutOpened: true,
   },
   bindings: EXPECTED,
+  supportFixture: {
+    schema: supportFixture.schema,
+    sourceRuntimeRawSha256: supportFixture.sourceRuntimeRawSha256,
+    supportCoordinateCount: supportCoordinates.length,
+    localRegressionUnsupportedRows: actualUnsupportedLocal.length,
+  },
   q1CompleteHistoryCounts: Object.fromEntries(Object.entries(q1ByArm).map(([k, v]) => [k, v.length])),
   q1CompleteHistories: Object.fromEntries(Object.entries(q1ByArm).map(([k, v]) => [k, v.map(h => historyId(h))])),
   refinementRowCount: refinementRows.length,

@@ -1,0 +1,122 @@
+name: Issue 117 Level-B real transient trajectory diagnostic v1
+
+on:
+  push:
+    branches:
+      - review/level-b-transient-real-trajectory-diagnostic-v1
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      APPLICATION_SHA: e0da52eb0a2d5bac333da6572f51df52ea7e676e
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Bind review-only diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = review/level-b-transient-real-trajectory-diagnostic-v1
+          python - <<'PY'
+          import json
+          c=json.load(open('review/level-b-transient-real-trajectory-diagnostic-v1/contract.review.json'))
+          assert c['diagnosticId']=='issue117-level-b-real-transient-trajectories-v1'
+          assert c['applicationSha']=='e0da52eb0a2d5bac333da6572f51df52ea7e676e'
+          assert c['tauSeconds']==[20,30,45,60] and c['fieldFactor']==3.14
+          assert c['expectedTransformedCatalogRowsPerNight']==7653
+          assert c['negativeSlopeIntervalBackgroundCdM2']==[0.021567318651181808,0.04705255275868123]
+          assert all(v is False for k,v in c['boundaries'].items() if k!='diagnosticOnly')
+          assert c['boundaries']['diagnosticOnly'] is True
+          PY
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Build exact current-main application
+        working-directory: app
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: npm run build:pages
+      - name: Instrument read-only transformed catalog handoff
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='dist/work-in-progress/index.html';
+          let s=fs.readFileSync(p,'utf8');
+          const needle='globalThis.__LEVEL_B_SITEWIDE_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows;';
+          if(s.split(needle).length-1!==1) throw new Error('catalog handoff anchor drift');
+          s=s.replace(needle,needle+'\n          globalThis.__DIAG_LEVEL_B_DIRECT_CATALOG_ROWS__ = levelBDirectCatalogRows.map(row => ({ ...row }));');
+          fs.writeFileSync(p,s);
+          NODE
+      - name: Install exact Playwright diagnostic dependency
+        working-directory: app
+        run: npm install --no-save --package-lock=false playwright@1.62.1
+      - name: Install exact Chromium for diagnostic
+        working-directory: app
+        run: npx playwright@1.62.1 install --with-deps chromium
+      - name: Run current-main real Level-B trajectory characterization
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp review/level-b-transient-real-trajectory-diagnostic-v1/run.mjs app/issue117-trajectories.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/server.log" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node issue117-trajectories.mjs
+      - name: Validate diagnostic boundary and output schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'issue117-level-b-real-trajectories-v1','trajectory-summary.json')
+          r=json.load(open(p))
+          assert r['diagnosticId']=='issue117-level-b-real-transient-trajectories-v1'
+          assert r['applicationSha']=='e0da52eb0a2d5bac333da6572f51df52ea7e676e' and r['applicationMainExact'] is True
+          assert r['tauSeconds']==[20,30,45,60] and r['fieldFactor']==3.14
+          assert r['noMysticSolverExecuted'] is True and r['changesTransientMapping'] is False and r['changesTransientTau'] is False
+          assert r['changesFieldFactor'] is False and r['changesProductionRouting'] is False and r['authorizesProduction'] is False
+          assert len(r['reports'])==2
+          for n in r['reports']:
+              assert n['transformedRowCount']==7653
+              for tau in ('20','30','45','60'):
+                  t=n['tauReports'][tau]
+                  assert t['stateCount']>0 and t['targetCount']>0
+                  assert 0 <= t['rawNegativePenaltyStateCount'] <= t['stateCount']
+                  assert len(t['mostNegativeOrIntervalWitnesses']) <= 40
+          PY
+          test ! -e "$RUNNER_TEMP/issue117-level-b-real-trajectories-v1/uvspec.log"
+          test ! -e "$RUNNER_TEMP/issue117-level-b-real-trajectories-v1/mc.rad.spc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: issue117-level-b-real-transient-trajectories-v1
+          path: ${{ runner.temp }}/issue117-level-b-real-trajectories-v1/trajectory-summary.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

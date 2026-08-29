@@ -37,6 +37,13 @@ class LunarTopocentricGeometryAndFiniteDiskSensitivityV1Test(unittest.TestCase):
         self.assertTrue(d['resolvedLunarRadianceMapRequiredForPhysicalDiskIntegration'])
         self.assertFalse(d['uniformDiskMayBeUsedAsPhysicalTruthWithoutSeparateJustification'])
 
+    def test_primary_sources_distinguish_irradiance_from_experimental_resolved_model(self):
+        p = self.c['primarySourceEvidence']
+        self.assertEqual(p['kiefferStone2005']['doi'], '10.1086/430185')
+        self.assertEqual(p['stoneKiefferBecker2003']['doi'], '10.1117/12.506117')
+        self.assertIn('disk-integrated irradiance', p['kiefferStone2005']['relevance'])
+        self.assertIn('experimental', p['stoneKiefferBecker2003']['relevance'])
+
     def test_result_blind_33_direction_sensitivity_grid_is_frozen(self):
         q = self.c['preregisteredSensitivitySampling']
         self.assertEqual(q['sampleRadiiInLunarRadius'], [0.0, 0.5, 1.0])
@@ -48,6 +55,31 @@ class LunarTopocentricGeometryAndFiniteDiskSensitivityV1Test(unittest.TestCase):
         self.assertTrue(q['freshIndependentSeedsRequired'])
         self.assertTrue(q['noDirectionMayBeAddedOrRemovedFromObservedResiduals'])
         self.assertFalse(q['acceptanceThresholdInventedHere'])
+
+    def test_transfer_kernel_bound_does_not_assume_uniform_disk(self):
+        k = self.c['transferKernelBound']
+        self.assertTrue(k['nonnegativeSourceMeasureRequired'])
+        self.assertFalse(k['requiresAssumptionOfUniformLunarDisk'])
+        self.assertFalse(k['requiresAssumptionOfResolvedLunarBrightnessPattern'])
+        self.assertTrue(k['sampledDiscreteSupportConvexHullExact'])
+        self.assertFalse(k['thirtyThreeSampleEnvelopeIsExactContinuousDiskBound'])
+        self.assertFalse(k['observationalResidualRequiredToComputeKernelBound'])
+        self.assertFalse(k['postHocDirectionSelectionAllowed'])
+        self.assertIn('min_disk(K)', k['exactContinuousSupportBoundIfKernelExtremaKnown'])
+        self.assertIn('max_disk(K)', k['exactContinuousSupportBoundIfKernelExtremaKnown'])
+
+    def test_resolved_disk_candidate_can_only_supply_normalized_angular_weights(self):
+        r = self.c['resolvedDiskWeightingPath']
+        self.assertFalse(r['candidateAbsoluteScaleMayReplaceDiskIntegratedRolo'])
+        self.assertTrue(r['candidateUsedForRelativeAngularWeightsOnly'])
+        self.assertFalse(r['negativeResolvedWeightsAllowed'])
+        self.assertTrue(r['phaseAndLibrationMustMatchSourceGeometry'])
+        self.assertTrue(r['wavelengthInterpolationMustBeFrozenBeforeValidationResiduals'])
+        self.assertFalse(r['resolvedMapSelectionOrSmoothingFromXshooterResidualsAllowed'])
+        self.assertFalse(r['uniformDiskFallbackMayBeLabeledPhysicalTruth'])
+        self.assertFalse(r['upstreamResolvedModelBytesAcquiredAndHashBound'])
+        self.assertFalse(r['resolvedWeightAlgorithmImplementedAndAudited'])
+        self.assertFalse(r['physicalExtendedDiskProviderAuthorized'])
 
     def test_sampled_envelope_is_not_misrepresented_as_exact_disk_solution(self):
         e = self.c['extendedSourceLogic']
@@ -65,6 +97,8 @@ class LunarTopocentricGeometryAndFiniteDiskSensitivityV1Test(unittest.TestCase):
         gate = self.c['openingGate']
         self.assertFalse(gate['ephemerisImplementationFrozenAndAudited'])
         self.assertFalse(gate['finiteDiskSensitivityExecuted'])
+        self.assertFalse(gate['transferKernelBoundAudited'])
+        self.assertFalse(gate['resolvedLunarRadianceBytesHashBound'])
         self.assertFalse(gate['physicalResolvedDiskIntegrationImplemented'])
         self.assertFalse(gate['mysticResidualsOpened'])
         self.assertFalse(gate['atmosphericScatteredMoonlightValidated'])

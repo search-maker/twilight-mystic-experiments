@@ -34,7 +34,7 @@ DERIVED_CHANNELS_PATH = Path("experiments/aerosol-family-challenge-v2-r8/derived
 WAVELENGTH_GRID_PATH = Path("experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat")
 
 EXPECTED_BLOBS = {
-    CONTRACT_PATH: "a7a87a3cd7b1ebffbe693d14443f906a0aed6ff2",
+    CONTRACT_PATH: "383db5619849cb499104826801ed82227e6a2ddf",
     AUTH_PATH: "dcfbd39081abe8e98604eedd48a1d934cea5483a",
     ADAPTER_PATH: "c245eac2fe5b5d026e46ec4253bc377c5fde97ec",
     RUNTIME_STAGE_PATH: "0d3ac10f3ef7d22f0205854233a6c37cbba03f7c",
@@ -306,9 +306,7 @@ def execute_case(
     if syntax.get("timedOut") or syntax.get("exitCode") != 0:
         raise ExecutionRefusal("single syntax check failed")
 
-    solver_timeout = 7200
-    syntax_count = 1
-    solver = run([str(uvspec)], text, case_dir, solver_timeout, sigterm_grace_seconds=5)
+    solver = run([str(uvspec)], text, case_dir, 7200, sigterm_grace_seconds=5)
     (case_dir / "solver-stdout.txt").write_text(str(solver.get("stdout") or ""))
     (case_dir / "solver-stderr.txt").write_text(str(solver.get("stderr") or ""))
     if solver.get("processGroupIsolated") is not True:
@@ -362,7 +360,7 @@ def execute_case(
         "executionKey": EXPECTED_EXECUTION_KEY,
         "workflowRunId": guard["workflowRunId"],
         "workflowRunAttempt": 1,
-        "syntaxCheckCount": syntax_count,
+        "syntaxCheckCount": 1,
         "solverExecutionCount": 1,
         "retryPerformed": False,
         "resumePerformed": False,
@@ -404,7 +402,6 @@ def review_summary(repository_root: Path) -> dict[str, Any]:
     cases = adapter.authorized_case_universe(auth)
     if len(cases) != 360 or len({row["groupId"] for row in cases}) != 72:
         raise ExecutionRefusal("review authorized universe drift")
-    # Seeds are deliberately kept in memory. The review output emits only their canonical identity.
     return {
         "status": "REVIEW_ONLY_V2_EXECUTOR_PARITY_PASS_NO_SOLVER",
         "scientificOrdinal": EXPECTED_ORDINAL,

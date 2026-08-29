@@ -19,9 +19,24 @@ jobs:
   review:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      EXPECTED_BASE: a99f9181072755889cf3fae3f446e036a012f760
+      EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-predispatch-recovery2
+      AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+      AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
+      AUTH_PR: '629'
+      ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
+      CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+      FAILED_PUBLISHER_RUN: '33257846884'
+      FAILED_PUBLISHER_JOB: '99114571607'
+      PUBLISHER_BLOB: d253313d6dbe047c69408e53ad63f5990def66a5
+      TRIGGER_BLOB: 93b20ae69634cf4282d6d132fba728520fc4d0a9
+      SCIENCE_SHA256: 04a178e0cc777e0fc090c8bfc6175ad10b4bec56c6f12048428382ea36217878
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -29,31 +44,24 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Review recovery2 exact scope and fail-closed transport
+      - name: Review exact head, recovery scope and pre-consumption evidence
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_BASE: a99f9181072755889cf3fae3f446e036a012f760
-          EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-predispatch-recovery2
-          AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
-          AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
-          AUTH_PR: '629'
-          ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
-          CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
-          DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
-          FAILED_PUBLISHER_RUN: '33257846884'
-          FAILED_PUBLISHER_JOB: '99114571607'
-          PUBLISHER_BLOB: d253313d6dbe047c69408e53ad63f5990def66a5
-          TRIGGER_BLOB: 93b20ae69634cf4282d6d132fba728520fc4d0a9
-          SCIENCE_SHA256: 04a178e0cc777e0fc090c8bfc6175ad10b4bec56c6f12048428382ea36217878
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = pull_request
           test "$GITHUB_RUN_ATTEMPT" = 1
-          test "${{ github.event.pull_request.base.sha }}" = "$EXPECTED_BASE"
-          test "${{ github.event.pull_request.head.ref }}" = "$EXPECTED_BRANCH"
-          test "${{ github.event.pull_request.draft }}" = "true"
-          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > changed-paths.txt
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          test "$EVENT_BRANCH" = "$EXPECTED_BRANCH"
+          test "$EVENT_DRAFT" = true
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+          git diff --name-only "$EXPECTED_BASE"..."$EXPECTED_HEAD" | sort > changed-paths.txt
           cat > expected-paths.txt <<'EOF'
           .github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml
           .github/workflows/avps-v2-postconsumption-recovery1-predispatch-recovery2-review.yml
@@ -68,54 +76,37 @@ jobs:
           python - <<'PY'
           import hashlib, os
           from pathlib import Path
-          science=Path('.github/workflows/avps-v2-postconsumption-recovery1-science.yml')
-          if hashlib.sha256(science.read_bytes()).hexdigest()!=os.environ['SCIENCE_SHA256']: raise SystemExit('published recovery science workflow drift')
-          p=Path('.github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml').read_text()
-          required=[
-            'git worktree add --detach "$AUTH_WORKTREE" "$AUTH_HEAD"',
-            "review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py",
-            "relocatedBeforeValidation':False",
-            'FAILED_PUBLISHER_RUN',
-            'Fresh recovery2 zero-runtime pre-dispatch fence',
-            'Create exact dispatch ref and consumed marker once under recovery2',
-            'Explicitly dispatch exact recovery science workflow from main under recovery2']
-          for token in required:
-              if token not in p: raise SystemExit(f'missing recovery2 invariant: {token}')
-          forbidden=[
-            'git show "$AUTH_HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py" >',
-            'uvspec ', 'libRadtran', 'mc_photons']
-          for token in forbidden:
-              if token in p: raise SystemExit(f'recovery2 publisher contains forbidden runtime/relocation token: {token}')
-          t=Path('.github/workflows/avps-v2-postconsumption-recovery1-publisher-recovery2-trigger-bridge.yml').read_text()
-          if 'avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml' not in t or 'publisher-recovery2' not in t:
-              raise SystemExit('recovery2 trigger does not bind recovery2 publisher')
+          if hashlib.sha256(Path('.github/workflows/avps-v2-postconsumption-recovery1-science.yml').read_bytes()).hexdigest()!=os.environ['SCIENCE_SHA256']:
+              raise SystemExit('published recovery science workflow drift')
+          pub=Path('.github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml').read_text()
+          for token in ('git worktree add --detach "$AUTH_WORKTREE" "$AUTH_HEAD"','review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py',"relocatedBeforeValidation':False",'FAILED_PUBLISHER_RUN','Fresh recovery2 zero-runtime pre-dispatch fence','Create exact dispatch ref and consumed marker once under recovery2','Explicitly dispatch exact recovery science workflow from main under recovery2'):
+              if token not in pub: raise SystemExit(f'missing recovery2 invariant: {token}')
+          for token in ('git show "$AUTH_HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py" >','uvspec ','libRadtran','mc_photons'):
+              if token in pub: raise SystemExit(f'forbidden runtime/relocation token: {token}')
+          trig=Path('.github/workflows/avps-v2-postconsumption-recovery1-publisher-recovery2-trigger-bridge.yml').read_text()
+          if 'avps-v2-postconsumption-recovery1-dispatch-publisher-recovery2.yml' not in trig or 'publisher-recovery2' not in trig: raise SystemExit('trigger binding drift')
           protocol=Path('review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-predispatch-recovery2/PROTOCOL.md').read_text()
           for token in ('33257846884','detached checkout/worktree','No GitHub Re-run/retry/resume'):
               if token not in protocol: raise SystemExit(f'protocol omission: {token}')
           PY
 
-          # Independently prove the prior publisher failure was pre-consumption.
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" > failed-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN/jobs" > failed-jobs.json
-          python - <<'PY'
-          import json, os
-          r=json.load(open('failed-run.json')); jobs=json.load(open('failed-jobs.json'))['jobs']
-          if r.get('id')!=int(os.environ['FAILED_PUBLISHER_RUN']) or r.get('run_attempt')!=1 or r.get('conclusion')!='failure': raise SystemExit('failed run identity drift')
-          hit=[j for j in jobs if j.get('id')==int(os.environ['FAILED_PUBLISHER_JOB'])]
-          if len(hit)!=1: raise SystemExit('failed job missing')
-          steps={s.get('name'):s.get('conclusion') for s in hit[0].get('steps',[])}
-          if steps.get('Fresh zero-runtime pre-dispatch fence')!='failure': raise SystemExit('prior failure step drift')
-          for n in ('Create exact dispatch ref and consumed marker once','Upload zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main'):
-              if steps.get(n)!='skipped': raise SystemExit(f'prior publisher not pre-consumption: {n}')
-          PY
-
-          # Fresh read-only authorization and live no-dispatch fence.
           gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > auth-pr.json
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > comments-pages.json
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-postconsumption-recovery1-science.yml/runs?event=workflow_dispatch&per_page=100" > science-pages.json
           if git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch exists' >&2; exit 1; fi
+
           python - <<'PY'
           import json, os
+          r=json.load(open('failed-run.json')); jobs=json.load(open('failed-jobs.json'))['jobs']
+          if r.get('id')!=int(os.environ['FAILED_PUBLISHER_RUN']) or r.get('run_attempt')!=1 or r.get('conclusion')!='failure': raise SystemExit('failed publisher identity drift')
+          hit=[j for j in jobs if j.get('id')==int(os.environ['FAILED_PUBLISHER_JOB'])]
+          if len(hit)!=1: raise SystemExit('failed publisher job missing')
+          steps={s.get('name'):s.get('conclusion') for s in hit[0].get('steps',[])}
+          if steps.get('Fresh zero-runtime pre-dispatch fence')!='failure': raise SystemExit('prior failure-step drift')
+          for n in ('Create exact dispatch ref and consumed marker once','Upload zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main'):
+              if steps.get(n)!='skipped': raise SystemExit(f'prior publisher not pre-consumption: {n}')
           p=json.load(open('auth-pr.json'))
           if p['number']!=629 or p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['AUTH_HEAD'] or p['base']['sha']!=os.environ['AUTH_PARENT']: raise SystemExit('authorization PR drift')
           pages=json.load(open('comments-pages.json')); bodies=[str(c.get('body') or '').strip() for page in pages for c in page]
@@ -127,33 +118,15 @@ jobs:
 
           mkdir -p review-evidence
           cp changed-paths.txt failed-run.json failed-jobs.json auth-pr.json review-evidence/
-          export HEAD_SHA="$GITHUB_SHA"
+          export RECEIPT_HEAD="$EXPECTED_HEAD"
           python - <<'PY'
-          import json, os, subprocess
+          import json, os
           from pathlib import Path
-          out={
-            'schemaVersion':1,
-            'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PREDISPATCH_RECOVERY2_SOLVER_FREE',
-            'headSha':os.environ['HEAD_SHA'],
-            'baseSha':os.environ['EXPECTED_BASE'],
-            'publisherBlob':os.environ['PUBLISHER_BLOB'],
-            'triggerBlob':os.environ['TRIGGER_BLOB'],
-            'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),
-            'failedPublisherPreConsumption':True,
-            'scientificOrdinal':42,
-            'authorizationHead':os.environ['AUTH_HEAD'],
-            'dispatchPresent':False,
-            'scienceRunPresent':False,
-            'scientificRuntime':False,
-            'solver':False,
-            'results':False,
-            'levelB':False,
-            'production':False,
-            'taylorOrJerusalem':False}
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_POSTCONSUMPTION_RECOVERY1_PREDISPATCH_RECOVERY2_SOLVER_FREE','headSha':os.environ['RECEIPT_HEAD'],'baseSha':os.environ['EXPECTED_BASE'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'triggerBlob':os.environ['TRIGGER_BLOB'],'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),'failedPublisherPreConsumption':True,'scientificOrdinal':42,'authorizationHead':os.environ['AUTH_HEAD'],'dispatchPresent':False,'scienceRunPresent':False,'scientificRuntime':False,'solver':False,'results':False,'levelB':False,'production':False,'taylorOrJerusalem':False}
           Path('review-evidence/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
           PY
 
-      - name: Upload recovery2 solver-free review receipt
+      - name: Upload recovery2 solver-free exact-head review receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: avps-v2-postconsumption-recovery1-predispatch-recovery2-review

@@ -1,0 +1,158 @@
+name: Review AVPS v2 executor parity v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1
+    paths:
+      - review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/**
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1-review.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_BASE_SHA: 53bfe783f5106252149e9da106ae87b5b6e3f710
+      EXPECTED_BASE_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1
+      EXPECTED_HEAD_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1
+      AUTH_HEAD: d5f5e4d9d19d7ede573fecae68565a92baabbec3
+      AUTH_PR: '604'
+      ORDINAL: '41'
+      EXECUTION_KEY: aerosol-vertical-profile-sensitivity-v2:numerical:41
+      ALLOCATION_MARKER: ORDINAL41_AVPS_V2_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=d5f5e4d9d19d7ede573fecae68565a92baabbec3 parent=b3d562222a38fc9d1ff5d218886afdda72c37fa2 pr=604
+      CONSUMED_MARKER: ORDINAL41_AVPS_V2_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41
+
+    steps:
+      - name: Checkout exact review head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact Draft PR and four-file scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$HEAD_BRANCH" = "$EXPECTED_HEAD_BRANCH"
+          test "$BASE_BRANCH" = "$EXPECTED_BASE_BRANCH"
+          test "$BASE_SHA" = "$EXPECTED_BASE_SHA"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > pr.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('executor parity PR must remain Draft/open/unmerged')
+          if p['head']['ref']!=os.environ['HEAD_BRANCH'] or p['head']['sha']!=os.environ['HEAD_SHA']:
+              raise SystemExit('executor parity head drift')
+          if p['base']['ref']!=os.environ['BASE_BRANCH'] or p['base']['sha']!=os.environ['BASE_SHA']:
+              raise SystemExit('executor parity base drift')
+          PY
+          git diff --name-only "$EXPECTED_BASE_SHA"..HEAD | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1-review.yml
+          review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/PROTOCOL.md
+          review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py
+          review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/test_executor.py
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+
+      - name: Prove ordinal 41 remains allocated but not consumed or dispatched
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --slurp > issue-pages.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/branches?per_page=100" --slurp > branch-pages.json
+          python - <<'PY'
+          import json, os
+          bodies=[str(x.get('body') or '').strip() for p in json.load(open('issue-pages.json')) for x in p]
+          if bodies.count(os.environ['ALLOCATION_MARKER']) != 1:
+              raise SystemExit('exact allocation marker count drift')
+          if any(x==os.environ['CONSUMED_MARKER'] or x.startswith(os.environ['CONSUMED_MARKER']+' ') for x in bodies):
+              raise SystemExit('ordinal 41 already consumed')
+          branches=[str(x.get('name') or '') for p in json.load(open('branch-pages.json')) for x in p]
+          if os.environ['DISPATCH_BRANCH'] in branches:
+              raise SystemExit('dispatch branch already exists')
+          PY
+
+      - name: Run executor parity refusal and binding tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          python review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/test_executor.py | tee executor-test.txt
+          grep -Fx AVPS_V2_EXECUTOR_PARITY_PASS executor-test.txt
+
+      - name: Static solver and transport audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py')
+          text=p.read_text()
+          required=[
+            'explicit allow_execution=True required',
+            'EXACT_ONE_USE_AVPS_V2_DISPATCH_AUTHORIZED',
+            'aerosol_species_file profiles/',
+            ' INSO WASO SOOT SUSO',
+            'legacy aerosol_file tau transport unexpectedly present',
+            'preSolverRepositoryGlobalSeedRecheckPassed',
+            'allocationMarkerCount',
+            'consumedMarkerCount',
+            'candidateSeedValuesSerialized',
+            'fourSpeciesProfileSha256',
+            'resultOpeningAuthorized',
+            'productionAuthorized',
+          ]
+          for token in required:
+              if token not in text: raise SystemExit(f'missing executor guard token: {token}')
+          if 'subprocess.run' in text or 'os.system' in text:
+              raise SystemExit('executor must use exact bound process-group runner rather than ad-hoc subprocess')
+          PY
+
+      - name: Prove review itself is zero-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(find . -type f -name 'mc.rad.spc' -o -name 'mc.rad.std.spc' | head -n 1)"
+          python - <<'PY'
+          import json, subprocess
+          raw=subprocess.check_output(['python','review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py'], text=True)
+          r=json.loads(raw)
+          if r['solverExecutionPerformed'] is not False or r['dispatchCreated'] is not False or r['resultsOpened'] is not False or r['productionAuthorized'] is not False:
+              raise SystemExit('review crossed disabled boundary')
+          json.dump(r, open('executor-review-summary.json','w'), indent=2, sort_keys=True)
+          PY
+
+      - name: Upload executor review evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: avps-v2-executor-parity-v1-review
+          path: |
+            changed.txt
+            executor-test.txt
+            executor-review-summary.json
+          if-no-files-found: error
+          retention-days: 30

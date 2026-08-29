@@ -1,0 +1,206 @@
+name: Review AVPS v2 science workflow deployment v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/avps-v2-science.yml
+      - .github/workflows/avps-v2-dispatch-publisher.yml
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1/**
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: review-avps-v2-science-workflow-v1-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact child identity and allowed review scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_BASE_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1
+          EXPECTED_BASE_HEAD: b0721b0c17b64251cb388e5d0af4100e8ae23f3d
+          EXPECTED_HEAD_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.ref }}" = "$EXPECTED_BASE_BRANCH"
+          test "${{ github.event.pull_request.base.sha }}" = "$EXPECTED_BASE_HEAD"
+          test "${{ github.event.pull_request.head.ref }}" = "$EXPECTED_HEAD_BRANCH"
+          test "${{ github.event.pull_request.draft }}" = true
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin "$EXPECTED_BASE_BRANCH"
+          test "$(git rev-parse origin/$EXPECTED_BASE_BRANCH)" = "$EXPECTED_BASE_HEAD"
+          mapfile -t CHANGED < <(git diff --name-only "$EXPECTED_BASE_HEAD...$GITHUB_SHA" | sort)
+          printf '%s\n' "${CHANGED[@]}" > changed-paths.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed={
+            '.github/workflows/avps-v2-science.yml',
+            '.github/workflows/avps-v2-dispatch-publisher.yml',
+            '.github/workflows/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1/PROTOCOL.md',
+          }
+          rows={x for x in Path('changed-paths.txt').read_text().splitlines() if x}
+          if rows != allowed:
+              raise SystemExit(f'exact four-file review scope required; got {sorted(rows)}')
+          PY
+
+      - name: Verify frozen source and authorization bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          def blob(path):
+              b=Path(path).read_bytes(); return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          expected={
+            'review/aerosol-vertical-profile-sensitivity-v2-execution-control-v1/execution-contract.review.json':'383db5619849cb499104826801ed82227e6a2ddf',
+            'review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4/authorization.json':'dcfbd39081abe8e98604eedd48a1d934cea5483a',
+            'review/aerosol-vertical-profile-sensitivity-v2-control-v1/adapter.py':'c245eac2fe5b5d026e46ec4253bc377c5fde97ec',
+            'review/aerosol-vertical-profile-sensitivity-v2-control-v1/runtime_stage.py':'0d3ac10f3ef7d22f0205854233a6c37cbba03f7c',
+            'review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py':'bb1e4276d6383127a6b7e820fc2568d87d5de4b0',
+            'review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py':'ef24a0d30af3dfb46a6b764f3e426465da870fbe',
+            'experiments/aerosol-family-challenge-v2-r8-timeout-recovery-v1/execution-candidate/process_runner.py':'e23d724e99c1cf9b0b862f8ab48356bd3d9bc56c',
+            'experiments/aerosol-family-challenge-v2-r8/derived_channels.py':'ccfd04d4c21188966351f4257e92893d7ce340c7',
+            'experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat':'3bb3db96580d555ef758f57cabd6cac55b61cebb',
+          }
+          for path,want in expected.items():
+              got=blob(path)
+              if got!=want: raise SystemExit(f'bound byte drift {path}: {got}')
+          auth=json.load(open('review/aerosol-vertical-profile-sensitivity-v2-authorization-control-v4/authorization.json'))
+          checks={
+            'scientificOrdinal':41,
+            'executionKey':'aerosol-vertical-profile-sensitivity-v2:numerical:41',
+            'authorizationBranch':'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'dispatchBranch':'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'candidateSeedCanonicalSha256':'02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2',
+            'caseCount':360,'commonRandomNumberGroupCount':72,'statesPerGroup':5,
+            'photonHistoriesPerCase':20000000,
+          }
+          for k,w in checks.items():
+              if auth.get(k)!=w: raise SystemExit(f'authorization drift {k}: {auth.get(k)!r}')
+          if auth.get('scientificExecutionAuthorized') is not True or auth.get('solverExecutionAuthorized') is not True:
+              raise SystemExit('authorization does not preserve separately dispatched science permission')
+          for k in ('automaticDispatch','dispatchAuthorized','resultOpeningAuthorized','productionAuthorized','taylorOrJerusalemFitAuthorized','githubRerunAllowed','retryAllowed','resumeAllowed'):
+              if auth.get(k) is not False: raise SystemExit(f'forbidden authorization state {k}')
+          PY
+
+      - name: Static-review callable science and zero-runtime publisher mechanics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s .github/workflows/avps-v2-science.yml
+          test -s .github/workflows/avps-v2-dispatch-publisher.yml
+          python - <<'PY'
+          from pathlib import Path
+          science=Path('.github/workflows/avps-v2-science.yml').read_text()
+          publisher=Path('.github/workflows/avps-v2-dispatch-publisher.yml').read_text()
+          protocol=Path('review/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1/PROTOCOL.md').read_text()
+          required_science=[
+            'name: AVPS v2 scientific execution', 'workflow_dispatch:', 'dispatch_ref:',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'd5f5e4d9d19d7ede573fecae68565a92baabbec3',
+            'aerosol-vertical-profile-sensitivity-v2:numerical:41',
+            'review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py',
+            'review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py',
+            'avps-v2-case-', 'avps-v2-preflight-ordinal-',
+            'GITHUB_RUN_ATTEMPT', '20_000_000', 'candidateSeedCanonicalSha256',
+            'aerosol_species_file', 'INSO WASO SOOT SUSO',
+            'COMPLETE_EXACT_360_CASE_ARTIFACT_UNIVERSE_RESULTS_STILL_CLOSED',
+          ]
+          missing=[x for x in required_science if x not in science]
+          if missing: raise SystemExit(f'science workflow required bindings missing: {missing}')
+          forbidden_science=['open_results', 'level_b_runner', 'primary-analysis.json', 'level-b-analysis.json', 'Taylor', 'Jerusalem']
+          present=[x for x in forbidden_science if x in science]
+          if present: raise SystemExit(f'science workflow crosses result-opening boundary: {present}')
+          required_publisher=[
+            'name: AVPS v2 dispatch publisher', 'workflow_dispatch:',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-ordinal-41',
+            'd5f5e4d9d19d7ede573fecae68565a92baabbec3',
+            'ORDINAL41_AVPS_V2_DISPATCH_CONSUMED', 'DISPATCH_PUBLISHED_ZERO_RUNTIME',
+            'avps-v2-science.yml', '"ref":"main"', 'dispatch_ref',
+            'scientificRuntimeSetupPerformed', 'solverExecutionPerformed',
+          ]
+          missing=[x for x in required_publisher if x not in publisher]
+          if missing: raise SystemExit(f'publisher required bindings missing: {missing}')
+          forbidden_publisher=['rubin-libradtran', 'micromamba', 'uvspec', 'optprop_v2.1.tar.gz', 'mc_photons', 'rte_solver mystic']
+          present=[x for x in forbidden_publisher if x in publisher]
+          if present: raise SystemExit(f'publisher must remain zero-runtime: {present}')
+          for text,label in ((science,'science'),(publisher,'publisher')):
+              if 'rerun' in text.lower() and 'githubrerun' not in text.lower() and 'GitHub Re-run' not in protocol:
+                  raise SystemExit(f'unreviewed rerun semantics in {label}')
+          if 'The callable workflow is published on the default branch' not in protocol:
+              raise SystemExit('default-branch/authorization-ref separation is not frozen in protocol')
+          PY
+
+      - name: Prove review itself remains zero-runtime and non-mutating
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          self_text=Path('.github/workflows/aerosol-vertical-profile-sensitivity-v2-science-workflow-v1-review.yml').read_text()
+          forbidden=['setup-micromamba','rubin-libradtran','command -v uvspec','workflow_dispatch:', 'git push origin', 'issues/60/comments" -f body=', 'optprop_v2.1.tar.gz']
+          # The literal workflow_dispatch token is allowed only inside quoted Python static-test strings above.
+          scrub='\n'.join(line for line in self_text.splitlines() if "'workflow_dispatch:'" not in line and 'required_' not in line)
+          bad=[x for x in forbidden if x in scrub]
+          if bad: raise SystemExit(f'review crossed solver/dispatch/mutation boundary: {bad}')
+          PY
+
+      - name: Emit review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-science-workflow-v1-review',
+            'status':'PASS_SOLVER_FREE_SCIENCE_WORKFLOW_AND_ZERO_RUNTIME_PUBLISHER_REVIEW_DISPATCH_NOT_CREATED',
+            'headSha':os.environ['GITHUB_SHA'],
+            'baseHead':'b0721b0c17b64251cb388e5d0af4100e8ae23f3d',
+            'scientificOrdinal':41,
+            'authorizationHead':'d5f5e4d9d19d7ede573fecae68565a92baabbec3',
+            'scienceWorkflowSha256':sha('.github/workflows/avps-v2-science.yml'),
+            'publisherWorkflowSha256':sha('.github/workflows/avps-v2-dispatch-publisher.yml'),
+            'scientificRuntimeSetupPerformed':False,
+            'scientificExecutionPerformed':False,
+            'solverExecutionPerformed':False,
+            'dispatchCreated':False,
+            'consumedMarkerPosted':False,
+            'resultsOpened':False,
+            'levelBOpened':False,
+            'productionAuthorized':False,
+            'taylorOrJerusalemScored':False,
+          }
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-science-workflow-v1-review
+          path: |
+            review-receipt.json
+            changed-paths.txt
+          if-no-files-found: error
+          compression-level: 0

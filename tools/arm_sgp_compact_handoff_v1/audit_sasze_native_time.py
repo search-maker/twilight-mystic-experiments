@@ -33,7 +33,6 @@ STREAMS: tuple[tuple[str, str, str], ...] = (
         "DAYLIGHT_GATED_DERIVED_RADIANCE_NOT_TWILIGHT_GATE",
     ),
 )
-# Backward-compatible import used by older callers/self-tests.
 STREAM = PRIMARY_STREAM
 QC_VAR_RE = re.compile(r"(^qc_|_qc$|quality|flag|mask|status)", re.I)
 AUDIT_VARS = {
@@ -103,7 +102,6 @@ def decode_native_times(ds: netCDF4.Dataset) -> np.ndarray:
 
 
 def has_decodable_time_coordinate(ds: netCDF4.Dataset) -> bool:
-    """Whether an empty native-time array is still structurally decodable."""
     if "time" in ds.variables and bool(getattr(ds.variables["time"], "units", None)):
         return True
     return "base_time" in ds.variables and "time_offset" in ds.variables
@@ -120,14 +118,12 @@ def load_cases(path: Path) -> list[dict[str, str]]:
 
 
 def strict_gap_metrics(times: np.ndarray, core_start: float, core_end: float) -> tuple[float | None, float | None, bool]:
-    """Return source-day median cadence, bracketing-segment max gap, bracket flag."""
     if times.size < 2:
         return None, None, False
     times = np.unique(times[np.isfinite(times)])
     positive = np.diff(times)
     positive = positive[positive > 0]
     cadence = float(np.median(positive)) if positive.size else None
-
     left_candidates = np.flatnonzero(times <= core_start)
     right_candidates = np.flatnonzero(times >= core_end)
     if left_candidates.size == 0 or right_candidates.size == 0:
@@ -136,15 +132,13 @@ def strict_gap_metrics(times: np.ndarray, core_start: float, core_end: float) ->
     right = int(right_candidates[0])
     if right <= left:
         return cadence, None, False
-    segment = times[left : right + 1]
-    gaps = np.diff(segment)
+    gaps = np.diff(times[left : right + 1])
     gaps = gaps[gaps > 0]
     max_gap = float(np.max(gaps)) if gaps.size else None
     return cadence, max_gap, True
 
 
 def collect_housekeeping(ds: netCDF4.Dataset, modes: set[str], health: set[str], errors: list[str], source: str) -> None:
-    """Read timing/housekeeping metadata only; never touch radiance/transmittance."""
     for name, var in ds.variables.items():
         lname = name.lower()
         if name in AUDIT_VARS or "integration_time" in lname or "number_of_scans" in lname:
@@ -184,7 +178,6 @@ def audit_case(archive_root: Path, case: dict[str, str], stream: str = PRIMARY_S
     t7 = parse_utc(case["t_minus7_utc"]).timestamp()
     t6 = parse_utc(case["t_minus6_utc"]).timestamp()
     core_start, core_end = sorted((t8, t6))
-
     chunks: list[np.ndarray] = []
     errors: list[str] = []
     modes: set[str] = set()
@@ -205,18 +198,13 @@ def audit_case(archive_root: Path, case: dict[str, str], stream: str = PRIMARY_S
         except Exception as exc:
             unresolved_source_files += 1
             errors.append(f"{path.name}:{type(exc).__name__}:{exc}")
-
     times = np.unique(np.concatenate(chunks)) if chunks else np.array([], dtype=float)
     core = times[(times >= core_start) & (times <= core_end)]
     cadence, max_gap, brackets = strict_gap_metrics(times, core_start, core_end)
     gap_ok = bool(cadence is not None and max_gap is not None and max_gap <= 2.0 * cadence + 1e-9)
-
     if not files:
         disposition = "SOURCE_FILE_MISSING"
     elif readable == 0 or unresolved_source_files > 0:
-        # Fail closed even if another same-day file is readable/continuous. A
-        # partially unresolved source set cannot prove observational absence or
-        # continuity and therefore must never contribute to the all-20 HALT rule.
         disposition = "UNREADABLE"
     elif core.size == 0:
         disposition = "TWILIGHT_SAMPLES_ABSENT"
@@ -260,13 +248,20 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def update_summary(path: Path, rows: list[dict[str, Any]]) -> None:
     summary = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    # Remove provisional filterband-gate fields emitted by the broad inventory
+    # pass so no stale key can be mistaken for the authoritative VIS decision.
+    for legacy_key in (
+        "sasze_gate_counts",
+        "sasze_gate_complete_readable",
+        "sasze_all20_readably_absent_or_discontinuous",
+    ):
+        summary.pop(legacy_key, None)
     counts_by_stream: dict[str, dict[str, int]] = {}
     for row in rows:
         stream = str(row["stream"])
         disposition = str(row["disposition"])
         stream_counts = counts_by_stream.setdefault(stream, {})
         stream_counts[disposition] = stream_counts.get(disposition, 0) + 1
-
     primary_rows = [r for r in rows if r["stream"] == PRIMARY_STREAM]
     summary["sasze_gate_algorithm"] = "strict-primary-vis-source-day-cadence-edge-gap-partial-unreadable-failclosed-v3"
     summary["sasze_primary_gate_stream"] = PRIMARY_STREAM
@@ -294,14 +289,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--update-summary", type=Path)
     args = parser.parse_args(argv)
-
     archive_root = args.archive_root.resolve()
     cases = load_cases(args.priority_csv)
     rows = [audit_case(archive_root, case, stream) for case in cases for stream, _, _ in STREAMS]
     write_csv(args.output, rows)
     if args.update_summary:
         update_summary(args.update_summary, rows)
-
     primary_rows = [r for r in rows if r["stream"] == PRIMARY_STREAM]
     counts: dict[str, int] = {}
     for row in primary_rows:

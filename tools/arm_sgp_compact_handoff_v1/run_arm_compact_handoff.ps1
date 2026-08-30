@@ -52,6 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 # or if the frozen synthetic SASZE gate semantics do not reproduce exactly.
 & $python -m py_compile `
     (Join-Path $ScriptRoot "extract_arm_compact_handoff.py") `
+    (Join-Path $ScriptRoot "repair_cdf_netcdf_inventory.py") `
     (Join-Path $ScriptRoot "compact_netcdf_headers.py") `
     (Join-Path $ScriptRoot "extract_quality_documents.py") `
     (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
@@ -74,6 +75,16 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
     --start 2023-12-14 `
     --end 2024-06-02
 if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $LASTEXITCODE." }
+
+# ARM still uses .cdf filenames for scientifically essential NetCDF streams
+# such as SGP radiosondes. The broad extractor deliberately keeps its original
+# .nc classification stable; this additive post-pass decodes .cdf NetCDF files
+# into the compact inventory/headers/QC/representative extracts without changing
+# any source byte or opening protected SASZE radiance.
+& $python (Join-Path $ScriptRoot "repair_cdf_netcdf_inventory.py") `
+    --archive-root $ArchiveRoot `
+    --output $OutputRoot
+if ($LASTEXITCODE -ne 0) { throw "ARM .cdf NetCDF compatibility pass failed with exit code $LASTEXITCODE." }
 
 # Collapse daily NetCDF headers to structural schemas. Record/time dimension
 # lengths are observed ranges, not reasons to duplicate an otherwise identical schema.
@@ -99,8 +110,9 @@ if ($LASTEXITCODE -ne 0) { throw "Quality-document extraction failed with exit c
     --update-summary (Join-Path $OutputRoot "summary.json")
 if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
 
-# Refresh handoff file hashes after header compaction, quality-document extraction,
-# and the strict SASZE gate. Redact the absolute local archive path before upload.
+# Refresh handoff file hashes after .cdf repair, header compaction,
+# quality-document extraction, and the strict SASZE gate. Redact the absolute
+# local archive path before upload.
 $manifestRefresh = @'
 import hashlib
 import json

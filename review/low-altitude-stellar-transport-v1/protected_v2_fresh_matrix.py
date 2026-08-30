@@ -13,6 +13,7 @@ protected results.
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import hashlib
 import importlib.util
 import json
@@ -61,7 +62,15 @@ class FreshProtectedV2Refusal(RuntimeError):
 
 
 def _midpoints(axis: tuple[float, ...]) -> tuple[float, ...]:
-    return tuple((float(axis[i]) + float(axis[i + 1])) / 2.0 for i in range(len(axis) - 1))
+    # Derive cell centers from the canonical decimal spelling of the frozen
+    # axes, rather than from binary-float addition. This keeps values such as
+    # the midpoint of 0.10 and 0.20 canonically equal to the frozen 0.15 while
+    # changing no scientific coordinate.
+    two = Decimal("2")
+    return tuple(
+        float((Decimal(str(axis[i])) + Decimal(str(axis[i + 1]))) / two)
+        for i in range(len(axis) - 1)
+    )
 
 
 def _coord(h: float, e: float, a: float) -> tuple[float, float, float]:

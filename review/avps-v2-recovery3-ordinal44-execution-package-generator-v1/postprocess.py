@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,10 +60,20 @@ def main() -> int:
     publisher = replace_exact(publisher, old, new, 1)
     PUBLISHER.write_text(publisher)
 
+    publisher_blob = git_blob(PUBLISHER.read_bytes())
+    trigger = TRIGGER.read_text()
+    pattern = re.compile(r'(?m)^  PUBLISHER_BLOB: [0-9a-f]{40}$')
+    matches = pattern.findall(trigger)
+    if len(matches) != 1:
+        raise SystemExit(f'expected exactly one trigger PUBLISHER_BLOB binding, found {len(matches)}')
+    trigger = pattern.sub(f'  PUBLISHER_BLOB: {publisher_blob}', trigger, count=1)
+    TRIGGER.write_text(trigger)
+
     manifest = json.loads(MANIFEST.read_text())
     manifest['hardeningPostprocessApplied'] = True
     manifest['freshPreflightArtifactIdentity'] = True
     manifest['publicationModeReviewRequiredBeforeDispatch'] = True
+    manifest['triggerBindsHardenedPublisherBlob'] = True
     manifest['outputs'] = {
         SCIENCE.name: file_identity(SCIENCE),
         PUBLISHER.name: file_identity(PUBLISHER),

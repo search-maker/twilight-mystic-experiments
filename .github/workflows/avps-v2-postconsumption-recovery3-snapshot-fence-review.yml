@@ -1,0 +1,203 @@
+name: Review AVPS v2 recovery3 snapshot-fence protocol
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-postconsumption-recovery3-snapshot-fence-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-snapshot-fence-v1/PROTOCOL.md
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v2-recovery3-snapshot-fence-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  solver-free-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_BASE: 970a566f33fefe80590c84cccf3bbe0b1176ec23
+      EXPECTED_BRANCH: review/avps-v2-postconsumption-recovery3-snapshot-fence-v1
+      FAILED_RUN: '33298433506'
+      FAILED_JOB: '99222000748'
+      CONSUMED_MARKER: ORDINAL43_AVPS_V2_POSTCONSUMPTION_RECOVERY2_DISPATCH_CONSUMED
+      PROTOCOL: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-snapshot-fence-v1/PROTOCOL.md
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact additive preregistration surface
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          test "$EVENT_BRANCH" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/avps-v2-postconsumption-recovery3-snapshot-fence-review.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-snapshot-fence-v1/PROTOCOL.md
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          if grep -E '^(experiments/|scientific-tools/|src/|index.html$)' changed-paths.txt; then
+            echo 'runtime/science source changed by preregistration' >&2
+            exit 1
+          fi
+
+      - name: Re-verify immutable ordinal43 pre-solver failure and consumption
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN" > failed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN/jobs?per_page=100" > failed-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN/artifacts?per_page=100" > failed-artifacts.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          run=json.load(open('failed-run.json'))
+          expected={
+            'id':int(os.environ['FAILED_RUN']),
+            'run_attempt':1,
+            'event':'workflow_dispatch',
+            'status':'completed',
+            'conclusion':'failure',
+            'head_sha':'970a566f33fefe80590c84cccf3bbe0b1176ec23',
+          }
+          for k,v in expected.items():
+              if run.get(k)!=v: raise SystemExit(f'failed run drift {k}: {run.get(k)!r} != {v!r}')
+          if run.get('path')!='.github/workflows/avps-v2-postconsumption-recovery2-science.yml':
+              raise SystemExit('failed science workflow path drift')
+
+          jobs=json.load(open('failed-jobs.json')).get('jobs',[])
+          hits=[j for j in jobs if int(j.get('id') or 0)==int(os.environ['FAILED_JOB'])]
+          if len(hits)!=1 or hits[0].get('name')!='preflight' or hits[0].get('conclusion')!='failure':
+              raise SystemExit('failed preflight identity/state drift')
+          steps={s.get('name'):s.get('conclusion') for s in hits[0].get('steps',[])}
+          if steps.get('Prove exact one-use dispatch and authorization identity before runtime')!='success':
+              raise SystemExit('ordinal43 identity gate did not pass')
+          if steps.get('Fresh repository-global candidate-seed recheck and one-use guard')!='failure':
+              raise SystemExit('expected repository-global stability refusal not preserved')
+          for name in (
+              'Recover immutable validated four-species profile bytes',
+              'Build exact four 90-case matrices in memory',
+              'Acquire and hash-bind exact OPAC archive once',
+              'Persist pre-solver guard, profiles and exact OPAC bytes',
+          ):
+              if steps.get(name)!='skipped':
+                  raise SystemExit(f'ordinal43 crossed pre-solver boundary at {name}: {steps.get(name)!r}')
+          other=[j for j in jobs if int(j.get('id') or 0)!=int(os.environ['FAILED_JOB'])]
+          if len(other)!=5 or any(j.get('conclusion')!='skipped' for j in other):
+              raise SystemExit(f'non-preflight jobs did not all skip: {[(j.get("name"),j.get("conclusion")) for j in other]}')
+
+          artifacts=json.load(open('failed-artifacts.json'))
+          if artifacts.get('total_count')!=0 or artifacts.get('artifacts')!=[]:
+              raise SystemExit('ordinal43 unexpectedly produced artifacts')
+
+          pages=json.load(open('issue60-pages.json'))
+          comments=[c for page in pages for c in page]
+          bodies=[str(c.get('body') or '').strip() for c in comments]
+          marker=os.environ['CONSUMED_MARKER']
+          if sum(b.startswith(marker) for b in bodies)!=1:
+              raise SystemExit('ordinal43 consumed marker cardinality drift')
+          if not any('AVPS-V2 ORDINAL43 TERMINAL PRE-SOLVER FAILURE' in b and 'PRE_SOLVER_REPOSITORY_GLOBAL_SNAPSHOT_STABILITY_FAILURE' in b for b in bodies):
+              raise SystemExit('durable terminal failure classification missing')
+
+          protocol=Path(os.environ['PROTOCOL']).read_text()
+          required=(
+              'Failed science workflow run: `33298433506`, attempt 1.',
+              'Failed preflight job: `99222000748`.',
+              'PRE_SOLVER_REPOSITORY_GLOBAL_SNAPSHOT_STABILITY_FAILURE',
+              'never GitHub Re-run/retry/resume run `33298433506`',
+              'never reuse ordinal 43',
+              'dynamically verified next unused global scientific ordinal',
+              'MUST NOT be hard-coded',
+              '360 cases total',
+              '72 common-random-number groups',
+              '20,000,000 photon histories per case',
+              'short-lived repository WRITE_QUIET snapshot fence',
+              'Release the fence **before long case solver work continues**',
+              'scanner itself must remain fail-closed',
+              'every richer `newMappingAuthorized` flag remains `false`',
+              'resultOpeningAuthorized=false',
+              'productionAuthorized=false',
+          )
+          for token in required:
+              if token not in protocol: raise SystemExit(f'protocol missing invariant: {token}')
+          forbidden=(
+              'ordinal 43 is reusable',
+              'may reuse ordinal 43',
+              'GitHub Re-run run `33298433506`',
+              'Taylor/Jerusalem residual use is allowed',
+              'weaken the two-pass comparison',
+          )
+          for token in forbidden:
+              if token in protocol: raise SystemExit(f'forbidden recovery claim: {token}')
+          PY
+
+      - name: Prove zero-runtime preregistration and write review receipt
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if grep -R -nE '(^|[^A-Za-z])(uvspec|mc_photons|aerosol_set_tau_at_wvl)([^A-Za-z]|$)' "$PROTOCOL" .github/workflows/avps-v2-postconsumption-recovery3-snapshot-fence-review.yml | grep -vE 'does not create|No `uvspec`|no `uvspec`|No scientific/runtime'; then
+            echo 'preregistration must not implement scientific runtime' >&2
+            exit 1
+          fi
+          mkdir -p review-evidence
+          cp changed-paths.txt failed-run.json failed-jobs.json failed-artifacts.json review-evidence/
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out={
+            'schemaVersion':1,
+            'status':'PASS_AVPS_V2_RECOVERY3_SNAPSHOT_FENCE_PROTOCOL_SOLVER_FREE',
+            'headSha':os.environ['EVENT_HEAD'],
+            'baseSha':os.environ['EXPECTED_BASE'],
+            'failedRun':int(os.environ['FAILED_RUN']),
+            'failedJob':int(os.environ['FAILED_JOB']),
+            'ordinal43Consumed':True,
+            'failedBeforeSolver':True,
+            'failedRunArtifactCount':0,
+            'numericalConclusionAvailable':False,
+            'freshIdentityRequired':True,
+            'freshSeedsRequired':True,
+            'dynamicNextOrdinalRequired':True,
+            'shortLivedWriteQuietRequired':True,
+            'scientificRuntimePerformed':False,
+            'resultOpeningPerformed':False,
+            'levelBAdmissionPerformed':False,
+            'holdoutOpened':False,
+            'productionPerformed':False,
+            'taylorOrJerusalemUsed':False,
+          }
+          Path('review-evidence/review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery3-snapshot-fence-protocol-review
+          path: review-evidence/
+          if-no-files-found: error
+          compression-level: 0

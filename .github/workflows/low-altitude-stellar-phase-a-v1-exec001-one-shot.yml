@@ -1,0 +1,181 @@
+name: Low-altitude stellar Phase-A v1 exec001 one-shot
+run-name: Low-altitude stellar Phase-A v1 exec001 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - dispatch/low-altitude-stellar-phase-a-v1-exec001
+
+permissions:
+  contents: read
+
+concurrency:
+  group: low-altitude-stellar-phase-a-v1-exec001-one-shot
+  cancel-in-progress: false
+
+env:
+  STAGE_DIR: review/low-altitude-stellar-transport-v1
+  DISPATCH_PATH: review/low-altitude-stellar-transport-v1/phase-a-exec001-dispatch.json
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  UVSPEC_HELP_SHA256: 868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+
+jobs:
+  execute-once:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact dispatch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-file one-shot dispatch boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = dispatch/low-altitude-stellar-phase-a-v1-exec001
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$DISPATCH_PATH"
+          python - <<'PY'
+          import json,os,subprocess
+          p=os.environ['DISPATCH_PATH']
+          d=json.load(open(p,encoding='utf-8'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          expected={
+            'schemaVersion':1,
+            'executionId':'low-altitude-stellar-phase-a-v1-exec001',
+            'status':'AUTHORIZED_ONE_SHOT_DETERMINISTIC_NUMERICAL_CAPABILITY_SCREEN',
+            'baseMainSha':parent,
+            'phaseACaseCount':28,
+            'scientificExecutionAuthorized':True,
+            'solverExecutionAuthorized':True,
+            'resultOpeningAuthorized':True,
+            'protectedRepresentationValidationAuthorized':False,
+            'githubRerunPermitted':False,
+            'solverRetryPermitted':False,
+            'solverResumePermitted':False,
+            'positiveEpsilonSubstitutionAllowed':False,
+            'productionAuthorized':False,
+            'taylorOrJerusalemUsed':False,
+          }
+          for k,v in expected.items():
+            if d.get(k)!=v: raise SystemExit(f'dispatch mismatch {k}: {d.get(k)!r} != {v!r}')
+          if d.get('targetGeometricAltitudeDeg') != [0.25,0.5,1.0,2.0,3.0,4.0,5.0]:
+            raise SystemExit('altitude freeze drift')
+          if d.get('observerElevationM') != [0.0,2500.0] or d.get('aod550') != [0.05,0.4]:
+            raise SystemExit('atmosphere endpoint freeze drift')
+          PY
+
+      - name: Set up exact libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: low-altitude-stellar-phase-a-v1-exec001
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify pinned solver and atmosphere data
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          UVHELP_SHA="$(python - <<'PY'
+          import hashlib,subprocess,shutil
+          u=shutil.which('uvspec')
+          r=subprocess.run([u,'-h'],capture_output=True,check=True)
+          print(hashlib.sha256(r.stdout+r.stderr).hexdigest())
+          PY
+          )"
+          test "$UVHELP_SHA" = "$UVSPEC_HELP_SHA256"
+          PACKAGE_SPEC="$(python - <<'PY'
+          import json,subprocess
+          rows=json.loads(subprocess.check_output(['micromamba','list','--json'],text=True))
+          matches=[r for r in rows if r.get('name')=='rubin-libradtran']
+          if len(matches)!=1: raise SystemExit('rubin-libradtran package count drift')
+          r=matches[0]
+          print(f"{r['name']}={r['version']}={r['build_string']}")
+          PY
+          )"
+          test "$PACKAGE_SPEC" = 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1'
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+
+      - name: Recheck frozen protocol immediately before execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests/test_low_altitude_stellar_transport_preexecution_v1.py tests/test_low_altitude_stellar_phase_a_exec001_control.py
+          python "$STAGE_DIR/low_altitude_phase_a.py" --emit-ledger > /tmp/phase-a-ledger.json
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/phase-a-ledger.json',encoding='utf-8'))
+          assert len(d['phaseACases']) == 28
+          assert d['failureSemantics']['epsilonSubstitutionAllowed'] is False
+          assert d['failureSemantics']['sameIdentityRetryAllowed'] is False
+          PY
+
+      - name: Execute exactly 28 deterministic Phase-A spectra once
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test ! -e execution-output
+          python "$STAGE_DIR/run_phase_a_exec001.py" \
+            --execute --allow-execution \
+            --uvspec "$UVSPEC" \
+            --data-dir "$LIBRADTRAN_DATA" \
+            --atmosphere-file "$LIBRADTRAN_DATA/atmmod/afglus.dat" \
+            --wavelength-grid-file experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat \
+            --output-dir execution-output
+
+      - name: Verify terminal case accounting without changing scientific classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('execution-output/phase-a-exec001-result.json',encoding='utf-8'))
+          q=json.load(open('execution-output/execution-receipt.json',encoding='utf-8'))
+          assert r['executionId']=='low-altitude-stellar-phase-a-v1-exec001'
+          assert r['executionComplete'] is True
+          assert r['solverInvocationCount']==28
+          assert len(r['cases'])==28
+          assert r['randomNumbersUsed'] is False
+          assert r['positiveEpsilonSubstitutionUsed'] is False
+          assert r['protectedRepresentationValidationOpened'] is False
+          assert r['productionAuthorized'] is False
+          assert q['solverInvocationCount']==28
+          print(json.dumps(q,sort_keys=True))
+          PY
+
+      - name: Publish immutable Phase-A capability evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: low-altitude-stellar-phase-a-v1-exec001-result
+          path: execution-output/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

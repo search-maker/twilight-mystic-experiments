@@ -1,0 +1,230 @@
+name: Lunar secondary AOD550 anchor precision recovery v1 exec001
+
+on:
+  push:
+    branches:
+      - execution/lunar-secondary-aod550-anchor-precision-recovery-v1-exec001
+    paths:
+      - '.github/workflows/lunar-secondary-aod550-anchor-precision-recovery-v1-exec001.yml'
+
+permissions:
+  contents: read
+
+env:
+  EXECUTION_ID: lunar-secondary-aod550-anchor-precision-recovery-v1-exec001
+  REVIEW_HEAD: 65adf3ade4d5a957124b5721ee5c9aabb656b13e
+  REVIEW_RUN_ID: '33296769952'
+  REVIEW_ARTIFACT_ID: '9727678041'
+  REVIEW_ARTIFACT_DIGEST: sha256:8b4f6aeadd62a1bdcc6dda9ffc1a612e315f11832582634d487ddb17bcf97a95
+
+jobs:
+  execute-shards:
+    name: execute shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Refuse rerun/retry semantics and bind execution authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('review/lunar-scattered-light-source-contract-v1/lunar-secondary-aod550-anchor-precision-recovery-v1-exec001.json')
+          x=json.load(open(p))
+          assert x['executionId']==os.environ['EXECUTION_ID']
+          assert x['status']=='AUTHORIZED_ONE_SHOT_ATTEMPT1_ONLY'
+          assert x['sourceReview']['head']==os.environ['REVIEW_HEAD']
+          assert str(x['sourceReview']['reviewRunId'])==os.environ['REVIEW_RUN_ID']
+          assert str(x['sourceReview']['reviewArtifactId'])==os.environ['REVIEW_ARTIFACT_ID']
+          assert x['sourceReview']['reviewArtifactDigest']==os.environ['REVIEW_ARTIFACT_DIGEST']
+          assert x['authorization']['scientificSolverExecutionAuthorized'] is True
+          assert x['authorization']['resultOpeningAuthorizedOnlyByFrozenEvaluator'] is True
+          assert x['frozenExecution']['freshSeeds']==list(range(28764001,28764037))
+          assert x['frozenExecution']['mcPhotonsDirectivePerInput']==5000000
+          assert x['frozenExecution']['targetRelativeMcStdMax']==0.10
+          assert x['frozenExecution']['replicateConsistencyZMax']==4.0
+          assert all(v is False for v in x['protectedBoundaries'].values())
+          PY
+
+      - name: Deterministic contract/evaluator regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_lunar_mystic_secondary_aod550_anchor_compatibility_v1.py
+          python tests/test_lunar_mystic_secondary_aod550_anchor_precision_recovery_v1.py
+
+      - name: Set up exact frozen libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lunar-anchor-precision-recovery-exec001
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Prepare exact reviewed inputs
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p work shard-artifact/cases
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output work/runtime-report.json
+          python review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_aod550_anchor_precision_recovery.py \
+            --prepare \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere-file "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --atlas-file "$CONDA_PREFIX/share/libRadtran/data/solar_flux/atlas_plus_modtran" \
+            --runtime-report work/runtime-report.json \
+            --output-root work/prepared
+          python - <<'PY'
+          import json
+          m=json.load(open('work/prepared/prepared-manifest.json'))
+          assert m['status']=='PREPARED_NO_SOLVER_EXECUTION'
+          assert m['caseCount']==36
+          assert [r['randomSeed'] for r in m['cases']]==list(range(28764001,28764037))
+          assert all(r['photonHistories']==5000000 for r in m['cases'])
+          PY
+          cp work/runtime-report.json "shard-artifact/runtime-shard-${{ matrix.shard }}.json"
+
+      - name: Execute exactly the six frozen cases assigned to this shard
+        shell: micromamba-shell {0}
+        run: |
+          set -u
+          python - <<'PY' > work/shard-case-paths.txt
+          import json
+          shard=int('${{ matrix.shard }}')
+          m=json.load(open('work/prepared/prepared-manifest.json'))
+          chosen=[row for i,row in enumerate(m['cases']) if i % 6 == shard]
+          assert len(chosen)==6
+          for row in chosen:
+              print(row['inputPath'])
+          PY
+          while IFS= read -r input_path; do
+            case_dir="$(dirname "$input_path")"
+            set +e
+            uvspec < "$input_path" > "$case_dir/uvspec.stdout" 2> "$case_dir/uvspec.stderr"
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$case_dir/uvspec.exitcode"
+            cp -a "$case_dir" "shard-artifact/cases/$(basename "$case_dir")"
+          done < work/shard-case-paths.txt
+          set -euo pipefail
+          test "$(find shard-artifact/cases -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 6
+
+      - name: Publish immutable shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-secondary-anchor-recovery-exec001-shard-${{ matrix.shard }}
+          path: shard-artifact
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  evaluate-frozen-result:
+    name: frozen evaluator
+    needs: execute-shards
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Refuse rerun/retry semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Download all immutable shard evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lunar-secondary-anchor-recovery-exec001-shard-*
+          path: aggregated
+          merge-multiple: true
+
+      - name: Assemble exactly 36 cases and apply only the frozen evaluator
+        id: evaluate
+        shell: bash
+        run: |
+          set -u
+          mkdir -p final-result
+          if [ -d aggregated/cases ]; then
+            cp -a aggregated/cases/. final-result/
+          fi
+          find aggregated -maxdepth 1 -name 'runtime-shard-*.json' -type f -exec cp {} final-result/ \;
+          count="$(find final-result -mindepth 1 -maxdepth 1 -type d | wc -l)"
+          printf '%s\n' "$count" > final-result/case-directory-count.txt
+          set +e
+          python review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_aod550_anchor_precision_recovery.py \
+            --evaluate \
+            --output-root final-result
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > final-result/evaluator.exitcode
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('final-result/precision-recovery-report.json')
+          if p.exists():
+              r=json.load(open(p))
+              assert r['parentV1StatusRemains']=='FAIL_COMPUTATIONAL_PRECISION'
+              assert r['failedExec001StatusRemains']=='EXECUTION_INCOMPLETE'
+              assert r['technicalAnchorExcludedFromPrecisionAcceptance'] is True
+              assert r['compatibilityProbeUsedAsPrecisionEvidence'] is False
+              assert r['toaSourceValidated'] is False
+              assert r['atmosphericScatteredMoonlightEmpiricallyValidated'] is False
+              assert r['finiteMoonDiskValidated'] is False
+              assert r['totalSkyValidated'] is False
+              assert r['productionAuthorized'] is False
+          PY
+          exit 0
+
+      - name: Publish complete immutable execution result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-secondary-aod550-anchor-precision-recovery-v1-exec001-result
+          path: final-result
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Enforce frozen scientific classification
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f final-result/evaluator.exitcode ]; then
+            echo 'Frozen evaluator did not produce a classification.' >&2
+            exit 2
+          fi
+          rc="$(cat final-result/evaluator.exitcode)"
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'This one-shot identity evaluates computational precision only for the frozen central collimated lunar grid.'
+          echo 'The technical 550-nm anchor output is excluded from secondary precision acceptance.'
+          echo 'No Air-LUSI/X-Shooter/Taylor/Jerusalem residuals are opened or used.'
+          echo 'No ROLO TOA validation, empirical atmospheric moonlight validation, finite-disk validation, total-sky validation, or production authorization follows from this run.'

@@ -1,0 +1,120 @@
+name: LOWALT STATE-0003 pinned source equivalence audit v1
+
+on:
+  pull_request:
+    paths:
+      - review/low-altitude-stellar-transport-v3/LOWALT_STELLAR_STATE_0003_SOURCE_EQUIVALENCE_AUDIT_V1.md
+      - review/low-altitude-stellar-transport-v3/source_audit.py
+      - .github/workflows/lowalt-stellar-state-0003-source-equivalence-audit-v1.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  source-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_BASE: 35f21245886086d0762affc7e2b80ffd5a67cbd4
+      FEEDSTOCK_COMMIT: d6f1997b2f486541136f514188c650fdd370f8e2
+      FEEDSTOCK_RECIPE_URL: https://raw.githubusercontent.com/conda-forge/rubin-libradtran-feedstock/d6f1997b2f486541136f514188c650fdd370f8e2/recipe/meta.yaml
+      SOURCE_URL: https://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+      EXPECTED_SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact result-blind review identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/low-altitude-stellar-state-0003-source-equivalence-audit-v1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}")"
+          python - "$pr_json" <<'PY'
+          import json, os, sys
+          p = json.loads(sys.argv[1])
+          if p["state"] != "open" or p["draft"] is not True or p["merged_at"] is not None:
+              raise SystemExit("source audit PR must remain open Draft/unmerged")
+          if p["head"]["ref"] != "review/low-altitude-stellar-state-0003-source-equivalence-audit-v1":
+              raise SystemExit("head ref drift")
+          if p["head"]["sha"] != os.environ["EXPECTED_HEAD"]:
+              raise SystemExit("head sha drift")
+          if p["base"]["ref"] != "main" or p["base"]["sha"] != os.environ["EXPECTED_BASE"]:
+              raise SystemExit("base drift")
+          PY
+          python -m py_compile review/low-altitude-stellar-transport-v3/source_audit.py
+          ! grep -R -E 'LOWALT-STELLAR-STATE-0001.*delta|Taylor|Jerusalem|halachic' review/low-altitude-stellar-transport-v3/source_audit.py
+          ! grep -R -E 'subprocess|os\.system|Popen|check_call|check_output' review/low-altitude-stellar-transport-v3/source_audit.py
+
+      - name: Acquire exact feedstock recipe and source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          curl -L --fail --retry 3 --retry-all-errors --max-time 120 -o feedstock-meta.yaml "$FEEDSTOCK_RECIPE_URL"
+          curl -L --fail --retry 3 --retry-all-errors --max-time 1200 -o libRadtran-2.0.6.tar.gz "$SOURCE_URL"
+          printf '%s  %s\n' "$(sha256sum feedstock-meta.yaml | awk '{print $1}')" feedstock-meta.yaml > evidence/download-sha256.txt
+          printf '%s  %s\n' "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" libRadtran-2.0.6.tar.gz >> evidence/download-sha256.txt
+
+      - name: Freeze pinned-source evidence
+        id: audit
+        shell: bash
+        run: |
+          set +e
+          python review/low-altitude-stellar-transport-v3/source_audit.py \
+            --archive libRadtran-2.0.6.tar.gz \
+            --recipe feedstock-meta.yaml \
+            --output evidence
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Prove solver-free boundary and classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s evidence/source-audit-report.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/source-audit-report.json'))
+          if x.get('scientificSolverExecuted') is not False: raise SystemExit('scientific solver boundary crossed')
+          if x.get('uvspecExecuted') is not False: raise SystemExit('uvspec boundary crossed')
+          if x.get('mysticExecuted') is not False: raise SystemExit('MYSTIC boundary crossed')
+          if x.get('protectedResultsRead') is not False: raise SystemExit('protected result boundary crossed')
+          if x.get('supportBelow5DegPromoted') is not False: raise SystemExit('support boundary crossed')
+          allowed={'PASS_PINNED_SOURCE_CAPTURED','FAIL_PINNED_SOURCE_ARCHIVE_DRIFT','FAIL_PINNED_RECIPE_DRIFT','FAIL_SOURCE_CAPTURE'}
+          if x.get('status') not in allowed: raise SystemExit(f"unexpected status {x.get('status')}")
+          print(x['status'])
+          PY
+
+      - name: Upload immutable compact source audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-state-0003-source-equivalence-audit-v1-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce audit success
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/source-audit-report.json'))
+          if x['status'] != 'PASS_PINNED_SOURCE_CAPTURED':
+              raise SystemExit(f"pinned source audit fail-closed: {x['status']}")
+          if len(x.get('governingFiles', {})) != 6:
+              raise SystemExit('governing source capture incomplete')
+          PY

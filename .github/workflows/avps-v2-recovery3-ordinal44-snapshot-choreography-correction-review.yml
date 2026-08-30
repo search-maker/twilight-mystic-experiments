@@ -1,0 +1,202 @@
+name: Review AVPS v2 recovery3 ordinal44 snapshot choreography correction
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review.yml
+      - review/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-v1/**
+      - .github/workflows/avps-v2-postconsumption-recovery3-science.yml
+      - .github/workflows/avps-v2-postconsumption-recovery3-dispatch-publisher.yml
+      - .github/workflows/avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v2-recovery3-ordinal44-snapshot-choreography-correction-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GENERATOR: review/avps-v2-recovery3-ordinal44-execution-package-generator-v1/generate.py
+      FIRST_POSTPROCESS: review/avps-v2-recovery3-ordinal44-execution-package-generator-v1/postprocess.py
+      CORRECTION: review/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-v1/postprocess.py
+      PROTOCOL: review/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-v1/PROTOCOL.md
+      REVIEW_WORKFLOW: .github/workflows/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review.yml
+      SCIENCE: .github/workflows/avps-v2-postconsumption-recovery3-science.yml
+      PUBLISHER: .github/workflows/avps-v2-postconsumption-recovery3-dispatch-publisher.yml
+      TRIGGER: .github/workflows/avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml
+      GENERATOR_BLOB: c4af4baf82bf6d938c63d87e75fb9fe48876a508
+      FIRST_POSTPROCESS_BLOB: 0a424a107100b265d8ef6d90483422c0c65149ea
+      SNAPSHOT_PROTOCOL_BLOB: 4526e5a2703ff3024c465a7b2f109034bd029786
+      AUTH_HEAD: dd3a4c692af505389e9feb1e5f5480fa389110a3
+      AUTH_PARENT: d8cd4af807e7a8f11ed39fdc579ed92adf866aab
+      NOT_ADMISSIBLE_COMMENT_ID: '5470357989'
+      EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact zero-runtime correction/publication review scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          test "$(git hash-object "$GENERATOR")" = "$GENERATOR_BLOB"
+          test "$(git hash-object "$FIRST_POSTPROCESS")" = "$FIRST_POSTPROCESS_BLOB"
+          test "$(git hash-object review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-snapshot-fence-v1/PROTOCOL.md)" = "$SNAPSHOT_PROTOCOL_BLOB"
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$NOT_ADMISSIBLE_COMMENT_ID" > not-admissible-comment.json
+          python - <<'PY'
+          import json,os
+          c=json.load(open('not-admissible-comment.json'))
+          if int(c.get('id') or 0)!=int(os.environ['NOT_ADMISSIBLE_COMMENT_ID']): raise SystemExit('NOT_ADMISSIBLE comment identity drift')
+          body=str(c.get('body') or '')
+          if 'AVPS_V2_RECOVERY3_ORDINAL44_EXECUTION_PACKAGE_NOT_ADMISSIBLE' not in body or 'snapshot-fence-release' not in body: raise SystemExit('NOT_ADMISSIBLE evidence drift')
+          PY
+          git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD | sort > changed.txt
+          if grep -qx "$CORRECTION" changed.txt; then
+            cat > expected.txt <<EOF
+          $REVIEW_WORKFLOW
+          $PROTOCOL
+          $CORRECTION
+          EOF
+            MODE=correction
+          else
+            cat > expected.txt <<EOF
+          $SCIENCE
+          $PUBLISHER
+          $TRIGGER
+          EOF
+            MODE=publication
+          fi
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          echo "MODE=$MODE" >> "$GITHUB_ENV"
+
+      - name: Regenerate old package then apply correction twice deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$GENERATOR" "$FIRST_POSTPROCESS" "$CORRECTION"
+          rm -rf generated-avps-v2-recovery3-ordinal44-execution-package /tmp/avps-r3-corrected-first
+          python "$GENERATOR" > generator-output-1.json
+          python "$FIRST_POSTPROCESS"
+          python "$CORRECTION"
+          cp -a generated-avps-v2-recovery3-ordinal44-execution-package /tmp/avps-r3-corrected-first
+          rm -rf generated-avps-v2-recovery3-ordinal44-execution-package
+          python "$GENERATOR" > generator-output-2.json
+          python "$FIRST_POSTPROCESS"
+          python "$CORRECTION"
+          diff -ru /tmp/avps-r3-corrected-first generated-avps-v2-recovery3-ordinal44-execution-package
+          cmp generator-output-1.json generator-output-2.json
+
+      - name: Verify exact frozen science plus required BEGIN-guard-END-barrier choreography
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,re,subprocess
+          from pathlib import Path
+          root=Path('generated-avps-v2-recovery3-ordinal44-execution-package')
+          m=json.load(open(root/'manifest.json'))
+          required={
+            'scientificOrdinal':44,
+            'authorizationHead':os.environ['AUTH_HEAD'],
+            'authorizationParent':os.environ['AUTH_PARENT'],
+            'caseCount':360,
+            'commonRandomNumberGroupCount':72,
+            'statesPerGroup':5,
+            'photonHistoriesPerCase':20000000,
+            'frozenScienceDesignChanged':False,
+            'snapshotFenceChoreographyCorrectionApplied':True,
+            'writeQuietBeginBeforeBootstrapRequired':True,
+            'guardStepTerminalEndRequired':True,
+            'snapshotFenceReleaseBarrierRequired':True,
+            'allSolverCaseJobsDependOnSnapshotFenceRelease':True,
+            'publisherReviewWorkflowExistsAfterCorrection':True,
+            'supersedesNotAdmissibleCommentId':5470357989,
+            'correctionReviewWorkflow':'avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review.yml',
+            'correctionReviewArtifact':'avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review',
+            'dispatchCreated':False,
+            'scientificRuntime':False,
+            'solverExecution':False,
+            'resultOpening':False,
+            'levelBOpening':False,
+            'protectedHoldoutOpening':False,
+            'taylorOrJerusalemUsed':False,
+            'invalidatedLowAltitudeEvidenceUsed':False,
+            'productionAuthorized':False,
+          }
+          for k,v in required.items():
+              if m.get(k)!=v: raise SystemExit(f'manifest drift {k}: {m.get(k)!r} != {v!r}')
+          science=(root/'avps-v2-postconsumption-recovery3-science.yml').read_text()
+          pub=(root/'avps-v2-postconsumption-recovery3-dispatch-publisher.yml').read_text()
+          trig=(root/'avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml').read_text()
+          if science.count('\n  snapshot-fence-release:\n')!=1: raise SystemExit('snapshot-fence-release job cardinality drift')
+          if 'Verify matching recovery3 WRITE_QUIET_END before solver runtime' not in science: raise SystemExit('barrier verification step missing')
+          if 'matching WRITE_QUIET_END not observed within bounded 10-minute barrier' not in science: raise SystemExit('bounded barrier timeout missing')
+          for job in ('cases-dep2','cases-dep4','cases-dep6','cases-dep8'):
+              mm=re.search(rf'(?ms)^  {job}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)',science)
+              if not mm or 'needs: [preflight, snapshot-fence-release]' not in mm.group(1): raise SystemExit(f'{job} does not depend on barrier')
+          for token in ('WRITE_QUIET_BEGIN token=$FENCE_TOKEN','WRITE_QUIET_END begin=$FENCE_BEGIN','Fresh repository-global candidate-seed recheck and one-use guard','actions/runs/$SCIENCE_RUN/jobs?per_page=100','guard=repository-global-candidate-seed-recheck','publisher_exit_${rc}','AVPS_V2_RECOVERY3_ORDINAL44_EXECUTION_PACKAGE_CORRECTED_ADMISSIBLE'):
+              if token not in pub: raise SystemExit(f'publisher choreography token missing: {token}')
+          if 'PACKAGE_REVIEW_WORKFLOW: avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review.yml' not in pub: raise SystemExit('publisher binds wrong/nonexistent review workflow')
+          if "PASS_AVPS_V2_RECOVERY3_ORDINAL44_SNAPSHOT_CHOREOGRAPHY_CORRECTION_REVIEW_ZERO_RUNTIME" not in pub: raise SystemExit('publisher correction review status binding missing')
+          publisher_blob=subprocess.check_output(['git','hash-object',str(root/'avps-v2-postconsumption-recovery3-dispatch-publisher.yml')],text=True).strip()
+          if f'  PUBLISHER_BLOB: {publisher_blob}' not in trig: raise SystemExit('trigger does not bind corrected publisher blob')
+          old=('dbc433cf261e64ee338a7fd1d1ecb42e8066baf8','62ab8db6f07ccead96c35a7aa0551b74465f10dc','882c98a92f98e7098a10920967261b6472822115')
+          current=[m['outputs'][n]['gitBlobSha1'] for n in ('avps-v2-postconsumption-recovery3-science.yml','avps-v2-postconsumption-recovery3-dispatch-publisher.yml','avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml')]
+          if any(x in current for x in old): raise SystemExit('old NOT_ADMISSIBLE generated blob survived correction')
+          PY
+
+      - name: Compare future publication bytes to corrected reviewed output
+        if: env.MODE == 'publication'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp "$SCIENCE" generated-avps-v2-recovery3-ordinal44-execution-package/avps-v2-postconsumption-recovery3-science.yml
+          cmp "$PUBLISHER" generated-avps-v2-recovery3-ordinal44-execution-package/avps-v2-postconsumption-recovery3-dispatch-publisher.yml
+          cmp "$TRIGGER" generated-avps-v2-recovery3-ordinal44-execution-package/avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml
+
+      - name: Freeze exact-head corrected zero-runtime review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          root=Path('generated-avps-v2-recovery3-ordinal44-execution-package')
+          def blob(name): return subprocess.check_output(['git','hash-object',str(root/name)],text=True).strip()
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_RECOVERY3_ORDINAL44_SNAPSHOT_CHOREOGRAPHY_CORRECTION_REVIEW_ZERO_RUNTIME','mode':os.environ['MODE'],'headSha':os.environ['EVENT_HEAD'],'scientificOrdinal':44,'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],'authorizationPr':718,'scienceBlob':blob('avps-v2-postconsumption-recovery3-science.yml'),'publisherBlob':blob('avps-v2-postconsumption-recovery3-dispatch-publisher.yml'),'triggerBlob':blob('avps-v2-postconsumption-recovery3-publisher-trigger-bridge.yml'),'snapshotFenceChoreographyCorrectionApplied':True,'writeQuietEndOnExactGuardStepTerminal':True,'snapshotFenceReleaseBarrierPresent':True,'allSolverCaseJobsBarrierGated':True,'dispatchCreated':False,'solverExecutionPerformed':False,'resultOpeningPerformed':False,'levelBOpened':False,'holdoutOpened':False,'taylorOrJerusalemUsed':False,'invalidatedLowAltitudeEvidenceUsed':False,'productionAuthorized':False}
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review
+          path: |
+            changed.txt
+            generator-output-1.json
+            review-receipt.json
+            generated-avps-v2-recovery3-ordinal44-execution-package/
+          if-no-files-found: error
+          compression-level: 0

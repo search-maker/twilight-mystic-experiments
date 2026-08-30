@@ -1,0 +1,167 @@
+name: Lunar finite-disk exec002 science workflow review v1
+
+on:
+  push:
+    branches:
+      - review/lunar-finite-disk-exec002-science-workflow-v1
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py'
+      - 'review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec002-science-workflow-v1.yml'
+      - 'tests/test_lunar_finite_disk_exec002_runtime_v1.py'
+      - 'tests/test_lunar_finite_disk_exec002_science_workflow_v1.py'
+      - '.github/workflows/lunar-finite-disk-exec002-science-workflow-review-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: lunar-finite-disk-exec002-science-workflow-review-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  solver-free-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REVIEW_BASE: 16efed6164670263bb18d960d76cfb8a42e4a36b
+      EXPECTED_BRANCH: review/lunar-finite-disk-exec002-science-workflow-v1
+      AUTH_REVIEW_RUN: '33342878656'
+      AUTH_REVIEW_ARTIFACT: '9741235986'
+      AUTH_REVIEW_NAME: lunar-finite-disk-exec002-authorization-review-v1
+      AUTH_REVIEW_DIGEST: sha256:7f30472329828f90193297129d567c45e8b6dfadcbe83f804c49630c11a530da
+      CONTROL_RUN: '33337886233'
+      CONTROL_ARTIFACT: '9739969664'
+      CONTROL_NAME: lunar-finite-disk-exec002-fresh-seed-control-v1-proof
+      CONTROL_DIGEST: sha256:fa1ed884e21b59dee7a3013cfb2fd84ab3c3cd8f2befaca1f1ed26fb5b44e858
+      SEED_CANONICAL: 30350e6986b554d09bcd77e9095cb871dd634a80a4f219cca29d0fc0b8249e84
+      ROWS_CANONICAL: 7dbb4cbe6c34ffad668eb63ad051bd7319d68e56ea1b3c4e540d70eda23b1c95
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Enforce exact review-only surface and no solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$REVIEW_BASE" HEAD
+          test -z "$(command -v uvspec || true)"
+          git diff --name-only "$REVIEW_BASE"...HEAD | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/lunar-finite-disk-exec002-science-workflow-review-v1.yml
+          review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec002-science-workflow-v1.yml
+          review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py
+          tests/test_lunar_finite_disk_exec002_runtime_v1.py
+          tests/test_lunar_finite_disk_exec002_science_workflow_v1.py
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          mkdir -p review-evidence auth-review control-proof
+      - name: Run solver-free runtime/workflow contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py
+          python tests/test_lunar_finite_disk_exec002_authorization_v1.py
+          python tests/test_lunar_finite_disk_exec002_runtime_v1.py
+          python tests/test_lunar_finite_disk_exec002_science_workflow_v1.py
+          python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate --json > review-evidence/runtime-contract.json
+      - name: Bind prior authorization review and candidate ledger without seed logging
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$AUTH_REVIEW_RUN" > review-evidence/auth-review-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AUTH_REVIEW_ARTIFACT" > review-evidence/auth-review-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CONTROL_ARTIFACT" > review-evidence/control-artifact.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('review-evidence/auth-review-run.json'))
+          assert r['id']==int(os.environ['AUTH_REVIEW_RUN']) and r['run_attempt']==1 and r['conclusion']=='success'
+          a=json.load(open('review-evidence/auth-review-artifact.json'))
+          assert a['id']==int(os.environ['AUTH_REVIEW_ARTIFACT']) and a['name']==os.environ['AUTH_REVIEW_NAME'] and a['digest']==os.environ['AUTH_REVIEW_DIGEST']
+          c=json.load(open('review-evidence/control-artifact.json'))
+          assert c['id']==int(os.environ['CONTROL_ARTIFACT']) and c['name']==os.environ['CONTROL_NAME'] and c['digest']==os.environ['CONTROL_DIGEST']
+          PY
+          gh run download "$AUTH_REVIEW_RUN" -n "$AUTH_REVIEW_NAME" --dir auth-review
+          gh run download "$CONTROL_RUN" -n "$CONTROL_NAME" --dir control-proof
+          python - <<'PY'
+          import json,os
+          a=json.load(open('auth-review/authorization-review-receipt.json'))
+          assert a['status']=='PASS_LUNAR_FINITE_DISK_EXEC002_AUTHORIZATION_REVIEW_SOLVER_FREE_NOT_DISPATCHED'
+          assert a['candidateSeedCanonicalSha256']==os.environ['SEED_CANONICAL']
+          assert a['candidateRowsCanonicalSha256']==os.environ['ROWS_CANONICAL']
+          c=json.load(open('control-proof/exec002-candidate-seed-ledger.json'))
+          assert c['candidateSeedCount']==198
+          assert c['candidateSeedCanonicalSha256']==os.environ['SEED_CANONICAL']
+          assert c['candidateRowsCanonicalSha256']==os.environ['ROWS_CANONICAL']
+          assert c['freshExecutionIdentity']=='lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002'
+          assert c['candidateSeedsAppliedToCases'] is False
+          print('candidate_ledger_binding=PASS count=198 literals_not_printed=true')
+          PY
+          python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate-candidate-ledger --candidate-ledger control-proof/exec002-candidate-seed-ledger.json > review-evidence/candidate-ledger-validation.json
+      - name: Freeze reviewed workflow bytes and claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          workflow=Path('review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec002-science-workflow-v1.yml')
+          runtime=Path('review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py')
+          receipt={
+            'schemaVersion':1,
+            'status':'PASS_LUNAR_FINITE_DISK_EXEC002_SCIENCE_WORKFLOW_REVIEW_SOLVER_FREE',
+            'reviewHead':os.environ['GITHUB_SHA'],
+            'reviewBase':os.environ['REVIEW_BASE'],
+            'proposedExecutionWorkflowPath':str(workflow),
+            'proposedExecutionWorkflowSha256':hashlib.sha256(workflow.read_bytes()).hexdigest(),
+            'runtimePath':str(runtime),
+            'runtimeSha256':hashlib.sha256(runtime.read_bytes()).hexdigest(),
+            'candidateSeedCount':198,
+            'candidateSeedCanonicalSha256':os.environ['SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['ROWS_CANONICAL'],
+            'frozenWavelengthNm':550,
+            'frozenDirectionalCases':198,
+            'photonHistoriesPerCase':5000000,
+            'totalPhotonHistories':990000000,
+            'fullPaginatedIssue60ReleaseRequired':True,
+            'freshFinalRepositoryGlobalSeedRecheckRequiredBeforeSolver':True,
+            'oneShotAttempt1Only':True,
+            'rerunRetryResumeForbidden':True,
+            'mandatorySpectralFollowOnNm':[450,650,750],
+            'solverRuntimeInstalled':False,
+            'solverExecuted':False,
+            'resultOpened':False,
+            'finiteDiskAdequacyValidated':False,
+            'empiricalAtmosphericMoonlightValidated':False,
+            'totalSkyValidated':False,
+            'productionAuthorized':False,
+            'nextAction':'After a fresh Issue #60 read and only if no unrelated critical metadata churn/global fence is active, open the exec002 final-preflight WRITE_QUIET fence, then copy the reviewed workflow bytes exactly to .github/workflows/lunar-finite-disk-exec002-v1.yml on a fresh execution branch from this exact review head.'
+          }
+          Path('review-evidence/science-workflow-review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print('status='+receipt['status'])
+          print('solver_executed=false result_opened=false')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunar-finite-disk-exec002-science-workflow-review-v1
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Claim boundary
+        if: always()
+        run: |
+          echo 'Review only: proposed execution workflow and runtime are solver-free at this stage.'
+          echo 'No execution branch, seed application, libRadtran/MYSTIC, result opening, finite-disk adequacy, empirical moonlight validation, total-sky validation, or production authorization occurs here.'

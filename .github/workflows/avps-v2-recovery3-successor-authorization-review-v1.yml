@@ -242,17 +242,24 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
-          python - <<'PY'
-          import json,os
+          found=0
+          for _ in $(seq 1 60); do
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+            if python - <<'PY'
+          import json,os,sys
           rows=[r for page in json.load(open('issue60-pages.json')) for r in page]
           wanted=f"WRITE_QUIET_BEGIN | {os.environ['FENCE_TOKEN']} | branch={os.environ['AUTH_BRANCH']} | head={os.environ['HEAD_SHA']} | base={os.environ['CONTROL_HEAD']} | pr={os.environ['PR_NUMBER']}"
           matches=[r for r in rows if str(r.get('body') or '').startswith(wanted)]
-          if len(matches)!=1: raise SystemExit(f'exact authorization WRITE_QUIET_BEGIN required once; found {len(matches)}')
+          if len(matches)!=1:
+              sys.exit(1)
           begin_id=int(matches[0]['id'])
           if any(str(r.get('body') or '').startswith(f"WRITE_QUIET_END | {os.environ['FENCE_TOKEN']} |") for r in rows if int(r.get('id') or 0)>begin_id):
               raise SystemExit('authorization fence already ended before protected scan')
           PY
+            then found=1; break; fi
+            sleep 5
+          done
+          test "$found" = 1
 
       - name: Require repository-wide workflow quiescence and cooldown
         shell: bash

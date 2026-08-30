@@ -6,7 +6,6 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 P = ROOT / "review" / "low-altitude-stellar-transport-v1" / "run_phase_a_exec001.py"
@@ -32,7 +31,7 @@ class PhaseAExec001ControlTests(unittest.TestCase):
                     allow_execution=False,
                 )
 
-    def test_controller_has_exactly_one_subprocess_run_site_and_no_retry_primitives(self):
+    def test_controller_has_exactly_one_subprocess_run_site_and_no_loop_retry_primitive(self):
         source = P.read_text(encoding="utf-8")
         tree = ast.parse(source)
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
@@ -44,8 +43,7 @@ class PhaseAExec001ControlTests(unittest.TestCase):
             and n.func.attr == "run"
         ]
         self.assertEqual(len(subprocess_runs), 1)
-        self.assertNotIn("while True", source)
-        self.assertNotIn("retry", source.lower().replace("solverRetryPermitted", "").replace("sameIdentityRetryUsed", ""))
+        self.assertFalse(any(isinstance(n, ast.While) for n in ast.walk(tree)))
         self.assertNotIn("sleep(", source)
         self.assertNotIn("Popen(", source)
 

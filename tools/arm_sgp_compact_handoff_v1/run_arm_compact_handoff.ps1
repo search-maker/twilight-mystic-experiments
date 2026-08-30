@@ -21,7 +21,8 @@ if (-not (Test-Path -LiteralPath $ArchiveRoot -PathType Container)) {
     throw "ArchiveRoot does not exist or is not a directory: $ArchiveRoot"
 }
 
-$venv = Join-Path $ScriptRoot ".venv-arm-compact-handoff"
+# Keep helper dependencies outside the repository and outside the preserved ARM archive.
+$venv = Join-Path ([System.IO.Path]::GetTempPath()) "arm-sgp-compact-handoff-v1-venv"
 $python = $null
 
 if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -51,6 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 # or if the frozen synthetic SASZE gate semantics do not reproduce exactly.
 & $python -m py_compile `
     (Join-Path $ScriptRoot "extract_arm_compact_handoff.py") `
+    (Join-Path $ScriptRoot "compact_netcdf_headers.py") `
     (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
     (Join-Path $ScriptRoot "selftest_arm_compact_handoff.py")
 if ($LASTEXITCODE -ne 0) { throw "Python syntax preflight failed." }
@@ -72,6 +74,12 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
     --end 2024-06-02
 if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $LASTEXITCODE." }
 
+# Collapse daily NetCDF headers to structural schemas. Record/time dimension
+# lengths are observed ranges, not reasons to duplicate an otherwise identical schema.
+& $python (Join-Path $ScriptRoot "compact_netcdf_headers.py") `
+    --headers (Join-Path $OutputRoot "netcdf_headers.jsonl")
+if ($LASTEXITCODE -ne 0) { throw "NetCDF header compaction failed with exit code $LASTEXITCODE." }
+
 # Recompute the authoritative SASZE gate with source-day cadence and explicit
 # edge-gap checking. This overwrites the provisional gate emitted by the broad
 # inventory script and refreshes the gate fields in summary.json.
@@ -82,7 +90,7 @@ if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $
     --update-summary (Join-Path $OutputRoot "summary.json")
 if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
 
-# Refresh handoff file hashes after the strict gate overwrote gate/summary files.
+# Refresh handoff file hashes after header compaction and the strict SASZE gate.
 $manifestRefresh = @'
 import hashlib
 import json

@@ -1,0 +1,26 @@
+# AVPS v2 recovery3 ordinal-44 snapshot-choreography correction gate
+
+Status: **ZERO-RUNTIME CORRECTION / NO DISPATCH / NO RESULT OPENING**.
+
+This gate repairs only the control choreography omitted from the merged recovery3 execution-package generator. Issue #60 comment `5470357989` classifies the previously generated recovery3 three-file package as **NOT_ADMISSIBLE / DO NOT USE for dispatch**. The ordinal-44 authorization itself remains reviewed/allocated and unconsumed: PR #718 head `dd3a4c692af505389e9feb1e5f5480fa389110a3`, parent `d8cd4af807e7a8f11ed39fdc579ed92adf866aab`, allocation marker comment `5469582091`.
+
+The governing preregistration is the already-merged recovery3 snapshot-fence protocol at `review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-snapshot-fence-v1/PROTOCOL.md`. This correction does not alter its science or criteria. It implements the missing requirements exactly:
+
+1. The publisher completes all solver-free pre-dispatch review first and verifies current `main`, the fresh authorization, no prior dispatch/science identity, seed freshness, global ordinal state, and a later explicit corrected-admissible Issue #60 marker.
+2. Immediately before any dispatch-ref or consumed-marker bootstrap write, the publisher creates one `WRITE_QUIET_BEGIN` carrying a unique recovery3 token, exact authorization head, exact dispatch branch, expected science workflow, and publisher run ID.
+3. While that fence is active the only intentional repository mutations are the preregistered one-use bootstrap writes and the one-time science dispatch. Automatic Actions/check/artifact lifecycle metadata are tolerated under the already-reviewed scanner semantics.
+4. After dispatch the publisher becomes read-only and polls the exact fresh science run. It observes the exact preflight step named `Fresh repository-global candidate-seed recheck and one-use guard`, not merely the whole preflight job.
+5. As soon as that exact step is terminal, the publisher emits exactly one matching `WRITE_QUIET_END` bound to the BEGIN comment ID, fence token, authorization, dispatch branch, exact science run, exact preflight job, and terminal guard-step conclusion. A trap performs a fail-closed END attempt on publisher failure so a technical failure is not intentionally left as an orphan fence.
+6. The science workflow contains a distinct read-only `snapshot-fence-release` job after `preflight`. It requires exactly one matching BEGIN and exactly one matching END for its own `GITHUB_RUN_ID`, requires guard-step conclusion `success`, and uses a frozen bounded 10-minute wait for END visibility.
+7. Every solver-bearing case job (`cases-dep2`, `cases-dep4`, `cases-dep6`, `cases-dep8`) depends on both successful `preflight` and successful `snapshot-fence-release`. Therefore no `uvspec`/libRadtran/MYSTIC case can start before the external fence is released and verified.
+8. If the preflight guard fails, the publisher closes the fence with the observed failure and exits failed; solver-bearing jobs remain blocked. Ordinal 44 is then consumed and immutable under the pre-existing one-use rule. No GitHub Re-run/retry/resume is permitted.
+
+The correction also fixes a second mechanical defect discovered during the same exact-byte audit: the old generator bound `PACKAGE_REVIEW_WORKFLOW` to the nonexistent `avps-v2-recovery3-ordinal44-execution-package-review.yml`, while the merged workflow is `...review-v2.yml`. The corrected package instead binds its future publication review to this gate's real merged workflow, `.github/workflows/avps-v2-recovery3-ordinal44-snapshot-choreography-correction-review.yml`, and requires a publication-mode receipt from that workflow before dispatch bootstrap.
+
+The correction is applied as a second deterministic postprocessor after the already-merged generator and its first hardening postprocessor. The old generator/main bytes remain preserved historical evidence; the old expected science/publisher/trigger blobs are superseded for dispatch. Future publication must use only the newly regenerated corrected identities and must pass this workflow again in `publication` mode byte-for-byte.
+
+Hard scientific boundaries remain unchanged: 360 cases, 72 common-random-number groups, five vertical-profile states, 20,000,000 photon histories per case, same geometries/wavelengths/profile bytes/OPAC/runtime/executor/aggregator/classification/stopping semantics, no Taylor/Jerusalem fitting, no protected holdout opening, no result opening during execution, and no production authorization.
+
+Level-B remains closed to richer mappings. `AOD550` is still the only directly consumed validated-v3 aerosol coordinate. Arbitrary spectral AOD, vertical profile/normalized optical-depth shape, SSA spectrum, phase function, and aerosol family/classification remain represented or sensitivity evidence only; every richer `newMappingAuthorized` flag stays `false` until a successful fresh numerical result is separately opened and a later mapper gate is reviewed.
+
+This correction gate itself creates no authorization/ref, no dispatch, no consumed marker, no WRITE_QUIET marker, no solver run, no result opening, no Level-B admission, no holdout access, and no production change.

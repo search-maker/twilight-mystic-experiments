@@ -1,0 +1,220 @@
+name: Low-altitude stellar Phase-B candidate assembly v1 one-shot
+run-name: Low-altitude stellar Phase-B candidate assembly v1 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - dispatch/low-altitude-stellar-phase-b-candidate-assembly-v1
+    paths:
+      - review/low-altitude-stellar-transport-v1/phase-b-candidate-assembly-v1-dispatch.json
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: low-altitude-stellar-phase-b-candidate-assembly-v1-one-shot
+  cancel-in-progress: false
+
+env:
+  STAGE_DIR: review/low-altitude-stellar-transport-v1
+  DISPATCH_PATH: review/low-altitude-stellar-transport-v1/phase-b-candidate-assembly-v1-dispatch.json
+  SOURCE_RUN_ID: '33310723749'
+  SOURCE_JOB_ID: '99255161427'
+  SOURCE_ARTIFACT_NAME: 'low-altitude-stellar-phase-b-training-v1-exec001-result'
+  SOURCE_DISPATCH_SHA: '5ddb68e9a46fe9cc0bbb225dbe9614b47e4b24c2'
+  SOURCE_V32_RUNTIME_SHA256: '0b96bd5868dc0c72d5cd77b504098d35086feaf573d92556c4f8311a163e3ce2'
+
+jobs:
+  assemble-once:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact assembly dispatch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify fresh one-file assembly dispatch boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = dispatch/low-altitude-stellar-phase-b-candidate-assembly-v1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(command -v uvspec || true)"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          PARENT="${PARENTS[0]}"
+          test "$PARENT" = "$(git rev-parse origin/main)"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$DISPATCH_PATH"
+          python - <<'PY'
+          import json, os, subprocess
+          d=json.load(open(os.environ['DISPATCH_PATH'],encoding='utf-8'))
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          required={
+            'schemaVersion':1,
+            'assemblyId':'low-altitude-stellar-phase-b-training-candidate-v1',
+            'scientificState':'LOWALT-STELLAR-STATE-0001',
+            'status':'AUTHORIZED_SOLVER_FREE_IMMUTABLE_CANDIDATE_ASSEMBLY',
+            'baseMainSha':parent,
+            'sourceRunId':int(os.environ['SOURCE_RUN_ID']),
+            'sourceJobId':int(os.environ['SOURCE_JOB_ID']),
+            'sourceArtifactName':os.environ['SOURCE_ARTIFACT_NAME'],
+            'sourceDispatchSha':os.environ['SOURCE_DISPATCH_SHA'],
+            'trainingExecutionId':'low-altitude-stellar-phase-b-training-v1-exec001',
+            'freshTrainingSpectrumCount':275,
+            'inheritedFiveDegreeSeamSpectrumCount':25,
+            'protectedValidationAuthorized':False,
+            'scientificSolverExecutionAuthorized':False,
+            'postResultRetuningAuthorized':False,
+            'applicationSupportChanged':False,
+            'productionAuthorized':False,
+          }
+          for k,v in required.items():
+              if d.get(k)!=v: raise SystemExit(f'dispatch mismatch {k}: {d.get(k)!r} != {v!r}')
+          artifact_id=d.get('sourceArtifactId')
+          artifact_digest=d.get('sourceArtifactDigest')
+          if not isinstance(artifact_id,int) or artifact_id <= 0: raise SystemExit('sourceArtifactId must be positive int')
+          if not isinstance(artifact_digest,str) or not artifact_digest.startswith('sha256:') or len(artifact_digest)!=71:
+              raise SystemExit('sourceArtifactDigest must be sha256:<64hex>')
+          int(artifact_digest.split(':',1)[1],16)
+          open(os.environ['RUNNER_TEMP']+'/artifact-id.txt','w').write(str(artifact_id)+'\n')
+          open(os.environ['RUNNER_TEMP']+'/artifact-digest.txt','w').write(artifact_digest+'\n')
+          PY
+
+      - name: Verify immutable training artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_ARTIFACT_ID="$(cat "$RUNNER_TEMP/artifact-id.txt")"
+          SOURCE_ARTIFACT_DIGEST="$(cat "$RUNNER_TEMP/artifact-digest.txt")"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID" \
+            > "$RUNNER_TEMP/artifact-metadata.json"
+          python - <<'PY'
+          import json, os
+          p=json.load(open(os.environ['RUNNER_TEMP']+'/artifact-metadata.json'))
+          artifact_id=int(open(os.environ['RUNNER_TEMP']+'/artifact-id.txt').read().strip())
+          artifact_digest=open(os.environ['RUNNER_TEMP']+'/artifact-digest.txt').read().strip()
+          assert int(p['id'])==artifact_id
+          assert p['name']==os.environ['SOURCE_ARTIFACT_NAME']
+          assert p['digest']==artifact_digest
+          assert int(p['workflow_run']['id'])==int(os.environ['SOURCE_RUN_ID'])
+          assert p['workflow_run']['head_sha']==os.environ['SOURCE_DISPATCH_SHA']
+          assert p['expired'] is False
+          PY
+          echo "SOURCE_ARTIFACT_ID=$SOURCE_ARTIFACT_ID" >> "$GITHUB_ENV"
+          echo "SOURCE_ARTIFACT_DIGEST=$SOURCE_ARTIFACT_DIGEST" >> "$GITHUB_ENV"
+
+      - name: Download exact immutable training artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/training-source"
+          curl -fsSL --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID/zip" \
+            -o "$RUNNER_TEMP/training-source.zip"
+          unzip -q "$RUNNER_TEMP/training-source.zip" -d "$RUNNER_TEMP/training-source"
+          test -f "$RUNNER_TEMP/training-source/phase-b-training-v1-result.json"
+          test -f "$RUNNER_TEMP/training-source/execution-receipt.json"
+
+      - name: Verify terminal eligible training evidence before assembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          root=os.environ['RUNNER_TEMP']+'/training-source'
+          r=json.load(open(root+'/phase-b-training-v1-result.json'))
+          q=json.load(open(root+'/execution-receipt.json'))
+          assert r['executionId']=='low-altitude-stellar-phase-b-training-v1-exec001'
+          assert r['scientificState']=='LOWALT-STELLAR-STATE-0001'
+          assert r['executionComplete'] is True
+          assert r['trainingScientificallyEligible'] is True
+          assert r['solverInvocationCount']==275 and len(r['cases'])==275
+          assert r['passingTrainingSpectrumCount']==275
+          assert r['numericallyUnresolvedTrainingSpectrumCount']==0
+          assert r['trainingOnly'] is True
+          assert r['fiveDegreeSeamRegenerated'] is False
+          assert r['protectedValidationOpened'] is False
+          assert r['protectedSolverInvocationCount']==0
+          assert r['positiveEpsilonSubstitutionUsed'] is False
+          assert r['productionAuthorized'] is False
+          assert r['applicationSupportChanged'] is False
+          assert q['executionComplete'] is True and q['trainingScientificallyEligible'] is True
+          assert q['solverInvocationCount']==275
+          assert q['protectedValidationOpened'] is False
+          PY
+
+      - name: Verify exact authoritative v3.2 source seam bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum generated/level-b-stellar-v32/stellar-transport-v32-zenith-lut.json | cut -d' ' -f1)" = "$SOURCE_V32_RUNTIME_SHA256"
+
+      - name: Assemble immutable protected-closed candidate once
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e candidate-output
+          python "$STAGE_DIR/assemble_phase_b_training_candidate_v1.py" \
+            --training-result "$RUNNER_TEMP/training-source/phase-b-training-v1-result.json" \
+            --source-v32-runtime generated/level-b-stellar-v32/stellar-transport-v32-zenith-lut.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+            --source-artifact-digest "$SOURCE_ARTIFACT_DIGEST" \
+            --source-dispatch-sha "$SOURCE_DISPATCH_SHA" \
+            --output-dir candidate-output
+
+      - name: Verify exact 5-degree seam and closed claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,pathlib
+          p=pathlib.Path('review/low-altitude-stellar-transport-v1/low_altitude_phase_b.py')
+          s=importlib.util.spec_from_file_location('phase_b_assembly_verify',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          candidate=json.load(open('candidate-output/stellar-transport-low-altitude-training-candidate-v1.json'))
+          source=json.load(open('generated/level-b-stellar-v32/stellar-transport-v32-zenith-lut.json'))
+          receipt=json.load(open('candidate-output/assembly-receipt.json'))
+          m.validate_lower_runtime(candidate,source)
+          assert receipt['freshTrainingSpectrumCount']==275
+          assert receipt['inheritedFiveDegreeSeamSpectrumCount']==25
+          assert receipt['protectedSpectrumCountOpened']==0
+          assert receipt['protectedJohnsonVComparisonCountOpened']==0
+          assert receipt['exactFiveDegreeSeamContentIdentical'] is True
+          assert receipt['cscExtrapolationBelow5Deg'] is False
+          assert receipt['minimumCandidateGeometricAltitudeDeg']==0.25
+          assert receipt['minimumScientificallySupportedGeometricAltitudeDeg'] is None
+          assert receipt['exactHorizonSupported'] is False
+          assert receipt['scientificallyValidatedBelow5Deg'] is False
+          assert receipt['protectedValidationAuthorized'] is False
+          assert receipt['productionAuthorized'] is False
+          assert receipt['applicationSupportChanged'] is False
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+
+      - name: Publish immutable candidate assembly evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: low-altitude-stellar-phase-b-training-candidate-v1
+          path: candidate-output/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

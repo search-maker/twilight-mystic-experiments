@@ -22,8 +22,8 @@ CASE = {
 }
 
 
-def write_file(root: Path, times_epoch: np.ndarray) -> None:
-    path = root / f"{STREAM}.20240408.000000.nc"
+def write_file(root: Path, times_epoch: np.ndarray, suffix: str = "000000") -> Path:
+    path = root / f"{STREAM}.20240408.{suffix}.nc"
     if path.exists():
         path.unlink()
     with netCDF4.Dataset(path, "w") as ds:
@@ -39,6 +39,7 @@ def write_file(root: Path, times_epoch: np.ndarray) -> None:
         qc.flag_values = np.asarray([0, 1], dtype=np.int32)
         qc.flag_meanings = "good bad"
         qc[:] = np.zeros(len(times_epoch), dtype=np.int32)
+    return path
 
 
 def run() -> None:
@@ -49,11 +50,34 @@ def run() -> None:
 
         # Continuous 1 Hz source-day series bracketing both sub-second crossings.
         times = np.arange(np.floor(t0) - 5, np.ceil(t1) + 6, 1.0)
-        write_file(root, times)
+        good = write_file(root, times)
         row = audit_case(root, CASE)
         assert row["disposition"] == "TWILIGHT_CONTIGUOUS", row
         assert row["median_positive_cadence_s"] == "1.000000", row
         assert float(row["max_internal_gap_s"]) == 1.0, row
+
+        # Any additional same-day source file that cannot be opened must force
+        # UNREADABLE, even though another file by itself proves continuity. This
+        # prevents a partially unreadable archive from contributing to an
+        # observational-absence/HALT conclusion.
+        broken = root / f"{STREAM}.20240408.010000.nc"
+        broken.write_bytes(b"not-a-netcdf-file")
+        row = audit_case(root, CASE)
+        assert row["disposition"] == "UNREADABLE", row
+        assert "010000.nc" in row["read_errors"], row
+        broken.unlink()
+
+        # A NetCDF file that opens but has no decodable native-time coordinate
+        # is also unresolved rather than observationally absent.
+        no_time = root / f"{STREAM}.20240408.020000.nc"
+        with netCDF4.Dataset(no_time, "w") as ds:
+            ds.createDimension("record", 1)
+            x = ds.createVariable("housekeeping_only", "f4", ("record",))
+            x[:] = [1.0]
+        row = audit_case(root, CASE)
+        assert row["disposition"] == "UNREADABLE", row
+        assert "NO_DECODABLE_NATIVE_TIME_COORDINATE" in row["read_errors"], row
+        no_time.unlink()
 
         # Introduce a 120-second hole inside the core; median source cadence remains 1 s.
         hole_start = t0 + 120.0
@@ -71,7 +95,7 @@ def run() -> None:
         assert row["disposition"] == "TWILIGHT_SAMPLES_ABSENT", row
 
         # Removing the source file must remain distinct from observational absence.
-        (root / f"{STREAM}.20240408.000000.nc").unlink()
+        good.unlink()
         row = audit_case(root, CASE)
         assert row["disposition"] == "SOURCE_FILE_MISSING", row
 

@@ -352,7 +352,7 @@ def transform_publisher(text: str) -> str:
     pattern=re.compile(r'\n      - name: Create exact dispatch ref and consumed marker once\n.*\Z',re.S)
     if len(pattern.findall(text))!=1:
         raise SystemExit('could not isolate publisher bootstrap/dispatch tail')
-    text=pattern.sub(publisher_tail(),text,count=1)
+    text=pattern.sub(lambda _m: publisher_tail(),text,count=1)
     return text
 
 

@@ -27,6 +27,30 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.m = load_module()
+        cls.runtime_identity = {
+            'uvspecSha256': '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'libRadtranDataTreeSha256': 'ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7',
+        }
+
+    def test_crs_custom_source_runtime_gate_is_exact_and_capability_only(self):
+        m = self.m
+        receipt = m._require_verified_crs_source_binding(self.runtime_identity)
+        self.assertEqual(receipt['status'], 'PASS_CUSTOM_SOURCE_WITH_CRS_CONSUMED_EXACT_RUNTIME')
+        self.assertEqual(receipt['workflowRunId'], 33291389252)
+        self.assertEqual(receipt['workflowRunAttempt'], 1)
+        self.assertEqual(receipt['artifactId'], 9726068017)
+        self.assertEqual(receipt['artifactDigest'], 'sha256:5f9c2a642a61a5a82fd62e2ccd3f5e5f1ad287b9580f1097a8dbacbbfb23a42b')
+        self.assertTrue(receipt['capabilityOnly'])
+        self.assertFalse(receipt['atmosphericScatteredMoonlightValidated'])
+        self.assertFalse(receipt['productionAuthorized'])
+        with self.assertRaises(m.LunarMysticInputError):
+            m._require_verified_crs_source_binding(None)
+        bad_uvspec = dict(self.runtime_identity, uvspecSha256='0' * 64)
+        with self.assertRaises(m.LunarMysticInputError):
+            m._require_verified_crs_source_binding(bad_uvspec)
+        bad_data = dict(self.runtime_identity, libRadtranDataTreeSha256='f' * 64)
+        with self.assertRaises(m.LunarMysticInputError):
+            m._require_verified_crs_source_binding(bad_data)
 
     def test_custom_source_units_geometry_and_level_b_elevation_semantics(self):
         m = self.m
@@ -56,6 +80,7 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
                 photon_histories=1000000,
                 random_seed=12345,
                 case_dir=case_dir,
+                runtime_identity=self.runtime_identity,
             )
             self.assertIn(f'source solar {source.resolve()}', text)
             self.assertIn('sza 48.250000', text)
@@ -69,6 +94,7 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
             self.assertNotIn('mc_elevation_file ', text)
             self.assertFalse(provenance['dayOfYearDistanceScalingApplied'])
             self.assertFalse(provenance['finiteMoonDiskModeled'])
+            self.assertTrue(provenance['customSourceCrsConsumptionCapabilityVerified'])
             self.assertFalse(provenance['validatedForAtmosphericScatteredMoonlight'])
             self.assertFalse(provenance['productionAuthorized'])
 
@@ -169,9 +195,11 @@ class LunarMysticInputContractV1Test(unittest.TestCase):
                 photon_histories=1000000,
                 random_seed=12346,
                 case_dir=case_dir,
+                runtime_identity=self.runtime_identity,
             )
             self.assertIn(f"sza {sample['sourceZenithDeg']:.6f}", text)
             self.assertIn(f"phi {sample['targetRelativeAzimuthToSampleSourceDeg']:.6f}", text)
+            self.assertTrue(provenance['customSourceCrsConsumptionCapabilityVerified'])
             self.assertFalse(provenance['finiteMoonDiskModeled'])
             self.assertFalse(provenance['validatedForAtmosphericScatteredMoonlight'])
 

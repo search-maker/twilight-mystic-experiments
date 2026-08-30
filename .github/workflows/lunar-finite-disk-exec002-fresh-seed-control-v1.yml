@@ -1,0 +1,348 @@
+name: Lunar finite-disk exec002 fresh-seed control v1
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - review/lunar-finite-disk-exec001-pagination-recovery-v1
+    paths:
+      - '.github/workflows/lunar-finite-disk-exec002-fresh-seed-control-v1.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: lunar-finite-disk-exec002-fresh-seed-control-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  zero-runtime-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      EXPECTED_BASE: 0ea3c960f5bcbb6454d9c90ca09b746bf30d06c1
+      EXPECTED_BRANCH: review/lunar-finite-disk-exec002-fresh-seed-control-v1
+      CONSUMED_RUN: '33303099872'
+      CONSUMED_HEAD: b73d5cf4a58aee3b3e8794b396b79bbd3463f680
+      RECOVERY_REVIEW_RUN: '33304298825'
+      RECOVERY_REVIEW_ARTIFACT: '9729948779'
+      RECOVERY_REVIEW_DIGEST: sha256:dfcf409c25af5c294892c9723ae2bd13467d37f4645e51d1632f1546e7096417
+      FENCE_BEGIN_COMMENT: '5467776090'
+      MACHINE_END_COMMENT: '5467875147'
+      OLD_EXECUTION_IDENTITY: lunar-finite-disk-transfer-kernel-sensitivity-v1-exec001
+      FRESH_EXECUTION_IDENTITY: lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002
+      NEW_NAMESPACE: lunar-finite-disk-transfer-kernel-sensitivity-v1|pagination-recovery-exec002|case-seed|sha256-v1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact one-file zero-runtime recovery-control surface
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          test "$EVENT_BRANCH" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > changed-paths.txt
+          printf '%s\n' '.github/workflows/lunar-finite-disk-exec002-fresh-seed-control-v1.yml' > expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          test -z "$(command -v uvspec || true)"
+          mkdir -p control-evidence prior-recovery
+          git ls-files -z > control-evidence/tracked-files.nul
+
+      - name: Bind consumed exec001 and reviewed pagination recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN" > control-evidence/consumed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN/jobs?per_page=100" > control-evidence/consumed-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECOVERY_REVIEW_ARTIFACT" > control-evidence/recovery-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_REVIEW_RUN" > control-evidence/recovery-run.json
+          python - <<'PY'
+          import json, os
+          run=json.load(open('control-evidence/consumed-run.json'))
+          assert run['id']==int(os.environ['CONSUMED_RUN']) and run['run_attempt']==1
+          assert run['head_sha']==os.environ['CONSUMED_HEAD'] and run['event']=='push'
+          jobs=json.load(open('control-evidence/consumed-jobs.json'))['jobs']
+          solver=[j for j in jobs if str(j.get('name','')).startswith('execute shard ')]
+          assert solver and all(j.get('conclusion')=='skipped' for j in solver), solver
+          rr=json.load(open('control-evidence/recovery-run.json'))
+          assert rr['id']==int(os.environ['RECOVERY_REVIEW_RUN']) and rr['run_attempt']==1 and rr['conclusion']=='success'
+          art=json.load(open('control-evidence/recovery-artifact.json'))
+          assert art['id']==int(os.environ['RECOVERY_REVIEW_ARTIFACT'])
+          assert art['digest']==os.environ['RECOVERY_REVIEW_DIGEST']
+          assert art['name']=='lunar-finite-disk-exec001-pagination-recovery-review-v1'
+          PY
+
+      - name: Prove complete paginated Issue 60 release semantics
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > control-evidence/issue60-first-page.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > control-evidence/issue60-pages.json
+          python - <<'PY'
+          import json, os
+          first=json.load(open('control-evidence/issue60-first-page.json'))
+          pages=json.load(open('control-evidence/issue60-pages.json'))
+          allc=[r for page in pages for r in page]
+          target=int(os.environ['MACHINE_END_COMMENT'])
+          assert len(first)==100
+          assert all(int(r['id']) != target for r in first)
+          hit=[r for r in allc if int(r['id'])==target]
+          assert len(hit)==1
+          body=str(hit[0].get('body') or '')
+          for token in (
+              'WRITE_QUIET_END | LUNAR_FINITE_DISK_EXEC001_FINAL_PREFLIGHT_GLOBAL_SCAN_V1',
+              f"begin={os.environ['FENCE_BEGIN_COMMENT']}",
+              f"head={os.environ['CONSUMED_HEAD']}",
+              f"run={os.environ['CONSUMED_RUN']}",
+          ):
+              assert token in body, token
+          assert len(allc) > 100
+          print(f'paginated_issue60_comment_count={len(allc)}')
+          print('first_page_blindness_reproduced=true')
+          print('complete_pagination_release_visibility=true')
+          PY
+
+      - name: Derive fresh exec002 candidate seeds without logging literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, importlib.util, json, os, sys
+          from pathlib import Path
+          old_path=Path('review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('lunar_fd_old_seed_ledger_exec002_control', old_path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import existing finite-disk seed ledger')
+          old=importlib.util.module_from_spec(spec); sys.modules[spec.name]=old; spec.loader.exec_module(old)
+          old_ledger=old.validate_ledger()
+          old_seeds=set(map(int, old_ledger['candidateSeeds']))
+          case_ids=[str(x['caseId']) for x in old._load_planner().frozen_cases()]
+          if len(case_ids)!=198 or len(set(case_ids))!=198: raise SystemExit('frozen 198-case universe drift')
+          namespace=os.environ['NEW_NAMESPACE']; minimum=10_000_000; maximum=2_147_483_647; span=maximum-minimum
+          retired=range(32_910_001,32_910_199)
+          rows=[]; used=set()
+          for case_id in case_ids:
+              counter=0
+              while True:
+                  material=f'{namespace}|caseId={case_id}|counter={counter}'
+                  digest=hashlib.sha256(material.encode()).hexdigest()
+                  seed=(int(digest[:16],16)%span)+minimum
+                  if seed in retired or seed in old_seeds or seed in used:
+                      counter+=1; continue
+                  break
+              used.add(seed)
+              rows.append({'caseId':case_id,'collisionCounter':counter,'derivationMaterialSha256':digest,'seed':seed})
+          seeds=[r['seed'] for r in rows]
+          if len(seeds)!=198 or len(set(seeds))!=198: raise SystemExit('fresh seed cardinality/uniqueness drift')
+          if set(seeds)&old_seeds: raise SystemExit('fresh exec002 candidates overlap prior replacement candidates')
+          if any(s in retired for s in seeds): raise SystemExit('fresh exec002 candidate entered retired disclosed range')
+          canon=lambda x: hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          ledger={
+            'schemaVersion':1,
+            'stageId':'lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002-fresh-candidate-seeds',
+            'status':'CANDIDATE_ONLY_ARTIFACT_ONLY_NOT_APPLIED_NOT_AUTHORIZED',
+            'namespace':namespace,
+            'freshExecutionIdentity':os.environ['FRESH_EXECUTION_IDENTITY'],
+            'consumedExecutionIdentity':os.environ['OLD_EXECUTION_IDENTITY'],
+            'candidateSeedCount':198,
+            'candidateSeeds':seeds,
+            'candidateRows':rows,
+            'candidateSeedCanonicalSha256':canon(seeds),
+            'candidateRowsCanonicalSha256':canon(rows),
+            'overlapWithPriorReplacementCandidateCount':0,
+            'retiredPriorCandidateRangeMayEverExecute':False,
+            'candidateSeedsAppliedToCases':False,
+            'scientificExecutionAuthorized':False,
+            'solverExecutionAuthorized':False,
+            'resultOpeningAuthorized':False,
+            'finiteDiskAdequacyValidated':False,
+            'productionAuthorized':False,
+          }
+          out=Path('control-evidence')
+          (out/'exec002-candidate-seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          batches=[seeds[:72],seeds[72:144],seeds[144:]+seeds[:18]]
+          if any(len(b)!=72 or len(set(b))!=72 for b in batches): raise SystemExit('scanner batch drift')
+          if set().union(*(set(b) for b in batches)) != set(seeds): raise SystemExit('scanner batches do not cover exact fresh universe')
+          for i,b in enumerate(batches,1):
+              (out/f'exec002-candidate-seed-batch-{i}.json').write_text(json.dumps({'candidateSeeds':b},indent=2,sort_keys=True)+'\n')
+          (out/'empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          print('fresh_candidate_seed_count=198')
+          print('fresh_candidate_seed_canonical_sha256='+ledger['candidateSeedCanonicalSha256'])
+          print('fresh_candidate_rows_canonical_sha256='+ledger['candidateRowsCanonicalSha256'])
+          print('overlap_with_prior_replacement_candidates=0')
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - name: Scan exact tracked tree for fresh exec002 seed collisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py \
+              --repo-root . \
+              --file-list control-evidence/tracked-files.nul \
+              --candidate-seed-ledger "control-evidence/exec002-candidate-seed-batch-${i}.json" \
+              --allow-self-ledger-json control-evidence/empty-self-ledger-policy.json \
+              --output "control-evidence/tracked-seed-scan-${i}.json"
+          done
+          python - <<'PY'
+          import json
+          for i in range(1,4):
+              r=json.load(open(f'control-evidence/tracked-seed-scan-{i}.json'))
+              assert r['candidateSeedCount']==72
+              assert r['trackedTreeExternalCollisionCount']==0
+              assert r['exactHeadTrackedTreeByteScanPassed'] is True
+          PY
+
+      - name: Build bound exec002 repository-global scanner wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > control-evidence/exec002_repository_global_seed_scan.py <<'PY'
+          from __future__ import annotations
+          import hashlib, importlib.util
+          from pathlib import Path
+          base=Path('experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py')
+          expected='4c6d704fa24228284780bcb1dd7c52537b4c5b0d'
+          data=base.read_bytes()
+          blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+          if blob != expected: raise SystemExit('bound repository-global scanner bytes changed')
+          spec=importlib.util.spec_from_file_location('lunar_fd_exec002_bound_global_scan',base)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import repository-global scanner')
+          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          mod.REVIEW_PROOF_ARTIFACT_NAME='lunar-finite-disk-exec002-fresh-seed-control-v1-proof'
+          raise SystemExit(mod.main())
+          PY
+
+      - name: Fresh three-batch repository-global exec002 seed scan
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python control-evidence/exec002_repository_global_seed_scan.py \
+              --repository "$GITHUB_REPOSITORY" \
+              --issue-number 60 \
+              --candidate-seed-ledger "control-evidence/exec002-candidate-seed-batch-${i}.json" \
+              --current-run-id "$GITHUB_RUN_ID" \
+              --audit-mode review-freeze \
+              --expected-branch-name "$EXPECTED_BRANCH" \
+              --expected-repo-head "$EXPECTED_HEAD" \
+              --output "control-evidence/repository-global-seed-scan-${i}.json"
+          done
+          python - <<'PY'
+          import json, os
+          for i in range(1,4):
+              r=json.load(open(f'control-evidence/repository-global-seed-scan-{i}.json'))
+              assert r['auditMode']=='review-freeze'
+              assert r['candidateSeedCount']==72
+              assert r['repositoryGlobalCollisionCount']==0
+              assert r['repositoryGlobalCollisionSurfaceScanPassed'] is True
+              assert r['repositoryGlobalDoubleEnumerationStable'] is True
+              assert r['auditedBranchHeadMatchesRepositoryHead'] is True
+              assert r['repositoryHeadExpected']==os.environ['EXPECTED_HEAD']
+              assert r['auditedBranchHeadShaObserved']==os.environ['EXPECTED_HEAD']
+              assert r['priorReviewProofArtifactCount']==0
+              assert r['reviewProofIdentityFresh'] is True
+          PY
+
+      - name: Freeze fresh exec002 control proof
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          ledger=json.load(open('control-evidence/exec002-candidate-seed-ledger.json'))
+          globals_=[json.load(open(f'control-evidence/repository-global-seed-scan-{i}.json')) for i in range(1,4)]
+          tracked=[json.load(open(f'control-evidence/tracked-seed-scan-{i}.json')) for i in range(1,4)]
+          proof={
+            'schemaVersion':1,
+            'status':'PASS_LUNAR_FINITE_DISK_EXEC002_FRESH_SEED_AND_PAGINATED_RELEASE_CONTROL',
+            'reviewHead':os.environ['EVENT_HEAD'],
+            'baseHead':os.environ['EXPECTED_BASE'],
+            'consumedExec001Run':int(os.environ['CONSUMED_RUN']),
+            'consumedExec001Reusable':False,
+            'paginationRecoveryReviewRun':int(os.environ['RECOVERY_REVIEW_RUN']),
+            'paginationRecoveryReviewArtifact':int(os.environ['RECOVERY_REVIEW_ARTIFACT']),
+            'completeIssue60PaginationRequiredForReleaseBarrier':True,
+            'completeIssue60PaginationSemanticsConfirmed':True,
+            'freshExecutionIdentity':os.environ['FRESH_EXECUTION_IDENTITY'],
+            'freshExecutionIdentityAuthorized':False,
+            'candidateSeedCount':198,
+            'candidateSeedCanonicalSha256':ledger['candidateSeedCanonicalSha256'],
+            'candidateRowsCanonicalSha256':ledger['candidateRowsCanonicalSha256'],
+            'overlapWithPriorReplacementCandidateCount':0,
+            'trackedTreeExternalCollisionCount':sum(int(r['trackedTreeExternalCollisionCount']) for r in tracked),
+            'repositoryGlobalCollisionCount':sum(int(r['repositoryGlobalCollisionCount']) for r in globals_),
+            'repositoryGlobalDoubleEnumerationStableAllBatches':all(r['repositoryGlobalDoubleEnumerationStable'] is True for r in globals_),
+            'candidateSeedsAppliedToCases':False,
+            'scientificExecutionAuthorized':False,
+            'solverExecutionAuthorized':False,
+            'solverExecuted':False,
+            'finiteDiskResultOpened':False,
+            'finiteDiskAdequacyValidated':False,
+            'frozen550NmCaseCount':198,
+            'frozenDirectionsPerGeometry':33,
+            'frozenGeometryCount':6,
+            'frozenPhotonHistoriesPerDirectionalCase':5000000,
+            'scientificDesignChanged':False,
+            'mandatorySpectralFollowOnNm':[450,650,750],
+            'mandatorySpectralFollowOnStillRequired':True,
+            'taylorOrJerusalemUsed':False,
+            'productionAuthorized':False,
+            'authorizationTimeRepositoryGlobalRecheckRequired':True,
+          }
+          assert proof['trackedTreeExternalCollisionCount']==0
+          assert proof['repositoryGlobalCollisionCount']==0
+          assert proof['repositoryGlobalDoubleEnumerationStableAllBatches'] is True
+          Path('control-evidence/exec002-control-proof.json').write_text(json.dumps(proof,indent=2,sort_keys=True)+'\n')
+          print('status='+proof['status'])
+          print('candidate_seed_canonical_sha256='+proof['candidateSeedCanonicalSha256'])
+          print('candidate_rows_canonical_sha256='+proof['candidateRowsCanonicalSha256'])
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunar-finite-disk-exec002-fresh-seed-control-v1-proof
+          path: control-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Zero-runtime exec002 recovery control only.'
+          echo 'No candidate seed is applied or printed; no execution is authorized; no uvspec/libRadtran/MYSTIC runs; no finite-disk result is opened.'
+          echo 'Frozen 33-direction / 198-case / 5M-history 550-nm science is unchanged and 450/650/750-nm follow-on remains mandatory.'
+          echo 'No Taylor/Jerusalem use and no production authorization.'

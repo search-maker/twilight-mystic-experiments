@@ -1,0 +1,81 @@
+name: AVPS v2 recovery2 ordinal43 publisher recovery1 review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml'
+      - '.github/workflows/avps-v2-postconsumption-recovery2-publisher-recovery1-trigger-bridge.yml'
+      - '.github/workflows/avps-v2-recovery2-ordinal43-publisher-recovery1-review.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact recovery-only scope and failed pre-consumption identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          FAILED_PUBLISHER_RUN: '33290906727'
+          FAILED_PUBLISHER_JOB: '99202243870'
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git diff --name-only "$PR_BASE"..."$PR_HEAD" | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml
+          .github/workflows/avps-v2-recovery2-ordinal43-publisher-recovery1-review.yml
+          .github/workflows/avps-v2-postconsumption-recovery2-publisher-recovery1-trigger-bridge.yml
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          test "$(git diff --name-only "$PR_BASE"..."$PR_HEAD" | grep -Ec '^experiments/|^scientific-tools/' || true)" = 0
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" > failed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN/jobs" > failed-jobs.json
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          r=json.load(open('failed-run.json')); jobs=json.load(open('failed-jobs.json')).get('jobs',[])
+          if r.get('id')!=int(os.environ['FAILED_PUBLISHER_RUN']) or r.get('run_attempt')!=1 or r.get('event')!='workflow_dispatch' or r.get('conclusion')!='failure': raise SystemExit('failed publisher identity drift')
+          hit=[j for j in jobs if j.get('id')==int(os.environ['FAILED_PUBLISHER_JOB'])]
+          if len(hit)!=1 or hit[0].get('conclusion')!='failure': raise SystemExit('failed publisher job drift')
+          steps={s.get('name'):s.get('conclusion') for s in hit[0].get('steps',[])}
+          if steps.get('Fresh zero-runtime pre-dispatch fence')!='failure': raise SystemExit('failed publisher failure-step drift')
+          for n in ('Create exact dispatch ref and consumed marker once','Upload zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main'):
+              if steps.get(n)!='skipped': raise SystemExit(f'prior publisher crossed boundary: {n}')
+          pub=Path('.github/workflows/avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml').read_text()
+          trig=Path('.github/workflows/avps-v2-postconsumption-recovery2-publisher-recovery1-trigger-bridge.yml').read_text()
+          for token in ('GITHUB_TOKEN: ${{ github.token }}','FAILED_PUBLISHER_RUN','Fresh recovery1 zero-runtime pre-dispatch fence','avps-v2-postconsumption-recovery2-science.yml'):
+              if token not in pub: raise SystemExit(f'missing recovery publisher invariant: {token}')
+          for token in ('FAILED_PUBLISHER_RUN','publisher-recovery1','avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml'):
+              if token not in trig: raise SystemExit(f'missing recovery trigger invariant: {token}')
+          for text in (pub,trig):
+              for forbidden in ('uvspec ','mc_photons','Taylor','Jerusalem'):
+                  if forbidden in text: raise SystemExit(f'forbidden new science/result token: {forbidden}')
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_RECOVERY2_ORDINAL43_PUBLISHER_RECOVERY1_SOLVER_FREE','headSha':os.environ['PR_HEAD'],'baseSha':os.environ['PR_BASE'],'publisherBlob':subprocess.check_output(['git','hash-object','.github/workflows/avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml'],text=True).strip(),'triggerBlob':subprocess.check_output(['git','hash-object','.github/workflows/avps-v2-postconsumption-recovery2-publisher-recovery1-trigger-bridge.yml'],text=True).strip(),'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),'failedPublisherPreConsumption':True,'scientificOrdinal':43,'dispatchPresent':False,'scientificRuntime':False,'solver':False,'results':False,'levelB':False,'holdout':False,'production':False}
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery2-ordinal43-publisher-recovery1-review
+          path: |
+            changed.txt
+            review-receipt.json
+          if-no-files-found: error
+          compression-level: 0

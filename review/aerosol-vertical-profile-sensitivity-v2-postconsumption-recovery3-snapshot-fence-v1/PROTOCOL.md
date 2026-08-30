@@ -72,10 +72,11 @@ A successor execution may proceed only after a separately reviewed control path 
 4. Immediately before the final science preflight, acquire a **short-lived repository WRITE_QUIET snapshot fence** in Issue #60. The marker must name the fresh authorization head, dispatch identity, expected science workflow, and a unique recovery3 fence token.
 5. After that BEGIN marker, perform all explicitly preregistered bootstrap writes needed for the one-use execution identity (for example exact dispatch ref and exact consumed marker) **before** launching the science workflow. No unrelated manual repository metadata writes are allowed after bootstrap begins.
 6. Dispatch the fresh science workflow exactly once. The science preflight must itself make no repository metadata mutations while it performs the repository-global two-pass seed/ordinal/identity guard.
-7. The publisher/control process must become read-only and wait for the exact fresh science run and its exact `preflight` job. It must observe the step `Fresh repository-global candidate-seed recheck and one-use guard` to a terminal conclusion without editing repository metadata.
-8. As soon as that exact preflight step/job is terminal, write the matching `WRITE_QUIET_END` with exact BEGIN comment, authorization/dispatch/run/job identities and terminal result. Release the fence **before long case solver work continues**. The fence must not remain active for the 360-case runtime.
-9. If preflight fails for any reason, preserve that fresh successor identity as consumed and immutable; never GitHub Re-run/retry/resume it. Any later attempt requires another fresh identity under a separately reviewed gate.
-10. If preflight succeeds, solver jobs may continue after the END marker under the already frozen science design. Result opening remains a separate preregistered gate.
+7. The publisher/control process must become read-only and wait for the exact fresh science run and its exact `preflight` job. It must observe the specific step `Fresh repository-global candidate-seed recheck and one-use guard` to a terminal **step** conclusion without editing repository metadata. It MUST NOT wait for the entire successful preflight job before closing the fence.
+8. As soon as that exact repository-global guard step is terminal, write the matching `WRITE_QUIET_END` with exact BEGIN comment, authorization/dispatch/run/job identities, step conclusion, and observed timestamp. On a successful guard step this END must be written while the remaining non-solver preflight preparation may continue; on a failed guard step it must be written as soon as the refusal is observable. The fence must not remain active for the 360-case runtime.
+9. The fresh science workflow must contain an explicit read-only **snapshot-fence-release barrier** after `preflight` and before every case-shard/solver job. That barrier must verify the exact matching `WRITE_QUIET_END` for its own BEGIN token + authorization + dispatch + run identity. Every solver-bearing case job must depend on this barrier as well as the successful preflight. If the matching END is absent, malformed, belongs to another run, or does not arrive within the preregistered bounded wait, the barrier must fail closed before any solver execution. This prevents scheduler races in which case jobs could start before the external publisher has released the repository fence.
+10. If preflight/guard fails for any reason, preserve that fresh successor identity as consumed and immutable; never GitHub Re-run/retry/resume it. Any later attempt requires another fresh identity under a separately reviewed gate.
+11. If the repository-global guard, remaining preflight, and snapshot-fence-release barrier all succeed, solver jobs may continue under the already frozen science design. Result opening remains a separate preregistered gate.
 
 Automatic GitHub Actions/check/artifact lifecycle bookkeeping during the short fence may occur. The repository-global scanner already treats current-audit self metadata and operational lifecycle fields under its reviewed semantics; recovery3 must not loosen those semantics. Other workers/coordinators must treat the active recovery3 WRITE_QUIET as read-only until the matching END.
 
@@ -89,7 +90,9 @@ The recovery3 implementation/control gate must be independently solver-free revi
 - ordinal 43 and its 72 seeds are explicitly non-reusable;
 - fresh seed and dynamic-next-ordinal requirements are explicit;
 - the scanner's two-pass stability contract is preserved byte-for-byte unless a separate scanner-change preregistration is reviewed first;
-- WRITE_QUIET BEGIN precedes the final bootstrap/dispatch sequence and END occurs only after the exact fresh preflight is terminal;
+- WRITE_QUIET BEGIN precedes the final bootstrap/dispatch sequence;
+- matching WRITE_QUIET END is emitted from the exact guard-step terminal result, not delayed until a successful whole-preflight completion;
+- an exact-run snapshot-fence-release barrier gates every solver-bearing job and fails closed if END is absent or mismatched;
 - no fence is held across long solver runtime;
 - no scientific/runtime source change, dispatch, result opening, Level-B admission, protected holdout access, Taylor/Jerusalem scoring, or production transition occurs in this preregistration gate.
 

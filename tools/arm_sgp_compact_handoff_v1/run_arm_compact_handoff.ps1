@@ -47,6 +47,14 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 & $python -m pip install --disable-pip-version-check -r (Join-Path $ScriptRoot "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
+# Fail before touching the archive if any package Python file has a syntax error
+# or if the frozen synthetic SASZE gate semantics do not reproduce exactly.
+& $python -m py_compile `
+    (Join-Path $ScriptRoot "extract_arm_compact_handoff.py") `
+    (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
+    (Join-Path $ScriptRoot "selftest_arm_compact_handoff.py")
+if ($LASTEXITCODE -ne 0) { throw "Python syntax preflight failed." }
+
 Push-Location $ScriptRoot
 try {
     & $python (Join-Path $ScriptRoot "selftest_arm_compact_handoff.py")
@@ -75,7 +83,32 @@ if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $
 if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
 
 # Refresh handoff file hashes after the strict gate overwrote gate/summary files.
-& $python -c "import hashlib,json,pathlib; r=pathlib.Path(r'$OutputRoot'); m=json.loads((r/'handoff_manifest.json').read_text(encoding='utf-8')); fs=[]; [fs.append({'relative_path':str(p.relative_to(r)).replace('\\','/'),'size_bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}) for p in sorted(r.rglob('*')) if p.is_file() and p.name!='handoff_manifest.json']; m['files']=fs; (r/'handoff_manifest.json').write_text(json.dumps(m,indent=2,sort_keys=True),encoding='utf-8')"
+$manifestRefresh = @'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "handoff_manifest.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+files = []
+for path in sorted(root.rglob("*")):
+    if not path.is_file() or path.name == "handoff_manifest.json":
+        continue
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    files.append({
+        "relative_path": str(path.relative_to(root)).replace("\\", "/"),
+        "size_bytes": path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    })
+manifest["files"] = files
+manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+'@
+& $python -c $manifestRefresh $OutputRoot
 if ($LASTEXITCODE -ne 0) { throw "Failed to refresh handoff manifest hashes." }
 
 $zipPath = "$OutputRoot.zip"

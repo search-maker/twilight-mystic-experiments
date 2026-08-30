@@ -1,0 +1,178 @@
+name: Lunar finite-disk replacement seed freshness review v1
+
+on:
+  pull_request:
+    branches:
+      - review/lunar-finite-disk-transfer-kernel-sensitivity-v1
+    types: [opened]
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_seed_ledger.py'
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_repository_global_seed_scan.py'
+      - 'review/lunar-scattered-light-source-contract-v1/build_lunar_finite_disk_seed_freshness_proof.py'
+      - 'tests/test_lunar_finite_disk_seed_freshness_v1.py'
+      - '.github/workflows/lunar-finite-disk-seed-freshness-v1-review.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Enforce one-shot review-only surface
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "pull_request"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$EXPECTED_BRANCH" = "review/lunar-finite-disk-seed-freshness-v1"
+          test -z "$(command -v uvspec || true)"
+          mkdir -p seed-freshness-evidence
+          git ls-files -z > seed-freshness-evidence/tracked-files.nul
+
+      - name: Test deterministic replacement seed derivation and proof refusal boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_lunar_finite_disk_seed_freshness_v1.py
+
+      - name: Build artifact-only candidate ledger and three bound 72-seed scanner batches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, sys
+          from pathlib import Path
+          p=Path('review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('lunar_fd_seed_ledger_workflow',p)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import lunar seed ledger')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          ledger=mod.validate_ledger()
+          if ledger['candidateSeedCount'] != 198 or ledger['trackedCandidateSeedLedger'] is not False:
+              raise SystemExit('replacement candidate ledger boundary drift')
+          if ledger['allSeedsOutsideRetiredRange'] is not True:
+              raise SystemExit('replacement candidate overlapped retired disclosed range')
+          out=Path('seed-freshness-evidence')
+          (out/'candidate-seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          batches=mod.audit_batches(ledger['candidateSeeds'])
+          for index,batch in enumerate(batches, start=1):
+              (out/f'candidate-seed-batch-{index}.json').write_text(json.dumps({'candidateSeeds':batch},indent=2,sort_keys=True)+'\n')
+          (out/'empty-self-ledger-policy.json').write_text(json.dumps({
+              'schemaVersion':2,
+              'requiredTrackedSelfLedgerPaths':[],
+              'futureEvidenceSelfLedgerPaths':[],
+          },indent=2,sort_keys=True)+'\n')
+          print('replacement_candidate_count=198')
+          print('candidate_seed_canonical_sha256='+ledger['candidateSeedCanonicalSha256'])
+          print('candidate_rows_canonical_sha256='+ledger['candidateRowsCanonicalSha256'])
+          print('audit_batch_hashes='+','.join(ledger['auditBatchCanonicalSha256']))
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - name: Scan exact tracked tree for all replacement candidate seed literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py \
+              --repo-root . \
+              --file-list seed-freshness-evidence/tracked-files.nul \
+              --candidate-seed-ledger "seed-freshness-evidence/candidate-seed-batch-${i}.json" \
+              --allow-self-ledger-json seed-freshness-evidence/empty-self-ledger-policy.json \
+              --output "seed-freshness-evidence/tracked-seed-scan-${i}.json"
+          done
+
+      - name: Three-batch two-pass repository-global replacement candidate seed scan
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python review/lunar-scattered-light-source-contract-v1/lunar_repository_global_seed_scan.py \
+              --repository "$GITHUB_REPOSITORY" \
+              --issue-number 60 \
+              --candidate-seed-ledger "seed-freshness-evidence/candidate-seed-batch-${i}.json" \
+              --current-run-id "$GITHUB_RUN_ID" \
+              --audit-mode review-freeze \
+              --expected-branch-name "$EXPECTED_BRANCH" \
+              --expected-repo-head "$EXPECTED_HEAD" \
+              --output "seed-freshness-evidence/repository-global-seed-scan-${i}.json"
+          done
+
+      - name: Freeze combined replacement candidate seed freshness proof
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/lunar-scattered-light-source-contract-v1/build_lunar_finite_disk_seed_freshness_proof.py \
+            --tracked-report seed-freshness-evidence/tracked-seed-scan-1.json \
+            --tracked-report seed-freshness-evidence/tracked-seed-scan-2.json \
+            --tracked-report seed-freshness-evidence/tracked-seed-scan-3.json \
+            --global-report seed-freshness-evidence/repository-global-seed-scan-1.json \
+            --global-report seed-freshness-evidence/repository-global-seed-scan-2.json \
+            --global-report seed-freshness-evidence/repository-global-seed-scan-3.json \
+            --expected-head "$EXPECTED_HEAD" \
+            --output seed-freshness-evidence/seed-freshness-proof.json
+          python - <<'PY'
+          import json
+          p=json.load(open('seed-freshness-evidence/seed-freshness-proof.json'))
+          assert p['status']=='PASS_REPLACEMENT_CANDIDATE_SEEDS_FRESH_REVIEW_ONLY_NOT_ALLOCATED'
+          assert p['candidateSeedCount']==198
+          assert p['scannerCoverageUniqueCandidateCount']==198
+          assert p['trackedTreeExternalCollisionCount']==0
+          assert p['repositoryGlobalCollisionCount']==0
+          assert p['allSeedsOutsideRetiredDisclosedRange'] is True
+          assert p['retiredPriorCandidateRangeMayEverExecute'] is False
+          assert p['candidateSeedsAppliedToCases'] is False
+          assert p['scientificOrdinalAllocated'] is False
+          assert p['authorizationCreated'] is False
+          assert p['solverExecutionAuthorized'] is False
+          assert p['resultOpeningAuthorized'] is False
+          assert p['authorizationTimeRepositoryGlobalRecheckRequired'] is True
+          print('status='+p['status'])
+          print('candidate_seed_count=198')
+          print('candidate_seed_canonical_sha256='+p['candidateSeedCanonicalSha256'])
+          print('candidate_rows_canonical_sha256='+p['candidateRowsCanonicalSha256'])
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - name: Upload replacement candidate seed freshness proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-finite-disk-seed-freshness-v1-proof
+          path: seed-freshness-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Replacement candidate seed freshness review only.'
+          echo 'Candidate seed literals remain artifact-only and unapplied.'
+          echo 'The previously disclosed candidate range is retired and may never execute.'
+          echo 'No scientific ordinal, no authorization/dispatch, no uvspec/MYSTIC, no result opening, no production action.'

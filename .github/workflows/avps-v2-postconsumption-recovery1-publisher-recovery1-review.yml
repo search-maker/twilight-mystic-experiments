@@ -1,0 +1,150 @@
+name: Review AVPS v2 ordinal42 publisher recovery1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher-recovery1.yml
+      - .github/workflows/avps-v2-postconsumption-recovery1-publisher-trigger-bridge-recovery1.yml
+      - .github/workflows/avps-v2-postconsumption-recovery1-publisher-recovery1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-publisher-recovery1/PROTOCOL.md
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-v2-ordinal42-publisher-recovery1-review-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+env:
+  BASE_MAIN: a99f9181072755889cf3fae3f446e036a012f760
+  BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-publisher-recovery1
+  AUTH_BRANCH: authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+  AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+  AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
+  AUTH_PR: '629'
+  FAILED_PUBLISHER_RUN: '33257846884'
+  FAILED_PUBLISHER_JOB: '99114571607'
+  ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
+  CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
+  DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+  SCIENCE_WORKFLOW: avps-v2-postconsumption-recovery1-science.yml
+  SCIENCE_SHA256: 04a178e0cc777e0fc090c8bfc6175ad10b4bec56c6f12048428382ea36217878
+  SCIENCE_BLOB: 7af7f28269ad245b1b9218012707957b048a6875
+  RECOVERY_PUBLISHER: avps-v2-postconsumption-recovery1-dispatch-publisher-recovery1.yml
+  RECOVERY_BRIDGE: avps-v2-postconsumption-recovery1-publisher-trigger-bridge-recovery1.yml
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove recovery-only scope and frozen science bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.head.ref }}" = "$BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          git diff --name-only "$BASE_MAIN...HEAD" | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher-recovery1.yml
+          .github/workflows/avps-v2-postconsumption-recovery1-publisher-recovery1-review.yml
+          .github/workflows/avps-v2-postconsumption-recovery1-publisher-trigger-bridge-recovery1.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-publisher-recovery1/PROTOCOL.md
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          test "$(sha256sum .github/workflows/$SCIENCE_WORKFLOW | cut -d' ' -f1)" = "$SCIENCE_SHA256"
+          test "$(git hash-object .github/workflows/$SCIENCE_WORKFLOW)" = "$SCIENCE_BLOB"
+          grep -Fq 'git worktree add --detach dispatch-evidence/auth-worktree "$AUTH_HEAD"' ".github/workflows/$RECOVERY_PUBLISHER"
+          grep -Fq 'nativeAuthorizationWorktreeSeedValidation' ".github/workflows/$RECOVERY_PUBLISHER"
+          grep -Fq 'FAILED_PUBLISHER_RUN' ".github/workflows/$RECOVERY_PUBLISHER"
+          grep -Fq 'Explicitly dispatch exact science workflow from main' ".github/workflows/$RECOVERY_PUBLISHER"
+          grep -Fq 'publisher-recovery1' ".github/workflows/$RECOVERY_BRIDGE"
+          if grep -Eq 'rubin-libradtran|setup-micromamba|uvspec|mc_photons' ".github/workflows/$RECOVERY_PUBLISHER" ".github/workflows/$RECOVERY_BRIDGE"; then
+            echo 'scientific runtime leaked into zero-runtime transport' >&2; exit 1
+          fi
+
+      - name: Reproduce native authorization-tree seed validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/heads/$AUTH_BRANCH:refs/remotes/origin/$AUTH_BRANCH"
+          test "$(git rev-parse origin/$AUTH_BRANCH)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$AUTH_PARENT"
+          git worktree add --detach native-auth "$AUTH_HEAD"
+          native="native-auth/review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py"
+          test "$(git -C native-auth hash-object review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = 491d1b6653bea0fcc5275269723a76aa1af52300
+          NATIVE_LEDGER="$native" python - <<'PY'
+          import importlib.util,os,sys
+          from pathlib import Path
+          p=Path(os.environ['NATIVE_LEDGER']).resolve()
+          s=importlib.util.spec_from_file_location('native_seed_review',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          x=m.validate_ledger()
+          if x.get('candidateSeedCount')!=72: raise SystemExit('candidate seed count drift')
+          if x.get('candidateSeedCanonicalSha256')!='a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7': raise SystemExit('candidate seed identity drift')
+          if x.get('overlapWithConsumedOrdinal41SeedCount')!=0: raise SystemExit('consumed seed overlap')
+          PY
+
+      - name: Fresh live pre-consumption fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > auth-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" > failed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$FAILED_PUBLISHER_JOB" > failed-job.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/$SCIENCE_WORKFLOW/runs?event=workflow_dispatch&per_page=100" > science-pages.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('auth-pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['AUTH_HEAD'] or p['base']['sha']!=os.environ['AUTH_PARENT']: raise SystemExit('authorization drift')
+          r=json.load(open('failed-run.json'))
+          if r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='failure': raise SystemExit('failed publisher provenance drift')
+          j=json.load(open('failed-job.json')); steps={s['name']:s['conclusion'] for s in j.get('steps',[])}
+          for k in ['Create exact dispatch ref and consumed marker once','Upload zero-runtime publisher evidence before science dispatch','Explicitly dispatch exact science workflow from main']:
+              if steps.get(k)!='skipped': raise SystemExit(f'failed publisher mutated downstream: {k}')
+          pages=json.load(open('issue-pages.json')); bodies=[str(c.get('body') or '').strip() for p in pages for c in p]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation marker drift')
+          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=0: raise SystemExit('ordinal42 already consumed')
+          pages=json.load(open('science-pages.json')); runs=[r for p in pages for r in p.get('workflow_runs',[])]
+          if runs: raise SystemExit('science workflow already dispatched')
+          PY
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42")"
+          test "$code" = 404
+
+      - name: Emit zero-runtime recovery review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > review-receipt.json <<EOF
+          {"schemaVersion":1,"status":"PASS_AVPS_V2_ORDINAL42_PUBLISHER_RECOVERY1_REVIEW_ONLY","head":"${{ github.event.pull_request.head.sha }}","base":"$BASE_MAIN","scientificOrdinal":42,"failedPublisherRun":33257846884,"nativeAuthorizationWorktreeSeedValidation":true,"scientificDesignChanged":false,"solver":false,"dispatch":false,"results":false,"levelB":false,"production":false,"taylorOrJerusalem":false}
+          EOF
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-ordinal42-publisher-recovery1-review
+          path: |
+            review-receipt.json
+            changed.txt
+            expected.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

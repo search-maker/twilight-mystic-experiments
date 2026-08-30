@@ -1,0 +1,132 @@
+name: Lunar secondary AOD550 anchor compatibility v1
+
+on:
+  push:
+    branches:
+      - review/lunar-secondary-aod550-anchor-compatibility-v1
+  pull_request:
+    branches:
+      - review/lunar-mystic-secondary-monochromatic-precision-v1
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar-mystic-secondary-aod550-anchor-compatibility-v1.json'
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_aod550_anchor_compatibility.py'
+      - 'tests/test_lunar_mystic_secondary_aod550_anchor_compatibility_v1.py'
+      - '.github/workflows/lunar-secondary-aod550-anchor-compatibility-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-transport-compatibility-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Refuse rerun semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Run deterministic contract and evaluator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_lunar_mystic_secondary_aod550_anchor_compatibility_v1.py
+
+      - name: Set up exact frozen libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lunar-aod550-anchor-compatibility-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Prepare exact runtime-bound three-case probe
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p probe-artifact
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output probe-artifact/runtime-report.json
+          python review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_aod550_anchor_compatibility.py \
+            --prepare \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere-file "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --atlas-file "$CONDA_PREFIX/share/libRadtran/data/solar_flux/atlas_plus_modtran" \
+            --runtime-report probe-artifact/runtime-report.json \
+            --output-root probe-artifact/probe
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('probe-artifact/probe')
+          manifest=json.load(open(root/'prepared-manifest.json'))
+          assert manifest['status']=='PREPARED_TRANSPORT_COMPATIBILITY_PROBE_NO_RESULTS'
+          assert manifest['caseCount']==3
+          assert manifest['solverExecutedByPreparation'] is False
+          assert manifest['precisionClassificationAllowed'] is False
+          assert manifest['empiricalValidationClaim'] is False
+          assert manifest['productionAuthorized'] is False
+          expected={450.0:(450.0,550.0),650.0:(550.0,650.0),750.0:(550.0,750.0)}
+          for row in manifest['cases']:
+            target=row['targetWavelengthNm']
+            text=Path(row['inputPath']).read_text()
+            lo,hi=expected[target]
+            assert text.count(f'wavelength {lo:.1f} {hi:.1f}')==1
+            assert text.count('aerosol_set_tau_at_wvl 550 0.100000')==1
+            assert 'mc_spectral_is' not in text
+            assert text.count('mc_std')==1
+            assert text.count('atm_z_grid ')==1
+            assert text.count('zout 0.000000')==1
+            source=Path(row['sparseSourcePath']).read_text().splitlines()
+            assert len(source)==2
+            wavelengths=[float(line.split()[0]) for line in source]
+            assert wavelengths==[lo,hi]
+          runtime=json.load(open('probe-artifact/runtime-report.json'))
+          assert runtime['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert runtime['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          PY
+
+      - name: Execute frozen three-case MYSTIC transport compatibility probe once
+        shell: micromamba-shell {0}
+        run: |
+          set -u
+          for case_dir in probe-artifact/probe/w*-anchor550; do
+            set +e
+            uvspec < "$case_dir/case.inp" > "$case_dir/uvspec.stdout" 2> "$case_dir/uvspec.stderr"
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$case_dir/uvspec.exitcode"
+          done
+          set -euo pipefail
+          python review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_aod550_anchor_compatibility.py \
+            --evaluate \
+            --output-root probe-artifact/probe
+
+      - name: Publish immutable compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-secondary-aod550-anchor-compatibility-v1
+          path: probe-artifact
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'This run is a frozen transport-compatibility probe only.'
+          echo 'Probe radiances may not be used for secondary precision classification or model fitting.'
+          echo 'Exec001 remains immutable EXECUTION_INCOMPLETE and its seeds are consumed.'
+          echo 'No Air-LUSI/X-Shooter/Taylor/Jerusalem residuals opened; no TOA, empirical moonlight, finite-disk, total-sky, or production claim.'

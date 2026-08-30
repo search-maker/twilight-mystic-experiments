@@ -12,28 +12,28 @@ From a Windows clone of this repository, run once:
 powershell -ExecutionPolicy Bypass -File .\tools\arm_sgp_compact_handoff_v1\run_arm_compact_handoff.ps1 -ArchiveRoot "<FOLDER_CONTAINING_THE_PRESERVED_ARM_ORDER>"
 ```
 
-The wrapper creates an isolated Python venv beside the script, installs the pinned reader dependencies, scans the archive read-only, creates a compact folder, and produces a ZIP plus its SHA-256. Upload/share the ZIP only; keep the original ARM order untouched.
+The wrapper keeps its temporary Python environment outside the repository and outside the ARM archive, installs the small reader dependencies, syntax-checks the package, runs a synthetic native-time continuity self-test, scans the archive read-only, compacts structurally equivalent NetCDF headers, reruns the strict SASZE native-time gate, then produces a compact ZIP plus its SHA-256. Upload/share the ZIP only; keep the original ARM order untouched.
 
 ## Outputs
 
 The compact ZIP contains:
 
 - `archive_inventory.csv` — every source filename, inferred datastream/date, size, SHA-256, NetCDF readability, **native decoded** time coverage/sample count, schema signature and error state.
-- `netcdf_headers.jsonl` — de-duplicated NetCDF dimensions, global metadata keys/nonvolatile values, variables, units, dimensions and variable attributes. Daily volatile coverage/history attributes are deliberately not used as a sample-continuity proof.
+- `netcdf_headers.jsonl` — structurally de-duplicated NetCDF dimensions, global metadata keys/nonvolatile values, variables, units, dimensions and variable attributes. Record/time dimension lengths are summarized as observed ranges rather than duplicating otherwise identical daily schemas. Daily volatile coverage/history attributes are deliberately not used as a sample-continuity proof.
 - `quality_metadata.jsonl` — discovered QC/quality/DQR/DQPR/flag metadata from global and variable attributes, including flag meanings/masks when present.
 - `daily_availability.csv` — day-by-day availability by concrete datastream.
 - `family_daily_availability.csv` — explicit available/absent matrix for the science interval 2023-12-14 through 2024-06-02 for SASZE, HSRL, Raman/RLPROF, CSPHOT AOD, MFRSR/NIMFR AOD, ARSCL, ceilometer, sonde and surface/albedo families.
 - `issues.csv` — corrupt/unreadable/hash/extract notes; absence is kept distinct from unreadability.
 - `representative_extracts.jsonl` — deterministic first/middle/last small samples from relevant datastream families, preserving original values, units, dimensions, QC and coordinate metadata. **SASZE radiance/transmittance values are excluded by default**; SASZE timing, wavelength coordinates and housekeeping remain visible so the radiance holdout stays protected.
 - `stageA_sasze_twilight_operability_2024.csv` — the frozen 20-case native-time gate for `sgpsaszefilterbandsC1.a1`, using actual sample timestamps rather than global `time_coverage_*` attributes.
-- `summary.json` — compact family/gate summary, including any `TWILIGHT_CONTIGUOUS` survivor IDs.
-- `handoff_manifest.json` — tool/runtime versions plus SHA-256/size for every handoff output.
+- `summary.json` — compact family/gate summary, including any `TWILIGHT_CONTIGUOUS` survivor IDs and the exact strict-gate algorithm identity.
+- `handoff_manifest.json` — tool/runtime versions plus SHA-256/size for every handoff output, refreshed after all post-processing.
 
 ## SASZE gate semantics
 
 The mandatory filterband gate has five dispositions:
 
-- `TWILIGHT_CONTIGUOUS`: native samples bracket the whole chronological -8..-6 degree core and no positive internal gap exceeds `2 x median_positive_cadence`.
+- `TWILIGHT_CONTIGUOUS`: native samples bracket the whole chronological -8..-6 degree core and no positive gap in the full bracketing segment, including the two edge gaps, exceeds `2 x median_positive_source_day_cadence`.
 - `TWILIGHT_DISCONTINUOUS`: some core samples exist but the bracketing/gap rule fails.
 - `TWILIGHT_SAMPLES_ABSENT`: matching readable file(s) exist but no native sample lies in the core.
 - `UNREADABLE`: matching source file(s) exist but native timestamps cannot be decoded.
@@ -41,7 +41,7 @@ The mandatory filterband gate has five dispositions:
 
 Only the first disposition can advance a case. `SOURCE_FILE_MISSING` or `UNREADABLE` is a local-data blocker and cannot be misreported as evidence that SASZE did not observe.
 
-The filterband audit records integration-time/scan modes and native health/saturation/high-SZA flag names if they exist. Multiple integration times are not themselves a failure; SASZE intentionally used multiple integration modes to improve low-signal SNR while protecting intense spectral regions.
+The strict gate is independently exercised before the archive scan with synthetic NetCDF cases for continuous 1-Hz sampling, an internal 120-s gap, readable source-day data with no twilight samples, and a genuinely missing source file. The filterband audit also records integration-time/scan modes and native health/saturation/high-SZA flag names if they exist. Multiple integration times are not themselves a failure; SASZE intentionally used multiple integration modes to improve low-signal SNR while protecting intense spectral regions.
 
 ## Holdout boundary
 

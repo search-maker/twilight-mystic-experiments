@@ -100,7 +100,7 @@ if ($LASTEXITCODE -ne 0) { throw "Quality-document extraction failed with exit c
 if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
 
 # Refresh handoff file hashes after header compaction, quality-document extraction,
-# and the strict SASZE gate.
+# and the strict SASZE gate. Redact the absolute local archive path before upload.
 $manifestRefresh = @'
 import hashlib
 import json
@@ -108,8 +108,12 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+archive_root = pathlib.Path(sys.argv[2])
 manifest_path = root / "handoff_manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest.pop("archive_root", None)
+manifest["archive_root_name"] = archive_root.name
+manifest["archive_root_path_redacted"] = True
 files = []
 for path in sorted(root.rglob("*")):
     if not path.is_file() or path.name == "handoff_manifest.json":
@@ -126,7 +130,7 @@ for path in sorted(root.rglob("*")):
 manifest["files"] = files
 manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 '@
-& $python -c $manifestRefresh $OutputRoot
+& $python -c $manifestRefresh $OutputRoot $ArchiveRoot
 if ($LASTEXITCODE -ne 0) { throw "Failed to refresh handoff manifest hashes." }
 
 $zipPath = "$OutputRoot.zip"

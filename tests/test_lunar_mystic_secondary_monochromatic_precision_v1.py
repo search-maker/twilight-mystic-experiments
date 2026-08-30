@@ -60,7 +60,10 @@ with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     atmosphere = td / 'afglus.dat'
     source = td / 'lunar-source.dat'
-    atmosphere.write_text('0 0\n', encoding='utf-8')
+    # The reviewed elevated-site helper only needs a strictly descending
+    # altitude column for this renderer contract test. Include sea level and a
+    # level above the 2-km observer so atm_z_grid construction is meaningful.
+    atmosphere.write_text('10 0\n0 0\n', encoding='utf-8')
     source.write_text('380 1\n780 1\n', encoding='utf-8')
     runtime_identity = {
         'uvspecSha256': contract['sourceAndRuntime']['uvspecSha256'],

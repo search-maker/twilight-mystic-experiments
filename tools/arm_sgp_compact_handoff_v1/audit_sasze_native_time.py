@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Strict residual-blind SASZE filterband native-time operability audit.
+"""Strict residual-blind SASZE native-time operability audit.
 
-This script is the authoritative Phase-0 SASZE continuity gate. It reads native
-sample timestamps and non-radiometric housekeeping only. It never reads SASZE
-radiance/transmittance values.
+The primary Phase-0 held-out-observable gate is the calibrated full VIS stream
+(`sgpsaszevisC1.a1`). NIR is an independently audited secondary spectral
+extension. `sgpsaszefilterbandsC1.a1` is retained only as a daylight-derived
+product/timing diagnostic: actual 2024 file evidence shows its time coordinate
+continues through twilight while its derived band-radiance fields are daylight
+gated. This script never reads any SASZE radiance/transmittance value.
 """
 
 from __future__ import annotations
@@ -20,7 +23,18 @@ import netCDF4
 import numpy as np
 
 UTC = dt.timezone.utc
-STREAM = "sgpsaszefilterbandsC1.a1"
+PRIMARY_STREAM = "sgpsaszevisC1.a1"
+STREAMS: tuple[tuple[str, str, str], ...] = (
+    (PRIMARY_STREAM, "PRIMARY_HELDOUT_SUPPORT", "CALIBRATED_FULL_SPECTRAL_RADIANCE"),
+    ("sgpsaszenirC1.a1", "SECONDARY_SPECTRAL_EXTENSION", "CALIBRATED_FULL_SPECTRAL_RADIANCE"),
+    (
+        "sgpsaszefilterbandsC1.a1",
+        "DAYLIGHT_DERIVED_DIAGNOSTIC",
+        "DAYLIGHT_GATED_DERIVED_RADIANCE_NOT_TWILIGHT_GATE",
+    ),
+)
+# Backward-compatible import used by older callers/self-tests.
+STREAM = PRIMARY_STREAM
 QC_VAR_RE = re.compile(r"(^qc_|_qc$|quality|flag|mask|status)", re.I)
 AUDIT_VARS = {
     "integration_time", "integration_time_vis", "integration_time_nir",
@@ -29,7 +43,8 @@ AUDIT_VARS = {
     "collector_x_tilt_std", "collector_y_tilt_std",
 }
 FIELDS = (
-    "priority", "case_id", "event", "stream", "source_files", "core_start_utc", "core_end_utc",
+    "priority", "case_id", "event", "stream", "product_role", "product_semantics",
+    "source_files", "core_start_utc", "core_end_utc",
     "decoded_sample_count_core", "first_sample_utc", "last_sample_utc",
     "nearest_sample_to_minus8_s", "nearest_sample_to_minus7_s", "nearest_sample_to_minus6_s",
     "median_positive_cadence_s", "max_internal_gap_s", "samples_within_5s_minus8",
@@ -88,11 +103,7 @@ def decode_native_times(ds: netCDF4.Dataset) -> np.ndarray:
 
 
 def has_decodable_time_coordinate(ds: netCDF4.Dataset) -> bool:
-    """Whether an empty native-time array is still structurally decodable.
-
-    A zero-record file with a normal time coordinate is readable evidence of no
-    samples. A file that opens but lacks usable native time semantics is not.
-    """
+    """Whether an empty native-time array is still structurally decodable."""
     if "time" in ds.variables and bool(getattr(ds.variables["time"], "units", None)):
         return True
     return "base_time" in ds.variables and "time_offset" in ds.variables
@@ -133,6 +144,7 @@ def strict_gap_metrics(times: np.ndarray, core_start: float, core_end: float) ->
 
 
 def collect_housekeeping(ds: netCDF4.Dataset, modes: set[str], health: set[str], errors: list[str], source: str) -> None:
+    """Read timing/housekeeping metadata only; never touch radiance/transmittance."""
     for name, var in ds.variables.items():
         lname = name.lower()
         if name in AUDIT_VARS or "integration_time" in lname or "number_of_scans" in lname:
@@ -151,9 +163,23 @@ def collect_housekeeping(ds: netCDF4.Dataset, modes: set[str], health: set[str],
             health.add(name)
 
 
-def audit_case(archive_root: Path, case: dict[str, str]) -> dict[str, Any]:
-    pattern = f"{STREAM}.{case['source_date_utc']}.*.nc"
-    files = sorted(p for p in archive_root.rglob(pattern) if p.is_file())
+def stream_meta(stream: str) -> tuple[str, str]:
+    for candidate, role, semantics in STREAMS:
+        if candidate == stream:
+            return role, semantics
+    raise ValueError(f"unsupported SASZE stream: {stream}")
+
+
+def matching_files(archive_root: Path, stream: str, source_date_utc: str) -> list[Path]:
+    found: set[Path] = set()
+    for ext in ("nc", "cdf"):
+        found.update(p for p in archive_root.rglob(f"{stream}.{source_date_utc}.*.{ext}") if p.is_file())
+    return sorted(found)
+
+
+def audit_case(archive_root: Path, case: dict[str, str], stream: str = PRIMARY_STREAM) -> dict[str, Any]:
+    role, semantics = stream_meta(stream)
+    files = matching_files(archive_root, stream, case["source_date_utc"])
     t8 = parse_utc(case["t_minus8_utc"]).timestamp()
     t7 = parse_utc(case["t_minus7_utc"]).timestamp()
     t6 = parse_utc(case["t_minus6_utc"]).timestamp()
@@ -206,7 +232,8 @@ def audit_case(archive_root: Path, case: dict[str, str]) -> dict[str, Any]:
         return 0 if not times.size else int(np.count_nonzero(np.abs(times - target) <= 5.0))
 
     return {
-        "priority": case["priority"], "case_id": case["case_id"], "event": case["event"], "stream": STREAM,
+        "priority": case["priority"], "case_id": case["case_id"], "event": case["event"], "stream": stream,
+        "product_role": role, "product_semantics": semantics,
         "source_files": ";".join(str(p.relative_to(archive_root)) for p in files),
         "core_start_utc": iso_epoch(core_start), "core_end_utc": iso_epoch(core_end),
         "decoded_sample_count_core": int(core.size),
@@ -233,16 +260,29 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def update_summary(path: Path, rows: list[dict[str, Any]]) -> None:
     summary = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    counts: dict[str, int] = {}
+    counts_by_stream: dict[str, dict[str, int]] = {}
     for row in rows:
-        key = str(row["disposition"])
-        counts[key] = counts.get(key, 0) + 1
-    summary["sasze_gate_algorithm"] = "strict-source-day-cadence-edge-gap-partial-unreadable-failclosed-v2"
-    summary["sasze_gate_counts"] = dict(sorted(counts.items()))
-    summary["sasze_gate_complete_readable"] = all(r["disposition"] not in {"SOURCE_FILE_MISSING", "UNREADABLE"} for r in rows)
-    summary["sasze_primary_survivor_case_ids"] = [r["case_id"] for r in rows if r["disposition"] == "TWILIGHT_CONTIGUOUS"]
-    summary["sasze_all20_readably_absent_or_discontinuous"] = bool(rows) and all(
-        r["disposition"] in {"TWILIGHT_DISCONTINUOUS", "TWILIGHT_SAMPLES_ABSENT"} for r in rows
+        stream = str(row["stream"])
+        disposition = str(row["disposition"])
+        stream_counts = counts_by_stream.setdefault(stream, {})
+        stream_counts[disposition] = stream_counts.get(disposition, 0) + 1
+
+    primary_rows = [r for r in rows if r["stream"] == PRIMARY_STREAM]
+    summary["sasze_gate_algorithm"] = "strict-primary-vis-source-day-cadence-edge-gap-partial-unreadable-failclosed-v3"
+    summary["sasze_primary_gate_stream"] = PRIMARY_STREAM
+    summary["sasze_secondary_stream"] = "sgpsaszenirC1.a1"
+    summary["sasze_filterband_role"] = "DAYLIGHT_DERIVED_DIAGNOSTIC_NOT_TWILIGHT_HELDOUT_GATE"
+    summary["sasze_gate_counts_by_stream"] = {
+        stream: dict(sorted(counts.items())) for stream, counts in sorted(counts_by_stream.items())
+    }
+    summary["sasze_primary_gate_complete_readable"] = all(
+        r["disposition"] not in {"SOURCE_FILE_MISSING", "UNREADABLE"} for r in primary_rows
+    )
+    summary["sasze_primary_survivor_case_ids"] = [
+        r["case_id"] for r in primary_rows if r["disposition"] == "TWILIGHT_CONTIGUOUS"
+    ]
+    summary["sasze_all20_primary_vis_readably_absent_or_discontinuous"] = bool(primary_rows) and all(
+        r["disposition"] in {"TWILIGHT_DISCONTINUOUS", "TWILIGHT_SAMPLES_ABSENT"} for r in primary_rows
     )
     path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -257,15 +297,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     archive_root = args.archive_root.resolve()
     cases = load_cases(args.priority_csv)
-    rows = [audit_case(archive_root, case) for case in cases]
+    rows = [audit_case(archive_root, case, stream) for case in cases for stream, _, _ in STREAMS]
     write_csv(args.output, rows)
     if args.update_summary:
         update_summary(args.update_summary, rows)
 
+    primary_rows = [r for r in rows if r["stream"] == PRIMARY_STREAM]
     counts: dict[str, int] = {}
-    for row in rows:
+    for row in primary_rows:
         counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
-    print(json.dumps({"gate_counts": counts, "survivors": [r["case_id"] for r in rows if r["disposition"] == "TWILIGHT_CONTIGUOUS"]}, indent=2, sort_keys=True))
+    print(json.dumps({
+        "primary_gate_stream": PRIMARY_STREAM,
+        "primary_gate_counts": counts,
+        "primary_survivors": [r["case_id"] for r in primary_rows if r["disposition"] == "TWILIGHT_CONTIGUOUS"],
+        "audited_streams": [s for s, _, _ in STREAMS],
+    }, indent=2, sort_keys=True))
     return 0
 
 

@@ -1,0 +1,225 @@
+name: Lunar finite-disk authorization-time seed recheck v1
+
+on:
+  pull_request:
+    branches:
+      - review/lunar-finite-disk-seed-freshness-v1
+    types: [opened]
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-authorization-recheck-v1.json'
+      - 'review/lunar-scattered-light-source-contract-v1/build_lunar_finite_disk_authorization_recheck_proof.py'
+      - 'tests/test_lunar_finite_disk_authorization_recheck_v1.py'
+      - '.github/workflows/lunar-finite-disk-authorization-recheck-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: lunar-finite-disk-authorization-recheck-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorization-recheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Enforce exact one-shot zero-runtime boundary
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "pull_request"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$EXPECTED_BRANCH" = "review/lunar-finite-disk-authorization-recheck-v1"
+          test -z "$(command -v uvspec || true)"
+          ! grep -R -n -E '(^|[^A-Za-z0-9_])(uvspec|MYSTIC)([^A-Za-z0-9_]|$)' .github/workflows/lunar-finite-disk-authorization-recheck-v1.yml | grep -v "command -v uvspec" | grep -v "uvspec|MYSTIC"
+          mkdir -p authorization-recheck-evidence prior-proof
+          git ls-files -z > authorization-recheck-evidence/tracked-files.nul
+
+      - name: Test frozen authorization-recheck contract and refusal boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_lunar_finite_disk_authorization_recheck_v1.py
+
+      - name: Verify and download exact prior freshness proof artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: '9728990224'
+          EXPECTED_DIGEST: 'sha256:afe747efe812531833e3576ce4d4a5af9318336a345e92874d915507ca43c93c'
+          EXPECTED_RUN_ID: '33300258286'
+          EXPECTED_NAME: 'lunar-finite-disk-seed-freshness-v1-proof'
+        run: |
+          set -euo pipefail
+          observed_name="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EXPECTED_ARTIFACT_ID" --jq .name)"
+          observed_digest="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EXPECTED_ARTIFACT_ID" --jq .digest)"
+          observed_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EXPECTED_ARTIFACT_ID" --jq .workflow_run.id)"
+          test "$observed_name" = "$EXPECTED_NAME"
+          test "$observed_digest" = "$EXPECTED_DIGEST"
+          test "$observed_run" = "$EXPECTED_RUN_ID"
+          gh run download "$EXPECTED_RUN_ID" -n "$EXPECTED_NAME" --dir prior-proof
+          test -f prior-proof/seed-freshness-proof.json
+          python - <<'PY'
+          import json
+          p=json.load(open('prior-proof/seed-freshness-proof.json'))
+          assert p['status']=='PASS_REPLACEMENT_CANDIDATE_SEEDS_FRESH_REVIEW_ONLY_NOT_ALLOCATED'
+          assert p['auditedHead']=='cfc0eb11dc86544a46f492de9cb41b62c8556d31'
+          assert p['candidateSeedCount']==198
+          assert p['candidateSeedCanonicalSha256']=='ccfb4a645fdb35f35e759338cde7e5d20992391b4d25b3d272d1b8e80c93ad7a'
+          assert p['candidateRowsCanonicalSha256']=='b2c69985b098ca46c5447f025c4a774ab384135b2a641a2a439121cb45f90ce8'
+          assert p['authorizationTimeRepositoryGlobalRecheckRequired'] is True
+          assert p['candidateSeedsAppliedToCases'] is False
+          assert p['solverExecutionAuthorized'] is False
+          print('prior_freshness_proof_identity=PASS')
+          PY
+
+      - name: Rebuild exact candidate universe into runner-only audit batches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, sys
+          from pathlib import Path
+          p=Path('review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('lunar_fd_auth_seed_ledger_workflow',p)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import lunar seed ledger')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          ledger=mod.validate_ledger()
+          if ledger['candidateSeedCount'] != 198 or ledger['candidateSeedsAppliedToCases'] is not False:
+              raise SystemExit('replacement candidate ledger boundary drift')
+          if ledger['candidateSeedCanonicalSha256'] != 'ccfb4a645fdb35f35e759338cde7e5d20992391b4d25b3d272d1b8e80c93ad7a':
+              raise SystemExit('replacement candidate seed identity drift')
+          if ledger['candidateRowsCanonicalSha256'] != 'b2c69985b098ca46c5447f025c4a774ab384135b2a641a2a439121cb45f90ce8':
+              raise SystemExit('replacement candidate row identity drift')
+          out=Path('authorization-recheck-evidence')
+          batches=mod.audit_batches(ledger['candidateSeeds'])
+          for index,batch in enumerate(batches, start=1):
+              (out/f'candidate-seed-batch-{index}.json').write_text(json.dumps({'candidateSeeds':batch},indent=2,sort_keys=True)+'\n')
+          (out/'empty-self-ledger-policy.json').write_text(json.dumps({
+              'schemaVersion':2,
+              'requiredTrackedSelfLedgerPaths':[],
+              'futureEvidenceSelfLedgerPaths':[],
+          },indent=2,sort_keys=True)+'\n')
+          print('candidate_seed_count=198')
+          print('candidate_seed_canonical_sha256='+ledger['candidateSeedCanonicalSha256'])
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - name: Re-scan exact authorization head tracked tree for candidate literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py \
+              --repo-root . \
+              --file-list authorization-recheck-evidence/tracked-files.nul \
+              --candidate-seed-ledger "authorization-recheck-evidence/candidate-seed-batch-${i}.json" \
+              --allow-self-ledger-json authorization-recheck-evidence/empty-self-ledger-policy.json \
+              --output "authorization-recheck-evidence/tracked-seed-scan-${i}.json"
+          done
+          python - <<'PY'
+          import json
+          for i in range(1,4):
+              p=json.load(open(f'authorization-recheck-evidence/tracked-seed-scan-{i}.json'))
+              assert p['candidateSeedCount']==72
+              assert p['trackedTreeExternalCollisionCount']==0
+              assert p['exactHeadTrackedTreeByteScanPassed'] is True
+          print('exact_authorization_head_tracked_tree_rescan=PASS')
+          PY
+
+      - name: Fresh authorization-time two-pass repository-global candidate recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            python review/lunar-scattered-light-source-contract-v1/lunar_repository_global_seed_scan.py \
+              --repository "$GITHUB_REPOSITORY" \
+              --issue-number 60 \
+              --candidate-seed-ledger "authorization-recheck-evidence/candidate-seed-batch-${i}.json" \
+              --current-run-id "$GITHUB_RUN_ID" \
+              --audit-mode authorization-recheck \
+              --expected-branch-name "$EXPECTED_BRANCH" \
+              --expected-repo-head "$EXPECTED_HEAD" \
+              --output "authorization-recheck-evidence/repository-global-seed-scan-${i}.json"
+          done
+
+      - name: Build zero-runtime authorization recheck proof
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/lunar-scattered-light-source-contract-v1/build_lunar_finite_disk_authorization_recheck_proof.py \
+            --prior-proof prior-proof/seed-freshness-proof.json \
+            --global-report authorization-recheck-evidence/repository-global-seed-scan-1.json \
+            --global-report authorization-recheck-evidence/repository-global-seed-scan-2.json \
+            --global-report authorization-recheck-evidence/repository-global-seed-scan-3.json \
+            --expected-head "$EXPECTED_HEAD" \
+            --output authorization-recheck-evidence/authorization-recheck-proof.json
+          python - <<'PY'
+          import json
+          p=json.load(open('authorization-recheck-evidence/authorization-recheck-proof.json'))
+          assert p['status']=='PASS_AUTHORIZATION_TIME_REPOSITORY_GLOBAL_SEED_RECHECK_ZERO_RUNTIME'
+          assert p['candidateSeedCount']==198
+          assert p['scannerCoverageUniqueCandidateCount']==198
+          assert p['repositoryGlobalCollisionCount']==0
+          assert p['repositoryGlobalDoubleEnumerationStableAllBatches'] is True
+          assert p['candidateSeedsAppliedToCases'] is False
+          assert p['scientificExecutionAuthorizationCreated'] is False
+          assert p['solverExecutionAuthorized'] is False
+          assert p['solverExecuted'] is False
+          assert p['resultOpeningAuthorized'] is False
+          assert p['resultOpened'] is False
+          assert p['finiteDiskAdequacyClaimed'] is False
+          assert p['productionAuthorized'] is False
+          print('status='+p['status'])
+          print('candidate_seed_count=198')
+          print('candidate_seed_literals_logged=false')
+          PY
+
+      - name: Upload zero-runtime authorization recheck proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-finite-disk-authorization-recheck-v1-proof
+          path: |
+            authorization-recheck-evidence/authorization-recheck-proof.json
+            authorization-recheck-evidence/repository-global-seed-scan-1.json
+            authorization-recheck-evidence/repository-global-seed-scan-2.json
+            authorization-recheck-evidence/repository-global-seed-scan-3.json
+            authorization-recheck-evidence/tracked-seed-scan-1.json
+            authorization-recheck-evidence/tracked-seed-scan-2.json
+            authorization-recheck-evidence/tracked-seed-scan-3.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Authorization-time seed collision recheck only.'
+          echo 'No candidate seed is applied to a finite-disk case by this workflow.'
+          echo 'No scientific ordinal, no scientific execution authorization, no solver runtime, no result opening.'
+          echo 'No finite-disk adequacy, empirical moonlight, total-sky, or production claim.'

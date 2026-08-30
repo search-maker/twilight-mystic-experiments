@@ -31,9 +31,10 @@ class ProtectedOneShotWorkflowV1Tests(unittest.TestCase):
         self.assertIn("'positiveEpsilonSubstitutionAllowed':False", text)
         self.assertIn("'postResultFloorBackSelectionAuthorized':False", text)
         self.assertIn("'postResultRetuningAuthorized':False", text)
+        self.assertIn("'taylorOrJerusalemUsed':False", text)
         self.assertNotIn('workflow_dispatch:', text)
-        self.assertNotIn('Taylor', text)
-        self.assertNotIn('Jerusalem', text)
+        for forbidden in ('AnnArbor.csv', 'Taylor residual', 'Jerusalem residual', 'first-seeing', 'halachic'):
+            self.assertNotIn(forbidden, text)
 
     def test_result_is_published_for_pass_or_fail(self):
         text = WORKFLOW.read_text(encoding='utf-8')

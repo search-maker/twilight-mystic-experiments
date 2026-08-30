@@ -25,14 +25,26 @@ jobs:
           set -euo pipefail
           f=review/low-altitude-stellar-transport-v3/lowalt_state_0003_spherical_path.py
           test -f "$f"
-          if grep -Eq '(^|[^A-Za-z0-9_])(subprocess|Popen)([^A-Za-z0-9_]|$)|os\.system[[:space:]]*\(' "$f"; then
-            echo 'solver/process execution surface found in STATE-0003 solver-free prototype' >&2
-            exit 1
-          fi
-          if grep -Eq '(^|[[:space:]])(import|from)[[:space:]]+(subprocess|shutil|os)([[:space:].]|$)' "$f"; then
-            echo 'process-discovery module import found in STATE-0003 solver-free prototype' >&2
-            exit 1
-          fi
+          python - "$f" <<'PY'
+          import ast, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+          forbidden_modules = {'os','subprocess','shutil'}
+          forbidden_calls = {'system','popen','Popen','run','call','check_call','check_output'}
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  for alias in node.names:
+                      if alias.name.split('.')[0] in forbidden_modules:
+                          raise SystemExit(f'forbidden process module import: {alias.name}')
+              elif isinstance(node, ast.ImportFrom):
+                  if (node.module or '').split('.')[0] in forbidden_modules:
+                      raise SystemExit(f'forbidden process module import: {node.module}')
+              elif isinstance(node, ast.Call):
+                  fn = node.func
+                  name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ''
+                  if name in forbidden_calls:
+                      raise SystemExit(f'forbidden process-like call: {name}')
+          PY
           python -m py_compile "$f"
           python "$f"
       - name: Audit result-blind source-trace contract

@@ -210,24 +210,41 @@ jobs:
           test "$(git rev-parse HEAD^)" = "$PARENT"
 
           # Mandatory live-ledger guard immediately before the only remote repository mutation.
+          # Comment 5470173780 recorded a clean ledger/fence baseline after PR #720 merged.
+          # Any later protected fence or lane-specific closure/recovery directive must stop this push.
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > /tmp/issue60-pages.json
           python - <<'PY'
-          import json
+          import json, re
           pages=json.load(open('/tmp/issue60-pages.json'))
           comments=[c for page in pages for c in page]
-          bodies=[str(c.get('body') or '').strip() for c in comments]
-          begins=sum(b.startswith('WRITE_QUIET_BEGIN') for b in bodies)
-          ends=sum(b.startswith('WRITE_QUIET_END') for b in bodies)
-          if begins != ends:
-              raise SystemExit(f'unmatched WRITE_QUIET fence: begin={begins} end={ends}')
-          blockers=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
-          for c,b in zip(comments,bodies):
-              if int(c.get('id') or 0) <= 5470173780:
-                  continue
-              upper=b.upper()
+          baseline=5470173780
+          post=[c for c in comments if int(c.get('id') or 0) > baseline]
+
+          open_begins={}
+          for c in post:
+              cid=int(c.get('id') or 0)
+              body=str(c.get('body') or '').strip()
+              if body.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[cid]=body
+              elif body.startswith('WRITE_QUIET_END'):
+                  match=re.search(r'\bbegin=(\d+)\b', body)
+                  if not match:
+                      raise SystemExit(f'new WRITE_QUIET_END lacks explicit begin binding: comment {cid}')
+                  begin_id=int(match.group(1))
+                  if begin_id not in open_begins:
+                      raise SystemExit(f'new WRITE_QUIET_END does not match a post-baseline BEGIN: comment {cid} begin={begin_id}')
+                  del open_begins[begin_id]
+          if open_begins:
+              raise SystemExit(f'unmatched post-baseline WRITE_QUIET_BEGIN comments: {sorted(open_begins)}')
+
+          blockers=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED','CLOSED')
+          for c in post:
+              cid=int(c.get('id') or 0)
+              upper=str(c.get('body') or '').upper()
               relevant=('AVPS' in upper or 'ORDINAL44' in upper or 'ORDINAL 44' in upper or 'RECOVERY3' in upper)
-              if relevant and any(x in upper for x in blockers):
-                  raise SystemExit(f'newer relevant fail-closed directive/comment {c.get("id")}')
+              superseding=('SUPERSED' in upper or ('COORDINATOR' in upper and 'RECOVERY' in upper))
+              if relevant and (any(x in upper for x in blockers) or superseding):
+                  raise SystemExit(f'newer relevant fail-closed/closure/recovery directive comment {cid}')
           PY
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
           printf 'parent=%s\ncommit=%s\nbranch=%s\n' "$PARENT" "$COMMIT" "$TARGET_BRANCH" > materialization-receipt.txt

@@ -1,0 +1,115 @@
+name: Lunar MYSTIC secondary monochromatic precision v1 review
+
+on:
+  pull_request:
+    branches:
+      - review/lunar-mystic-computational-precision-v1
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar-mystic-secondary-monochromatic-precision-v1.json'
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_monochromatic_precision.py'
+      - 'tests/test_lunar_mystic_secondary_monochromatic_precision_v1.py'
+      - '.github/workflows/lunar-mystic-secondary-monochromatic-precision-v1-review.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-solver-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Refuse rerun semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Run deterministic contract/evaluator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_lunar_mystic_secondary_monochromatic_precision_v1.py
+
+      - name: Set up exact frozen libRadtran runtime without scientific execution
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lunar-secondary-monochromatic-review-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Prepare all 36 exact-runtime inputs and prove no solver execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p review-artifact
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output review-artifact/runtime-report.json
+          python review/lunar-scattered-light-source-contract-v1/lunar_mystic_secondary_monochromatic_precision.py \
+            --prepare \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere-file "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --atlas-file "$CONDA_PREFIX/share/libRadtran/data/solar_flux/atlas_plus_modtran" \
+            --runtime-report review-artifact/runtime-report.json \
+            --output-root review-artifact/prepared
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('review-artifact/prepared')
+          m=json.load(open(root/'prepared-manifest.json'))
+          assert m['status']=='PREPARED_NO_SOLVER_EXECUTION'
+          assert m['caseCount']==36
+          assert m['totalPhotonHistories']==180_000_000
+          assert m['scientificSolverExecuted'] is False
+          assert m['resultsOpened'] is False
+          assert m['parentResultReclassified'] is False
+          assert m['empiricalValidationClaim'] is False
+          assert m['productionAuthorized'] is False
+          seeds=[x['randomSeed'] for x in m['cases']]
+          assert seeds==list(range(28762001,28762037))
+          wavelengths=[x['wavelengthNm'] for x in m['cases']]
+          assert wavelengths[:12]==[450.0]*12
+          assert wavelengths[12:24]==[650.0]*12
+          assert wavelengths[24:]==[750.0]*12
+          for row in m['cases']:
+            text=Path(row['inputPath']).read_text()
+            w=row['wavelengthNm']
+            assert text.count(f'wavelength {w:.1f} {w:.1f}')==1
+            assert 'wavelength 380 780' not in text
+            assert 'mc_spectral_is' not in text
+            assert text.count('mc_std')==1
+            assert text.count('atm_z_grid ')==1
+            assert text.count('zout 0.000000')==1
+            assert 'altitude ' not in text
+          r=json.load(open('review-artifact/runtime-report.json'))
+          assert r['scientificSolverExecuted'] is False
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          PY
+
+      - name: Publish review-only input evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-mystic-secondary-monochromatic-precision-v1-review
+          path: review-artifact
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Review/preparation only: this workflow does not invoke uvspec.'
+          echo 'Parent v1 remains FAIL_COMPUTATIONAL_PRECISION.'
+          echo 'No Air-LUSI/X-Shooter/Taylor/Jerusalem residuals opened; no empirical, finite-disk, total-sky, or production claim.'

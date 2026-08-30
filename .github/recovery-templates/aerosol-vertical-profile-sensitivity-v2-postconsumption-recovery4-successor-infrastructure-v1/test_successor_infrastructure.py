@@ -108,12 +108,28 @@ def main() -> None:
         output.mkdir()
         manifest = generator.generate(identity_path, output)
 
-        mirror = {
-            generator.BASE_ADAPTER: output / "review/aerosol-vertical-profile-sensitivity-v2-control-v1/adapter.py",
-            ROOT / "review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py": output / "review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py",
-            ROOT / "review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py": output / "review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py",
-        }
-        for src, dst in mirror.items():
+        # The generated runtime wrappers deliberately bind the already-reviewed base
+        # implementation. The synthetic fixture therefore mirrors the exact small
+        # transitive byte-bound dependency set under the temporary repository root;
+        # it does not weaken hashes or copy runtime/solver data.
+        mirror_relatives = (
+            "review/aerosol-vertical-profile-sensitivity-v2-control-v1/adapter.py",
+            "review/aerosol-vertical-profile-sensitivity-v2-control-v1/control_package.py",
+            "review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py",
+            "review/aerosol-vertical-profile-sensitivity-v2-prereg/protocol.review.json",
+            "review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py",
+            "review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py",
+            "review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py",
+            "experiments/aerosol-vertical-profile-sensitivity-v1/protocol.review.json",
+            "experiments/aerosol-vertical-profile-sensitivity-v1/SCIENTIFIC_REVIEW.md",
+            "experiments/aerosol-vertical-profile-sensitivity-v1/opac_vertical_templates.py",
+            "experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat",
+        )
+        for relative in mirror_relatives:
+            src = ROOT / relative
+            dst = output / relative
+            if not src.is_file():
+                raise SystemExit(f"bound fixture dependency missing: {relative}")
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
 

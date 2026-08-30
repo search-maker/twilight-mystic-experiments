@@ -32,10 +32,14 @@ if (-not (Test-Path -LiteralPath $venv -PathType Container)) {
 $python = Join-Path $venv "Scripts\python.exe"
 & $python -m pip install --disable-pip-version-check -r (Join-Path $ScriptRoot "requirements_v2_anchor_support.txt")
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-& $python -m py_compile (Join-Path $ScriptRoot "audit_sasze_anchor_support_v2.py")
+$baseAudit = Join-Path $ScriptRoot "audit_sasze_anchor_support_v2.py"
+$hardenedAudit = Join-Path $ScriptRoot "audit_sasze_anchor_support_v2_hardened.py"
+& $python -m py_compile $baseAudit $hardenedAudit
 if ($LASTEXITCODE -ne 0) { throw "V2 audit syntax preflight failed." }
+& $python $hardenedAudit --self-test
+if ($LASTEXITCODE -ne 0) { throw "V2 hardened mechanical self-test failed." }
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
-& $python (Join-Path $ScriptRoot "audit_sasze_anchor_support_v2.py") --archive-root $ArchiveRoot --output-dir $OutputRoot
+& $python $hardenedAudit --archive-root $ArchiveRoot --output-dir $OutputRoot
 if ($LASTEXITCODE -ne 0) { throw "V2 anchor-support audit failed with exit code $LASTEXITCODE." }
 
 $manifest = @'

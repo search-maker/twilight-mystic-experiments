@@ -1,0 +1,175 @@
+name: Review ARM SGP C1 real-sky preregistration v1
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'experiments/arm-sgp-c1-real-sky-validation-v1/**'
+      - '.github/workflows/arm-sgp-c1-real-sky-prereg-preflight-v1.yml'
+      - 'review/aerosol-vertical-profile-transport-v1/profile_transport.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm-sgp-c1-real-sky-prereg-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  syntax-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      EXPECTED_COMPRESSED_PROFILE_SHA256: e4d916e3c6f97cfe5de8908c44e3460087a6435deb2296a226c0a18b55bdae88
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce exact-head review-only first attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test ! -e experiments/arm-sgp-c1-real-sky-validation-v1/fex-profile-shapes.csv
+          test "$(sha256sum experiments/arm-sgp-c1-real-sky-validation-v1/fex-profile-shapes.csv.zlib.b64 | awk '{print $1}')" = "$EXPECTED_COMPRESSED_PROFILE_SHA256"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: arm-sgp-real-sky-prereg-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Materialize and verify the exact frozen preregistration package
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          STAGE=experiments/arm-sgp-c1-real-sky-validation-v1
+          python "$STAGE/materialize_profile.py" > materialize-profile.json
+          python - <<'PY'
+          import csv, hashlib
+          from pathlib import Path
+          stage=Path('experiments/arm-sgp-c1-real-sky-validation-v1')
+          rows=list(csv.DictReader((stage/'MANIFEST_SHA256.csv').open(newline='')))
+          if len(rows)!=8: raise SystemExit(f'manifest row-count drift: {len(rows)}')
+          for row in rows:
+              path=stage/row['file']
+              if not path.is_file(): raise SystemExit(f'manifest member missing: {path}')
+              raw=path.read_bytes()
+              if len(raw)!=int(row['bytes']): raise SystemExit(f'byte-count drift: {row["file"]}')
+              got=hashlib.sha256(raw).hexdigest()
+              if got!=row['sha256']: raise SystemExit(f'SHA-256 drift: {row["file"]}: {got}')
+          if b'FROZEN BEFORE MYSTIC' not in (stage/'PREREGISTRATION.md').read_bytes():
+              raise SystemExit('preregistration freeze marker missing')
+          PY
+          python -m py_compile "$STAGE/materialize_profile.py" "$STAGE/preflight.py"
+
+      - name: Bind exact project libRadtran runtime without invoking uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p arm-preflight-audit
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output arm-preflight-audit/runtime-report.json
+          python - <<'PY'
+          import json, os
+          x=json.load(open('arm-preflight-audit/runtime-report.json'))
+          if x.get('scientificSolverExecuted') is not False or x.get('syntaxCheckExecuted') is not False:
+              raise SystemExit('runtime probe crossed execution boundary')
+          if x.get('uvspecSha256') != os.environ['EXPECTED_UVSPEC_SHA256']:
+              raise SystemExit('uvspec SHA-256 drift')
+          if x.get('libRadtranDataTreeSha256') != os.environ['EXPECTED_BASE_DATA_SHA256']:
+              raise SystemExit('libRadtran base data-tree SHA-256 drift')
+          PY
+
+      - name: Render frozen central minus-7 syntax case without seed or solver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python experiments/arm-sgp-c1-real-sky-validation-v1/preflight.py \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-dir "$GITHUB_WORKSPACE/arm-preflight-case" \
+            > arm-preflight-audit/preflight-stdout.json
+          grep -q 'rte_solver mystic' arm-preflight-case/central-minus7.inp
+          grep -q 'aerosol_modify ssa set' arm-preflight-case/central-minus7.inp
+          grep -q 'aerosol_modify gg set' arm-preflight-case/central-minus7.inp
+          grep -q 'aerosol_file tau' arm-preflight-case/central-minus7.inp
+          grep -q 'aerosol_set_tau_at_wvl 464.020874' arm-preflight-case/central-minus7.inp
+          ! grep -q 'mc_randomseed' arm-preflight-case/central-minus7.inp
+          ! grep -q 'sasze' arm-preflight-case/central-minus7.inp
+
+      - name: Execute exactly one uvspec syntax check
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          before="$(find arm-preflight-case -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')"
+          set +e
+          timeout 120 "$(command -v uvspec)" -c \
+            < arm-preflight-case/central-minus7.inp \
+            > arm-preflight-audit/syntax-stdout.txt \
+            2> arm-preflight-audit/syntax-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > arm-preflight-audit/syntax-exit-code.txt
+          test "$status" = "0"
+          after="$(find arm-preflight-case -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')"
+          test "$before" = "$after"
+
+      - name: Freeze preflight evidence and claim boundary
+        if: always()
+        shell: micromamba-shell {0}
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          audit=Path('arm-preflight-audit')
+          case=Path('arm-preflight-case')
+          syntax_exit=(audit/'syntax-exit-code.txt').read_text().strip() if (audit/'syntax-exit-code.txt').exists() else None
+          input_raw=(case/'central-minus7.inp').read_bytes() if (case/'central-minus7.inp').exists() else b''
+          tau_raw=(case/'central-minus7-aerosol-tau.dat').read_bytes() if (case/'central-minus7-aerosol-tau.dat').exists() else b''
+          report={
+              'schemaVersion':1,
+              'stageId':'arm-sgp-c1-sasze-real-sky-validation-v1-preflight',
+              'application':'exact-runtime syntax preflight only',
+              'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'headSha':os.environ['GITHUB_SHA'],
+              'uvspecCommand':['uvspec','-c'],
+              'syntaxExitCode':int(syntax_exit) if syntax_exit is not None and syntax_exit.isdigit() else None,
+              'inputSha256':hashlib.sha256(input_raw).hexdigest() if input_raw else None,
+              'aerosolTauSha256':hashlib.sha256(tau_raw).hexdigest() if tau_raw else None,
+              'scientificSolverExecuted':False,
+              'mysticScientificExecution':False,
+              'saszeRadianceOpened':False,
+              'scientificOrdinalAllocated':False,
+              'seedAllocated':False,
+              'dispatchCreated':False,
+              'resultOpeningAuthorized':False,
+              'productionAuthorized':False,
+          }
+          (audit/'preflight-report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+          echo 'Syntax-only review. No MYSTIC scientific execution, no seed/ordinal, no SASZE comparison radiance opening, no dispatch.'
+
+      - name: Upload syntax-preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-sgp-c1-real-sky-prereg-preflight-v1
+          path: |
+            arm-preflight-audit
+            arm-preflight-case
+            materialize-profile.json
+          retention-days: 14

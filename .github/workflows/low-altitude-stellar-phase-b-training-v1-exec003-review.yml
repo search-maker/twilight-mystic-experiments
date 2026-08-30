@@ -1,0 +1,105 @@
+name: Low-altitude stellar Phase-B training v1 exec003 recovery review
+
+on:
+  pull_request:
+    paths:
+      - 'review/low-altitude-stellar-transport-v1/run_phase_b_training_v1_exec003.py'
+      - '.github/workflows/low-altitude-stellar-phase-b-training-v1-exec003-review.yml'
+      - '.github/workflows/low-altitude-stellar-phase-b-training-v1-exec003-one-shot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-recovery-and-single-trigger-transport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prove frozen Phase-B science files remain byte-identical
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py)" = "eb83fffaddc9bcb441ad1362f044ddaef082b222"
+          test "$(git rev-parse HEAD:review/low-altitude-stellar-transport-v1/low_altitude_phase_b.py)" = "3577da2a64ddc549b81f806d8960120af6dc1a6a"
+
+      - name: Re-run frozen solver-free Phase-B tests
+        run: python -m unittest -v tests/test_low_altitude_stellar_phase_b_training_v1.py tests/test_low_altitude_stellar_phase_b_v1.py
+
+      - name: Verify exec003 is identity-only recovery and protected remains closed
+        run: |
+          python review/low-altitude-stellar-transport-v1/run_phase_b_training_v1_exec003.py --emit-ledger > /tmp/exec003-ledger.json
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/exec003-ledger.json',encoding='utf-8'))
+          assert d['executionId']=='low-altitude-stellar-phase-b-training-v1-exec003'
+          assert d['scientificState']=='LOWALT-STELLAR-STATE-0001'
+          assert d['recoveryIdentityOnly'] is True
+          assert d['recoveryFromExecutionIds']==['low-altitude-stellar-phase-b-training-v1-exec001','low-altitude-stellar-phase-b-training-v1-exec002']
+          assert d['predecessorNumericalOutputAdmissible'] is False
+          assert d['coordinatorCorrectionIssue60CommentId']==5468736357
+          assert d['exec002ClassificationIssue60CommentId']==5468770998
+          assert d['scientificDesignChangedFromFrozenPhaseB'] is False
+          assert d['dispatchTransportChangedOnly'] is True
+          assert d['trainingSpectrumCount']==275
+          assert d['trainingAltitudesDeg']==[0.25,0.5,0.75,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5]
+          assert d['observerElevationM']==[0.0,500.0,1250.0,2000.0,2500.0]
+          assert d['aod550']==[0.05,0.10,0.20,0.30,0.40]
+          assert d['wavelengthNm']==[380,780,1]
+          assert d['solver']=='sdisort' and d['solverGeometry']=='pseudo-spherical'
+          assert d['targetAltitudeBasis']=='topocentric-vacuum-geometric'
+          assert d['refractionAppliedInRadiativeTransfer'] is False
+          assert d['protectedSpectrumCountExecuted']==0
+          assert d['protectedResultsOpened'] is False
+          assert d['protectedValidationRemainsClosed'] is True
+          assert d['positiveEpsilonSubstitutionAllowed'] is False
+          assert d['exactHorizonIncluded'] is False
+          assert d['productionAuthorized'] is False
+          PY
+
+      - name: Verify wrapper exposes no new scientific or protected implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          P=review/low-altitude-stellar-transport-v1/run_phase_b_training_v1_exec003.py
+          grep -q 'base.EXECUTION_ID = EXECUTION_ID' "$P"
+          ! grep -n 'build_protected_cases()' "$P"
+          ! grep -n 'evaluate_protected_deltas(' "$P"
+          ! grep -n -E 'sza |aerosol_set_tau_at_wvl|rte_solver|output_quantity|mu0|math.exp' "$P"
+          ! grep -n -E 'Taylor|Jerusalem|first-seeing|halachic' "$P"
+
+      - name: Verify exec003 transport cannot execute on branch creation
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=.github/workflows/low-altitude-stellar-phase-b-training-v1-exec003-one-shot.yml
+          grep -Fq 'dispatch/low-altitude-stellar-phase-b-training-v1-exec003' "$W"
+          grep -Fq "paths:" "$W"
+          grep -Fq "phase-b-training-v1-exec003-dispatch.json" "$W"
+          grep -Fq 'if: ${{ github.event.created == false && github.event.deleted == false }}' "$W"
+          grep -Fq "assert e.get('created') is False" "$W"
+          grep -Fq "assert e.get('deleted') is False" "$W"
+          grep -Fq 'test "$GITHUB_RUN_ATTEMPT" = 1' "$W"
+          grep -Fq 'test "${#CHANGED[@]}" = 1' "$W"
+          grep -Fq "'branchCreationExecutionAllowed':False" "$W"
+          grep -Fq "'protectedValidationAuthorized':False" "$W"
+          ! grep -q 'workflow_dispatch' "$W"
+          ! grep -q 'pull_request:' "$W"
+
+      - name: Verify exec003 transport is still frozen training-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=.github/workflows/low-altitude-stellar-phase-b-training-v1-exec003-one-shot.yml
+          grep -Fq 'run_phase_b_training_v1_exec003.py' "$W"
+          grep -Fq 'trainingSpectrumCount' "$W"
+          grep -Fq '275' "$W"
+          grep -Fq 'protectedSolverInvocationCount' "$W"
+          grep -Fq 'positiveEpsilonSubstitutionAllowed' "$W"
+          ! grep -n -E 'Taylor|Jerusalem|first-seeing|halachic' "$W"

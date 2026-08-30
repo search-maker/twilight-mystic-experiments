@@ -104,7 +104,10 @@ def common_identity(text: str) -> str:
         ("'scientificOrdinal':42", "'scientificOrdinal':43"),
         ("'authorizationPr':629", "'authorizationPr':647"),
     ]
+    optional = {OLD_AUTH_PATH, OLD_AUTH_BLOB}
     for old, new in pairs:
+        if old in optional and old not in text:
+            continue
         text = must(text, old, new)
     return text
 

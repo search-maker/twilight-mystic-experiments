@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import importlib.util
+import json
 import math
 from pathlib import Path
 from typing import Iterable
 
 HELPER = Path(__file__).resolve().parents[2] / 'experiments' / 'mystic-batch-v1' / 'twilight_surrogate_tier1_execution_adapter.py'
+CRS_SOURCE_BINDING_RESULT = Path(__file__).with_name('libradtran-custom-source-crs-admission-result-v1.json')
 
 class LunarMysticInputError(ValueError):
     pass
@@ -25,6 +27,59 @@ def _elevation_helper():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+def _require_verified_crs_source_binding(runtime_identity: dict | None) -> dict:
+    """Bind the renderer to the exact runtime tuple that passed source-file admission.
+
+    This gate proves only that the custom extraterrestrial source amplitude is
+    consumed with ``mol_abs_param crs`` on the exact frozen libRadtran runtime.
+    It is not an empirical moonlit-sky validation or production authorization.
+    """
+    if not isinstance(runtime_identity, dict):
+        raise LunarMysticInputError('exact libRadtran runtime identity required for lunar CRS custom source')
+    if not CRS_SOURCE_BINDING_RESULT.is_file():
+        raise LunarMysticInputError('lunar CRS custom-source admission result unavailable')
+    try:
+        result = json.loads(CRS_SOURCE_BINDING_RESULT.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise LunarMysticInputError('cannot read lunar CRS custom-source admission result') from exc
+    if result.get('contractId') != 'libradtran-custom-source-crs-admission-gate-v1':
+        raise LunarMysticInputError('lunar CRS source-binding contract identity drift')
+    if result.get('status') != 'PASS_CUSTOM_SOURCE_WITH_CRS_CONSUMED_EXACT_RUNTIME':
+        raise LunarMysticInputError('lunar CRS custom-source admission has not passed')
+    interpretation = result.get('interpretation') or {}
+    if interpretation.get('customSourceAmplitudeConsumedWithMolAbsParamCrsForExactRuntimeTuple') is not True:
+        raise LunarMysticInputError('lunar CRS source consumption capability not proven')
+    if interpretation.get('atmosphericScatteredMoonlightValidatedByThisResult') is not False:
+        raise LunarMysticInputError('source-binding result scientific boundary drift')
+    if interpretation.get('productionAuthorized') is not False:
+        raise LunarMysticInputError('source-binding result production boundary drift')
+    observed = result.get('observed') or {}
+    ratios = observed.get('armBToArmARatio')
+    tolerance = observed.get('maximumAbsoluteRatioDeviationAllowed')
+    if ratios != [7.0, 7.0, 7.0] or tolerance != 0.01 or observed.get('maximumAbsoluteRatioDeviationObserved') != 0.0:
+        raise LunarMysticInputError('source-binding frozen decision evidence drift')
+    runtime = result.get('runtime') or {}
+    for key in ('uvspecSha256', 'libRadtranDataTreeSha256'):
+        if runtime_identity.get(key) != runtime.get(key):
+            raise LunarMysticInputError(f'lunar CRS source-binding runtime mismatch: {key}')
+    evidence = result.get('evidence') or {}
+    if evidence.get('workflowRunAttempt') != 1 or evidence.get('artifactDigest') != 'sha256:5f9c2a642a61a5a82fd62e2ccd3f5e5f1ad287b9580f1097a8dbacbbfb23a42b':
+        raise LunarMysticInputError('source-binding immutable evidence identity drift')
+    return {
+        'contractId': result['contractId'],
+        'status': result['status'],
+        'workflowRunId': evidence.get('workflowRunId'),
+        'workflowRunAttempt': evidence.get('workflowRunAttempt'),
+        'artifactId': evidence.get('artifactId'),
+        'artifactDigest': evidence.get('artifactDigest'),
+        'probeReportSha256': evidence.get('probeReportSha256'),
+        'uvspecSha256': runtime.get('uvspecSha256'),
+        'libRadtranDataTreeSha256': runtime.get('libRadtranDataTreeSha256'),
+        'capabilityOnly': True,
+        'atmosphericScatteredMoonlightValidated': False,
+        'productionAuthorized': False,
+    }
 
 def write_lunar_source_file(path: Path, wavelengths_nm: Iterable[float], lunar_toa_w_m2_nm: Iterable[float]) -> dict:
     wl = [float(x) for x in wavelengths_nm]
@@ -134,8 +189,10 @@ def render_lunar_mystic_input(*,
     photon_histories: int,
     random_seed: int,
     case_dir: Path,
+    runtime_identity: dict | None = None,
     alis_importance_nm: float = 550.0,
 ) -> tuple[str, dict]:
+    source_binding = _require_verified_crs_source_binding(runtime_identity)
     moon_zenith = _finite('moon_zenith_deg', moon_zenith_deg, 0.0, 120.0)
     target_alt = _finite('target_altitude_deg', target_altitude_deg, 0.0, 90.0)
     relative_az = _finite('target_relative_azimuth_to_moon_deg', target_relative_azimuth_to_moon_deg, 0.0, 360.0)
@@ -202,6 +259,8 @@ def render_lunar_mystic_input(*,
         'atmosphereGridKm': atmosphere_grid_km,
         'dayOfYearDistanceScalingApplied': False,
         'finiteMoonDiskModeled': False,
+        'customSourceCrsConsumptionCapabilityVerified': True,
+        'customSourceCrsBinding': source_binding,
         'sameAtmosphereStateRequiredForComposition': True,
         'validatedForAtmosphericScatteredMoonlight': False,
         'productionAuthorized': False,

@@ -72,6 +72,7 @@ def decode_native_times(ds: netCDF4.Dataset) -> np.ndarray:
             if vals.size:
                 decoded = netCDF4.num2date(vals, units=units, calendar=getattr(var, "calendar", "standard"))
                 return np.asarray([decoded_datetime(x).timestamp() for x in decoded], dtype=float)
+            return np.array([], dtype=float)
     if "base_time" in ds.variables and "time_offset" in ds.variables:
         base = np.ma.asarray(ds.variables["base_time"][:]).squeeze()
         offsets = np.ma.asarray(ds.variables["time_offset"][:])
@@ -82,7 +83,19 @@ def decode_native_times(ds: netCDF4.Dataset) -> np.ndarray:
         vals = vals[np.isfinite(vals)]
         if vals.size:
             return float(base) + vals
+        return np.array([], dtype=float)
     return np.array([], dtype=float)
+
+
+def has_decodable_time_coordinate(ds: netCDF4.Dataset) -> bool:
+    """Whether an empty native-time array is still structurally decodable.
+
+    A zero-record file with a normal time coordinate is readable evidence of no
+    samples. A file that opens but lacks usable native time semantics is not.
+    """
+    if "time" in ds.variables and bool(getattr(ds.variables["time"], "units", None)):
+        return True
+    return "base_time" in ds.variables and "time_offset" in ds.variables
 
 
 def load_cases(path: Path) -> list[dict[str, str]]:
@@ -151,15 +164,20 @@ def audit_case(archive_root: Path, case: dict[str, str]) -> dict[str, Any]:
     modes: set[str] = set()
     health: set[str] = set()
     readable = 0
+    unresolved_source_files = 0
     for path in files:
         try:
             with netCDF4.Dataset(path, "r") as ds:
                 times = decode_native_times(ds)
                 readable += 1
-                if times.size:
+                if not times.size and not has_decodable_time_coordinate(ds):
+                    unresolved_source_files += 1
+                    errors.append(f"{path.name}:NO_DECODABLE_NATIVE_TIME_COORDINATE")
+                elif times.size:
                     chunks.append(times[np.isfinite(times)])
                 collect_housekeeping(ds, modes, health, errors, path.name)
         except Exception as exc:
+            unresolved_source_files += 1
             errors.append(f"{path.name}:{type(exc).__name__}:{exc}")
 
     times = np.unique(np.concatenate(chunks)) if chunks else np.array([], dtype=float)
@@ -169,7 +187,10 @@ def audit_case(archive_root: Path, case: dict[str, str]) -> dict[str, Any]:
 
     if not files:
         disposition = "SOURCE_FILE_MISSING"
-    elif readable == 0:
+    elif readable == 0 or unresolved_source_files > 0:
+        # Fail closed even if another same-day file is readable/continuous. A
+        # partially unresolved source set cannot prove observational absence or
+        # continuity and therefore must never contribute to the all-20 HALT rule.
         disposition = "UNREADABLE"
     elif core.size == 0:
         disposition = "TWILIGHT_SAMPLES_ABSENT"
@@ -216,7 +237,7 @@ def update_summary(path: Path, rows: list[dict[str, Any]]) -> None:
     for row in rows:
         key = str(row["disposition"])
         counts[key] = counts.get(key, 0) + 1
-    summary["sasze_gate_algorithm"] = "strict-source-day-cadence-edge-gap-v1"
+    summary["sasze_gate_algorithm"] = "strict-source-day-cadence-edge-gap-partial-unreadable-failclosed-v2"
     summary["sasze_gate_counts"] = dict(sorted(counts.items()))
     summary["sasze_gate_complete_readable"] = all(r["disposition"] not in {"SOURCE_FILE_MISSING", "UNREADABLE"} for r in rows)
     summary["sasze_primary_survivor_case_ids"] = [r["case_id"] for r in rows if r["disposition"] == "TWILIGHT_CONTIGUOUS"]

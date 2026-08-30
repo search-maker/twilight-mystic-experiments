@@ -19,7 +19,7 @@ Every dawn/dusk event is retained in the complete ledger even when excluded. No 
 
 At minimum, one row per event:
 
-`case_id,local_civil_date,event,t_minus6_utc,t_minus7_utc,t_minus8_utc,t_minus12_utc,sasze_filter_disposition,sasze_continuity_margin_s,sasze_health_disposition,moon_max_alt_core_deg,moon_gate,arscl_disposition,ceil_or_mpl_disposition,cloud_consensus,hsrl_267_disposition,hsrl_valid_height_min_m,hsrl_valid_height_max_m,raman_disposition,hsrl_raman_common_support,aod_mfrsr_disposition,aod_nimfr_disposition,csphot_disposition,aeronet_aod_disposition,aeronet_l2_microphysics_disposition,aod_stability_disposition,aod_crosssource_disposition,sonde_disposition,surface_disposition,ozone_disposition,ompslp_disposition,evidence_stratum,profile_mode,primary_eligible,exclusion_reason,priority_order`
+`case_id,local_civil_date,event,t_minus6_utc,t_minus7_utc,t_minus8_utc,t_minus12_utc,sasze_vis_disposition,sasze_nir_disposition,sasze_filter_diagnostic_disposition,sasze_vis_continuity_margin_s,sasze_health_disposition,moon_max_alt_core_deg,moon_gate,arscl_disposition,ceil_or_mpl_disposition,cloud_consensus,hsrl_267_disposition,hsrl_valid_height_min_m,hsrl_valid_height_max_m,raman_disposition,hsrl_raman_common_support,aod_mfrsr_disposition,aod_nimfr_disposition,csphot_disposition,aeronet_aod_disposition,aeronet_l2_microphysics_disposition,aod_stability_disposition,aod_crosssource_disposition,sonde_disposition,surface_disposition,ozone_disposition,ompslp_disposition,evidence_stratum,profile_mode,primary_eligible,exclusion_reason,priority_order`
 
 All source files and source SHA-256 values live in a separate normalized provenance table keyed by `case_id/source_role`.
 
@@ -27,14 +27,24 @@ All source files and source SHA-256 values live in a separate normalized provena
 
 ### G0 — held-out observable exists
 
-Mandatory: `sgpsaszefilterbandsC1.a1` native timestamps must be `TWILIGHT_CONTIGUOUS` through the whole `-8..-6` core under the frozen native-time gate. Global `time_coverage_*` attributes are not continuity evidence.
+Actual 2024 local file evidence resolves an important product distinction before any model comparison:
 
-- `SOURCE_FILE_MISSING` or `UNREADABLE` is a local-data blocker, not evidence of observational absence.
-- If all events in the frozen priority set are readably absent/discontinuous, the current target halts rather than moving shallower after the fact.
+- `sgpsaszevisC1.a1` and `sgpsaszenirC1.a1` are the calibrated full spectral-radiance streams and retain usable per-pixel calibrated radiance into twilight, subject to their native fill/validity masks and integration modes.
+- `sgpsaszefilterbandsC1.a1` is a daylight-derived filterband/transmittance product. Its time coordinate can continue into twilight even when every derived filterband radiance field is fill; in the inspected 2024-02-09 file the band-radiance product is populated only through apparent solar zenith 89 deg. Therefore filterband timestamp continuity is **not evidence that the held-out twilight spectrum exists**, and filterband fill in twilight is **not evidence that the full VIS/NIR spectrum is absent**.
+
+Mandatory primary gate: `sgpsaszevisC1.a1` native timestamps must be `TWILIGHT_CONTIGUOUS` through the whole `-8..-6` core under the unchanged strict native-time rule: actual samples bracket both chronological endpoints and every positive gap in the bracketing segment is `<= 2 x` the stream's source-day median positive cadence. Global `time_coverage_*` attributes are not continuity evidence.
+
+- NIR is audited independently as `SECONDARY_SPECTRAL_EXTENSION`; it is required only for later metrics that explicitly use NIR wavelengths. The currently frozen primary anchor wavelengths 415/500/615/673/870 nm are VIS.
+- Filterbands are retained as `DAYLIGHT_DERIVED_DIAGNOSTIC` only; they never rescue or veto the primary held-out-observable gate.
+- `SOURCE_FILE_MISSING` or `UNREADABLE` on VIS is a local-data blocker, not evidence of observational absence.
+- If all events in the frozen priority set have **readable VIS** that is absent/discontinuous, the current target halts rather than moving shallower after the fact.
+- This product-semantics correction does not relax the strict continuity threshold and does not promote any already-inspected case. A VIS event with a gap larger than the frozen threshold remains ineligible even if filterband timestamps are continuous.
 
 ### G1 — SASZE health is independently admissible
 
-Retain actual integration-time/scan mode, shutter state if present, tilt, temperatures and any native saturation/high-SZA/health flags. Multiple integration times are allowed by design and are not themselves a failure. No saturation threshold is invented from held-out radiance or MYSTIC agreement.
+Retain actual VIS integration-time/scan mode, shutter state if present, tilt, temperatures and any native saturation/high-SZA/health flags. Multiple integration times are allowed by design and are not themselves a failure. Native per-pixel fill/validity masks are preserved as measurement-validity metadata; fill is never converted to zero. No saturation threshold or wavelength-validity rule is invented from MYSTIC agreement.
+
+Before exact case selection, measurement completeness at the already-frozen primary anchor wavelengths may be assessed only from **valid/non-fill counts and timing**, not from radiance magnitudes. Full radiance values remain held out until Stage B.
 
 ### G2 — conservative clear-sky consensus
 
@@ -139,8 +149,9 @@ Prefer the primary solar-only Moon gate for the first closure case. A lunar-sens
 
 | Property | Primary source / role | Classification at event |
 |---|---|---|
-| SASZE zenith spectral radiance | SASZE VIS/NIR calibrated radiance; held out until Stage B | `MEASURED` |
-| SASZE wavelength grid / timing / housekeeping | native SASZE file | `MEASURED` metadata |
+| SASZE zenith spectral radiance | SASZE VIS calibrated full spectrum; NIR only for preregistered secondary extension; held out until Stage B | `MEASURED` |
+| SASZE wavelength grid / timing / housekeeping / validity masks | native SASZE VIS/NIR files | `MEASURED` metadata |
+| SASZE filterband radiance/transmittance | daylight-derived product; diagnostic only in this twilight lane | `RETRIEVED/DERIVED`, not primary held-out gate |
 | Aerosol extinction/backscatter/depolarization at 532 nm | corrected HSRL 2.6.7 | `RETRIEVED` |
 | Raman aerosol optical properties | RLPROFBE/FEX | `RETRIEVED` |
 | Direct-sun spectral AOD | MFRSR/NIMFR/CSPHOT/AERONET at daylight timestamp | `RETRIEVED` |
@@ -164,6 +175,8 @@ No `MISSING` item may be silently renamed `MEASURED` because a standard profile 
 ## 7. Stage-B opening boundary
 
 Only after exact case IDs, complete input provenance, interpolation choices, sensitivity envelopes, MYSTIC geometry/numerical settings, photon budgets/seeds/stopping rule, wavelengths and comparison metrics are frozen may full selected-case SASZE radiance be opened.
+
+The currently frozen primary anchors are 415, 500, 615, 673 and 870 nm, all taken from the VIS stream. For each selected crossing (`-8`, `-7`, `-6`), the previously frozen measurement-support window is +/-2.5 s around the geometric crossing and requires at least three independently valid native samples in that window. This per-epoch support rule is applied from timing/validity masks before radiance magnitudes are opened and does not replace the stricter full-core G0 continuity gate.
 
 No scale factor, aerosol multiplier, wavelength correction, time shift, albedo adjustment, SSA/phase choice or case replacement is fit to the held-out residual.
 

@@ -53,6 +53,7 @@ if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 & $python -m py_compile `
     (Join-Path $ScriptRoot "extract_arm_compact_handoff.py") `
     (Join-Path $ScriptRoot "compact_netcdf_headers.py") `
+    (Join-Path $ScriptRoot "extract_quality_documents.py") `
     (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
     (Join-Path $ScriptRoot "selftest_arm_compact_handoff.py")
 if ($LASTEXITCODE -ne 0) { throw "Python syntax preflight failed." }
@@ -80,6 +81,14 @@ if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $
     --headers (Join-Path $OutputRoot "netcdf_headers.jsonl")
 if ($LASTEXITCODE -ne 0) { throw "NetCDF header compaction failed with exit code $LASTEXITCODE." }
 
+# Preserve small DQR/DQPR/quality/readme/manifest text excerpts when such files
+# exist in the order, while leaving all original documents untouched.
+& $python (Join-Path $ScriptRoot "extract_quality_documents.py") `
+    --archive-root $ArchiveRoot `
+    --inventory (Join-Path $OutputRoot "archive_inventory.csv") `
+    --output (Join-Path $OutputRoot "quality_documents.jsonl")
+if ($LASTEXITCODE -ne 0) { throw "Quality-document extraction failed with exit code $LASTEXITCODE." }
+
 # Recompute the authoritative SASZE gate with source-day cadence and explicit
 # edge-gap checking. This overwrites the provisional gate emitted by the broad
 # inventory script and refreshes the gate fields in summary.json.
@@ -90,7 +99,8 @@ if ($LASTEXITCODE -ne 0) { throw "NetCDF header compaction failed with exit code
     --update-summary (Join-Path $OutputRoot "summary.json")
 if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
 
-# Refresh handoff file hashes after header compaction and the strict SASZE gate.
+# Refresh handoff file hashes after header compaction, quality-document extraction,
+# and the strict SASZE gate.
 $manifestRefresh = @'
 import hashlib
 import json

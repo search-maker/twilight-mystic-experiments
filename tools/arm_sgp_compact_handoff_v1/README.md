@@ -37,12 +37,12 @@ The mandatory filterband gate has five dispositions:
 - `TWILIGHT_CONTIGUOUS`: native samples bracket the whole chronological -8..-6 degree core and no positive gap in the full bracketing segment, including the two edge gaps, exceeds `2 x median_positive_source_day_cadence`.
 - `TWILIGHT_DISCONTINUOUS`: some core samples exist but the bracketing/gap rule fails.
 - `TWILIGHT_SAMPLES_ABSENT`: matching readable file(s) exist but no native sample lies in the core.
-- `UNREADABLE`: matching source file(s) exist but native timestamps cannot be decoded.
+- `UNREADABLE`: one or more matching source files cannot be opened or do not provide decodable native timestamps; a partially unreadable same-day source set fails closed even if another matching file is readable.
 - `SOURCE_FILE_MISSING`: no matching preserved local file exists.
 
 Only the first disposition can advance a case. `SOURCE_FILE_MISSING` or `UNREADABLE` is a local-data blocker and cannot be misreported as evidence that SASZE did not observe.
 
-The strict gate is independently exercised before the archive scan with synthetic NetCDF cases for continuous 1-Hz sampling, an internal 120-s gap, readable source-day data with no twilight samples, and a genuinely missing source file. The filterband audit also records integration-time/scan modes and native health/saturation/high-SZA flag names if they exist. Multiple integration times are not themselves a failure; SASZE intentionally used multiple integration modes to improve low-signal SNR while protecting intense spectral regions.
+The strict gate is independently exercised before the archive scan with synthetic NetCDF cases for continuous 1-Hz sampling, an internal 120-s gap, readable source-day data with no twilight samples, a partially unreadable same-day source set, an openable NetCDF file lacking decodable native-time coordinates, and a genuinely missing source file. The filterband audit also records integration-time/scan modes and native health/saturation/high-SZA flag names if they exist. Multiple integration times are not themselves a failure; SASZE intentionally used multiple integration modes to improve low-signal SNR while protecting intense spectral regions.
 
 ## Holdout boundary
 

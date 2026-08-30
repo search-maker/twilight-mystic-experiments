@@ -1,0 +1,109 @@
+name: Review AVPS v2 postconsumption recovery1 preauthorization
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      BASE_MAIN: 6f0b3f3c73b23f84951bd7b6a2bad58d00854982
+      EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1
+      SEED_HEAD: 3f9a03b913125077a37a3eb56d1c031127bdfd60
+      SEED_CANONICAL: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
+      ROW_CANONICAL: 8213e65782b62d0e1a0ea51d620016fdcaa24b348e726f5570c54f7f1155a895
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Bind exact review ancestry and frozen bytes
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$EXPECTED_BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          test "${{ github.event.pull_request.draft }}" = true
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git fetch origin main "$SEED_HEAD"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          git merge-base --is-ancestor "$SEED_HEAD" HEAD
+          test "$(git rev-parse "$SEED_HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py")" = 491d1b6653bea0fcc5275269723a76aa1af52300
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-control-v1/rh_audit_dependency.py)" = 095ff86f12a79dc312a51f734b0a03bd318f2337
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py)" = 7ca8efd17ae9e7ec2baa32fe935e5173ca6d173f
+          mkdir -p preauthorization-evidence
+          git ls-files -z > preauthorization-evidence/tracked-files.nul
+      - name: Rebuild fresh recovery candidate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          python -m py_compile review/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1/preauthorize.py
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py > preauthorization-evidence/ledger-summary.json
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py')
+          s=importlib.util.spec_from_file_location('ledger',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          x=m.validate_ledger()
+          assert x['candidateSeedCanonicalSha256']=='a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7'
+          assert x['candidateRowsCanonicalSha256']=='8213e65782b62d0e1a0ea51d620016fdcaa24b348e726f5570c54f7f1155a895'
+          assert x['overlapWithConsumedOrdinal41SeedCount']==0
+          Path('preauthorization-evidence/candidate-seed-ledger.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Repeat tracked-tree and repository-global seed rechecks
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py --repo-root . --file-list preauthorization-evidence/tracked-files.nul --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json --allow-self-ledger-json preauthorization-evidence/empty-self-ledger-policy.json --output preauthorization-evidence/tracked-seed-scan.json
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name "$EXPECTED_BRANCH" --expected-repo-head "$PR_HEAD" --output preauthorization-evidence/repository-global-seed-recheck.json
+      - name: Derive and freeze dynamic global ordinal proposal
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1/preauthorize.py build --repository "$GITHUB_REPOSITORY" --seed-global-report preauthorization-evidence/repository-global-seed-recheck.json --expected-head "$PR_HEAD" --current-run-id "$GITHUB_RUN_ID" --output preauthorization-evidence/preauthorization.json --observations-output preauthorization-evidence/global-ordinal-observations.json
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-preauthorization-v1/preauthorize.py verify --repository "$GITHUB_REPOSITORY" --expected-head "$PR_HEAD" --current-run-id "$GITHUB_RUN_ID" --report preauthorization-evidence/preauthorization.json
+          python - <<'PY'
+          import json
+          p=json.load(open('preauthorization-evidence/preauthorization.json'))
+          assert p['status']=='PASS_POSTCONSUMPTION_RECOVERY1_PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED'
+          assert p['consumedScientificOrdinal']==41
+          assert p['nextAvailableScientificOrdinal']==p['occupiedMaxScientificOrdinal']+1
+          assert p['scientificOrdinalAllocated'] is False and p['authorizationCreated'] is False and p['solverExecutionAuthorized'] is False
+          print('dynamic_next_ordinal='+str(p['nextAvailableScientificOrdinal']))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vertical-profile-v2-postconsumption-recovery1-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

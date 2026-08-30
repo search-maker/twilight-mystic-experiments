@@ -28,7 +28,7 @@ EXPECTED_BLOBS = {
 STAGE = "aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4"
 AUTH_STATUS = "AUTHORIZED_POSTCONSUMPTION_RECOVERY4_PENDING_SEPARATE_ALLOCATION_AND_DISPATCH"
 GUARD_STATUS = "EXACT_ONE_USE_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_AUTHORIZED"
-SEED_NAMESPACE = "aerosol-vertical-profile-sensitivity-v2|postconsumption-recovery4|group-seed|sha256-v1"
+SEED_NAMESPACE = "synthetic-review-only|avps-v2-recovery4-routing-fixture|group-seed|sha256-v1"
 MIN_SEED = 10_000_000
 MAX_EXCLUSIVE = 2_147_483_647
 SPAN = MAX_EXCLUSIVE - MIN_SEED
@@ -78,6 +78,10 @@ def canonical(value: Any) -> str:
 
 
 def check_sources() -> None:
+    if not SEED_NAMESPACE.startswith("synthetic-review-only|"):
+        raise SystemExit("infrastructure review seed namespace must remain explicitly synthetic")
+    if "postconsumption-recovery4|group-seed" in SEED_NAMESPACE:
+        raise SystemExit("infrastructure review must not preselect a real recovery4 seed namespace")
     for path, expected in EXPECTED_BLOBS.items():
         if not path.is_file():
             raise SystemExit(f"bound source missing: {path}")
@@ -98,7 +102,7 @@ def load_module(name: str, path: Path):
 
 def derive_seed_rows(namespace: str = SEED_NAMESPACE) -> list[dict[str, Any]]:
     if namespace != SEED_NAMESPACE:
-        raise SystemExit("recovery4 seed namespace drift")
+        raise SystemExit("only the explicit synthetic review seed namespace may be derived in this infrastructure gate")
     base = load_module("avps_recovery4_generator_base_adapter", BASE_ADAPTER)
     skeleton = base._skeleton()
     groups = skeleton.get("groups")
@@ -113,11 +117,11 @@ def derive_seed_rows(namespace: str = SEED_NAMESPACE) -> list[dict[str, Any]]:
         digest = hashlib.sha256(material.encode()).hexdigest()
         seed = (int(digest[:16], 16) % SPAN) + MIN_SEED
         if seed in used:
-            raise SystemExit("unexpected recovery4 intra-ledger seed collision")
+            raise SystemExit("unexpected synthetic review seed collision")
         used.add(seed)
         rows.append({"groupId": gid, "collisionCounter": counter, "derivationMaterialSha256": digest, "seed": seed})
     if len(rows) != 72 or len({int(row["seed"]) for row in rows}) != 72:
-        raise SystemExit("recovery4 seed row cardinality drift")
+        raise SystemExit("synthetic review seed row cardinality drift")
     return rows
 
 
@@ -133,13 +137,14 @@ def validate_identity(identity: dict[str, Any]) -> dict[str, Any]:
     ordinal = identity.get("scientificOrdinal")
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal <= 0:
         raise SystemExit("future scientificOrdinal must be a positive separately-reviewed integer")
+    if ordinal == OLD["ordinal"]:
+        raise SystemExit("consumed recovery3 ordinal44 cannot be reused")
     exact = {
         "stageId": STAGE,
         "authorizationStatus": AUTH_STATUS,
         "executionKey": f"{STAGE}:numerical:{ordinal}",
         "authorizationBranch": f"authorization/{STAGE}-ordinal-{ordinal}",
         "dispatchBranch": f"dispatch/{STAGE}-ordinal-{ordinal}",
-        "seedNamespace": SEED_NAMESPACE,
         "candidateSeedCount": 72,
         "caseCount": 360,
         "commonRandomNumberGroupCount": 72,
@@ -161,6 +166,10 @@ def validate_identity(identity: dict[str, Any]) -> dict[str, Any]:
     for key in ("candidateSeedCanonicalSha256", "candidateRowsCanonicalSha256"):
         if not _is_sha256(identity.get(key)):
             raise SystemExit(f"future identity invalid SHA-256: {key}")
+    if identity.get("candidateSeedCanonicalSha256") == OLD["seed"]:
+        raise SystemExit("consumed recovery3 candidate seed identity cannot be reused")
+    if identity.get("candidateRowsCanonicalSha256") == OLD["rows"]:
+        raise SystemExit("consumed recovery3 candidate row identity cannot be reused")
     if not isinstance(identity.get("authorizationPr"), int) or identity["authorizationPr"] <= 0:
         raise SystemExit("future authorizationPr invalid")
     if not isinstance(identity.get("authorizationReviewRun"), int) or identity["authorizationReviewRun"] <= 0:
@@ -174,12 +183,26 @@ def validate_identity(identity: dict[str, Any]) -> dict[str, Any]:
         value = identity.get(key)
         if not isinstance(value, str) or not value or value.startswith("/") or ".." in Path(value).parts:
             raise SystemExit(f"future path invalid: {key}")
-    rows = derive_seed_rows(identity["seedNamespace"])
-    seeds = [int(row["seed"]) for row in rows]
-    if canonical(seeds) != identity["candidateSeedCanonicalSha256"]:
-        raise SystemExit("future candidateSeedCanonicalSha256 does not match frozen recovery4 namespace")
-    if canonical(rows) != identity["candidateRowsCanonicalSha256"]:
-        raise SystemExit("future candidateRowsCanonicalSha256 does not match frozen recovery4 namespace")
+    namespace = identity.get("seedNamespace")
+    if not isinstance(namespace, str) or not namespace or len(namespace) > 256 or re.fullmatch(r"[A-Za-z0-9._:/=|+-]+", namespace) is None:
+        raise SystemExit("future seedNamespace invalid")
+    if namespace == OLD["namespace"]:
+        raise SystemExit("consumed recovery3 seed namespace cannot be reused")
+    synthetic = identity.get("syntheticReviewOnly")
+    if synthetic is True:
+        if namespace != SEED_NAMESPACE:
+            raise SystemExit("synthetic review identity must use the explicit synthetic namespace")
+        rows = derive_seed_rows(SEED_NAMESPACE)
+        seeds = [int(row["seed"]) for row in rows]
+        if canonical(seeds) != identity["candidateSeedCanonicalSha256"]:
+            raise SystemExit("synthetic candidateSeedCanonicalSha256 drift")
+        if canonical(rows) != identity["candidateRowsCanonicalSha256"]:
+            raise SystemExit("synthetic candidateRowsCanonicalSha256 drift")
+    elif synthetic is False:
+        if namespace == SEED_NAMESPACE or namespace.startswith("synthetic-review-only|"):
+            raise SystemExit("future scientific identity cannot reuse the synthetic review namespace")
+    else:
+        raise SystemExit("syntheticReviewOnly must be explicit boolean")
     return identity
 
 
@@ -205,7 +228,7 @@ def transform_adapter(identity: dict[str, Any]) -> str:
         (f'DISPATCH_BRANCH = "{OLD["dispatch_branch"]}"', f'DISPATCH_BRANCH = "{identity["dispatchBranch"]}"'),
         (f'SEED_CANONICAL = "{OLD["seed"]}"', f'SEED_CANONICAL = "{identity["candidateSeedCanonicalSha256"]}"'),
         (f'ROWS_CANONICAL = "{OLD["rows"]}"', f'ROWS_CANONICAL = "{identity["candidateRowsCanonicalSha256"]}"'),
-        (f'NAMESPACE = "{OLD["namespace"]}"', f'NAMESPACE = "{SEED_NAMESPACE}"'),
+        (f'NAMESPACE = "{OLD["namespace"]}"', f'NAMESPACE = "{identity["seedNamespace"]}"'),
     ]
     for old, new in replacements:
         text = replace_exact(text, old, new, count=1, label="adapter identity")
@@ -456,6 +479,8 @@ def generate(identity_path: Path, output_root: Path) -> dict[str, Any]:
         "workflow": workflow_name,
         "candidateSeedCanonicalSha256": identity["candidateSeedCanonicalSha256"],
         "candidateRowsCanonicalSha256": identity["candidateRowsCanonicalSha256"],
+        "seedNamespaceSelectedByInfrastructure": False,
+        "realCandidateRowsDerivedByInfrastructure": False,
         "caseCount": 360,
         "groupCount": 72,
         "statesPerGroup": 5,

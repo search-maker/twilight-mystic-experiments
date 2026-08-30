@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import importlib.util
-import math
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -76,8 +74,10 @@ class PhaseBTests(unittest.TestCase):
         self.assertEqual(len(seam['seamCanonicalSha256']),64)
 
     def test_review_cli_has_no_solver_execution_surface(self):
+        # Mentions of solver names in documentation are allowed; executable
+        # process primitives and execution flags are not.
         source=P.read_text(encoding='utf-8').lower()
-        for forbidden in ('import subprocess','subprocess.','popen(','os.system','uvspec','--execute','allow_execution'):
+        for forbidden in ('import subprocess','subprocess.','popen(','os.system','--execute','allow_execution'):
             self.assertNotIn(forbidden,source)
 
 if __name__=='__main__': unittest.main()

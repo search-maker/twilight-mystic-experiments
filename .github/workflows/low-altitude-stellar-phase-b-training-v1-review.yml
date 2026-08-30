@@ -1,0 +1,66 @@
+name: Low-altitude stellar Phase-B training v1 review
+
+on:
+  pull_request:
+    paths:
+      - 'review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py'
+      - 'tests/test_low_altitude_stellar_phase_b_training_v1.py'
+      - '.github/workflows/low-altitude-stellar-phase-b-training-v1-review.yml'
+      - '.github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-control-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run frozen training-control tests without solver
+        run: python -m unittest -v tests/test_low_altitude_stellar_phase_b_training_v1.py tests/test_low_altitude_stellar_phase_b_v1.py
+      - name: Verify deterministic review ledger
+        run: |
+          python review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py --emit-ledger > /tmp/phase-b-training-ledger.json
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/phase-b-training-ledger.json',encoding='utf-8'))
+          assert d['scientificState']=='LOWALT-STELLAR-STATE-0001'
+          assert d['trainingSpectrumCount']==275
+          assert d['protectedSpectrumCountExecuted']==0
+          assert d['protectedResultsOpened'] is False
+          assert d['solver']=='sdisort' and d['solverGeometry']=='pseudo-spherical'
+          assert d['targetAltitudeBasis']=='topocentric-vacuum-geometric'
+          assert d['sourceZenithAngleRule']=='90deg-targetGeometricAltitudeDeg'
+          assert d['refractionAppliedInRadiativeTransfer'] is False
+          assert d['positiveEpsilonSubstitutionAllowed'] is False
+          assert d['exactHorizonIncluded'] is False
+          assert d['productionAuthorized'] is False
+          PY
+      - name: Verify training-only and protected-closed surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPECTED_INVOCATIONS = phase_b.EXPECTED_TRAINING_SPECTRA' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'protectedSolverInvocationCount' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          ! grep -n 'build_protected_cases()' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          ! grep -n 'evaluate_protected_deltas(' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          ! grep -n -E 'Taylor|Jerusalem|first-seeing|halachic' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'NUMERICALLY_UNRESOLVED' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'math.exp(-optical_depth)' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+      - name: Verify execution requires fresh push-only one-shot gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q -- '--execute' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q -- '--allow-execution' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'output directory already exists; retry/resume is forbidden' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'positiveEpsilonSubstitutionUsed' review/low-altitude-stellar-transport-v1/run_phase_b_training_v1.py
+          grep -q 'dispatch/low-altitude-stellar-phase-b-training-v1-exec001' .github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml
+          grep -q 'test "$GITHUB_RUN_ATTEMPT" = 1' .github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml
+          grep -q 'test "${#CHANGED\[@\]}" = 1' .github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml
+          ! grep -q 'workflow_dispatch' .github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml
+          ! grep -q 'pull_request:' .github/workflows/low-altitude-stellar-phase-b-training-v1-one-shot.yml

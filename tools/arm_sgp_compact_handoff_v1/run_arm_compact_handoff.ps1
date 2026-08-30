@@ -56,6 +56,20 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
     --end 2024-06-02
 if ($LASTEXITCODE -ne 0) { throw "ARM compact extraction failed with exit code $LASTEXITCODE." }
 
+# Recompute the authoritative SASZE gate with source-day cadence and explicit
+# edge-gap checking. This overwrites the provisional gate emitted by the broad
+# inventory script and refreshes the gate fields in summary.json.
+& $python (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
+    --archive-root $ArchiveRoot `
+    --priority-csv (Join-Path $ScriptRoot "priority20_sasze_gate.csv") `
+    --output (Join-Path $OutputRoot "stageA_sasze_twilight_operability_2024.csv") `
+    --update-summary (Join-Path $OutputRoot "summary.json")
+if ($LASTEXITCODE -ne 0) { throw "Strict SASZE native-time audit failed with exit code $LASTEXITCODE." }
+
+# Refresh handoff file hashes after the strict gate overwrote gate/summary files.
+& $python -c "import hashlib,json,pathlib; r=pathlib.Path(r'$OutputRoot'); m=json.loads((r/'handoff_manifest.json').read_text(encoding='utf-8')); fs=[]; [fs.append({'relative_path':str(p.relative_to(r)).replace('\\','/'),'size_bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}) for p in sorted(r.rglob('*')) if p.is_file() and p.name!='handoff_manifest.json']; m['files']=fs; (r/'handoff_manifest.json').write_text(json.dumps(m,indent=2,sort_keys=True),encoding='utf-8')"
+if ($LASTEXITCODE -ne 0) { throw "Failed to refresh handoff manifest hashes." }
+
 $zipPath = "$OutputRoot.zip"
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force

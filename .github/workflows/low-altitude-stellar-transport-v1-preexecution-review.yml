@@ -1,0 +1,46 @@
+name: Low-altitude stellar transport v1 pre-execution review
+
+on:
+  pull_request:
+    paths:
+      - 'review/low-altitude-stellar-transport-v1/**'
+      - 'tests/test_low_altitude_stellar_transport_preexecution_v1.py'
+      - '.github/workflows/low-altitude-stellar-transport-v1-preexecution-review.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prove review package contains no solver execution path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e review/low-altitude-stellar-transport-v1/results
+          ! grep -R -n -E 'subprocess\.|Popen\(|os\.system|--execute|allow_execution' review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py
+          ! grep -R -n -E 'Taylor|Jerusalem|first-seeing|halachic' review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py
+      - name: Run exact pre-execution contract tests
+        run: python -m unittest -v tests/test_low_altitude_stellar_transport_preexecution_v1.py
+      - name: Emit deterministic frozen case ledger
+        run: |
+          python review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py --emit-ledger > /tmp/phase-a-ledger.json
+          python - <<'PY'
+          import json
+          p='/tmp/phase-a-ledger.json'
+          d=json.load(open(p, encoding='utf-8'))
+          assert len(d['phaseACases']) == 28
+          assert d['scientificExecutionAuthorized'] is False
+          assert d['solverExecutionAuthorized'] is False
+          assert d['protectedResultsOpened'] is False
+          assert d['failureSemantics']['epsilonSubstitutionAllowed'] is False
+          assert min(c['targetGeometricAltitudeDeg'] for c in d['phaseACases']) == 0.25
+          assert max(c['targetGeometricAltitudeDeg'] for c in d['phaseACases']) == 5.0
+          print('LOW_ALTITUDE_PREEXECUTION_REVIEW_PASS', d['caseLedgerSha256'])
+          PY

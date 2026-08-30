@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = ROOT / 'review' / 'lunar-scattered-light-source-contract-v1'
-MODULE_PATH = STAGE / 'lunar_mystic_computational_precision.py'
+MODULE_PATH = STAGE / 'lunar_mystic_computational_precision_runtime.py'
 CONTRACT_PATH = STAGE / 'lunar-mystic-computational-precision-v1.json'
 
 spec = importlib.util.spec_from_file_location('lunar_mystic_computational_precision_tested', MODULE_PATH)

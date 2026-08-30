@@ -113,6 +113,7 @@ recovery_review = r'''          gh api --paginate --slurp "repos/$GITHUB_REPOSIT
             fi
           done
           test -n "$RECOVERY_REVIEW_RUN"
+          export RECOVERY_REVIEW_RUN
 '''
 needle = "          test -n \"$MATCHED\"\n          export MATCHED\n          echo \"review_run=$MATCHED\" >> \"$GITHUB_OUTPUT\"\n"
 pub = replace_once(pub, needle, needle + "\n" + recovery_review)

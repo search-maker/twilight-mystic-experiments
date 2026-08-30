@@ -14,9 +14,9 @@ Gate P -- optical/property/profile parity
   union-grid conversion with the same value. Inserted union-grid nodes are not
   new physical data and are therefore not used as source parity targets.
 * Explicit p11 Legendre moments are preserved.
-* The full altitude-dependent aerosol extinction profile, sampled on a
-  separately frozen common altitude grid, is compared pointwise and by column
-  AOD. Same AOD550 alone never passes.
+* The full altitude-dependent aerosol extinction and scattering profiles, sampled
+  on a separately frozen common altitude grid, are compared pointwise and by
+  column optical depth. Same AOD550 alone never passes.
 * Hidden nearest-neighbour humidity/effective-radius selection and conversion-
   time phase renormalization fail closed.
 
@@ -141,19 +141,28 @@ def evaluate_parity(source: dict[str, Any], converted: dict[str, Any], tolerance
     sprof=source["vertical_profile"]; cprof=converted["vertical_profile"]
     z1=list(map(float,sprof["altitude_km"])); z2=list(map(float,cprof["altitude_km"]))
     if len(z1)!=len(z2) or any(abs(a-b)>1e-10 for a,b in zip(z1,z2)): failures.append("vertical altitude grid changed")
-    e1=sprof["extinction_per_km_by_wavelength"]; e2=cprof["extinction_per_km_by_wavelength"]
-    max_prof_rel=0.0
-    if len(e1)!=len(e2) or len(e1)!=len(sw): failures.append("vertical profile wavelength dimension mismatch")
-    else:
+    max_profile_rel = {"extinction": 0.0, "scattering": 0.0}
+    for profile_name, key_name, column_label in (
+        ("extinction", "extinction_per_km_by_wavelength", "AOD"),
+        ("scattering", "scattering_per_km_by_wavelength", "scattering optical depth"),
+    ):
+        e1=sprof[key_name]; e2=cprof[key_name]
+        if len(e1)!=len(e2) or len(e1)!=len(sw):
+            failures.append(f"vertical {profile_name} profile wavelength dimension mismatch")
+            continue
         for iw,(a,b) in enumerate(zip(e1,e2)):
             a=list(map(float,a)); b=list(map(float,b))
-            if len(a)!=len(z1) or len(b)!=len(z2): failures.append(f"vertical profile shape mismatch at wavelength index {iw}"); continue
-            max_prof_rel=max(max_prof_rel,_max_rel(a,b))
+            if len(a)!=len(z1) or len(b)!=len(z2):
+                failures.append(f"vertical {profile_name} profile shape mismatch at wavelength index {iw}")
+                continue
+            max_profile_rel[profile_name]=max(max_profile_rel[profile_name],_max_rel(a,b))
             bad_idx=[k for k,(x,y) in enumerate(zip(a,b)) if not _close(x,y,t["profile_rtol"],t["profile_atol_per_km"])]
-            if bad_idx: failures.append(f"vertical extinction changed at wavelength index {iw}; first altitude index {bad_idx[0]}")
+            if bad_idx: failures.append(f"vertical {profile_name} changed at wavelength index {iw}; first altitude index {bad_idx[0]}")
             if len(z1)>=2 and len(z2)>=2:
-                if not _close(_trapz(z1,a),_trapz(z2,b),t["column_aod_rtol"],t["column_aod_atol"]): failures.append(f"column AOD changed at wavelength index {iw}")
-    metrics["verticalExtinctionMaxRel"]=max_prof_rel
+                if not _close(_trapz(z1,a),_trapz(z2,b),t["column_aod_rtol"],t["column_aod_atol"]):
+                    failures.append(f"column {column_label} changed at wavelength index {iw}")
+    metrics["verticalExtinctionMaxRel"]=max_profile_rel["extinction"]
+    metrics["verticalScatteringMaxRel"]=max_profile_rel["scattering"]
     metadata=converted.get("translation_metadata",{})
     if metadata.get("nearest_neighbor_dimension_selected",False): failures.append("hidden nearest-neighbour humidity/effective-radius selection recorded")
     if metadata.get("phase_normalized_during_conversion",False): failures.append("phase normalization during conversion is not permitted in parity gate")
@@ -189,7 +198,7 @@ def evaluate_korkin(reference_csv:Path,batches_csv:Path) -> dict[str,Any]:
 
 
 def _self_test() -> None:
-    src={"wavelength_nm":[500.,550.],"extinction_per_km":[.01,.009],"ssa":[.9,.91],"phase":[{"components":{"11":{"mu":[-1.,0.,1.],"value":[.5,1.,1.5]}}},{"components":{"11":{"mu":[-1.,0.,1.],"value":[.6,1.,1.4]}}}],"pmom_p11":[[1.,.1],[1.,.2]],"vertical_profile":{"altitude_km":[0.,1.,2.],"extinction_per_km_by_wavelength":[[.02,.01,0.],[.018,.009,0.]]}}
+    src={"wavelength_nm":[500.,550.],"extinction_per_km":[.01,.009],"ssa":[.9,.91],"phase":[{"components":{"11":{"mu":[-1.,0.,1.],"value":[.5,1.,1.5]}}},{"components":{"11":{"mu":[-1.,0.,1.],"value":[.6,1.,1.4]}}}],"pmom_p11":[[1.,.1],[1.,.2]],"vertical_profile":{"altitude_km":[0.,1.,2.],"extinction_per_km_by_wavelength":[[.02,.01,0.],[.018,.009,0.]],"scattering_per_km_by_wavelength":[[.018,.009,0.],[.01638,.00819,0.]]}}
     conv=json.loads(json.dumps(src)); conv["phase"]=[{"mu":[-1.,0.,1.],"components":{"11":[.5,1.,1.5]}},{"mu":[-1.,0.,1.],"components":{"11":[.6,1.,1.4]}}]; conv["translation_metadata"]={"nearest_neighbor_dimension_selected":False,"phase_normalized_during_conversion":False}
     assert evaluate_parity(src,conv)["status"]=="PASS"
     bad=json.loads(json.dumps(conv)); bad["vertical_profile"]["extinction_per_km_by_wavelength"][0][1]*=1.01; assert evaluate_parity(src,bad)["status"]=="FAIL_CLOSED"

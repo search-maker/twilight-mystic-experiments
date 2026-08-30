@@ -1,0 +1,136 @@
+name: Review AVPS v2 ordinal43 publisher recovery1 generator
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-review.yml
+      - review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_BASE: 720ef20556c60bf1ed2fa7499bf97ab4f1d69f7b
+      EXPECTED_BRANCH: review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1
+      SOURCE_PUBLISHER_BLOB: a5349ad644f93bf45fba79c58cee2ec7b0dd6359
+      SOURCE_TRIGGER_BLOB: c102d173aba9f0aa952b25459a9b4a30626c7936
+      SOURCE_SCIENCE_SHA256: 0c893ede91d3c639acffc9a0d6550841f521a87c248a66c514366a2aaa7bad9d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review-only scope and frozen source bytes
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          test "$EVENT_BRANCH" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-review.yml
+          review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1/PROTOCOL.md
+          review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1/generate.py
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          test "$(git hash-object .github/workflows/avps-v2-postconsumption-recovery2-dispatch-publisher.yml)" = "$SOURCE_PUBLISHER_BLOB"
+          test "$(git hash-object .github/workflows/avps-v2-postconsumption-recovery2-publisher-trigger-bridge.yml)" = "$SOURCE_TRIGGER_BLOB"
+          python - <<'PY'
+          import hashlib,os
+          from pathlib import Path
+          got=hashlib.sha256(Path('.github/workflows/avps-v2-postconsumption-recovery2-science.yml').read_bytes()).hexdigest()
+          if got!=os.environ['SOURCE_SCIENCE_SHA256']: raise SystemExit(f'science workflow drift: {got}')
+          PY
+
+      - name: Generate twice and verify deterministic zero-runtime recovery candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf generated-avps-v2-recovery2-publisher-recovery1 /tmp/avps-recovery-first
+          python review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1/generate.py > generator-output-1.json
+          cp -a generated-avps-v2-recovery2-publisher-recovery1 /tmp/avps-recovery-first
+          rm -rf generated-avps-v2-recovery2-publisher-recovery1
+          python review/avps-v2-recovery2-ordinal43-publisher-recovery1-generator-v1/generate.py > generator-output-2.json
+          diff -ru /tmp/avps-recovery-first generated-avps-v2-recovery2-publisher-recovery1
+          cmp generator-output-1.json generator-output-2.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('generated-avps-v2-recovery2-publisher-recovery1')
+          m=json.load(open(root/'manifest.json'))
+          if m.get('status')!='GENERATED_AVPS_V2_RECOVERY2_ORDINAL43_PUBLISHER_RECOVERY1_ZERO_RUNTIME': raise SystemExit('manifest status drift')
+          if m.get('failedPublisherRun')!=33290906727 or m.get('failedPublisherJob')!=99202243870: raise SystemExit('failed identity drift')
+          for key in ('scienceChanged','authorizationChanged','seedIdentityChanged','dispatchCreated','scientificRuntime'):
+              if m.get(key) is not False: raise SystemExit(f'{key} unexpectedly true')
+          pub=(root/'avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml').read_text()
+          trig=(root/'avps-v2-postconsumption-recovery2-publisher-recovery1-trigger-bridge.yml').read_text()
+          rev=(root/'avps-v2-recovery2-ordinal43-publisher-recovery1-review.yml').read_text()
+          required_pub=('GITHUB_TOKEN: ${{ github.token }}','FAILED_PUBLISHER_RUN','33290906727','Fresh recovery1 zero-runtime pre-dispatch fence','Create exact dispatch ref and consumed marker once','Explicitly dispatch exact science workflow from main','RECOVERY_REVIEW_WORKFLOW')
+          for t in required_pub:
+              if t not in pub: raise SystemExit(f'missing publisher invariant: {t}')
+          required_trig=('publisher-recovery1','FAILED_PUBLISHER_RUN','33290906727','avps-v2-postconsumption-recovery2-dispatch-publisher-recovery1.yml')
+          for t in required_trig:
+              if t not in trig: raise SystemExit(f'missing trigger invariant: {t}')
+          if 'PASS_AVPS_V2_RECOVERY2_ORDINAL43_PUBLISHER_RECOVERY1_SOLVER_FREE' not in rev: raise SystemExit('review receipt status missing')
+          for text in (pub,trig,rev):
+              for forbidden in ('uvspec ','mc_photons'):
+                  if forbidden in text: raise SystemExit(f'new runtime/science token in generated transport: {forbidden}')
+          PY
+
+      - name: Prove generator package itself contains no runtime/source mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --name-only "$EXPECTED_BASE"...HEAD | grep -E '^experiments/|^scientific-tools/|^src/'; then
+            echo 'scientific/runtime source changed by generator PR' >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Write review receipt
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          m=json.load(open('generated-avps-v2-recovery2-publisher-recovery1/manifest.json'))
+          out={'schemaVersion':1,'status':'PASS_AVPS_V2_RECOVERY2_ORDINAL43_PUBLISHER_RECOVERY1_GENERATOR_REVIEW_ZERO_RUNTIME','headSha':os.environ['EVENT_HEAD'],'baseSha':os.environ['EXPECTED_BASE'],'failedPublisherRun':33290906727,'failedPublisherPreConsumption':True,'scientificOrdinal':43,'generatedOutputs':m['outputs'],'dispatchCreated':False,'scientificRuntime':False,'solver':False,'results':False,'levelB':False,'holdout':False,'production':False,'taylorOrJerusalemUsed':False}
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery2-ordinal43-publisher-recovery1-generator-review
+          path: |
+            changed.txt
+            generator-output-1.json
+            review-receipt.json
+            generated-avps-v2-recovery2-publisher-recovery1/
+          if-no-files-found: error
+          compression-level: 0

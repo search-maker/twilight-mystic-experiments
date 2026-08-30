@@ -2,8 +2,9 @@
 """Solver-free capability/runtime contract for LOWALT-STELLAR-STATE-0002.
 
 This module materializes the frozen fresh 20-case / 60-invocation low-altitude
-capability and timing plan. It deliberately contains no subprocess, uvspec, or
-libRadtran execution path and cannot open protected results or lower support.
+capability and timing plan. It deliberately contains no process-spawning,
+uvspec, or libRadtran execution path and cannot open protected results or lower
+support.
 """
 from __future__ import annotations
 

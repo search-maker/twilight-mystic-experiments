@@ -12,7 +12,7 @@ From a Windows clone of this repository, run once:
 powershell -ExecutionPolicy Bypass -File .\tools\arm_sgp_compact_handoff_v1\run_arm_compact_handoff.ps1 -ArchiveRoot "<FOLDER_CONTAINING_THE_PRESERVED_ARM_ORDER>"
 ```
 
-The wrapper keeps its temporary Python environment outside the repository and outside the ARM archive, installs the small reader dependencies, syntax-checks the package, runs a synthetic native-time continuity self-test, scans the archive read-only, compacts structurally equivalent NetCDF headers, reruns the strict SASZE native-time gate, then produces a compact ZIP plus its SHA-256. Upload/share the ZIP only; keep the original ARM order untouched.
+The wrapper keeps its temporary Python environment outside the repository and outside the ARM archive, installs the small reader dependencies, syntax-checks the package, runs a synthetic native-time continuity self-test, scans the archive read-only, compacts structurally equivalent NetCDF headers, captures bounded DQR/DQPR/quality-document excerpts when present, reruns the strict SASZE native-time gate, then produces a compact ZIP plus its SHA-256. Upload/share the ZIP only; keep the original ARM order untouched.
 
 ## Outputs
 
@@ -20,7 +20,8 @@ The compact ZIP contains:
 
 - `archive_inventory.csv` — every source filename, inferred datastream/date, size, SHA-256, NetCDF readability, **native decoded** time coverage/sample count, schema signature and error state.
 - `netcdf_headers.jsonl` — structurally de-duplicated NetCDF dimensions, global metadata keys/nonvolatile values, variables, units, dimensions and variable attributes. Record/time dimension lengths are summarized as observed ranges rather than duplicating otherwise identical daily schemas. Daily volatile coverage/history attributes are deliberately not used as a sample-continuity proof.
-- `quality_metadata.jsonl` — discovered QC/quality/DQR/DQPR/flag metadata from global and variable attributes, including flag meanings/masks when present.
+- `quality_metadata.jsonl` — discovered QC/quality/DQR/DQPR/flag metadata from NetCDF global and variable attributes, including flag meanings/masks when present.
+- `quality_documents.jsonl` — bounded excerpts from small text-like DQR/DQPR/data-quality/readme/manifest files in the order, retaining source relative path, source SHA-256, size and truncation/read disposition. Binary-looking or large files are noted rather than copied.
 - `daily_availability.csv` — day-by-day availability by concrete datastream.
 - `family_daily_availability.csv` — explicit available/absent matrix for the science interval 2023-12-14 through 2024-06-02 for SASZE, HSRL, Raman/RLPROF, CSPHOT AOD, MFRSR/NIMFR AOD, ARSCL, ceilometer, sonde and surface/albedo families.
 - `issues.csv` — corrupt/unreadable/hash/extract notes; absence is kept distinct from unreadability.

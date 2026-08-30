@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -106,6 +107,16 @@ def main() -> None:
         output = root / "generated"
         output.mkdir()
         manifest = generator.generate(identity_path, output)
+
+        mirror = {
+            generator.BASE_ADAPTER: output / "review/aerosol-vertical-profile-sensitivity-v2-control-v1/adapter.py",
+            ROOT / "review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py": output / "review/aerosol-vertical-profile-sensitivity-v2-executor-parity-v1/executor.py",
+            ROOT / "review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py": output / "review/aerosol-vertical-profile-sensitivity-v2-aggregator-parity-v1/aggregator.py",
+        }
+        for src, dst in mirror.items():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+
         runtime = output / manifest["runtimeDir"]
         adapter = load("avps_recovery4_fixture_adapter", runtime / "runtime_adapter.py")
         executor = load("avps_recovery4_fixture_executor", runtime / "executor.py")

@@ -47,6 +47,14 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 & $python -m pip install --disable-pip-version-check -r (Join-Path $ScriptRoot "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
+Push-Location $ScriptRoot
+try {
+    & $python (Join-Path $ScriptRoot "selftest_arm_compact_handoff.py")
+    if ($LASTEXITCODE -ne 0) { throw "ARM compact-handoff self-test failed with exit code $LASTEXITCODE." }
+} finally {
+    Pop-Location
+}
+
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
 & $python (Join-Path $ScriptRoot "extract_arm_compact_handoff.py") `

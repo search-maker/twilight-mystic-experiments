@@ -212,9 +212,9 @@ def transform_publisher(src: str) -> str:
     t = replace_all_present(t,
         'avps-v2-postconsumption-recovery2-dispatch-publisher-ordinal-43',
         'avps-v2-postconsumption-recovery3-dispatch-publisher-ordinal-44', min_count=1)
-    t = replace_once(t,
-        "PAYLOAD='{\"ref\":\"main\",\"inputs\":{\"dispatch_ref\":\"dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-ordinal-43\"}}'",
-        "PAYLOAD='{\"ref\":\"main\",\"inputs\":{\"dispatch_ref\":\"dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-ordinal-44\"}}'")
+    expected_payload = r'''PAYLOAD='{"ref":"main","inputs":{"dispatch_ref":"dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-ordinal-44"}}' '''.strip()
+    if t.count(expected_payload) != 1:
+        raise SystemExit(f'recovery3 dispatch payload cardinality drift: {t.count(expected_payload)}')
     t = replace_once(t,
         'repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-postconsumption-recovery2-science.yml/dispatches',
         'repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-postconsumption-recovery3-science.yml/dispatches')

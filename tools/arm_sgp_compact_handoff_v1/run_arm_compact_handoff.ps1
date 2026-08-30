@@ -100,9 +100,12 @@ if ($LASTEXITCODE -ne 0) { throw "NetCDF header compaction failed with exit code
     --output (Join-Path $OutputRoot "quality_documents.jsonl")
 if ($LASTEXITCODE -ne 0) { throw "Quality-document extraction failed with exit code $LASTEXITCODE." }
 
-# Recompute the authoritative SASZE gate with source-day cadence and explicit
-# edge-gap checking. This overwrites the provisional gate emitted by the broad
-# inventory script and refreshes the gate fields in summary.json.
+# Recompute the authoritative SASZE gate from native sample times. Full VIS is
+# the primary held-out spectral-radiance support stream, NIR is an independently
+# audited secondary extension, and filterbands are retained only as a
+# daylight-derived diagnostic. No SASZE radiance/transmittance value is opened.
+# This overwrites the provisional gate emitted by the broad inventory script and
+# removes its legacy filterband summary keys.
 & $python (Join-Path $ScriptRoot "audit_sasze_native_time.py") `
     --archive-root $ArchiveRoot `
     --priority-csv (Join-Path $ScriptRoot "priority20_sasze_gate.csv") `

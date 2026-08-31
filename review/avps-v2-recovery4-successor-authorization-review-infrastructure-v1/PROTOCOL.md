@@ -1,0 +1,11 @@
+# AVPS v2 Recovery4 successor authorization-review infrastructure
+
+This package adds a solver-free, result-blind `pull_request_target` review for the exact one-file Recovery4 ordinal-45 authorization proposed by the successful Recovery4 authorization-control proof.
+
+It is infrastructure only. It does not allocate or reserve ordinal 45, create an authorization or dispatch ref, apply/consume candidate seeds, execute libRadtran/MYSTIC/uvspec, open AVPS results, admit richer Level-B atmosphere coordinates, access protected holdouts, use Taylor/Jerusalem or invalidated low-altitude evidence, or change production behavior.
+
+The review binds control PR #766/head `5685d5c313071014a94c816ee26b129f1f17a7fc`/run `33360847786` attempt 1/artifact `9746918484` (`sha256:5a8f7b17273499e68521c95f91354d2d1d1a50a40758128b762859e2f5c5a16c`) and Issue #60 transition `5474307907`. The future authorization must be an exact one-file direct child of that control head and byte-equal to `authorization.proposed.json` (`sha256:d1ca682466935efb10d304919fbbf51f6a266c16fd1e0f2e9a4eca2bc9f300c1`, Git blob `96ee8299d00bd72cdb73de4583670730ce89c73b`).
+
+The protected review rebuilds the 72 Recovery4 candidate seeds with the historical ordinal-42 native ledger binding, refuses overlap with permanently consumed ordinals 41/42/43/44, repeats tracked-tree and stable repository-global seed checks, and independently proves that ordinal 45 is present only through the authorization PR's own branch/PR/workflow surfaces while the non-self global maximum remains 44. All GitHub/network evidence reads use bounded read-only retries and all temporary proof files live in a dedicated untracked scratch directory; tracked `evidence/` is never deleted or modified.
+
+Frozen AVPS science remains 360 cases / 72 CRN groups / five profiles / 20,000,000 photons per case. Recovery3 ordinal44/run `33334396129` is permanently consumed/non-reusable. Every richer Operational Atmosphere State v2 field remains unadmitted to the fast Level-B mapper and every richer `newMappingAuthorized` flag remains false. A passing review is not allocation or dispatch; allocation requires a separate post-review Issue #60 marker after the matching WRITE_QUIET fence is closed and independently read back.

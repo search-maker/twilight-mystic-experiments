@@ -1,0 +1,72 @@
+name: arm-sgp-postg3-aeronet-acquisition-v1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-postg3-aeronet-acquisition-v1
+    paths:
+      - .github/workflows/arm-sgp-postg3-aeronet-acquisition-v1.yml
+
+permissions:
+  contents: read
+
+env:
+  SITE: ARM_SGP
+  START_YEAR: '2024'
+  START_MONTH: '1'
+  START_DAY: '27'
+  END_YEAR: '2024'
+  END_MONTH: '6'
+  END_DAY: '1'
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Acquire consolidated public AERONET V3 data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          base='https://aeronet.gsfc.nasa.gov/cgi-bin'
+          common="site=${SITE}&year=${START_YEAR}&month=${START_MONTH}&day=${START_DAY}&year2=${END_YEAR}&month2=${END_MONTH}&day2=${END_DAY}&AVG=10&if_no_html=1"
+          fetch() {
+            local name="$1" url="$2"
+            curl --fail --silent --show-error --location --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 180 \
+              -A 'StarsVisibility-ARM-validation/1.0 (public AERONET scientific acquisition)' \
+              "$url" -o "out/${name}.csv"
+            test -s "out/${name}.csv"
+          }
+          fetch aod20 "${base}/print_web_data_v3?${common}&AOD20=1"
+          sleep 7
+          fetch alm20_all "${base}/print_web_data_inv_v3?${common}&product=ALL&ALM20=1"
+          sleep 7
+          fetch hyb20_all "${base}/print_web_data_inv_v3?${common}&product=ALL&HYB20=1"
+          sleep 7
+          fetch alm15_all "${base}/print_web_data_inv_v3?${common}&product=ALL&ALM15=1"
+          sleep 7
+          fetch hyb15_all "${base}/print_web_data_inv_v3?${common}&product=ALL&HYB15=1"
+          sha256sum out/*.csv | sort > out/SHA256SUMS.txt
+          wc -c out/*.csv | sort -k2 > out/SIZES.txt
+          printf '%s\n' \
+            'site=ARM_SGP' \
+            'range=2024-01-27..2024-06-01' \
+            'purpose=result-blind independent aerosol-column/microphysics availability acquisition for the exact eight post-G3 ARM candidates' \
+            'no SASZE radiance or MYSTIC result is accessed by this workflow' \
+            > out/README.txt
+      - name: Validate source identity without scientific classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in out/*.csv; do
+            grep -q 'AERONET' "$f" || { echo "missing AERONET identity in $f" >&2; exit 2; }
+          done
+          grep -q 'ARM_SGP' out/aod20.csv || { echo 'ARM_SGP absent from AOD20 response' >&2; exit 3; }
+      - name: Upload immutable acquisition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM_SGP_POSTG3_AERONET_ACQUISITION_V1
+          path: out/
+          if-no-files-found: error
+          retention-days: 30

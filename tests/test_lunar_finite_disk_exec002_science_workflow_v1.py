@@ -18,8 +18,8 @@ def main() -> None:
     require(text, 'execution/lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002')
     require(text, 'AUTHORIZATION_REVIEW_HEAD: 16efed6164670263bb18d960d76cfb8a42e4a36b')
     require(text, "AUTHORIZATION_REVIEW_RUN_ID: '33342878656'")
-    require(text, "AUTHORIZATION_REVIEW_ARTIFACT_ID: '9741235986'")
-    require(text, 'sha256:7f30472329828f90193297129d567c45e8b6dfadcbe83f804c49630c11a530da')
+    require(text, "AUTHORIZATION_REVIEW_ARTIFACT_ID: '9741082547'")
+    require(text, 'sha256:3ae40fa83dd12bd74ad022344dd470f94e75dcfa8e3406bc890b1e5a51a731e9')
     require(text, "AUTHORIZATION_RECHECK_ARTIFACT_ID: '9740536985'")
     require(text, "CONTROL_ARTIFACT_ID: '9739969664'")
     require(text, '30350e6986b554d09bcd77e9095cb871dd634a80a4f219cca29d0fc0b8249e84')
@@ -33,10 +33,21 @@ def main() -> None:
     require(text, 'lunar_finite_disk_exec002.py prepare-shard')
     require(text, 'lunar_finite_disk_exec002.py evaluate')
 
+    # Historical artifact IDs are bound exactly, and archive retrieval is by immutable ID.
+    require(text, 'artifact-ids: ${{ env.AUTHORIZATION_REVIEW_ARTIFACT_ID }}')
+    require(text, 'artifact-ids: ${{ env.CONTROL_ARTIFACT_ID }}')
+    assert '9741235986' not in text
+    assert 'sha256:7f30472329828f90193297129d567c45e8b6dfadcbe83f804c49630c11a530da' not in text
+
     # The historical page-one release bug must not recur.
     require(text, 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100"')
     require(text, 'require matching paginated WRITE_QUIET_END before solver')
-    assert "url=f'https://api.github.com/repos/{repo}/issues/60/comments?per_page=100'" not in text
+
+    # Fence BEGIN must bind the actual execution parent, not the older authorization-review head.
+    require(text, 'git rev-parse HEAD^ > final-preflight-evidence/execution-parent.txt')
+    require(text, 'assert f"parent={parent}" in body(begin)')
+    require(text, 'assert f"authorizationReviewHead={os.environ[\'AUTHORIZATION_REVIEW_HEAD\']}" in body(begin)')
+    assert 'parent={os.environ[\'AUTHORIZATION_REVIEW_HEAD\']}' not in text
 
     # Final collision proof precedes solver installation and binds the exact current head.
     preflight = text.index('Fresh final repository-global collision recheck before any solver')
@@ -46,8 +57,8 @@ def main() -> None:
     require(text, "'executionIdentityAndCandidateSeedsConsumedByThisAttempt':True")
 
     # The 550-nm execution remains descriptive only and cannot close finite-disk validation.
-    require(text, "'finiteMoonDiskValidated'] is False")
-    require(text, "'mandatorySpectralFollowOnWavelengthsNm']==[450.0,650.0,750.0]")
+    require(text, "p['finiteMoonDiskValidated'] is False")
+    require(text, "p['mandatorySpectralFollowOnWavelengthsNm']==[450.0,650.0,750.0]")
     require(text, '450/650/750-nm follow-on remains mandatory before broadband finite-disk adequacy.')
     assert 'acceptanceThreshold=' not in text
     assert 'Taylor' in text and 'Jerusalem' in text  # only explicit no-use claim text
@@ -56,6 +67,8 @@ def main() -> None:
     require(runtime, 'load_candidate_ledger')
     require(runtime, 'candidateSeedCanonicalSha256')
     require(runtime, 'seedLiteralsSerializedInManifest')
+    require(runtime, 'EXPECTED_AUTH_REVIEW_ARTIFACT_ID = 9741082547')
+    assert '9741235986' not in runtime
     assert '32_910_001' not in runtime
 
     print('lunar finite-disk exec002 science workflow contract tests passed')

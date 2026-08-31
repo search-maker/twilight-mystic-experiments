@@ -1,0 +1,143 @@
+name: ARM SGP G3 Horizons V1
+on:
+  push:
+    branches: [review/arm-sgp-g3-horizons-v1-exec]
+permissions:
+  contents: read
+jobs:
+  g3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Execute frozen result-blind lunar gate
+        shell: bash
+        run: |
+          cat > /tmp/g3.py <<'PY'
+          import csv, hashlib, json, math, os, re, time, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          CONTRACT = "ARM_SGP_G3_LUNAR_GEOMETRY_JPL_HORIZONS_V1"
+          SITE = "-97.487643,36.607322,0.314"
+          THRESHOLD = -10.000
+          MARGIN = 0.010
+          OUT = Path("arm_sgp_g3_horizons_v1")
+          RAW = OUT / "raw"
+          RAW.mkdir(parents=True, exist_ok=True)
+
+          # Exact 29 blind G0-V2 rows recovered from admitted hardened package
+          # SHA256 276342cbee453ab1786eb91206b530a57bc1ea08c10cd9083579b7318081616e.
+          # Tuple: universe_order, case_id, t_minus8, t_minus7, t_minus6, valid(-8,-7,-6).
+          CASES = [
+            (11,"2023-12-19_dusk","2023-12-19T23:56:35.554297Z","2023-12-19T23:51:08.982542Z","2023-12-19T23:45:40.474406Z",(23,22,29)),
+            (57,"2024-01-11_dusk","2024-01-12T00:12:37.919747Z","2024-01-12T00:07:16.173233Z","2024-01-12T00:01:52.716326Z",(20,18,9)),
+            (77,"2024-01-21_dusk","2024-01-22T00:22:02.339940Z","2024-01-22T00:16:45.566885Z","2024-01-22T00:11:27.323751Z",(5,5,6)),
+            (81,"2024-01-23_dusk","2024-01-24T00:23:59.733430Z","2024-01-24T00:18:44.049123Z","2024-01-24T00:13:26.948972Z",(18,23,29)),
+            (85,"2024-01-25_dusk","2024-01-26T00:25:58.005490Z","2024-01-26T00:20:43.423530Z","2024-01-26T00:15:27.481531Z",(5,10,14)),
+            (87,"2024-01-26_dusk","2024-01-27T00:26:57.402592Z","2024-01-27T00:21:43.374563Z","2024-01-27T00:16:28.015019Z",(24,20,11)),
+            (89,"2024-01-27_dusk","2024-01-28T00:27:56.939546Z","2024-01-28T00:22:43.466171Z","2024-01-28T00:17:28.689966Z",(7,7,5)),
+            (99,"2024-02-01_dusk","2024-02-02T00:32:55.905415Z","2024-02-02T00:27:45.184510Z","2024-02-02T00:22:33.308189Z",(6,16,24)),
+            (115,"2024-02-09_dusk","2024-02-10T00:40:53.669471Z","2024-02-10T00:35:47.079905Z","2024-02-10T00:30:39.579823Z",(13,6,8)),
+            (123,"2024-02-13_dusk","2024-02-14T00:44:49.659420Z","2024-02-14T00:39:44.906939Z","2024-02-14T00:34:39.368584Z",(25,17,15)),
+            (129,"2024-02-16_dusk","2024-02-17T00:47:44.581183Z","2024-02-17T00:42:41.071745Z","2024-02-17T00:37:36.870538Z",(6,6,6)),
+            (131,"2024-02-17_dusk","2024-02-18T00:48:42.450110Z","2024-02-18T00:43:39.326227Z","2024-02-18T00:38:35.542036Z",(20,11,5)),
+            (161,"2024-03-03_dusk","2024-03-04T01:02:45.857405Z","2024-03-04T00:57:46.442131Z","2024-03-04T00:52:46.844963Z",(6,6,5)),
+            (163,"2024-03-04_dusk","2024-03-05T01:03:40.768835Z","2024-03-05T00:58:41.445655Z","2024-03-05T00:53:41.973209Z",(11,8,5)),
+            (167,"2024-03-06_dusk","2024-03-07T01:05:30.248668Z","2024-03-07T01:00:31.046107Z","2024-03-07T00:55:31.759900Z",(21,21,19)),
+            (195,"2024-03-20_dusk","2024-03-21T01:18:07.319073Z","2024-03-21T01:13:06.466350Z","2024-03-21T01:08:06.012578Z",(19,11,12)),
+            (197,"2024-03-21_dusk","2024-03-22T01:19:01.109206Z","2024-03-22T01:13:59.965919Z","2024-03-22T01:08:59.258115Z",(19,25,24)),
+            (201,"2024-03-23_dusk","2024-03-24T01:20:48.780760Z","2024-03-24T01:15:46.985858Z","2024-03-24T01:10:45.700708Z",(7,6,5)),
+            (205,"2024-03-25_dusk","2024-03-26T01:22:36.671425Z","2024-03-26T01:17:34.130921Z","2024-03-26T01:12:32.175890Z",(12,29,23)),
+            (209,"2024-03-27_dusk","2024-03-28T01:24:24.898437Z","2024-03-28T01:19:21.518147Z","2024-03-28T01:14:18.800820Z",(11,11,5)),
+            (211,"2024-03-28_dusk","2024-03-29T01:25:19.174063Z","2024-03-29T01:20:15.338576Z","2024-03-29T01:15:12.205519Z",(8,6,12)),
+            (239,"2024-04-11_dusk","2024-04-12T01:38:15.985340Z","2024-04-12T01:33:03.357665Z","2024-04-12T01:27:52.040706Z",(28,18,9)),
+            (241,"2024-04-12_dusk","2024-04-13T01:39:12.789458Z","2024-04-13T01:33:59.367661Z","2024-04-13T01:28:47.304578Z",(7,10,13)),
+            (245,"2024-04-14_dusk","2024-04-15T01:41:06.889664Z","2024-04-15T01:35:51.817584Z","2024-04-15T01:30:38.202267Z",(22,26,9)),
+            (247,"2024-04-15_dusk","2024-04-16T01:42:04.179757Z","2024-04-16T01:36:48.252241Z","2024-04-16T01:31:33.831496Z",(10,13,28)),
+            (291,"2024-05-07_dusk","2024-05-08T02:03:33.649367Z","2024-05-08T01:57:54.883874Z","2024-05-08T01:52:18.894387Z",(11,11,17)),
+            (293,"2024-05-08_dusk","2024-05-09T02:04:32.353494Z","2024-05-09T01:58:52.434799Z","2024-05-09T01:53:15.356121Z",(9,12,22)),
+            (317,"2024-05-20_dusk","2024-05-21T02:15:50.729256Z","2024-05-21T02:09:57.179413Z","2024-05-21T02:04:07.242224Z",(13,13,14)),
+            (339,"2024-05-31_dusk","2024-06-01T02:24:51.346239Z","2024-06-01T02:18:47.091164Z","2024-06-01T02:12:47.082575Z",(14,19,12)),
+          ]
+
+          def dt(s): return datetime.fromisoformat(s.replace("Z","+00:00"))
+          def hfmt(d): return d.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+          def sha(b): return hashlib.sha256(b).hexdigest()
+
+          results=[]
+          for idx,(order,case_id,t8,t7,t6,valids) in enumerate(CASES):
+              start=min(dt(t6),dt(t8)); stop=max(dt(t6),dt(t8))
+              duration=(stop-start).total_seconds()
+              n=math.ceil(duration/0.5)
+              params={
+                "format":"text","COMMAND":"'301'","OBJ_DATA":"'NO'","MAKE_EPHEM":"'YES'",
+                "EPHEM_TYPE":"'OBSERVER'","CENTER":"'coord@399'","COORD_TYPE":"'GEODETIC'",
+                "SITE_COORD":f"'{SITE}'","START_TIME":f"'{hfmt(start)}'","STOP_TIME":f"'{hfmt(stop)}'",
+                "STEP_SIZE":f"'{n}'","TIME_TYPE":"'UT'","REF_SYSTEM":"'ICRF'","APPARENT":"'AIRLESS'",
+                "QUANTITIES":"'4'","TIME_DIGITS":"'FRACSEC'","EXTRA_PREC":"'YES'","CSV_FORMAT":"'YES'",
+                "ELEV_CUT":"'-90'","SKIP_DAYLT":"'NO'"
+              }
+              url="https://ssd.jpl.nasa.gov/api/horizons.api?"+urllib.parse.urlencode(params,safe="',@-")
+              req=urllib.request.Request(url,headers={"User-Agent":"ARM-SGP-G3-validation/1.0"})
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r: raw=r.read()
+                  text=raw.decode("utf-8",errors="strict")
+              except Exception as e:
+                  results.append({"universe_order":order,"case_id":case_id,"g3_disposition":"QUERY_FAILED","error":repr(e)})
+                  time.sleep(1.0); continue
+              raw_path=RAW/f"{case_id}.txt"; raw_path.write_bytes(raw)
+              api_ok="API VERSION: 1.3" in text
+              system_ok=("4.98e" in text)
+              soe=re.search(r"\$\$SOE\s*\n(.*?)\n\$\$EOE",text,re.S)
+              elev=[]; parse_error=""
+              if soe:
+                  for line in soe.group(1).splitlines():
+                      if not line.strip(): continue
+                      fields=next(csv.reader([line]))
+                      nums=[]
+                      for x in fields:
+                          try: nums.append(float(x.strip()))
+                          except Exception: pass
+                      if len(nums)>=2: elev.append(nums[-1])
+                  # With QUANTITIES=4 CSV rows end in azimuth,elevation; nums[-1] is elevation.
+              if not soe or not elev: parse_error="missing_or_unparsed_ephemeris_rows"
+              maxel=max(elev) if elev else None
+              if not api_ok or not system_ok or parse_error:
+                  disposition="QUERY_VALIDATION_FAIL"
+              elif abs(maxel-THRESHOLD)<=MARGIN:
+                  disposition="UNRESOLVED_NUMERICAL_MARGIN"
+              elif maxel <= THRESHOLD:
+                  disposition="PASS"
+              else:
+                  disposition="FAIL"
+              results.append({
+                "universe_order":order,"case_id":case_id,"t_minus8_utc":t8,"t_minus7_utc":t7,"t_minus6_utc":t6,
+                "start_time_utc":start.isoformat().replace("+00:00","Z"),"stop_time_utc":stop.isoformat().replace("+00:00","Z"),
+                "duration_s":duration,"step_size_N":n,"sample_count":len(elev),"max_moon_elevation_deg":maxel,
+                "threshold_deg":THRESHOLD,"margin_deg":MARGIN,"valid_464_minus8":valids[0],"valid_464_minus7":valids[1],"valid_464_minus6":valids[2],
+                "api_version_1_3_present":api_ok,"horizons_4_98e_present":system_ok,"raw_sha256":sha(raw),"raw_file":str(raw_path),
+                "g3_disposition":disposition,"error":parse_error,"query_url":url
+              })
+              time.sleep(1.0)
+
+          cols=sorted({k for r in results for k in r})
+          with (OUT/"arm_sgp_g3_lunar_gate.csv").open("w",newline="",encoding="utf-8") as f:
+              w=csv.DictWriter(f,fieldnames=cols); w.writeheader(); w.writerows(results)
+          summary={"contract":CONTRACT,"site_coord":SITE,"candidate_count":len(CASES),"counts":{},"radiance_magnitudes_opened":False}
+          for r in results: summary["counts"][r["g3_disposition"]]=summary["counts"].get(r["g3_disposition"],0)+1
+          (OUT/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          manifest={}
+          for p in sorted(OUT.rglob("*")):
+              if p.is_file(): manifest[str(p.relative_to(OUT))]={"size":p.stat().st_size,"sha256":sha(p.read_bytes())}
+          (OUT/"manifest.json").write_text(json.dumps({"contract":CONTRACT,"files":manifest,"radiance_magnitudes_opened":False},indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          print(json.dumps(summary,sort_keys=True))
+          if any(r["g3_disposition"] in ("QUERY_FAILED","QUERY_VALIDATION_FAIL") for r in results): raise SystemExit(2)
+          PY
+          python /tmp/g3.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm-sgp-g3-horizons-v1
+          path: arm_sgp_g3_horizons_v1
+          if-no-files-found: error
+          retention-days: 30

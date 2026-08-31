@@ -11,6 +11,18 @@ def require(text: str, token: str) -> None:
     assert token in text, token
 
 
+def require_flat_artifact_id_downloads(text: str) -> None:
+    lines = text.splitlines()
+    artifact_lines = [
+        i for i, line in enumerate(lines)
+        if line.strip().startswith('artifact-ids:')
+    ]
+    assert len(artifact_lines) == 4, f'expected exactly four artifact-id downloads, found {len(artifact_lines)}'
+    for i in artifact_lines:
+        block = '\n'.join(lines[i:i + 9])
+        assert 'merge-multiple: true' in block, f'artifact-id download is not flattened:\n{block}'
+
+
 def main() -> None:
     text = WORKFLOW.read_text()
     runtime = RUNTIME.read_text()
@@ -36,6 +48,8 @@ def main() -> None:
     # Historical artifact IDs are bound exactly, and archive retrieval is by immutable ID.
     require(text, 'artifact-ids: ${{ env.AUTHORIZATION_REVIEW_ARTIFACT_ID }}')
     require(text, 'artifact-ids: ${{ env.CONTROL_ARTIFACT_ID }}')
+    require(text, 'merge-multiple: true')
+    require_flat_artifact_id_downloads(text)
     assert '9741235986' not in text
     assert 'sha256:7f30472329828f90193297129d567c45e8b6dfadcbe83f804c49630c11a530da' not in text
 

@@ -1,0 +1,262 @@
+name: Review AVPS Recovery4 ordinal45 execution publication
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-ordinal45-execution-publication-review.yml
+      - review/avps-v2-recovery4-ordinal45-execution-publication-v1/**
+      - .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+      - runtime-avps-v2-recovery4-ordinal45-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  zero-runtime-publication-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      INFRA_BRANCH: review/avps-v2-recovery4-ordinal45-execution-publication-infrastructure-v1
+      INFRA_BASE: 62c967ebb2b44ab91b1e2787419b43e53cfbc86e
+      PUBLICATION_BRANCH: publication/avps-v2-recovery4-ordinal45-execution-package-v1
+      SOURCE_REVIEW_PR: '777'
+      SOURCE_REVIEW_HEAD: eb0ff26cbea7485ace9fe9bf6b1cc1a3c9d60489
+      SOURCE_REVIEW_RUN: '33372058737'
+      SOURCE_REVIEW_ARTIFACT: '9750420831'
+      SOURCE_REVIEW_DIGEST: sha256:f1c37d44636797ebcffa5eafe467ded0b9243e5b2e9fdbe66f7fd995986d75dd
+      AUTH_BRANCH: authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45
+      AUTH_HEAD: 6e095b4b1603c90dcee0943295909b30cd1b374d
+      AUTH_PARENT: 5685d5c313071014a94c816ee26b129f1f17a7fc
+      AUTH_PR: '774'
+      AUTH_PATH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorization.json
+      AUTH_BLOB: 96ee8299d00bd72cdb73de4583670730ce89c73b
+      ALLOCATION_MARKER: ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=6e095b4b1603c90dcee0943295909b30cd1b374d parent=5685d5c313071014a94c816ee26b129f1f17a7fc pr=774
+      CONSUMED_PREFIX: ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45
+      CANDIDATE_SEED_SHA256: ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de
+      CANDIDATE_ROWS_SHA256: c439de417520b330c037e2628df02b6955f652563300aa5ef30477abf7661a98
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review mode and immutable Recovery4 authorization
+        shell: bash
+        env:
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE_REF" = main
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          case "$EVENT_BRANCH" in
+            "$INFRA_BRANCH") MODE=infrastructure ;;
+            "$PUBLICATION_BRANCH") MODE=publication ;;
+            *) echo "unexpected branch: $EVENT_BRANCH" >&2; exit 1 ;;
+          esac
+          echo "MODE=$MODE" >> "$GITHUB_ENV"
+
+          git fetch origin "refs/heads/$AUTH_BRANCH:refs/remotes/origin/$AUTH_BRANCH"
+          test "$(git rev-parse origin/$AUTH_BRANCH)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$AUTH_PARENT"
+          test "$(git rev-parse "$AUTH_HEAD:$AUTH_PATH")" = "$AUTH_BLOB"
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > authorization-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$SOURCE_REVIEW_PR" > source-review-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_REVIEW_RUN" > source-review-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_REVIEW_ARTIFACT" > source-review-artifact-metadata.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          python - <<'PY'
+          import json, os
+          ap=json.load(open('authorization-pr.json'))
+          if ap['number']!=774 or ap['state']!='open' or ap['draft'] is not True or ap['merged_at'] is not None: raise SystemExit('authorization PR state drift')
+          if ap['head']['sha']!=os.environ['AUTH_HEAD'] or ap['base']['sha']!=os.environ['AUTH_PARENT']: raise SystemExit('authorization PR identity drift')
+          sp=json.load(open('source-review-pr.json'))
+          if sp['number']!=777 or sp['head']['sha']!=os.environ['SOURCE_REVIEW_HEAD']: raise SystemExit('source package review PR drift')
+          sr=json.load(open('source-review-run.json'))
+          if sr['id']!=int(os.environ['SOURCE_REVIEW_RUN']) or sr['head_sha']!=os.environ['SOURCE_REVIEW_HEAD'] or sr['run_attempt']!=1 or sr['status']!='completed' or sr['conclusion']!='success': raise SystemExit('source package review run drift')
+          a=json.load(open('source-review-artifact-metadata.json'))
+          if a['id']!=int(os.environ['SOURCE_REVIEW_ARTIFACT']) or a.get('digest')!=os.environ['SOURCE_REVIEW_DIGEST'] or a.get('expired'): raise SystemExit('source package artifact drift')
+          if a.get('workflow_run',{}).get('id')!=int(os.environ['SOURCE_REVIEW_RUN']) or a.get('workflow_run',{}).get('head_sha')!=os.environ['SOURCE_REVIEW_HEAD']: raise SystemExit('source artifact run binding drift')
+          pages=json.load(open('issue60-pages.json')); bodies=[str(c.get('body') or '').strip() for page in pages for c in page]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('ordinal45 already consumed; publication review must refuse')
+          PY
+          if git ls-remote --exit-code origin "refs/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then
+            echo "dispatch branch already exists" >&2
+            exit 1
+          fi
+
+      - name: Bind infrastructure or exact five-file publication scope
+        shell: bash
+        env:
+          EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
+          mapfile -t HEAD_PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#HEAD_PARENTS[@]}" = 1
+          test "${HEAD_PARENTS[0]}" = "$EVENT_BASE"
+          if [ "$MODE" = infrastructure ]; then
+            test "$EVENT_BRANCH" = "$INFRA_BRANCH"
+            test "$EVENT_BASE" = "$INFRA_BASE"
+            cat > expected.txt <<'PATHS'
+          .github/workflows/avps-v2-recovery4-ordinal45-execution-publication-review.yml
+          review/avps-v2-recovery4-ordinal45-execution-publication-v1/PROTOCOL.md
+          PATHS
+          else
+            test "$EVENT_BRANCH" = "$PUBLICATION_BRANCH"
+            git merge-base --is-ancestor "$INFRA_BASE" "$EVENT_BASE"
+            test "$(git show "$EVENT_BASE:.github/workflows/avps-v2-recovery4-ordinal45-execution-publication-review.yml")" = "$(git show "HEAD:.github/workflows/avps-v2-recovery4-ordinal45-execution-publication-review.yml")"
+            cat > expected.txt <<'PATHS'
+          .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+          runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py
+          runtime-avps-v2-recovery4-ordinal45-v1/executor.py
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json
+          PATHS
+          fi
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+
+      - name: Download exact immutable generated-package review artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: 9750420831
+          path: source-review-artifact
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 33372058737
+
+      - name: Verify source artifact and exact publication byte identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root=Path('source-review-artifact/generated-package')
+          m=json.load(open(root/'manifest.json'))
+          required={
+            'status':'GENERATED_AVPS_V2_RECOVERY4_SUCCESSOR_INFRASTRUCTURE_ZERO_RUNTIME_RESULTS_CLOSED',
+            'scientificOrdinal':45,
+            'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_SHA256'],
+            'candidateRowsCanonicalSha256':os.environ['CANDIDATE_ROWS_SHA256'],
+            'caseCount':360,'groupCount':72,'statesPerGroup':5,'photonHistoriesPerCase':20_000_000,
+            'matrixUsesGeneratedRecoveryAdapter':True,'caseUsesGeneratedRecoveryExecutor':True,'closedAggregateUsesGeneratedRecoveryAggregator':True,
+            'frozenScienceChanged':False,'dispatchCreated':False,'scientificRuntime':False,'solverExecution':False,'resultsOpened':False,
+            'levelBOpeningAuthorized':False,'protectedHoldoutOpeningAuthorized':False,'productionAuthorized':False,
+            'taylorOrJerusalemUsed':False,'newMappingAuthorized':False,
+          }
+          for k,v in required.items():
+              if m.get(k)!=v: raise SystemExit(f'source manifest drift {k}: {m.get(k)!r} != {v!r}')
+          expected={
+            'avps-v2-postconsumption-recovery4-science.yml':('24290edce579b5cf1774cee61d2c7a4433f730f18c9c99d2e2144efedf163b1f','b620f9e554378ec363ec1cc3da860432b7615218',29769),
+            'runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py':('e0c95d9ca15a78868bef13cb8375460de156075c07647298a2ad355c32d6d3ed','e4b690c2969fd01ecde5b08f554e47ad50b40914',5047),
+            'runtime-avps-v2-recovery4-ordinal45-v1/executor.py':('37f1f52fa2381c3bc40580ffc16f45efd8503d9242c22d2d72eb28a27c3882f5','7dc38e31c19701b1a1ceef300d75105cff179290',4892),
+            'runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py':('3287fb59344c223eb871befb05bef141fe79c74fec45f096c29a4c05e29845c2','6afc8b0d21c2b5553c251dc9ca5524c795ed2646',4686),
+            'runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json':('3a3e09f1a9dda5435e455fbc9a508a924c080f7f265cdd7c29de912449bacc93','2d5f71d80b5e573b86775c2806b80dcc1fbe02f4',2255),
+          }
+          if set(m.get('outputs',{}))!=set(expected): raise SystemExit('source artifact output set drift')
+          for p,(sha,blob,size) in expected.items():
+              f=root/p
+              b=f.read_bytes()
+              if len(b)!=size or hashlib.sha256(b).hexdigest()!=sha: raise SystemExit(f'source byte drift: {p}')
+              got=subprocess.check_output(['git','hash-object',str(f)],text=True).strip()
+              if got!=blob or m['outputs'][p].get('gitBlobSha1')!=blob or m['outputs'][p].get('sha256')!=sha: raise SystemExit(f'source blob/manifest drift: {p}')
+          if os.environ['MODE']=='publication':
+              mapping={
+                '.github/workflows/avps-v2-postconsumption-recovery4-science.yml':'avps-v2-postconsumption-recovery4-science.yml',
+                'runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py':'runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py',
+                'runtime-avps-v2-recovery4-ordinal45-v1/executor.py':'runtime-avps-v2-recovery4-ordinal45-v1/executor.py',
+                'runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py':'runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py',
+                'runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json':'runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json',
+              }
+              for dst,src in mapping.items():
+                  if Path(dst).read_bytes()!=(root/src).read_bytes(): raise SystemExit(f'publication differs from reviewed artifact: {dst}')
+                  if subprocess.check_output(['git','hash-object',dst],text=True).strip()!=expected[src][1]: raise SystemExit(f'publication blob drift: {dst}')
+          PY
+
+      - name: Verify published workflow choreography remains closed before dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$MODE" != publication ]; then exit 0; fi
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/avps-v2-postconsumption-recovery4-science.yml').read_text()
+          required=(
+            'workflow_dispatch:',
+            'AUTH_HEAD: 6e095b4b1603c90dcee0943295909b30cd1b374d',
+            'DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45',
+            'EXECUTION_KEY: aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4:numerical:45',
+            'snapshot-fence-release:',
+            'needs: [preflight, snapshot-fence-release]',
+            'Fresh repository-global candidate-seed recheck and one-use guard',
+            'Results remain closed. No primary interpretation or Level-B execution is authorized by this artifact.',
+          )
+          for x in required:
+              if x not in p: raise SystemExit(f'published workflow invariant missing: {x}')
+          if p.count('needs: [preflight, snapshot-fence-release]')!=4: raise SystemExit('four solver-bearing shards must depend on fence release')
+          forbidden=(
+            'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3:numerical:44',
+            'dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3-ordinal-44',
+          )
+          for x in forbidden:
+              if x in p: raise SystemExit(f'old Recovery3 identity survived: {x}')
+          PY
+
+      - name: Freeze zero-runtime review receipt
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          status='PASS_AVPS_V2_RECOVERY4_ORDINAL45_EXECUTION_PUBLICATION_INFRASTRUCTURE_ZERO_RUNTIME' if os.environ['MODE']=='infrastructure' else 'PASS_AVPS_V2_RECOVERY4_ORDINAL45_EXECUTION_PUBLICATION_REVIEW_ZERO_RUNTIME'
+          out={
+            'schemaVersion':1,'status':status,'mode':os.environ['MODE'],'headSha':os.environ['EVENT_HEAD'],'baseSha':os.environ['EVENT_BASE'],
+            'sourceReviewPr':777,'sourceReviewHead':os.environ['SOURCE_REVIEW_HEAD'],'sourceReviewRun':int(os.environ['SOURCE_REVIEW_RUN']),
+            'sourceReviewArtifact':int(os.environ['SOURCE_REVIEW_ARTIFACT']),'sourceReviewDigest':os.environ['SOURCE_REVIEW_DIGEST'],
+            'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],'authorizationPr':774,'scientificOrdinal':45,
+            'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_SHA256'],'candidateRowsCanonicalSha256':os.environ['CANDIDATE_ROWS_SHA256'],
+            'caseCount':360,'groupCount':72,'statesPerGroup':5,'photonHistoriesPerCase':20_000_000,
+            'dispatchCreated':False,'consumedMarkerCreated':False,'scientificRuntime':False,'solverExecution':False,'resultsOpened':False,
+            'levelBOpeningAuthorized':False,'protectedHoldoutOpened':False,'productionAuthorized':False,'taylorOrJerusalemUsed':False,'newMappingAuthorized':False,
+          }
+          Path('review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery4-ordinal45-execution-publication-review
+          path: |
+            changed.txt
+            source-review-artifact/generated-package/manifest.json
+            review-receipt.json
+          if-no-files-found: error
+          compression-level: 0

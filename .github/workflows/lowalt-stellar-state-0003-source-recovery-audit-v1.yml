@@ -1,0 +1,202 @@
+name: LOWALT STATE-0003 pinned source recovery audit v1
+
+on:
+  pull_request:
+    paths:
+      - review/low-altitude-stellar-transport-v3/LOWALT_STELLAR_STATE_0003_SOURCE_RECOVERY_AUDIT_V1.md
+      - review/low-altitude-stellar-transport-v3/source_recovery_audit.py
+      - .github/workflows/lowalt-stellar-state-0003-source-recovery-audit-v1.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  source-recovery-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_PARENT: d89c78c2ae993085f89e8ff7494f72871c868665
+      FEEDSTOCK_COMMIT: d6f1997b2f486541136f514188c650fdd370f8e2
+      FEEDSTOCK_RECIPE_URL: https://raw.githubusercontent.com/conda-forge/rubin-libradtran-feedstock/d6f1997b2f486541136f514188c650fdd370f8e2/recipe/meta.yaml
+      LITERAL_SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+      EXPECTED_SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+      PACKAGE_FILENAME: rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda
+      PACKAGE_URL: https://conda.anaconda.org/conda-forge/linux-64/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda
+      REPODATA_URL: https://conda.anaconda.org/conda-forge/linux-64/repodata.json.zst
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact solver-free review identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/low-altitude-stellar-state-0003-source-recovery-audit-v1
+          git merge-base --is-ancestor "$EXPECTED_PARENT" HEAD
+          git diff --name-only "$EXPECTED_PARENT"..HEAD | LC_ALL=C sort > /tmp/changed-files.txt
+          cat > /tmp/expected-files.txt <<'EOF'
+          .github/workflows/lowalt-stellar-state-0003-source-recovery-audit-v1.yml
+          review/low-altitude-stellar-transport-v3/LOWALT_STELLAR_STATE_0003_SOURCE_RECOVERY_AUDIT_V1.md
+          review/low-altitude-stellar-transport-v3/source_recovery_audit.py
+          EOF
+          diff -u /tmp/expected-files.txt /tmp/changed-files.txt
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}")"
+          python - "$pr_json" <<'PY'
+          import json, os, sys
+          p=json.loads(sys.argv[1])
+          if p['state'] != 'open' or p['draft'] is not True or p['merged_at'] is not None:
+              raise SystemExit('recovery audit PR must remain open Draft/unmerged')
+          if p['head']['ref'] != 'review/low-altitude-stellar-state-0003-source-recovery-audit-v1':
+              raise SystemExit('head ref drift')
+          if p['base']['ref'] != 'review/low-altitude-stellar-state-0003-source-equivalence-audit-v1':
+              raise SystemExit('stacked base ref drift')
+          if p['base']['sha'] != os.environ['EXPECTED_PARENT']:
+              raise SystemExit('stacked base SHA drift')
+          PY
+          python -m py_compile review/low-altitude-stellar-transport-v3/source_recovery_audit.py
+          ! grep -R -E 'LOWALT-STELLAR-STATE-0001.*delta|Taylor|Jerusalem|halachic' review/low-altitude-stellar-transport-v3/source_recovery_audit.py
+          ! grep -R -E 'subprocess|os\.system|Popen|check_call|check_output' review/low-altitude-stellar-transport-v3/source_recovery_audit.py
+
+      - name: Acquire literal recipe source and exact runtime package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p recovery-evidence/raw recovery-work
+          curl -L --fail --retry 3 --retry-all-errors --max-time 120 \
+            -o recovery-work/feedstock-meta.yaml "$FEEDSTOCK_RECIPE_URL"
+          set +e
+          curl --proto '=http,https' --proto-redir '=http,https' -L --fail --retry 3 --retry-all-errors --max-time 1200 \
+            -D recovery-evidence/raw/literal-http-headers.txt \
+            -w '%{url_effective}\n%{http_code}\n%{num_redirects}\n' \
+            -o recovery-work/libRadtran-2.0.6-literal-http.tar.gz "$LITERAL_SOURCE_URL" \
+            > recovery-evidence/raw/literal-http-effective-url.txt
+          http_rc=$?
+          set -e
+          printf '%s\n' "$http_rc" > recovery-evidence/raw/literal-http-curl-exit.txt
+          curl -L --fail --retry 3 --retry-all-errors --max-time 1200 \
+            -o recovery-work/repodata.json.zst "$REPODATA_URL"
+          command -v zstd
+          zstd -d -q -f recovery-work/repodata.json.zst -o recovery-work/repodata.json
+          curl -L --fail --retry 3 --retry-all-errors --max-time 1200 \
+            -o "recovery-work/$PACKAGE_FILENAME" "$PACKAGE_URL"
+
+      - name: Extract package metadata and exact uvspec without execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          pkg=Path('recovery-work') / 'rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda'
+          out=Path('recovery-work/conda-components'); out.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(pkg) as z:
+              names=z.namelist()
+              info=[n for n in names if n.startswith('info-') and n.endswith('.tar.zst')]
+              payload=[n for n in names if n.startswith('pkg-') and n.endswith('.tar.zst')]
+              if len(info) != 1 or len(payload) != 1:
+                  raise SystemExit(f'unexpected .conda component set: {names!r}')
+              for n in (*info,*payload):
+                  target=out/Path(n).name
+                  target.write_bytes(z.read(n))
+                  print(target)
+          PY
+          info_tar="$(find recovery-work/conda-components -maxdepth 1 -name 'info-*.tar.zst' -print -quit)"
+          pkg_tar="$(find recovery-work/conda-components -maxdepth 1 -name 'pkg-*.tar.zst' -print -quit)"
+          test -n "$info_tar" && test -n "$pkg_tar"
+          mkdir -p recovery-work/package-info recovery-work/package-payload
+          tar --zstd -xf "$info_tar" -C recovery-work/package-info
+          tar --zstd -tf "$pkg_tar" | LC_ALL=C sort > recovery-evidence/raw/package-members.txt
+          tar --zstd -xf "$pkg_tar" -C recovery-work/package-payload bin/uvspec
+          test -f recovery-work/package-payload/bin/uvspec
+
+      - name: Classify recovery result
+        id: classify
+        shell: bash
+        run: |
+          set +e
+          python review/low-altitude-stellar-transport-v3/source_recovery_audit.py \
+            --recipe recovery-work/feedstock-meta.yaml \
+            --http-archive recovery-work/libRadtran-2.0.6-literal-http.tar.gz \
+            --http-headers recovery-evidence/raw/literal-http-headers.txt \
+            --http-effective-url recovery-evidence/raw/literal-http-effective-url.txt \
+            --http-curl-status recovery-evidence/raw/literal-http-curl-exit.txt \
+            --repodata recovery-work/repodata.json \
+            --conda-package "recovery-work/$PACKAGE_FILENAME" \
+            --package-info-dir recovery-work/package-info \
+            --package-members recovery-evidence/raw/package-members.txt \
+            --uvspec recovery-work/package-payload/bin/uvspec \
+            --output recovery-evidence
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Capture exact governing source only when literal HTTP recovered expected bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(python -c "import json; print(json.load(open('recovery-evidence/source-recovery-report.json'))['status'])")"
+          if [ "$status" = PASS_LITERAL_RECIPE_SOURCE_RECOVERED ]; then
+            mkdir -p recovery-evidence/exact-source-capture
+            set +e
+            python review/low-altitude-stellar-transport-v3/source_audit.py \
+              --archive recovery-work/libRadtran-2.0.6-literal-http.tar.gz \
+              --recipe recovery-work/feedstock-meta.yaml \
+              --output recovery-evidence/exact-source-capture
+            rc=$?
+            set -e
+            test "$rc" -eq 0
+            python - <<'PY'
+            import json
+            x=json.load(open('recovery-evidence/exact-source-capture/source-audit-report.json'))
+            if x.get('status') != 'PASS_PINNED_SOURCE_CAPTURED':
+                raise SystemExit(f"exact source capture failed: {x.get('status')}")
+            if x.get('scientificSolverExecuted') is not False or x.get('uvspecExecuted') is not False:
+                raise SystemExit('solver boundary crossed during source capture')
+            PY
+          fi
+
+      - name: Prove solver-free and protected-result boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          x=json.load(open('recovery-evidence/source-recovery-report.json'))
+          for k in ('scientificSolverExecuted','uvspecExecuted','mysticExecuted','protectedResultsRead','supportBelow5DegPromoted','nonprotectedSolverMatrixFrozen'):
+              if x.get(k) is not False: raise SystemExit(f'boundary crossed: {k}')
+          allowed={'PASS_LITERAL_RECIPE_SOURCE_RECOVERED','FAIL_PINNED_SOURCE_NOT_RECOVERED','FAIL_RECOVERY_IDENTITY_OR_MECHANICS'}
+          if x.get('status') not in allowed: raise SystemExit(f"unexpected status {x.get('status')}")
+          print(x['status'])
+          PY
+
+      - name: Upload isolated immutable recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-state-0003-source-recovery-audit-v1-${{ github.run_id }}
+          path: recovery-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce source-recovery success before downstream use
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          x=json.load(open('recovery-evidence/source-recovery-report.json'))
+          if x['status'] != 'PASS_LITERAL_RECIPE_SOURCE_RECOVERED':
+              raise SystemExit(f"pinned-source recovery fail-closed: {x['status']}")
+          y=json.load(open('recovery-evidence/exact-source-capture/source-audit-report.json'))
+          if y['status'] != 'PASS_PINNED_SOURCE_CAPTURED' or len(y.get('governingFiles', {})) != 6:
+              raise SystemExit('exact governing source capture incomplete')
+          PY

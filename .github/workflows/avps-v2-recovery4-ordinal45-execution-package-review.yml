@@ -46,6 +46,8 @@ jobs:
           .github/workflows/avps-v2-recovery4-ordinal45-execution-package-review.yml
           review/avps-v2-recovery4-ordinal45-execution-package-v1/PROTOCOL.md
           review/avps-v2-recovery4-ordinal45-execution-package-v1/execution-identity.review.json
+          review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal-fence-fixtures.json
+          review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal_fence_postprocess.py
           EOF
           sort -o expected.txt expected.txt
           diff -u expected.txt changed.txt
@@ -53,20 +55,40 @@ jobs:
           test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-v1/seed_ledger.py)" = 16af5c68ae7e3cfc0cfbef4c8e2022517bf2ae91
           test "$(git rev-parse HEAD:.github/recovery-templates/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-successor-infrastructure-v1/generate.py)" = 052c9851a96f9c6cfe9aca2516e2ff6b5d09275a
 
-      - name: Generate exact Recovery4 ordinal45 candidate package without science
+      - name: Generate and deterministically correct exact Recovery4 ordinal45 candidate package
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile .github/recovery-templates/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-successor-infrastructure-v1/generate.py
+          python -m py_compile \
+            .github/recovery-templates/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-successor-infrastructure-v1/generate.py \
+            review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal_fence_postprocess.py
+          rm -rf generated-package /tmp/generated-package-first temporal-fence-regression.json temporal-fence-regression-first.json
           python .github/recovery-templates/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-successor-infrastructure-v1/generate.py \
             --identity review/avps-v2-recovery4-ordinal45-execution-package-v1/execution-identity.review.json \
             --output generated-package
+          python review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal_fence_postprocess.py \
+            --package generated-package \
+            --fixtures review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal-fence-fixtures.json \
+            --regression-output temporal-fence-regression.json > temporal-fence-postprocess-1.json
+          cp -a generated-package /tmp/generated-package-first
+          cp temporal-fence-regression.json temporal-fence-regression-first.json
+          rm -rf generated-package
+          python .github/recovery-templates/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-successor-infrastructure-v1/generate.py \
+            --identity review/avps-v2-recovery4-ordinal45-execution-package-v1/execution-identity.review.json \
+            --output generated-package
+          python review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal_fence_postprocess.py \
+            --package generated-package \
+            --fixtures review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal-fence-fixtures.json \
+            --regression-output temporal-fence-regression.json > temporal-fence-postprocess-2.json
+          diff -ru /tmp/generated-package-first generated-package
+          cmp temporal-fence-regression-first.json temporal-fence-regression.json
+          cmp temporal-fence-postprocess-1.json temporal-fence-postprocess-2.json
           python -m py_compile \
             generated-package/runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py \
             generated-package/runtime-avps-v2-recovery4-ordinal45-v1/executor.py \
             generated-package/runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py
 
-      - name: Verify generated package identity, corrected routing and closed boundaries
+      - name: Verify temporal-fence correction, package identity and closed science boundaries
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +107,10 @@ jobs:
             'matrixUsesGeneratedRecoveryAdapter':True,
             'caseUsesGeneratedRecoveryExecutor':True,
             'closedAggregateUsesGeneratedRecoveryAggregator':True,
+            'temporalFencePreScanBindingCorrected':True,
+            'preScanFenceBindingRequired':True,
+            'snapshotReleaseUsesPreflightBoundBeginOnly':True,
+            'independentLateBeginSearchRemoved':True,
             'frozenScienceChanged':False,'dispatchCreated':False,'scientificRuntime':False,'solverExecution':False,
             'resultsOpened':False,'levelBOpeningAuthorized':False,'protectedHoldoutOpeningAuthorized':False,
             'productionAuthorized':False,'taylorOrJerusalemUsed':False,'newMappingAuthorized':False,
@@ -110,12 +136,26 @@ jobs:
             'runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py',
             'runtime-avps-v2-recovery4-ordinal45-v1/executor.py',
             'runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py',
+            'pre-scan-fence-binding.json',
+            'repository-global-seed-scan-started-at.txt',
+            'writeQuietBeginCommentId',
+            'writeQuietFenceToken',
+            'preSolverWriteQuietBoundBeforeGlobalScan',
+            'releaseMustUsePreflightBoundBeginOnly',
+            'gh run download "$GITHUB_RUN_ID" -n avps-v2-postconsumption-recovery4-preflight-ordinal-45',
             'snapshot-fence-release:',
             'needs: [preflight, snapshot-fence-release]',
           ):
-              if token not in wf: raise SystemExit(f'generated workflow missing required token: {token}')
+              if token not in wf: raise SystemExit(f'generated workflow missing required corrected token: {token}')
           if wf.count('needs: [preflight, snapshot-fence-release]') != 4:
               raise SystemExit('every one of the four solver-bearing case shards must depend on the fence-release barrier')
+          bind_idx=wf.index('pre-scan-fence-binding.json')
+          scan_idx=wf.index('repository_global_seed_scan.py')
+          if bind_idx >= scan_idx: raise SystemExit('WRITE_QUIET binding is not proven before repository-global scan invocation')
+          snap=wf[wf.index('  snapshot-fence-release:\n'):wf.index('  cases-dep2:\n')]
+          if 'WRITE_QUIET_BEGIN' in snap: raise SystemExit('snapshot release still performs an independent/late BEGIN search')
+          if 'execution-guard.json' not in snap or 'writeQuietBeginCommentId' not in snap:
+              raise SystemExit('snapshot release is not bound to the uploaded preflight execution guard')
           for forbidden in (
             'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery3:numerical:44',
             'dd3a4c692af505389e9feb1e5f5480fa389110a3',
@@ -125,9 +165,21 @@ jobs:
             "Path('review/aerosol-vertical-profile-sensitivity-v2-control-v1/adapter.py')",
           ):
               if forbidden in wf: raise SystemExit(f'generated workflow retained forbidden old routing token: {forbidden}')
+          r=json.load(open('temporal-fence-regression.json'))
+          if r.get('status')!='PASS_RECOVERY4_TEMPORAL_FENCE_ZERO_RUNTIME_REGRESSIONS' or r.get('caseCount')!=5:
+              raise SystemExit('temporal-fence regression fixture suite did not pass exactly')
+          by={c['name']:c['outcome'] for c in r['cases']}
+          expected_outcomes={
+            'begin-before-scan-and-exact-end-passes-binding':'PASS',
+            'begin-created-only-after-scan-is-refused':'REFUSED',
+            'exact-bound-end-passes-release':'PASS',
+            'wrong-begin-id-is-refused':'REFUSED',
+            'wrong-current-run-is-refused':'REFUSED',
+          }
+          if by!=expected_outcomes: raise SystemExit(f'temporal-fence fixture outcome drift: {by}')
           PY
 
-      - name: Prove this review cannot dispatch or execute solver science
+      - name: Prove this corrected review still cannot dispatch or execute solver science
         shell: bash
         run: |
           set -euo pipefail
@@ -137,6 +189,8 @@ jobs:
           forbidden=('workflow_'+'dispatch:','setup-'+'micromamba','command -v '+'uvspec','rte_solver '+'mystic','mc_photons '+'20000000')
           for token in forbidden:
               if token in p: raise SystemExit(f'review workflow contains scientific-runtime token: {token}')
+          pp=Path('review/avps-v2-recovery4-ordinal45-execution-package-v1/temporal_fence_postprocess.py').read_text()
+          if 'Taylor' in pp or 'Jerusalem' in pp: raise SystemExit('temporal-fence correction must remain target-result blind')
           PY
           test -z "$(git status --porcelain --untracked-files=no)"
 
@@ -145,6 +199,8 @@ jobs:
           name: avps-v2-recovery4-ordinal45-generated-execution-package-review
           path: |
             changed.txt
+            temporal-fence-postprocess-1.json
+            temporal-fence-regression.json
             review/avps-v2-recovery4-ordinal45-execution-package-v1/
             generated-package/
           if-no-files-found: error

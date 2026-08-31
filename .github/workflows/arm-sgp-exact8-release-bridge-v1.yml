@@ -1,0 +1,72 @@
+name: ARM SGP Exact8 Release Bridge V1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-exact8-release-analysis-v1
+    paths:
+      - .github/workflows/arm-sgp-exact8-release-bridge-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ASSET_NAME: ARM_SGP_POSTG3_EXACT8_NATIVE_NONRADIANCE_V2_20260831-204756.zip
+      EXPECTED_SHA256: 0ffa68879ceaa6201c14bf2bad921e25a00f0e700ff92f5ed8578aede52a165b
+      RELEASE_TAG: arm-postg3-exact8-v2-20260831
+    steps:
+      - name: Download exact release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "$ASSET_NAME" \
+            --dir work
+
+      - name: Verify immutable outer identity and firewall surface
+        run: |
+          set -euo pipefail
+          cd work
+          echo "$EXPECTED_SHA256  $ASSET_NAME" | sha256sum -c -
+          python - <<'PY'
+          import json, zipfile, hashlib, os
+          p = os.environ['ASSET_NAME']
+          with zipfile.ZipFile(p) as z:
+              names = z.namelist()
+              raw_sasze = [n for n in names if n.lower().endswith(('.nc','.cdf')) and '/raw_non_sasze/' not in n.lower() and 'sgpsasze' in os.path.basename(n).lower()]
+              radiance_named = [n for n in names if 'radiance' in os.path.basename(n).lower()]
+              if raw_sasze:
+                  raise SystemExit('FAIL raw SASZE member(s): ' + repr(raw_sasze[:10]))
+              if radiance_named:
+                  raise SystemExit('FAIL radiance-named member(s): ' + repr(radiance_named[:10]))
+              receipt = {
+                  'status': 'PASS_RELEASE_BRIDGE_FIREWALL',
+                  'asset_name': p,
+                  'asset_size_bytes': os.path.getsize(p),
+                  'sha256': hashlib.sha256(open(p,'rb').read()).hexdigest(),
+                  'zip_member_count': len(names),
+                  'raw_sasze_member_count': 0,
+                  'radiance_named_member_count': 0,
+                  'sasze_radiance_magnitudes_opened': False,
+                  'protected_photometric_values_opened': False,
+              }
+              open('bridge_receipt.json','w',encoding='utf-8').write(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload exact asset as Actions artifact bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM-SGP-Exact8-V2-release-bridge
+          path: |
+            work/${{ env.ASSET_NAME }}
+            work/bridge_receipt.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7

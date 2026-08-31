@@ -104,22 +104,61 @@ jobs:
           if sj.get('total_count') != 0: raise SystemExit('stale recovery unexpectedly had jobs')
           PY
 
-      - name: Verify exact source blobs, target absence, and deterministic atomic publication tree
+      - name: Verify immutable artifact bytes, target absence, and deterministic atomic publication tree
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT/zip" > reviewed.zip
+          echo "${SOURCE_DIGEST#sha256:}  reviewed.zip" | sha256sum -c -
+          rm -rf "$RUNNER_TEMP/avps-r4-o45-reviewed"
+          mkdir -p "$RUNNER_TEMP/avps-r4-o45-reviewed"
+          unzip -q reviewed.zip -d "$RUNNER_TEMP/avps-r4-o45-reviewed"
+          ROOT="$RUNNER_TEMP/avps-r4-o45-reviewed/generated-package"
+          test -f "$ROOT/manifest.json"
           cat > path-blobs.tsv <<EOF
-          .github/workflows/avps-v2-postconsumption-recovery4-science.yml	$SCIENCE_BLOB
-          runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py	$AGGREGATOR_BLOB
-          runtime-avps-v2-recovery4-ordinal45-v1/executor.py	$EXECUTOR_BLOB
-          runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py	$ADAPTER_BLOB
-          runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json	$CONTRACT_BLOB
+          .github/workflows/avps-v2-postconsumption-recovery4-science.yml	avps-v2-postconsumption-recovery4-science.yml	$SCIENCE_BLOB	405959b98955198d41f9130f5170ca3e260015bd1c2265cd73e300030a77e4a8
+          runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py	runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py	$AGGREGATOR_BLOB	3287fb59344c223eb871befb05bef141fe79c74fec45f096c29a4c05e29845c2
+          runtime-avps-v2-recovery4-ordinal45-v1/executor.py	runtime-avps-v2-recovery4-ordinal45-v1/executor.py	$EXECUTOR_BLOB	37f1f52fa2381c3bc40580ffc16f45efd8503d9242c22d2d72eb28a27c3882f5
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py	runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py	$ADAPTER_BLOB	e0c95d9ca15a78868bef13cb8375460de156075c07647298a2ad355c32d6d3ed
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json	runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json	$CONTRACT_BLOB	3a3e09f1a9dda5435e455fbc9a508a924c080f7f265cdd7c29de912449bacc93
           EOF
-          while IFS=$'\t' read -r path blob; do
-            test "$(git cat-file -t "$blob")" = blob
-            test "$(git rev-parse "$SOURCE_HEAD:$path")" = "$blob"
+          python - "$ROOT/manifest.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1]))
+          required={
+            'status':'GENERATED_AVPS_V2_RECOVERY4_SUCCESSOR_INFRASTRUCTURE_ZERO_RUNTIME_RESULTS_CLOSED',
+            'scientificOrdinal':45,
+            'caseCount':360,
+            'groupCount':72,
+            'statesPerGroup':5,
+            'photonHistoriesPerCase':20000000,
+            'candidateSeedCanonicalSha256':'ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de',
+            'candidateRowsCanonicalSha256':'c439de417520b330c037e2628df02b6955f652563300aa5ef30477abf7661a98',
+            'temporalFencePreScanBindingCorrected':True,
+            'preScanFenceBindingRequired':True,
+            'snapshotReleaseUsesPreflightBoundBeginOnly':True,
+            'independentLateBeginSearchRemoved':True,
+            'frozenScienceChanged':False,
+            'dispatchCreated':False,
+            'scientificRuntime':False,
+            'solverExecution':False,
+            'resultsOpened':False,
+            'levelBOpeningAuthorized':False,
+            'protectedHoldoutOpeningAuthorized':False,
+            'productionAuthorized':False,
+            'taylorOrJerusalemUsed':False,
+            'newMappingAuthorized':False}
+          for k,v in required.items():
+              if m.get(k)!=v: raise SystemExit(f'manifest drift: {k}')
+          PY
+          while IFS=$'\t' read -r path rel blob sha; do
+            src="$ROOT/$rel"
+            test -f "$src"
+            test "$(sha256sum "$src" | awk '{print $1}')" = "$sha"
+            test "$(git hash-object "$src")" = "$blob"
+            test "$(git hash-object -w "$src")" = "$blob"
             if git cat-file -e "$REVIEW_BASE:$path" 2>/dev/null; then
               echo "target path already exists on recovery base: $path" >&2
               exit 1
@@ -138,7 +177,7 @@ jobs:
           export GIT_INDEX_FILE="$RUNNER_TEMP/avps-r4-o45-publication-v2.index"
           rm -f "$GIT_INDEX_FILE"
           git read-tree "$REVIEW_BASE"
-          while IFS=$'\t' read -r path blob; do
+          while IFS=$'\t' read -r path rel blob sha; do
             git update-index --add --cacheinfo "100644,$blob,$path"
           done < path-blobs.tsv
           PLANNED_TREE=$(git write-tree)
@@ -151,15 +190,17 @@ jobs:
           from pathlib import Path
           rows=[]
           for line in Path('path-blobs.tsv').read_text().splitlines():
-              path,blob=line.split('\t'); rows.append({'path':path,'mode':'100644','type':'blob','sha':blob})
+              path,rel,blob,sha=line.split('\t'); rows.append({'path':path,'artifactRelativePath':rel,'mode':'100644','type':'blob','sha':blob,'sha256':sha})
           receipt={
-            'schemaVersion':2,
+            'schemaVersion':3,
             'status':'PASS_AVPS_V2_RECOVERY4_ORDINAL45_ATOMIC_GITDATA_PUBLICATION_TRANSPORT_REVIEW_V2_ZERO_RUNTIME',
             'baseCommit':os.environ['REVIEW_BASE'],
             'baseTree':os.environ['REVIEW_BASE_TREE'],
             'preProbeMain':os.environ['PRE_PROBE_MAIN'],
             'transientHistoryCommitCount':int(os.environ['TRANSIENT_HISTORY_COUNT']),
             'restoredTreeEqualsPreProbeTree':True,
+            'sourceBytesLoadedFromImmutableArtifact':True,
+            'sourceGitObjectReachabilityAssumed':False,
             'targetBranch':os.environ['TARGET_BRANCH'],
             'plannedTreeSha':sys.argv[1],
             'treeElements':rows,

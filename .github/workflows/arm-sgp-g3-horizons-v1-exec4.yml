@@ -1,0 +1,75 @@
+name: ARM SGP G3 Horizons V1 Exec4
+on:
+  push:
+    branches: [review/arm-sgp-g3-horizons-v1-exec4]
+permissions:
+  contents: read
+jobs:
+  g3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute result-blind lunar gate
+        shell: bash
+        run: |
+          cat > /tmp/g3.py <<'PY'
+          import csv,hashlib,json,math,re,time,urllib.parse,urllib.request
+          from datetime import datetime,timezone
+          from pathlib import Path
+          CONTRACT='ARM_SGP_G3_LUNAR_GEOMETRY_JPL_HORIZONS_V1'; SITE='-97.487643,36.607322,0.314'; THRESHOLD=-10.0; MARGIN=0.010
+          SRC=Path('review/arm-sgp-g3-horizons-v1/arm_sgp_v2_29_blind_candidates_timing_validity.csv')
+          OUT=Path('arm_sgp_g3_horizons_v1'); RAW=OUT/'raw'; RAW.mkdir(parents=True,exist_ok=True)
+          rows=list(csv.DictReader(SRC.open(encoding='utf-8')))
+          assert len(rows)==29 and len({r['case_id'] for r in rows})==29
+          def dt(s): return datetime.fromisoformat(s.replace('Z','+00:00'))
+          def fmt(x): return x.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          results=[]
+          for r in rows:
+            start=min(dt(r['t6']),dt(r['t8'])); stop=max(dt(r['t6']),dt(r['t8'])); duration=(stop-start).total_seconds(); n=max(1,math.floor(duration/0.5))
+            params={'format':'text','COMMAND':"'301'",'OBJ_DATA':"'NO'",'MAKE_EPHEM':"'YES'",'EPHEM_TYPE':"'OBSERVER'",'CENTER':"'coord@399'",'COORD_TYPE':"'GEODETIC'",'SITE_COORD':f"'{SITE}'",'START_TIME':f"'{fmt(start)}'",'STOP_TIME':f"'{fmt(stop)}'",'STEP_SIZE':f"'{n}'",'TIME_TYPE':"'UT'",'REF_SYSTEM':"'ICRF'",'APPARENT':"'AIRLESS'",'QUANTITIES':"'4'",'TIME_DIGITS':"'FRACSEC'",'EXTRA_PREC':"'YES'",'CSV_FORMAT':"'YES'",'ELEV_CUT':"'-90'",'SKIP_DAYLT':"'NO'"}
+            url='https://ssd.jpl.nasa.gov/api/horizons.api?'+urllib.parse.urlencode(params,safe="',@-")
+            try:
+              with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'ARM-SGP-G3-validation/1.0'}),timeout=60) as q: raw=q.read()
+              text=raw.decode('utf-8','strict')
+            except Exception as e:
+              results.append({'universe_order':r['order'],'case_id':r['case_id'],'g3_disposition':'QUERY_FAILED','error':repr(e)}); time.sleep(1); continue
+            raw_path=RAW/f"{r['case_id']}.txt"; raw_path.write_bytes(raw)
+            m=re.search(r'^API VERSION:\s*([^\r\n]+)',text,re.M); api=m.group(1).strip() if m else ''; source_ok='API SOURCE: NASA/JPL Horizons API' in text; system_ok='4.98e' in text
+            soe=re.search(r'\$\$SOE\s*\n(.*?)\n\$\$EOE',text,re.S); elev=[]; err=''
+            if soe:
+              for line in soe.group(1).splitlines():
+                if not line.strip(): continue
+                vals=[]
+                for x in next(csv.reader([line])):
+                  try: vals.append(float(x.strip()))
+                  except Exception: pass
+                if len(vals)>=2: elev.append(vals[-1])
+            if not soe or not elev: err='missing_or_unparsed_ephemeris_rows'
+            mx=max(elev) if elev else None
+            if not source_ok or not system_ok or not api or err: disp='QUERY_VALIDATION_FAIL'
+            elif abs(mx-THRESHOLD)<=MARGIN: disp='UNRESOLVED_NUMERICAL_MARGIN'
+            elif mx<=THRESHOLD: disp='PASS'
+            else: disp='FAIL'
+            results.append({'universe_order':int(r['order']),'case_id':r['case_id'],'t_minus8_utc':r['t8'],'t_minus7_utc':r['t7'],'t_minus6_utc':r['t6'],'start_time_utc':start.isoformat().replace('+00:00','Z'),'stop_time_utc':stop.isoformat().replace('+00:00','Z'),'duration_s':duration,'step_size_N':n,'effective_spacing_s':duration/n,'sample_count':len(elev),'max_moon_elevation_deg':mx,'threshold_deg':THRESHOLD,'margin_deg':MARGIN,'valid_464_minus8':int(r['v8']),'valid_464_minus7':int(r['v7']),'valid_464_minus6':int(r['v6']),'api_version_reported':api,'api_source_ok':source_ok,'horizons_4_98e_present':system_ok,'raw_sha256':sha(raw),'raw_file':str(raw_path),'g3_disposition':disp,'error':err,'query_url':url}); time.sleep(1)
+          fields=sorted({k for r in results for k in r}); f=(OUT/'arm_sgp_g3_lunar_gate.csv').open('w',newline='',encoding='utf-8'); w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(results); f.close()
+          counts={}
+          for r in results: counts[r['g3_disposition']]=counts.get(r['g3_disposition'],0)+1
+          summary={'contract':CONTRACT,'candidate_count':len(rows),'counts':counts,'site_coord':SITE,'radiance_magnitudes_opened':False,'source_candidate_csv_sha256':sha(SRC.read_bytes()),'failed_query_run':33408331086,'config_parse_failed_run':33408647019,'transcription_failed_run':33408806458,'interface_correction_comment':5480541773}
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          manifest={}
+          for p in sorted(OUT.rglob('*')):
+            if p.is_file(): manifest[str(p.relative_to(OUT))]={'size':p.stat().st_size,'sha256':sha(p.read_bytes())}
+          (OUT/'manifest.json').write_text(json.dumps({'contract':CONTRACT,'files':manifest,'radiance_magnitudes_opened':False},indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,sort_keys=True))
+          if any(r['g3_disposition'] in ('QUERY_FAILED','QUERY_VALIDATION_FAIL') for r in results): raise SystemExit(2)
+          PY
+          python /tmp/g3.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm-sgp-g3-horizons-v1-exec4
+          path: arm_sgp_g3_horizons_v1
+          if-no-files-found: error
+          retention-days: 30

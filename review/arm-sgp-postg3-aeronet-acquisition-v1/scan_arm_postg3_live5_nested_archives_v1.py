@@ -27,7 +27,7 @@ COMPONENTS = {
     "SONDE": ["sgpsondewnpnC1.b1*{d}*"],
     "MFR_UP": ["sgpmfr10mC1.b1*{d}*"],
     "MFRSR_DOWN": ["sgpmfrsrC1.b1*{d}*"],
-    "QCRAD_C2": ["sgpqcrad1longC1.c2*{d}*", "sgpqcrad* C1.c2*{d}*"],
+    "QCRAD_C2": ["sgpqcrad1longC1.c2*{d}*", "sgpqcrad*C1.c2*{d}*"],
     "GECOMI_OZONE": ["gecomi*{d}*", "*omi*{d}*"],
 }
 

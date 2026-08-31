@@ -1,0 +1,209 @@
+name: Lunar finite-disk exec003 science workflow V6 review
+
+on:
+  push:
+    branches:
+      - review/lunar-finite-disk-exec003-science-workflow-v1
+    paths:
+      - 'review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py'
+      - 'review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec003-science-workflow-v1.yml'
+      - 'tests/test_lunar_finite_disk_exec003_science_workflow_v1.py'
+      - '.github/workflows/lunar-finite-disk-exec003-science-workflow-review-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: lunar-finite-disk-exec003-science-workflow-v6-review-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  solver-free-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REVIEW_BASE: f0131389c2195d61bd55b91cf03748dfd4c0da97
+      EXPECTED_BRANCH: review/lunar-finite-disk-exec003-science-workflow-v1
+      CONTROL_RUN: '33362571300'
+      CONTROL_JOB: '99396670270'
+      CONTROL_ARTIFACT: '9747665530'
+      CONTROL_NAME: lunar-finite-disk-exec003-fresh-seed-control-v1-proof
+      CONTROL_DIGEST: sha256:6dc617806f3b76fb675c19b295a9f9e1b6f85a5657d83d6811b69771c3d7683b
+      CONTROL_PROOF_SHA: 684f4c343dee44e1ab65b8f50581482d1922d17175fb5ff7f9295e8db1f80acc
+      SEED_CANONICAL: e27ba17758a6111da3b791535fff2a46d4e06a04fb163b546c871d455370ab44
+      ROWS_CANONICAL: ad13f6645d6db0621af78c2434c3a0c9f82b09850def79d051175d4a6cb814d5
+      V5_HEAD: f0131389c2195d61bd55b91cf03748dfd4c0da97
+      V5_RUN: '33380238826'
+      V5_JOB: '99450731881'
+      V5_ARTIFACT: '9754092951'
+      V5_NAME: lunar-finite-disk-exec003-authorization-recheck-v1-proof
+      V5_DIGEST: sha256:9d30e770fe88453b5527d548e3571997fc624e7e5c7e6b2b8a4de6f99e43ea66
+      V5_PROOF_SHA: 0c5d40e6fc2431cdce24419b87631da21048ce6ab9a2e0e3859a4e38c2c84bb9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Enforce exact review-only surface and no solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$REVIEW_BASE" HEAD
+          test -z "$(command -v uvspec || true)"
+          git diff --name-only "$REVIEW_BASE"...HEAD | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/lunar-finite-disk-exec003-science-workflow-review-v1.yml
+          review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec003-science-workflow-v1.yml
+          review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py
+          tests/test_lunar_finite_disk_exec003_science_workflow_v1.py
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          mkdir -p review-evidence v5-proof control-proof
+
+      - name: Run solver-free runtime/workflow contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py
+          python tests/test_lunar_finite_disk_exec003_science_workflow_v1.py
+          python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py validate-review > review-evidence/runtime-review-contract.json
+          test ! -f review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-transfer-kernel-sensitivity-v1-exec003-authorization.json
+          test -z "$(command -v uvspec || true)"
+
+      - name: Download exact V5 proof by immutable artifact id
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.V5_ARTIFACT }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V5_RUN }}
+          path: v5-proof
+          merge-multiple: true
+
+      - name: Download exact fresh-seed control by immutable artifact id
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.CONTROL_ARTIFACT }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONTROL_RUN }}
+          path: control-proof
+          merge-multiple: true
+
+      - name: Bind immutable V5 and control evidence without seed logging
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V5_RUN" > review-evidence/v5-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V5_RUN/jobs?per_page=100" > review-evidence/v5-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V5_ARTIFACT" > review-evidence/v5-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONTROL_RUN" > review-evidence/control-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONTROL_RUN/jobs?per_page=100" > review-evidence/control-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CONTROL_ARTIFACT" > review-evidence/control-artifact.json
+          python - <<'PY'
+          import hashlib,json,os
+          vr=json.load(open('review-evidence/v5-run.json'))
+          assert vr['id']==int(os.environ['V5_RUN']) and vr['run_attempt']==1 and vr['conclusion']=='success' and vr['head_sha']==os.environ['V5_HEAD']
+          vj=json.load(open('review-evidence/v5-jobs.json'))['jobs']
+          assert any(j['id']==int(os.environ['V5_JOB']) and j['conclusion']=='success' for j in vj)
+          va=json.load(open('review-evidence/v5-artifact.json'))
+          assert va['id']==int(os.environ['V5_ARTIFACT']) and va['name']==os.environ['V5_NAME'] and va['digest']==os.environ['V5_DIGEST']
+          vp=json.load(open('v5-proof/authorization-recheck-proof.json'))
+          raw=dict(vp); claimed=raw.pop('proofPayloadSha256')
+          calc=hashlib.sha256(json.dumps(raw,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert claimed==calc==os.environ['V5_PROOF_SHA']
+          assert vp['status']=='PASS_LUNAR_FINITE_DISK_EXEC003_AUTHORIZATION_TIME_RECHECK_ZERO_RUNTIME_NOT_AUTHORIZED'
+          assert vp['candidateSeedCount']==198 and vp['candidateSeedCanonicalSha256']==os.environ['SEED_CANONICAL'] and vp['candidateRowsCanonicalSha256']==os.environ['ROWS_CANONICAL']
+          assert vp['candidateSeedsAppliedToCases'] is False and vp['scientificExecutionAuthorized'] is False and vp['solverExecuted'] is False
+          cr=json.load(open('review-evidence/control-run.json'))
+          assert cr['id']==int(os.environ['CONTROL_RUN']) and cr['run_attempt']==1 and cr['conclusion']=='success'
+          cj=json.load(open('review-evidence/control-jobs.json'))['jobs']
+          assert any(j['id']==int(os.environ['CONTROL_JOB']) and j['conclusion']=='success' for j in cj)
+          ca=json.load(open('review-evidence/control-artifact.json'))
+          assert ca['id']==int(os.environ['CONTROL_ARTIFACT']) and ca['name']==os.environ['CONTROL_NAME'] and ca['digest']==os.environ['CONTROL_DIGEST']
+          cp=json.load(open('control-proof/exec003-fresh-seed-control-proof.json'))
+          raw=dict(cp); claimed=raw.pop('proofPayloadSha256')
+          calc=hashlib.sha256(json.dumps(raw,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert claimed==calc==os.environ['CONTROL_PROOF_SHA']
+          assert cp['candidateSeedCount']==198 and cp['candidateSeedCanonicalSha256']==os.environ['SEED_CANONICAL'] and cp['candidateRowsCanonicalSha256']==os.environ['ROWS_CANONICAL']
+          assert cp['candidateSeedsAppliedToCases'] is False
+          PY
+          python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py validate-candidate-ledger --candidate-ledger control-proof/exec003-candidate-seed-ledger.json > review-evidence/candidate-ledger-validation.json
+
+      - name: Freeze exact V6 workflow/runtime bytes and dispatch-ready boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          workflow=Path('review/lunar-scattered-light-source-contract-v1/lunar-finite-disk-exec003-science-workflow-v1.yml')
+          runtime=Path('review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec003.py')
+          receipt={
+            'schemaVersion':1,
+            'status':'PASS_LUNAR_FINITE_DISK_EXEC003_SCIENCE_WORKFLOW_V6_SOLVER_FREE',
+            'reviewHead':os.environ['GITHUB_SHA'],
+            'reviewBase':os.environ['REVIEW_BASE'],
+            'proposedExecutionWorkflowPath':str(workflow),
+            'proposedExecutionWorkflowSha256':hashlib.sha256(workflow.read_bytes()).hexdigest(),
+            'runtimePath':str(runtime),
+            'runtimeSha256':hashlib.sha256(runtime.read_bytes()).hexdigest(),
+            'v5AuthorizationTimeRecheckHead':os.environ['V5_HEAD'],
+            'v5AuthorizationTimeRecheckRun':int(os.environ['V5_RUN']),
+            'v5AuthorizationTimeRecheckArtifact':int(os.environ['V5_ARTIFACT']),
+            'v5AuthorizationTimeRecheckDigest':os.environ['V5_DIGEST'],
+            'v5AuthorizationTimeRecheckProofSha256':os.environ['V5_PROOF_SHA'],
+            'controlRun':int(os.environ['CONTROL_RUN']),
+            'controlArtifact':int(os.environ['CONTROL_ARTIFACT']),
+            'controlDigest':os.environ['CONTROL_DIGEST'],
+            'candidateSeedCount':198,
+            'candidateSeedCanonicalSha256':os.environ['SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['ROWS_CANONICAL'],
+            'frozenWavelengthNm':550,
+            'frozenDirectionalCases':198,
+            'photonHistoriesPerCase':5000000,
+            'fullPaginatedIssue60ReleaseRequired':True,
+            'freshFinalRepositoryGlobalSeedRecheckRequiredBeforeSolver':True,
+            'oneShotAttempt1Only':True,
+            'rerunRetryResumeForbidden':True,
+            'mandatorySpectralFollowOnNm':[450,650,750],
+            'solverRuntimeInstalled':False,
+            'solverExecuted':False,
+            'resultOpened':False,
+            'finiteDiskAdequacyValidated':False,
+            'empiricalAtmosphericMoonlightValidated':False,
+            'totalSkyValidated':False,
+            'productionAuthorized':False,
+            'nextAction':'After terminal exact-head V6 PASS and a fresh Issue #60 guard, create the exec003 authorization file binding this exact receipt, then under a fresh final-preflight WRITE_QUIET fence copy these exact reviewed workflow bytes to .github/workflows/lunar-finite-disk-exec003-v1.yml on the one-shot execution branch.'
+          }
+          Path('review-evidence/science-workflow-v6-review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print('status='+receipt['status'])
+          print('solver_executed=false result_opened=false')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunar-finite-disk-exec003-science-workflow-v6-review
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Claim boundary
+        if: always()
+        run: |
+          echo 'V6 review only: exact exec003 science workflow/runtime bytes are solver-free at this stage.'
+          echo 'No authorization file, execution branch, seed application, libRadtran/MYSTIC, result opening, finite-disk adequacy, empirical moonlight validation, total-sky validation, or production authorization occurs here.'

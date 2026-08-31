@@ -1,0 +1,205 @@
+name: Review AVPS v2 recovery4 seed/global control trigger bridge v2
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2.yml
+      - .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v2/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: review-avps-v2-recovery4-seed-global-control-trigger-bridge-v2-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_BASE: 9cdc548ef9f3d94269427c0c20773439f8600fde
+      EXPECTED_BRANCH: review/avps-v2-recovery4-seed-global-control-trigger-bridge-v2
+      CONTROL_WORKFLOW: avps-v2-recovery4-seed-global-control-v1.yml
+      CONTROL_BLOB: 875bd21758a0ac0a2e2aed57bfc428df4e1e9578
+      BRIDGE_WORKFLOW: .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact three-file zero-runtime correction scope
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$EXPECTED_BRANCH"
+          test "$PR_BASE" = "$EXPECTED_BASE"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          git diff --name-only "$EXPECTED_BASE...HEAD" | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2-review.yml
+          .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v2/PROTOCOL.md
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          test "$(git hash-object .github/workflows/$CONTROL_WORKFLOW)" = "$CONTROL_BLOB"
+
+      - name: Prove exact historical fence compatibility and fail-closed semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          text=Path('.github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v2.yml').read_text()
+          required=(
+            'control-trigger/aerosol-vertical-profile-sensitivity-v2-recovery4-seed-global-control-v2',
+            'control-triggers/avps-v2-recovery4-seed-global-control-v2.txt',
+            'AVPS_V2_RECOVERY4_SEED_GLOBAL_CONTROL_TRIGGER_V2',
+            'CONTROL_WORKFLOW: avps-v2-recovery4-seed-global-control-v1.yml',
+            'CONTROL_BLOB: 875bd21758a0ac0a2e2aed57bfc428df4e1e9578',
+            "for key in ('begin','beginComment','begin_comment'):",
+            'conflicting WRITE_QUIET_END begin ids',
+            'unexpected unmatched WRITE_QUIET set',
+            'final unexpected unmatched WRITE_QUIET set',
+            'repository workflows not quiescent before control dispatch',
+            'recovery4 seed/global control already has a workflow_dispatch run; refusing duplicate',
+            'Final live recheck immediately before control dispatch',
+            'actions/workflows/$CONTROL_WORKFLOW/dispatches',
+            'persist-credentials: false',
+          )
+          for token in required:
+              if token not in text: raise SystemExit(f'missing bridge-v2 invariant: {token}')
+          if text.count("for key in ('begin','beginComment','begin_comment'):") != 2:
+              raise SystemExit('both initial and final ledger scans must use the exact historical END-key set')
+          if text.count('--method POST') != 1: raise SystemExit('bridge-v2 must have exactly one POST')
+          if 'workflow_dispatch:' in text: raise SystemExit('bridge-v2 itself must not expose workflow_dispatch')
+          if not re.search(r'on:\s*\n\s*push:', text): raise SystemExit('bridge-v2 must be push-triggered only')
+          forbidden=(
+            'contents: write','issues: write','git/refs',
+            'authorization/aerosol-vertical-profile-sensitivity',
+            'dispatch/aerosol-vertical-profile-sensitivity',
+            'DISPATCH_CONSUMED','mc_photons','rte_solver','uvspec ','mystic',
+            'ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de',
+          )
+          low=text.lower()
+          for token in forbidden:
+              if token.lower() in low: raise SystemExit(f'forbidden science/allocation token in bridge-v2: {token}')
+
+          def closed_begin_id(body):
+              body=str(body or '').strip()
+              if not body.startswith('WRITE_QUIET_END'): return None
+              ids=set()
+              for key in ('begin','beginComment','begin_comment'):
+                  ids.update(int(x) for x in re.findall(rf'\b{re.escape(key)}=(\d+)\b',body))
+              if len(ids)>1: raise ValueError(f'conflicting WRITE_QUIET_END begin ids: {sorted(ids)}')
+              return next(iter(ids),None)
+          comments=[
+            {'id':101,'body':'WRITE_QUIET_BEGIN | A'},
+            {'id':102,'body':'WRITE_QUIET_BEGIN | B'},
+            {'id':103,'body':'WRITE_QUIET_BEGIN | C'},
+            {'id':104,'body':'WRITE_QUIET_BEGIN | D'},
+            {'id':201,'body':'WRITE_QUIET_END | A | begin=101'},
+            {'id':202,'body':'WRITE_QUIET_END | B | beginComment=102'},
+            {'id':203,'body':'WRITE_QUIET_END | C | begin_comment=103'},
+            {'id':204,'body':'ordinary text begin=104 must not close'},
+          ]
+          open_begins={}
+          for c in comments:
+              body=c['body']
+              if body.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[c['id']]=body
+              elif body.startswith('WRITE_QUIET_END'):
+                  closed=closed_begin_id(body)
+                  if closed is not None: open_begins.pop(closed,None)
+          if set(open_begins)!={104}: raise SystemExit(f'fixture failed to preserve genuine unmatched BEGIN: {open_begins}')
+          if closed_begin_id('WRITE_QUIET_END | X | beginComment=77') != 77: raise SystemExit('beginComment fixture failed')
+          if closed_begin_id('WRITE_QUIET_END | X | begin_comment=78') != 78: raise SystemExit('begin_comment fixture failed')
+          try:
+              closed_begin_id('WRITE_QUIET_END | X | begin=1 | beginComment=2')
+          except ValueError:
+              pass
+          else:
+              raise SystemExit('conflicting END identifiers must fail closed')
+          PY
+
+      - name: Rebind frozen target control and prove it remains undispatched
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          test "$(git show origin/main:.github/workflows/$CONTROL_WORKFLOW | git hash-object --stdin)" = "$CONTROL_BLOB"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > prior-control-run-ids.txt
+          if test -s prior-control-run-ids.txt; then
+            echo 'recovery4 seed/global control already has a workflow_dispatch run' >&2
+            cat prior-control-run-ids.txt >&2
+            exit 1
+          fi
+
+      - name: Emit zero-runtime correction review receipt
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v2',
+            'status':'PASS_AVPS_V2_RECOVERY4_TRIGGER_BRIDGE_V2_ZERO_RUNTIME_HISTORICAL_FENCE_COMPATIBILITY_REVIEW',
+            'reviewHead':os.environ['PR_HEAD'],
+            'reviewBase':os.environ['EXPECTED_BASE'],
+            'controlWorkflow':os.environ['CONTROL_WORKFLOW'],
+            'controlBlob':os.environ['CONTROL_BLOB'],
+            'bridgeSha256':hashlib.sha256(Path(os.environ['BRIDGE_WORKFLOW']).read_bytes()).hexdigest(),
+            'recognizedHistoricalEndKeys':['begin','beginComment','begin_comment'],
+            'genuineUnmatchedBeginRefused':True,
+            'candidateSeedsApplied':False,
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'controlWorkflowDispatchRequested':False,
+            'scientificRuntime':False,
+            'solverExecution':False,
+            'resultsOpened':False,
+            'levelBAdmission':False,
+            'holdout':False,
+            'production':False,
+            'taylorOrJerusalemUsed':False,
+            'newMappingAuthorized':False,
+          }
+          Path('bridge-v2-review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery4-seed-global-control-trigger-bridge-v2-review
+          path: |
+            changed-paths.txt
+            bridge-v2-review-receipt.json
+            prior-control-run-ids.txt
+          if-no-files-found: error
+          compression-level: 0

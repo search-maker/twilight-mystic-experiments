@@ -72,7 +72,7 @@ def bind_identity(head,base,pr,s):
     if rr.get('status')!='PASS_RECOVERY4_AUTHORIZATION_CONTROL_PROPOSAL_NOT_ALLOCATED_NOT_DISPATCHED' or rr.get('scientificOrdinalAllocated') is not False or rr.get('dispatchCreated') is not False: die('control receipt boundary drift')
 
 def ledger(s):
-    wt=s/'ord42'; subprocess.run(['git','worktree','add','--detach',str(wt),O42],check=True,stdout=subprocess.DEVNULL)
+    wt=Path(os.environ.get('RUNNER_TEMP','/tmp'))/'avps-r4-auth-review-ord42'; shutil.rmtree(wt,ignore_errors=True); subprocess.run(['git','worktree','add','--detach',str(wt),O42],check=True,stdout=subprocess.DEVNULL)
     try:
         os.environ['AVPS_ORDINAL42_LEDGER_PATH']=str(wt/'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py')
         x=load('r4ledger',R4).validate_ledger(); seeds={int(v) for v in x['candidateSeeds']}

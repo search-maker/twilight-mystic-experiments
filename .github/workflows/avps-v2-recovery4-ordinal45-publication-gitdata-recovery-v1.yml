@@ -1,0 +1,165 @@
+name: Review atomic Git-data recovery for corrected AVPS ordinal45 publication
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-ordinal45-publication-gitdata-recovery-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-r4-o45-publication-gitdata-recovery-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  REVIEW_BASE: dcfba1da47ea25beb044047d9da45747a730e2b2
+  REVIEW_BASE_TREE: 21eb1ff4e0ac808d2128d7b8f3c73fc8aa3d1acb
+  REVIEW_BRANCH: review/avps-v2-recovery4-ordinal45-publication-gitdata-recovery-v1
+  SELF: .github/workflows/avps-v2-recovery4-ordinal45-publication-gitdata-recovery-v1.yml
+  TARGET_BRANCH: review/avps-v2-recovery4-ordinal45-execution-publication-v2
+  SOURCE_HEAD: b5a68159aa09bb3f91cb050a7e1bb266f866c9f4
+  SOURCE_RUN: '33377879606'
+  SOURCE_ARTIFACT: '9752564112'
+  SOURCE_DIGEST: sha256:e5ed2a26e917f3ee095c749d107c0ad16ac31c3ac9513da6717a5e66965557b5
+  SOURCE_ACCEPTANCE_REVIEW: '5065401797'
+  FAILED_MATERIALIZER_RUN: '33383354413'
+  FAILED_MATERIALIZER_JOB: '99460402901'
+  SCIENCE_BLOB: df0763b61ce89063de6992bb984dc854024a1aad
+  CONTRACT_BLOB: 2d5f71d80b5e573b86775c2806b80dcc1fbe02f4
+  ADAPTER_BLOB: e4b690c2969fd01ecde5b08f554e47ad50b40914
+  EXECUTOR_BLOB: 7dc38e31c19701b1a1ceef300d75105cff179290
+  AGGREGATOR_BLOB: 6afc8b0d21c2b5553c251dc9ca5524c795ed2646
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact one-file zero-runtime recovery-review scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.base.sha }}" = "$REVIEW_BASE"
+          test "${{ github.event.pull_request.head.ref }}" = "$REVIEW_BRANCH"
+          test "${{ github.event.pull_request.head.repo.full_name }}" = "$GITHUB_REPOSITORY"
+          test "$(git rev-parse HEAD^)" = "$REVIEW_BASE"
+          test "$(git diff --name-only "$REVIEW_BASE"...HEAD)" = "$SELF"
+          git diff --check "$REVIEW_BASE"...HEAD
+
+      - name: Verify corrected source acceptance and preserve failed materializer attempt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT" > source-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/777/reviews/$SOURCE_ACCEPTANCE_REVIEW" > source-acceptance.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_MATERIALIZER_RUN" > failed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$FAILED_MATERIALIZER_JOB" > failed-job.json
+          python - <<'PY'
+          import json,os
+          s=json.load(open('source-run.json')); a=json.load(open('source-artifact.json')); v=json.load(open('source-acceptance.json'))
+          fr=json.load(open('failed-run.json')); fj=json.load(open('failed-job.json'))
+          if (s.get('id'),s.get('head_sha'),s.get('run_attempt'),s.get('status'),s.get('conclusion'))!=(int(os.environ['SOURCE_RUN']),os.environ['SOURCE_HEAD'],1,'completed','success'): raise SystemExit('corrected source run drift')
+          if a.get('id')!=int(os.environ['SOURCE_ARTIFACT']) or a.get('digest')!=os.environ['SOURCE_DIGEST'] or a.get('expired'): raise SystemExit('corrected artifact drift')
+          if v.get('id')!=int(os.environ['SOURCE_ACCEPTANCE_REVIEW']) or v.get('commit_id')!=os.environ['SOURCE_HEAD'] or not str(v.get('body') or '').startswith('INDEPENDENT_AUDIT::ACCEPT_CORRECTED_HEAD'): raise SystemExit('corrected-head independent acceptance drift')
+          if (fr.get('id'),fr.get('run_attempt'),fr.get('status'),fr.get('conclusion'))!=(int(os.environ['FAILED_MATERIALIZER_RUN']),1,'completed','failure'): raise SystemExit('failed materializer run identity/classification drift')
+          if (fj.get('id'),fj.get('run_id'),fj.get('status'),fj.get('conclusion'))!=(int(os.environ['FAILED_MATERIALIZER_JOB']),int(os.environ['FAILED_MATERIALIZER_RUN']),'completed','failure'): raise SystemExit('failed materializer job identity drift')
+          PY
+
+      - name: Verify exact source blobs and compute deterministic atomic publication tree
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$SOURCE_HEAD" --quiet
+          test "$(git rev-parse "$REVIEW_BASE^{tree}")" = "$REVIEW_BASE_TREE"
+          cat > path-blobs.tsv <<EOF
+          .github/workflows/avps-v2-postconsumption-recovery4-science.yml	$SCIENCE_BLOB
+          runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py	$AGGREGATOR_BLOB
+          runtime-avps-v2-recovery4-ordinal45-v1/executor.py	$EXECUTOR_BLOB
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py	$ADAPTER_BLOB
+          runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json	$CONTRACT_BLOB
+          EOF
+          while IFS=$'\t' read -r path blob; do
+            test "$(git cat-file -t "$blob")" = blob
+            test "$(git rev-parse "$SOURCE_HEAD:$path")" = "$blob"
+            if git cat-file -e "$REVIEW_BASE:$path" 2>/dev/null; then
+              echo "target path already exists on recovery base: $path" >&2
+              exit 1
+            fi
+          done < path-blobs.tsv
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH" > target-ref.json 2>target-ref.err && { echo 'target publication branch unexpectedly exists' >&2; exit 1; } || true
+          if ! grep -q 'HTTP 404' target-ref.err && ! grep -q 'Not Found' target-ref.err; then
+            echo 'target branch absence was not proven by expected 404' >&2
+            cat target-ref.err >&2
+            exit 1
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:${TARGET_BRANCH}&per_page=100" > target-prs.json
+          python - <<'PY'
+          import json
+          if json.load(open('target-prs.json')): raise SystemExit('target publication PR identity already exists')
+          PY
+          export GIT_INDEX_FILE="$RUNNER_TEMP/avps-r4-o45-publication.index"
+          rm -f "$GIT_INDEX_FILE"
+          git read-tree "$REVIEW_BASE"
+          while IFS=$'\t' read -r path blob; do
+            git update-index --add --cacheinfo "100644,$blob,$path"
+          done < path-blobs.tsv
+          PLANNED_TREE=$(git write-tree)
+          git ls-tree -r "$PLANNED_TREE" > planned-tree-ls.txt
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          rows=[]
+          for line in Path('path-blobs.tsv').read_text().splitlines():
+              path,blob=line.split('\t'); rows.append({'path':path,'mode':'100644','type':'blob','sha':blob})
+          receipt={'schemaVersion':1,'status':'PASS_AVPS_V2_RECOVERY4_ORDINAL45_ATOMIC_GITDATA_PUBLICATION_TRANSPORT_REVIEW_ZERO_RUNTIME','baseCommit':os.environ['REVIEW_BASE'],'baseTree':os.environ['REVIEW_BASE_TREE'],'targetBranch':os.environ['TARGET_BRANCH'],'plannedTreeSha':os.environ['PLANNED_TREE'],'treeElements':rows,'sourceHead':os.environ['SOURCE_HEAD'],'sourceRun':int(os.environ['SOURCE_RUN']),'sourceArtifact':int(os.environ['SOURCE_ARTIFACT']),'sourceArtifactDigest':os.environ['SOURCE_DIGEST'],'sourceAcceptanceReview':int(os.environ['SOURCE_ACCEPTANCE_REVIEW']),'failedMaterializerRun':int(os.environ['FAILED_MATERIALIZER_RUN']),'failedMaterializerJob':int(os.environ['FAILED_MATERIALIZER_JOB']),'failedAttemptReusable':False,'publicationBranchCreated':False,'publicationPrCreated':False,'dispatchCreated':False,'candidateSeedsConsumed':False,'scientificRuntime':False,'solverExecuted':False,'resultsOpened':False,'levelBOpeningAuthorized':False,'protectedHoldoutOpeningAuthorized':False,'productionAuthorized':False,'taylorOrJerusalemUsed':False,'newMappingAuthorized':False}
+          Path('transport-review-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+        env:
+          PLANNED_TREE: ${{ env.PLANNED_TREE }}
+
+      - name: Recompute receipt with shell-bound planned tree and verify no science execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_INDEX_FILE="$RUNNER_TEMP/avps-r4-o45-publication.index"
+          PLANNED_TREE=$(git write-tree)
+          python - "$PLANNED_TREE" <<'PY'
+          import json,sys
+          from pathlib import Path
+          p=Path('transport-review-receipt.json'); x=json.loads(p.read_text()); x['plannedTreeSha']=sys.argv[1]; p.write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/avps-v2-recovery4-ordinal45-publication-gitdata-recovery-v1.yml').read_text()
+          for token in ('workflow_'+'dispatch:','command -v '+'uvspec','rte_solver '+'mystic','mc_photons '+'20000000'):
+              if token in p: raise SystemExit(f'recovery review contains prohibited scientific-runtime token: {token}')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-recovery4-ordinal45-atomic-gitdata-publication-transport-review
+          path: |
+            path-blobs.tsv
+            planned-tree-ls.txt
+            transport-review-receipt.json
+          if-no-files-found: error
+          compression-level: 0

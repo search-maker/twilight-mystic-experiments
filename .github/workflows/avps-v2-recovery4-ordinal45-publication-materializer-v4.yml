@@ -22,6 +22,7 @@ env:
   ACTIVATION_MARKER: transport-triggers/avps-v2-recovery4-ordinal45-publication-v4.txt
   ACTIVATION_TEXT: AVPS_V2_RECOVERY4_ORDINAL45_CORRECTED_PUBLICATION_MATERIALIZER_V4
   ACTIVATION_REVIEW_PREFIX: INDEPENDENT_AUDIT::ACCEPT_AVPS_ORDINAL45_PUBLICATION_V4_ACTIVATION_IDENTITY
+  ACTIVATION_WORKFLOW_FILE: avps-v2-recovery4-ordinal45-publication-materializer-v4.yml
   PUBLICATION_BRANCH: review/avps-v2-recovery4-ordinal45-execution-publication-v3
   PUBLICATION_PARENT: b86c2142253c31dec3415bd1426210b1e73512f9
   AUTH_PR: '774'
@@ -68,6 +69,9 @@ jobs:
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test "$(jq -r '.created' "$GITHUB_EVENT_PATH")" = true
+          test "$(jq -r '.before' "$GITHUB_EVENT_PATH")" = 0000000000000000000000000000000000000000
+          test "$(jq -r '.after' "$GITHUB_EVENT_PATH")" = "$GITHUB_SHA"
           test "$(cat "$ACTIVATION_MARKER")" = "$ACTIVATION_TEXT"
           mapfile -t parents < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
           test "${#parents[@]}" = 1
@@ -78,6 +82,16 @@ jobs:
           test "${changed[0]}" = "$ACTIVATION_MARKER"
           printf '%s\n' "$live_main" > /tmp/live-main
           git rev-parse "$GITHUB_SHA^{tree}" > /tmp/activation-tree
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$ACTIVATION_WORKFLOW_FILE/runs?branch=$ACTIVATION_BRANCH&event=push&per_page=100" > /tmp/activation-runs.json
+          python - <<'PY'
+          import json, os
+          runs=json.load(open('/tmp/activation-runs.json')).get('workflow_runs',[])
+          if len(runs) != 1:
+              raise SystemExit(f'activation branch identity is not fresh one-shot; run_count={len(runs)}')
+          r=runs[0]
+          if r.get('id') != int(os.environ['GITHUB_RUN_ID']) or r.get('head_sha') != os.environ['GITHUB_SHA'] or r.get('event') != 'push' or r.get('run_attempt') != 1:
+              raise SystemExit('activation workflow history/current-run identity mismatch')
+          PY
 
       - name: Revalidate governance, authorization, source evidence and absence of downstream identity
         shell: bash
@@ -88,10 +102,12 @@ jobs:
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > /tmp/issue60.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > /tmp/auth-pr.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > /tmp/source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/self-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT" > /tmp/source-artifact.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$SOURCE_PR/reviews/$SOURCE_AUDIT_REVIEW" > /tmp/source-review.json
           python - <<'PY'
           import json, os, re
+          from datetime import datetime
           pages=json.load(open('/tmp/issue60.json')); comments=[c for page in pages for c in page]
           begins={}; closed=set()
           for c in comments:
@@ -114,7 +130,21 @@ jobs:
                     f"tree={open('/tmp/activation-tree').read().strip()}")
           accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX']) and expected in (c.get('body') or '')]
           if len(accepted) != 1: raise SystemExit('fresh independent activation-identity acceptance missing/ambiguous')
-          acceptance_id=int(accepted[0]['id']); open('/tmp/activation-review-id','w').write(str(acceptance_id)+'\n')
+          self_run=json.load(open('/tmp/self-run.json'))
+          if self_run.get('id') != int(os.environ['GITHUB_RUN_ID']) or self_run.get('head_sha') != os.environ['GITHUB_SHA'] or self_run.get('event') != 'push' or self_run.get('run_attempt') != 1:
+              raise SystemExit('self run identity drift')
+          def ts(value):
+              if not value: raise SystemExit('missing timestamp for temporal activation proof')
+              return datetime.fromisoformat(value.replace('Z','+00:00'))
+          acceptance=accepted[0]
+          run_created=self_run.get('created_at')
+          if not (ts(acceptance.get('created_at')) < ts(run_created) and ts(acceptance.get('updated_at')) < ts(run_created)):
+              raise SystemExit('activation acceptance did not predate activation branch-creation run')
+          acceptance_id=int(acceptance['id'])
+          open('/tmp/activation-review-id','w').write(str(acceptance_id)+'\n')
+          open('/tmp/activation-review-created-at','w').write(str(acceptance.get('created_at'))+'\n')
+          open('/tmp/activation-review-updated-at','w').write(str(acceptance.get('updated_at'))+'\n')
+          open('/tmp/activation-run-created-at','w').write(str(run_created)+'\n')
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
               if int(c['id']) <= acceptance_id: continue
@@ -205,6 +235,12 @@ jobs:
           if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies) != 1: raise SystemExit('allocation marker cardinality drift at final recheck')
           if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('consumed marker appeared before publication mutation')
           acceptance_id=int(open('/tmp/activation-review-id').read())
+          expected=(f"activation_commit={os.environ['GITHUB_SHA']} parent={open('/tmp/live-main').read().strip()} "
+                    f"tree={open('/tmp/activation-tree').read().strip()}")
+          accepted=[c for c in comments if int(c['id']) == acceptance_id and (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX']) and expected in (c.get('body') or '')]
+          if len(accepted) != 1: raise SystemExit('activation acceptance changed/disappeared at final recheck')
+          if str(accepted[0].get('created_at')) != open('/tmp/activation-review-created-at').read().strip() or str(accepted[0].get('updated_at')) != open('/tmp/activation-review-updated-at').read().strip():
+              raise SystemExit('activation acceptance timestamp/body mutation detected at final recheck')
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
               if int(c['id']) <= acceptance_id: continue
@@ -223,7 +259,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$GITHUB_SHA" "$(cat /tmp/activation-tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
+          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nactivationReviewCreatedAt=%s\nactivationReviewUpdatedAt=%s\nactivationRunCreatedAt=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$GITHUB_SHA" "$(cat /tmp/activation-tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$(cat /tmp/activation-review-created-at 2>/dev/null || true)" "$(cat /tmp/activation-review-updated-at 2>/dev/null || true)" "$(cat /tmp/activation-run-created-at 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
 
       - uses: actions/upload-artifact@v4
         if: always()

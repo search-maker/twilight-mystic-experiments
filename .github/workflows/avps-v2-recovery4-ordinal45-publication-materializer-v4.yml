@@ -1,11 +1,9 @@
 name: Review AVPS Recovery4 ordinal45 publication materializer v4
+run-name: AVPS ordinal45 publication v4 activation comment ${{ github.event.comment.id }}
 
 on:
-  push:
-    branches:
-      - transport-trigger/avps-v2-recovery4-ordinal45-publication-v4
-    paths:
-      - transport-triggers/avps-v2-recovery4-ordinal45-publication-v4.txt
+  issue_comment:
+    types: [created]
 
 permissions:
   actions: read
@@ -18,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CONTROL_ISSUE: '60'
   ACTIVATION_BRANCH: transport-trigger/avps-v2-recovery4-ordinal45-publication-v4
   ACTIVATION_MARKER: transport-triggers/avps-v2-recovery4-ordinal45-publication-v4.txt
   ACTIVATION_TEXT: AVPS_V2_RECOVERY4_ORDINAL45_CORRECTED_PUBLICATION_MATERIALIZER_V4
@@ -52,6 +51,9 @@ env:
 
 jobs:
   materialize:
+    if: >-
+      github.event.issue.number == 60 &&
+      startsWith(github.event.comment.body, 'INDEPENDENT_AUDIT::ACCEPT_AVPS_ORDINAL45_PUBLICATION_V4_ACTIVATION_IDENTITY')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -60,58 +62,94 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Prove reviewed one-shot activation identity and current main
+      - name: Prove acceptance event and unreferenced one-marker activation object
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_COMMENT_CREATED: ${{ github.event.comment.created_at }}
+          EVENT_COMMENT_UPDATED: ${{ github.event.comment.updated_at }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_EVENT_NAME" = issue_comment
+          test "$EVENT_ACTION" = created
+          test "$EVENT_ISSUE" = "$CONTROL_ISSUE"
           test "$GITHUB_RUN_ATTEMPT" = 1
-          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
-          test "$(jq -r '.created' "$GITHUB_EVENT_PATH")" = true
-          test "$(jq -r '.before' "$GITHUB_EVENT_PATH")" = 0000000000000000000000000000000000000000
-          test "$(jq -r '.after' "$GITHUB_EVENT_PATH")" = "$GITHUB_SHA"
-          test "$(cat "$ACTIVATION_MARKER")" = "$ACTIVATION_TEXT"
-          mapfile -t parents < <(git cat-file -p "$GITHUB_SHA" | sed -n 's/^parent //p')
-          test "${#parents[@]}" = 1
-          live_main="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
-          test "${parents[0]}" = "$live_main"
-          mapfile -t changed < <(git diff-tree --no-commit-id --name-only -r "${parents[0]}" "$GITHUB_SHA")
-          test "${#changed[@]}" = 1
-          test "${changed[0]}" = "$ACTIVATION_MARKER"
-          printf '%s\n' "$live_main" > /tmp/live-main
-          git rev-parse "$GITHUB_SHA^{tree}" > /tmp/activation-tree
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$ACTIVATION_WORKFLOW_FILE/runs?branch=$ACTIVATION_BRANCH&event=push&per_page=100" > /tmp/activation-runs.json
           python - <<'PY'
-          import json, os
-          runs=json.load(open('/tmp/activation-runs.json')).get('workflow_runs',[])
-          if len(runs) != 1:
-              raise SystemExit(f'activation branch identity is not fresh one-shot; run_count={len(runs)}')
-          r=runs[0]
-          if r.get('id') != int(os.environ['GITHUB_RUN_ID']) or r.get('head_sha') != os.environ['GITHUB_SHA'] or r.get('event') != 'push' or r.get('run_attempt') != 1:
-              raise SystemExit('activation workflow history/current-run identity mismatch')
+          import os,re
+          body=os.environ['EVENT_COMMENT_BODY'].strip()
+          prefix=os.environ['ACTIVATION_REVIEW_PREFIX']
+          if not body.startswith(prefix): raise SystemExit('wrong activation acceptance prefix')
+          vals={}
+          for key in ('activation_commit','parent','tree'):
+              found=re.findall(r'(?:^|\s)'+re.escape(key)+r'=([0-9a-f]{40})(?:\s|$)', body)
+              if len(found)!=1: raise SystemExit(f'{key} missing/ambiguous: {found}')
+              vals[key]=found[0]
+          for k,v in vals.items(): open('/tmp/'+k.replace('_','-'),'w').write(v+'\n')
           PY
+          activation_commit="$(cat /tmp/activation-commit)"
+          activation_parent="$(cat /tmp/parent)"
+          activation_tree="$(cat /tmp/tree)"
+          live_main="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+          test "$activation_parent" = "$live_main"
+          printf '%s\n' "$live_main" > /tmp/live-main
+          gh api "repos/$GITHUB_REPOSITORY/git/commits/$activation_commit" > /tmp/activation-commit.json
+          gh api "repos/$GITHUB_REPOSITORY/compare/$activation_parent...$activation_commit" > /tmp/activation-compare.json
+          gh api "repos/$GITHUB_REPOSITORY/git/trees/$activation_tree?recursive=1" > /tmp/activation-tree.json
+          python - <<'PY'
+          import json,os
+          commit=json.load(open('/tmp/activation-commit.json'))
+          parent=open('/tmp/parent').read().strip()
+          tree=open('/tmp/tree').read().strip()
+          if [p.get('sha') for p in commit.get('parents',[])] != [parent]: raise SystemExit('activation commit is not sole-parent direct child of live main')
+          if (commit.get('tree') or {}).get('sha') != tree: raise SystemExit('activation tree token drift')
+          comp=json.load(open('/tmp/activation-compare.json'))
+          if comp.get('ahead_by') != 1 or comp.get('behind_by') != 0 or comp.get('total_commits') != 1: raise SystemExit('activation compare is not exact one-commit direct child')
+          files=comp.get('files',[])
+          if len(files)!=1 or files[0].get('filename') != os.environ['ACTIVATION_MARKER']: raise SystemExit('activation changed-file scope drift')
+          entries=[e for e in json.load(open('/tmp/activation-tree.json')).get('tree',[]) if e.get('path')==os.environ['ACTIVATION_MARKER']]
+          if len(entries)!=1 or entries[0].get('type')!='blob': raise SystemExit('activation marker blob missing/ambiguous')
+          open('/tmp/activation-marker-blob','w').write(entries[0]['sha']+'\n')
+          PY
+          marker_blob="$(cat /tmp/activation-marker-blob)"
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/$marker_blob" > /tmp/activation-marker.json
+          python - <<'PY'
+          import base64,json,os
+          obj=json.load(open('/tmp/activation-marker.json'))
+          if obj.get('encoding')!='base64': raise SystemExit('activation marker encoding drift')
+          text=base64.b64decode(obj.get('content','')).decode()
+          if text != os.environ['ACTIVATION_TEXT']+'\n': raise SystemExit(f'activation marker text drift: {text!r}')
+          PY
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ACTIVATION_BRANCH" >/dev/null 2>&1; then echo 'activation branch already exists before accepted activation event' >&2; exit 1; fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PUBLICATION_BRANCH" >/dev/null 2>&1; then echo 'publication branch already exists' >&2; exit 1; fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch already exists' >&2; exit 1; fi
+          printf '%s\n' "$EVENT_COMMENT_ID" > /tmp/activation-review-id
+          printf '%s\n' "$EVENT_COMMENT_CREATED" > /tmp/activation-review-created-at
+          printf '%s\n' "$EVENT_COMMENT_UPDATED" > /tmp/activation-review-updated-at
 
-      - name: Revalidate governance, authorization, source evidence and absence of downstream identity
+      - name: Fresh governance and source recheck, then create activation ref only
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > /tmp/issue60.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$CONTROL_ISSUE/comments?per_page=100" > /tmp/issue60.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > /tmp/auth-pr.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > /tmp/source-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/self-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT" > /tmp/source-artifact.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$SOURCE_PR/reviews/$SOURCE_AUDIT_REVIEW" > /tmp/source-review.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/$ACTIVATION_WORKFLOW_FILE/runs?event=issue_comment&per_page=100" > /tmp/activation-runs.json
           python - <<'PY'
-          import json, os, re
-          from datetime import datetime
+          import json,os,re
           pages=json.load(open('/tmp/issue60.json')); comments=[c for page in pages for c in page]
           begins={}; closed=set()
           for c in comments:
-              lines=(c.get('body') or '').splitlines(); first=lines[0].strip() if lines else ''
+              first=((c.get('body') or '').splitlines() or [''])[0].strip()
               if first.startswith('WRITE_QUIET_BEGIN'): begins[int(c['id'])]=first
               elif first.startswith('WRITE_QUIET_END'):
                   vals=[]
@@ -119,49 +157,47 @@ jobs:
                       m=re.search(r'(?:^|[ |])'+re.escape(key)+r'=([^ |]+)',first)
                       if m: vals.append(m.group(1))
                   if not vals: continue
-                  if any(not v.isdigit() for v in vals) or len(set(vals)) != 1: raise SystemExit(f'conflicting/non-numeric WRITE_QUIET_END aliases in {c["id"]}: {vals}')
+                  if any(not v.isdigit() for v in vals) or len(set(vals))!=1: raise SystemExit(f'conflicting/non-numeric WRITE_QUIET_END aliases in {c["id"]}: {vals}')
                   closed.add(int(vals[0]))
           unmatched=sorted(set(begins)-closed)
-          if unmatched: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN: {unmatched}')
+          if unmatched: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN before activation ref creation: {unmatched}')
           bodies=[(c.get('body') or '').strip() for c in comments]
-          if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies) != 1: raise SystemExit('allocation marker cardinality drift')
+          if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
           if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('consumed marker already exists')
-          expected=(f"activation_commit={os.environ['GITHUB_SHA']} parent={open('/tmp/live-main').read().strip()} "
-                    f"tree={open('/tmp/activation-tree').read().strip()}")
-          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX']) and expected in (c.get('body') or '')]
-          if len(accepted) != 1: raise SystemExit('fresh independent activation-identity acceptance missing/ambiguous')
-          self_run=json.load(open('/tmp/self-run.json'))
-          if self_run.get('id') != int(os.environ['GITHUB_RUN_ID']) or self_run.get('head_sha') != os.environ['GITHUB_SHA'] or self_run.get('event') != 'push' or self_run.get('run_attempt') != 1:
-              raise SystemExit('self run identity drift')
-          def ts(value):
-              if not value: raise SystemExit('missing timestamp for temporal activation proof')
-              return datetime.fromisoformat(value.replace('Z','+00:00'))
-          acceptance=accepted[0]
-          run_created=self_run.get('created_at')
-          if not (ts(acceptance.get('created_at')) < ts(run_created) and ts(acceptance.get('updated_at')) < ts(run_created)):
-              raise SystemExit('activation acceptance did not predate activation branch-creation run')
-          acceptance_id=int(acceptance['id'])
-          open('/tmp/activation-review-id','w').write(str(acceptance_id)+'\n')
-          open('/tmp/activation-review-created-at','w').write(str(acceptance.get('created_at'))+'\n')
-          open('/tmp/activation-review-updated-at','w').write(str(acceptance.get('updated_at'))+'\n')
-          open('/tmp/activation-run-created-at','w').write(str(run_created)+'\n')
+          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          if len(accepted)!=1: raise SystemExit(f'activation acceptance global cardinality must be exactly one, got {len(accepted)}')
+          a=accepted[0]
+          if int(a['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (a.get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('current acceptance event is not the unique durable acceptance')
+          if str(a.get('created_at'))!=open('/tmp/activation-review-created-at').read().strip() or str(a.get('updated_at'))!=open('/tmp/activation-review-updated-at').read().strip(): raise SystemExit('activation acceptance timestamp drift')
+          acceptance_id=int(a['id'])
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
-              if int(c['id']) <= acceptance_id: continue
-              body=(c.get('body') or ''); first=body.splitlines()[0].upper() if body.splitlines() else ''
+              if int(c['id'])<=acceptance_id: continue
+              body=c.get('body') or ''; first=(body.splitlines() or [''])[0].upper()
               relevant=any(x in body.upper() for x in ('AVPS','ORDINAL45','RECOVERY4','PUBLICATION'))
               if relevant and any(tok in first for tok in blockers): raise SystemExit(f'newer blocking AVPS directive after activation acceptance: {c["id"]} {first}')
           p=json.load(open('/tmp/auth-pr.json'))
-          if p['number'] != int(os.environ['AUTH_PR']) or p['state'] != 'open' or not p['draft'] or p.get('merged_at') is not None or p['head']['sha'] != os.environ['AUTH_HEAD']: raise SystemExit('authorization PR/head drift')
+          if p['number']!=int(os.environ['AUTH_PR']) or p['state']!='open' or not p['draft'] or p.get('merged_at') is not None or p['head']['sha']!=os.environ['AUTH_HEAD']: raise SystemExit('authorization PR/head drift')
           r=json.load(open('/tmp/source-run.json'))
-          if (r['id'],r['head_sha'],r['run_attempt'],r['status'],r['conclusion']) != (int(os.environ['SOURCE_RUN']),os.environ['SOURCE_HEAD'],1,'completed','success'): raise SystemExit('source run drift')
-          a=json.load(open('/tmp/source-artifact.json'))
-          if a['id'] != int(os.environ['SOURCE_ARTIFACT']) or a.get('digest') != os.environ['SOURCE_DIGEST'] or a.get('expired'): raise SystemExit('source artifact drift')
+          if (r['id'],r['head_sha'],r['run_attempt'],r['status'],r['conclusion'])!=(int(os.environ['SOURCE_RUN']),os.environ['SOURCE_HEAD'],1,'completed','success'): raise SystemExit('source run drift')
+          art=json.load(open('/tmp/source-artifact.json'))
+          if art['id']!=int(os.environ['SOURCE_ARTIFACT']) or art.get('digest')!=os.environ['SOURCE_DIGEST'] or art.get('expired'): raise SystemExit('source artifact drift')
           v=json.load(open('/tmp/source-review.json'))
-          if v.get('id') != int(os.environ['SOURCE_AUDIT_REVIEW']) or v.get('commit_id') != os.environ['SOURCE_HEAD'] or not str(v.get('body') or '').startswith(os.environ['SOURCE_AUDIT_TOKEN']): raise SystemExit('independent source acceptance drift')
+          if v.get('id')!=int(os.environ['SOURCE_AUDIT_REVIEW']) or v.get('commit_id')!=os.environ['SOURCE_HEAD'] or not str(v.get('body') or '').startswith(os.environ['SOURCE_AUDIT_TOKEN']): raise SystemExit('independent source acceptance drift')
+          title=f"AVPS ordinal45 publication v4 activation comment {os.environ['EVENT_COMMENT_ID']}"
+          runs=[r for page in json.load(open('/tmp/activation-runs.json')) for r in page.get('workflow_runs',[]) if r.get('display_title')==title]
+          if len(runs)!=1: raise SystemExit(f'activation workflow-run identity is not unique; count={len(runs)}')
+          rr=runs[0]
+          if rr.get('id')!=int(os.environ['GITHUB_RUN_ID']) or rr.get('event')!='issue_comment' or rr.get('run_attempt')!=1: raise SystemExit('activation workflow current-run identity mismatch')
           PY
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PUBLICATION_BRANCH" >/dev/null 2>&1; then echo 'publication branch already exists' >&2; exit 1; fi
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch already exists' >&2; exit 1; fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)" = "$(cat /tmp/live-main)"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ACTIVATION_BRANCH" >/dev/null 2>&1; then echo 'activation branch appeared before governed creation' >&2; exit 1; fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PUBLICATION_BRANCH" >/dev/null 2>&1; then echo 'publication branch appeared before governed activation' >&2; exit 1; fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch appeared before governed activation' >&2; exit 1; fi
+          activation_commit="$(cat /tmp/activation-commit)"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$ACTIVATION_BRANCH" -f sha="$activation_commit" > /tmp/activation-ref-created.json
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ACTIVATION_BRANCH" --jq .object.sha)" = "$activation_commit"
+          printf '%s\n' "$GITHUB_RUN_ID" > /tmp/activation-run-id
 
       - name: Download and verify exact corrected five-byte payload
         shell: bash
@@ -205,21 +241,24 @@ jobs:
           test "${#changed[@]}" = 5; test "$(printf '%s\n' "${changed[@]}")" = "$(printf '%s\n' "${expected[@]}")"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "tree=$tree" >> "$GITHUB_OUTPUT"; printf '%s\n' "$commit" > /tmp/publication-commit; printf '%s\n' "$tree" > /tmp/publication-tree
 
-      - name: Final live governance recheck then publish only target ref and Draft PR
+      - name: Final live governance and activation-history recheck, then publish target ref
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ steps.build.outputs.commit }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
           test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)" = "$(cat /tmp/live-main)"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > /tmp/issue60-final.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$CONTROL_ISSUE/comments?per_page=100" > /tmp/issue60-final.json
           gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > /tmp/auth-pr-final.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/$ACTIVATION_WORKFLOW_FILE/runs?event=issue_comment&per_page=100" > /tmp/activation-runs-final.json
           python - <<'PY'
           import json,os,re
           pages=json.load(open('/tmp/issue60-final.json')); comments=[c for p in pages for c in p]; begins={}; closed=set()
           for c in comments:
-              lines=(c.get('body') or '').splitlines(); first=lines[0].strip() if lines else ''
+              first=((c.get('body') or '').splitlines() or [''])[0].strip()
               if first.startswith('WRITE_QUIET_BEGIN'): begins[int(c['id'])]=first
               elif first.startswith('WRITE_QUIET_END'):
                   vals=[]
@@ -227,39 +266,84 @@ jobs:
                       m=re.search(r'(?:^|[ |])'+re.escape(k)+r'=([^ |]+)',first)
                       if m: vals.append(m.group(1))
                   if not vals: continue
-                  if any(not v.isdigit() for v in vals) or len(set(vals)) != 1: raise SystemExit(f'bad END aliases at {c["id"]}: {vals}')
+                  if any(not v.isdigit() for v in vals) or len(set(vals))!=1: raise SystemExit(f'bad END aliases at {c["id"]}: {vals}')
                   closed.add(int(vals[0]))
           u=sorted(set(begins)-closed)
           if u: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN before publication mutation: {u}')
           bodies=[(c.get('body') or '').strip() for c in comments]
-          if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies) != 1: raise SystemExit('allocation marker cardinality drift at final recheck')
+          if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift at final recheck')
           if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('consumed marker appeared before publication mutation')
-          acceptance_id=int(open('/tmp/activation-review-id').read())
-          expected=(f"activation_commit={os.environ['GITHUB_SHA']} parent={open('/tmp/live-main').read().strip()} "
-                    f"tree={open('/tmp/activation-tree').read().strip()}")
-          accepted=[c for c in comments if int(c['id']) == acceptance_id and (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX']) and expected in (c.get('body') or '')]
-          if len(accepted) != 1: raise SystemExit('activation acceptance changed/disappeared at final recheck')
-          if str(accepted[0].get('created_at')) != open('/tmp/activation-review-created-at').read().strip() or str(accepted[0].get('updated_at')) != open('/tmp/activation-review-updated-at').read().strip():
-              raise SystemExit('activation acceptance timestamp/body mutation detected at final recheck')
+          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('activation acceptance changed/duplicated at final recheck')
+          if str(accepted[0].get('created_at'))!=open('/tmp/activation-review-created-at').read().strip() or str(accepted[0].get('updated_at'))!=open('/tmp/activation-review-updated-at').read().strip(): raise SystemExit('activation acceptance timestamp mutation detected at final recheck')
+          acceptance_id=int(accepted[0]['id'])
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
-              if int(c['id']) <= acceptance_id: continue
-              body=c.get('body') or ''; first=body.splitlines()[0].upper() if body.splitlines() else ''
+              if int(c['id'])<=acceptance_id: continue
+              body=c.get('body') or ''; first=(body.splitlines() or [''])[0].upper()
               relevant=any(x in body.upper() for x in ('AVPS','ORDINAL45','RECOVERY4','PUBLICATION'))
               if relevant and any(tok in first for tok in blockers): raise SystemExit(f'newer blocking AVPS directive at final recheck: {c["id"]} {first}')
           p=json.load(open('/tmp/auth-pr-final.json'))
-          if p['number'] != int(os.environ['AUTH_PR']) or p['state'] != 'open' or not p['draft'] or p.get('merged_at') is not None or p['head']['sha'] != os.environ['AUTH_HEAD']: raise SystemExit('authorization PR/head drift at final recheck')
+          if p['number']!=int(os.environ['AUTH_PR']) or p['state']!='open' or not p['draft'] or p.get('merged_at') is not None or p['head']['sha']!=os.environ['AUTH_HEAD']: raise SystemExit('authorization PR/head drift at final recheck')
+          title=f"AVPS ordinal45 publication v4 activation comment {os.environ['EVENT_COMMENT_ID']}"
+          runs=[r for page in json.load(open('/tmp/activation-runs-final.json')) for r in page.get('workflow_runs',[]) if r.get('display_title')==title]
+          if len(runs)!=1: raise SystemExit(f'activation workflow-run history drift at final recheck; count={len(runs)}')
+          rr=runs[0]
+          if rr.get('id')!=int(os.environ['GITHUB_RUN_ID']) or rr.get('event')!='issue_comment' or rr.get('run_attempt')!=1: raise SystemExit('activation workflow current-run identity drift at final recheck')
           PY
+          activation_commit="$(cat /tmp/activation-commit)"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ACTIVATION_BRANCH" --jq .object.sha)" = "$activation_commit"
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PUBLICATION_BRANCH" >/dev/null 2>&1; then echo 'publication branch appeared during run' >&2; exit 1; fi
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch appeared during run' >&2; exit 1; fi
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$COMMIT:refs/heads/$PUBLICATION_BRANCH"
-          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$PUBLICATION_BRANCH" --draft --title 'Publish exact corrected AVPS Recovery4 ordinal45 execution bytes v3' --body "Exact-five publication carrier only. Direct-child publication commit: \`$COMMIT\`; frozen parent: \`$PUBLICATION_PARENT\`. Source artifact: \`$SOURCE_ARTIFACT\` / \`$SOURCE_DIGEST\`. No dispatch/consumption/solver/result/Level-B/holdout/production/Taylor/Jerusalem/newMapping. Require fresh publication-mode gate + generic CI + independent audit before merge."
+
+      - name: Fresh post-publication governance recheck, then create Draft PR only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.build.outputs.commit }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$CONTROL_ISSUE/comments?per_page=100" > /tmp/issue60-pr.json
+          python - <<'PY'
+          import json,os,re
+          pages=json.load(open('/tmp/issue60-pr.json')); comments=[c for p in pages for c in p]; begins={}; closed=set()
+          for c in comments:
+              first=((c.get('body') or '').splitlines() or [''])[0].strip()
+              if first.startswith('WRITE_QUIET_BEGIN'): begins[int(c['id'])]=first
+              elif first.startswith('WRITE_QUIET_END'):
+                  vals=[]
+                  for k in ('begin','beginComment','begin_comment'):
+                      m=re.search(r'(?:^|[ |])'+re.escape(k)+r'=([^ |]+)',first)
+                      if m: vals.append(m.group(1))
+                  if not vals: continue
+                  if any(not v.isdigit() for v in vals) or len(set(vals))!=1: raise SystemExit(f'bad END aliases at PR-create recheck {c["id"]}: {vals}')
+                  closed.add(int(vals[0]))
+          u=sorted(set(begins)-closed)
+          if u: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN before PR creation: {u}')
+          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('activation acceptance drift before PR creation')
+          blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
+          acceptance_id=int(accepted[0]['id'])
+          for c in comments:
+              if int(c['id'])<=acceptance_id: continue
+              body=c.get('body') or ''; first=(body.splitlines() or [''])[0].upper()
+              relevant=any(x in body.upper() for x in ('AVPS','ORDINAL45','RECOVERY4','PUBLICATION'))
+              if relevant and any(tok in first for tok in blockers): raise SystemExit(f'newer blocking AVPS directive before PR creation: {c["id"]} {first}')
+          PY
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)" = "$(cat /tmp/live-main)"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$ACTIVATION_BRANCH" --jq .object.sha)" = "$(cat /tmp/activation-commit)"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PUBLICATION_BRANCH" --jq .object.sha)" = "$COMMIT"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch appeared before PR creation' >&2; exit 1; fi
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$PUBLICATION_BRANCH" --draft --title 'Publish exact corrected AVPS Recovery4 ordinal45 execution bytes v3' --body "Exact-five publication carrier only. Direct-child publication commit: \`$COMMIT\`; frozen parent: \`$PUBLICATION_PARENT\`. Source artifact: \`$SOURCE_ARTIFACT\` / \`$SOURCE_DIGEST\`. Activation acceptance comment: \`$EVENT_COMMENT_ID\`. No dispatch/consumption/solver/result/Level-B/holdout/production/Taylor/Jerusalem/newMapping. Require fresh publication-mode gate + generic CI + independent audit before merge."
 
       - name: Emit materializer receipt
         if: always()
         shell: bash
         run: |
-          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nactivationReviewCreatedAt=%s\nactivationReviewUpdatedAt=%s\nactivationRunCreatedAt=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$GITHUB_SHA" "$(cat /tmp/activation-tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$(cat /tmp/activation-review-created-at 2>/dev/null || true)" "$(cat /tmp/activation-review-updated-at 2>/dev/null || true)" "$(cat /tmp/activation-run-created-at 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
+          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nactivationReviewCreatedAt=%s\nactivationReviewUpdatedAt=%s\nactivationRun=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$(cat /tmp/activation-commit 2>/dev/null || true)" "$(cat /tmp/tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$(cat /tmp/activation-review-created-at 2>/dev/null || true)" "$(cat /tmp/activation-review-updated-at 2>/dev/null || true)" "$(cat /tmp/activation-run-id 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
 
       - uses: actions/upload-artifact@v4
         if: always()

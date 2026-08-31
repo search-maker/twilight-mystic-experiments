@@ -1,0 +1,185 @@
+name: Review AVPS v2 recovery4 seed/global control trigger bridge v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1.yml
+      - .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: review-avps-v2-recovery4-seed-global-control-trigger-bridge-v1-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_BASE: 9ae60a3283046fb977bfb2fb88b1c90ef583cc2d
+      EXPECTED_BRANCH: review/avps-v2-recovery4-seed-global-control-trigger-bridge-v1
+      CONTROL_WORKFLOW: avps-v2-recovery4-seed-global-control-v1.yml
+      CONTROL_BLOB: 875bd21758a0ac0a2e2aed57bfc428df4e1e9578
+      BRIDGE_WORKFLOW: .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact three-file zero-runtime review scope
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$EXPECTED_BRANCH"
+          test "$PR_BASE" = "$EXPECTED_BASE"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          git diff --name-only "$EXPECTED_BASE...HEAD" | sort > changed-paths.txt
+          cat > expected-paths.txt <<'EOF'
+          .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1-review.yml
+          .github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v1/PROTOCOL.md
+          EOF
+          sort -o expected-paths.txt expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          test "$(git hash-object .github/workflows/$CONTROL_WORKFLOW)" = "$CONTROL_BLOB"
+
+      - name: Static-review bridge as exact one-target transport only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          text=Path('.github/workflows/avps-v2-recovery4-seed-global-control-trigger-bridge-v1.yml').read_text()
+          required=(
+            'control-trigger/aerosol-vertical-profile-sensitivity-v2-recovery4-seed-global-control-v1',
+            'control-triggers/avps-v2-recovery4-seed-global-control-v1.txt',
+            'CONTROL_WORKFLOW: avps-v2-recovery4-seed-global-control-v1.yml',
+            'CONTROL_BLOB: 875bd21758a0ac0a2e2aed57bfc428df4e1e9578',
+            'AVPS_V2_RECOVERY4_SEED_GLOBAL_CONTROL_V1',
+            'actions: write',
+            'contents: read',
+            'issues: read',
+            'repository workflows not quiescent before control dispatch',
+            'recovery4 seed/global control already has a workflow_dispatch run; refusing duplicate',
+            'Final live recheck immediately before control dispatch',
+            'final unexpected unmatched WRITE_QUIET set',
+            'newer relevant fail-closed/closure/recovery directive',
+            'final repository workflows not quiescent',
+            'actions/workflows/$CONTROL_WORKFLOW/dispatches',
+            "'expected_main_sha':x['main']",
+            "'fence_begin_comment_id':str(x['fenceBeginCommentId'])",
+            'persist-credentials: false',
+          )
+          for token in required:
+              if token not in text: raise SystemExit(f'missing bridge invariant: {token}')
+          if text.count('--method POST')!=1: raise SystemExit('bridge must have exactly one POST')
+          if text.count('issues/60/comments?per_page=100')!=2: raise SystemExit('bridge must enumerate Issue60 once in initial guard and once immediately pre-dispatch')
+          if text.count('actions/runs?per_page=100')!=2: raise SystemExit('bridge must enumerate active runs once in initial guard and once immediately pre-dispatch')
+          if text.count('actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100')!=2: raise SystemExit('bridge must duplicate-check target control immediately before dispatch')
+          final_pos=text.index('Final live recheck immediately before control dispatch')
+          post_pos=text.index('gh api --method POST')
+          if final_pos>=post_pos: raise SystemExit('final live guard must textually precede the sole dispatch POST')
+          if not re.search(r'on:\s*\n\s*push:',text): raise SystemExit('bridge must be push-triggered only')
+          if 'workflow_dispatch:' in text: raise SystemExit('bridge itself must not expose workflow_dispatch')
+          forbidden=(
+            'git/refs',
+            'contents: write',
+            'issues: write',
+            'authorization/aerosol-vertical-profile-sensitivity',
+            'dispatch/aerosol-vertical-profile-sensitivity',
+            'DISPATCH_CONSUMED',
+            'mc_photons',
+            'rte_solver',
+            'rubin-libradtran',
+            'uvspec ',
+            'mystic',
+            'ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de',
+          )
+          low=text.lower()
+          for token in forbidden:
+              if token.lower() in low: raise SystemExit(f'forbidden science/allocation token in bridge: {token}')
+          PY
+
+      - name: Rebind reviewed control and prove it remains undispatched
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          test "$(git show origin/main:.github/workflows/$CONTROL_WORKFLOW | git hash-object --stdin)" = "$CONTROL_BLOB"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > prior-control-run-ids.txt
+          if test -s prior-control-run-ids.txt; then
+            echo 'recovery4 seed/global control already has a workflow_dispatch run' >&2
+            cat prior-control-run-ids.txt >&2
+            exit 1
+          fi
+
+      - name: Emit zero-runtime review receipt
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-trigger-bridge-v1',
+            'status':'PASS_AVPS_V2_RECOVERY4_SEED_GLOBAL_CONTROL_TRIGGER_BRIDGE_ZERO_RUNTIME_NOT_ACTIVATED',
+            'reviewHead':os.environ['PR_HEAD'],
+            'reviewBase':os.environ['EXPECTED_BASE'],
+            'controlWorkflow':os.environ['CONTROL_WORKFLOW'],
+            'controlBlob':os.environ['CONTROL_BLOB'],
+            'bridgeSha256':hashlib.sha256(Path(os.environ['BRIDGE_WORKFLOW']).read_bytes()).hexdigest(),
+            'liveLedgerRecheckedImmediatelyPreDispatch':True,
+            'workflowQuiescenceRecheckedImmediatelyPreDispatch':True,
+            'targetDuplicateRecheckedImmediatelyPreDispatch':True,
+            'candidateSeedsApplied':False,
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'controlWorkflowDispatchRequested':False,
+            'scientificRuntime':False,
+            'solverExecution':False,
+            'resultsOpened':False,
+            'levelBAdmission':False,
+            'holdout':False,
+            'production':False,
+            'taylorOrJerusalemUsed':False,
+            'newMappingAuthorized':False,
+          }
+          Path('bridge-review-receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery4-seed-global-control-trigger-bridge-v1-review
+          path: |
+            changed-paths.txt
+            bridge-review-receipt.json
+            prior-control-run-ids.txt
+          if-no-files-found: error
+          compression-level: 0

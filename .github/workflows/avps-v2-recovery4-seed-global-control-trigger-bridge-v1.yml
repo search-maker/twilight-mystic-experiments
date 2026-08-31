@@ -1,0 +1,176 @@
+name: AVPS v2 recovery4 seed/global control trigger bridge
+run-name: AVPS v2 recovery4 seed/global control trigger bridge
+
+on:
+  push:
+    branches:
+      - control-trigger/aerosol-vertical-profile-sensitivity-v2-recovery4-seed-global-control-v1
+    paths:
+      - control-triggers/avps-v2-recovery4-seed-global-control-v1.txt
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+
+concurrency:
+  group: avps-v2-recovery4-seed-global-control-trigger-bridge-v1
+  cancel-in-progress: false
+
+env:
+  ACTIVATION_BRANCH: control-trigger/aerosol-vertical-profile-sensitivity-v2-recovery4-seed-global-control-v1
+  ACTIVATION_MARKER: control-triggers/avps-v2-recovery4-seed-global-control-v1.txt
+  CONTROL_WORKFLOW: avps-v2-recovery4-seed-global-control-v1.yml
+  CONTROL_BLOB: 875bd21758a0ac0a2e2aed57bfc428df4e1e9578
+  CONTROL_STAGE: AVPS_V2_RECOVERY4_SEED_GLOBAL_CONTROL_V1
+
+jobs:
+  trigger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact one-use activation, active fence and repository quiescence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test -f "$ACTIVATION_MARKER"
+
+          git fetch origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$MAIN_SHA"
+          git diff --name-only HEAD^ HEAD | sort > activation-changed-paths.txt
+          test "$(wc -l < activation-changed-paths.txt | tr -d ' ')" = 1
+          test "$(cat activation-changed-paths.txt)" = "$ACTIVATION_MARKER"
+          test "$(git hash-object .github/workflows/$CONTROL_WORKFLOW)" = "$CONTROL_BLOB"
+
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          values={}
+          for line in Path(os.environ['ACTIVATION_MARKER']).read_text(encoding='utf-8').splitlines():
+              if '=' not in line: raise SystemExit(f'invalid activation line: {line!r}')
+              k,v=line.split('=',1)
+              if k in values: raise SystemExit(f'duplicate activation key: {k}')
+              values[k]=v
+          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
+          required_keys={'schema','main','controlWorkflow','controlBlob','fenceBeginCommentId'}
+          if set(values)!=required_keys: raise SystemExit(f'activation key drift: {sorted(values)}')
+          if values['schema']!='AVPS_V2_RECOVERY4_SEED_GLOBAL_CONTROL_TRIGGER_V1': raise SystemExit('activation schema drift')
+          if values['main']!=main: raise SystemExit('activation main drift')
+          if values['controlWorkflow']!=os.environ['CONTROL_WORKFLOW']: raise SystemExit('control workflow drift')
+          if values['controlBlob']!=os.environ['CONTROL_BLOB']: raise SystemExit('control blob drift')
+          try: fid=int(values['fenceBeginCommentId'])
+          except Exception: raise SystemExit('invalid fence begin id')
+          if fid<=0: raise SystemExit('invalid fence begin id')
+          Path('activation.json').write_text(json.dumps({'main':main,'fenceBeginCommentId':fid},sort_keys=True)+'\n')
+          PY
+
+          FENCE_ID="$(python -c "import json; print(json.load(open('activation.json'))['fenceBeginCommentId'])")"
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$FENCE_ID" > fence-begin.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          python - <<'PY'
+          import json,os,re,subprocess
+          begin=json.load(open('fence-begin.json'))
+          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
+          expected=f"WRITE_QUIET_BEGIN | {os.environ['CONTROL_STAGE']} | main={main}"
+          body=str(begin.get('body') or '').strip()
+          if not body.startswith(expected): raise SystemExit('exact recovery4 global-control fence BEGIN mismatch')
+          pages=json.load(open('issue60-pages.json')); comments=[c for p in pages for c in p]
+          begin_id=int(json.load(open('activation.json'))['fenceBeginCommentId'])
+          if sum(int(c.get('id') or 0)==begin_id for c in comments)!=1: raise SystemExit('fence BEGIN cardinality drift')
+          end_prefix=f"WRITE_QUIET_END | {os.environ['CONTROL_STAGE']} | begin={begin_id}"
+          if any(str(c.get('body') or '').strip().startswith(end_prefix) for c in comments): raise SystemExit('fence already closed before trigger')
+          open_begins={}
+          for c in comments:
+              cid=int(c.get('id') or 0); b=str(c.get('body') or '').strip()
+              if b.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[cid]=b
+              elif b.startswith('WRITE_QUIET_END'):
+                  m=re.search(r'\bbegin=(\d+)\b',b)
+                  if m: open_begins.pop(int(m.group(1)),None)
+          if set(open_begins)!={begin_id}: raise SystemExit(f'unexpected unmatched WRITE_QUIET set: {sorted(open_begins)}')
+          PY
+
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" > workflow-runs-pages.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('workflow-runs-pages.json')); rows=[r for p in pages for r in p.get('workflow_runs',[])]
+          self_id=int(os.environ['GITHUB_RUN_ID'])
+          active=[(int(r.get('id') or 0),str(r.get('status') or ''),str(r.get('name') or '')) for r in rows if int(r.get('id') or 0)!=self_id and str(r.get('status') or '') in {'queued','in_progress','waiting','requested','pending'}]
+          if active: raise SystemExit(f'repository workflows not quiescent before control dispatch: {active[:20]}')
+          PY
+
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > prior-control-run-ids.txt
+          if test -s prior-control-run-ids.txt; then
+            echo 'recovery4 seed/global control already has a workflow_dispatch run; refusing duplicate' >&2
+            cat prior-control-run-ids.txt >&2
+            exit 1
+          fi
+
+      - name: Final live recheck immediately before control dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          MARKER_MAIN="$(python -c "import json; print(json.load(open('activation.json'))['main'])")"
+          FENCE_ID="$(python -c "import json; print(json.load(open('activation.json'))['fenceBeginCommentId'])")"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$MARKER_MAIN"
+          test "$(git hash-object .github/workflows/$CONTROL_WORKFLOW)" = "$CONTROL_BLOB"
+
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > final-issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" > final-workflow-runs-pages.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > final-prior-control-run-ids.txt
+          python - <<'PY'
+          import json,os,re
+          pages=json.load(open('final-issue60-pages.json')); comments=[c for p in pages for c in p]
+          begin_id=int(json.load(open('activation.json'))['fenceBeginCommentId'])
+          main=json.load(open('activation.json'))['main']
+          target=[c for c in comments if int(c.get('id') or 0)==begin_id]
+          if len(target)!=1: raise SystemExit('final fence BEGIN cardinality drift')
+          expected=f"WRITE_QUIET_BEGIN | {os.environ['CONTROL_STAGE']} | main={main}"
+          if not str(target[0].get('body') or '').strip().startswith(expected): raise SystemExit('final exact recovery4 fence BEGIN mismatch')
+          open_begins={}
+          for c in comments:
+              cid=int(c.get('id') or 0); body=str(c.get('body') or '').strip()
+              if body.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[cid]=body
+              elif body.startswith('WRITE_QUIET_END'):
+                  m=re.search(r'\bbegin=(\d+)\b',body)
+                  if m: open_begins.pop(int(m.group(1)),None)
+          if set(open_begins)!={begin_id}: raise SystemExit(f'final unexpected unmatched WRITE_QUIET set: {sorted(open_begins)}')
+          blockers=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED','CLOSED')
+          for c in comments:
+              cid=int(c.get('id') or 0)
+              if cid<=begin_id: continue
+              upper=str(c.get('body') or '').upper()
+              relevant=('AVPS' in upper or 'RECOVERY4' in upper or 'RECOVERY 4' in upper)
+              superseding=('SUPERSED' in upper or ('COORDINATOR' in upper and 'RECOVERY' in upper))
+              if relevant and (any(x in upper for x in blockers) or superseding):
+                  raise SystemExit(f'newer relevant fail-closed/closure/recovery directive: {cid}')
+          runs=json.load(open('final-workflow-runs-pages.json')); rows=[r for p in runs for r in p.get('workflow_runs',[])]
+          self_id=int(os.environ['GITHUB_RUN_ID'])
+          active=[(int(r.get('id') or 0),str(r.get('status') or ''),str(r.get('name') or '')) for r in rows if int(r.get('id') or 0)!=self_id and str(r.get('status') or '') in {'queued','in_progress','waiting','requested','pending'}]
+          if active: raise SystemExit(f'final repository workflows not quiescent: {active[:20]}')
+          PY
+          test ! -s final-prior-control-run-ids.txt
+
+          python - <<'PY' > dispatch-payload.json
+          import json
+          x=json.load(open('activation.json'))
+          print(json.dumps({'ref':'main','inputs':{'expected_main_sha':x['main'],'fence_begin_comment_id':str(x['fenceBeginCommentId'])}},separators=(',',':')))
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/dispatches" --input dispatch-payload.json

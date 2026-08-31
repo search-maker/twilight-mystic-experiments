@@ -81,14 +81,24 @@ jobs:
             'issues: read',
             'repository workflows not quiescent before control dispatch',
             'recovery4 seed/global control already has a workflow_dispatch run; refusing duplicate',
+            'Final live recheck immediately before control dispatch',
+            'final unexpected unmatched WRITE_QUIET set',
+            'newer relevant fail-closed/closure/recovery directive',
+            'final repository workflows not quiescent',
             'actions/workflows/$CONTROL_WORKFLOW/dispatches',
-            "'expected_main_sha':main",
-            "'fence_begin_comment_id':str(fence)",
+            "'expected_main_sha':x['main']",
+            "'fence_begin_comment_id':str(x['fenceBeginCommentId'])",
             'persist-credentials: false',
           )
           for token in required:
               if token not in text: raise SystemExit(f'missing bridge invariant: {token}')
           if text.count('--method POST')!=1: raise SystemExit('bridge must have exactly one POST')
+          if text.count('issues/60/comments?per_page=100')!=2: raise SystemExit('bridge must enumerate Issue60 once in initial guard and once immediately pre-dispatch')
+          if text.count('actions/runs?per_page=100')!=2: raise SystemExit('bridge must enumerate active runs once in initial guard and once immediately pre-dispatch')
+          if text.count('actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100')!=2: raise SystemExit('bridge must duplicate-check target control immediately before dispatch')
+          final_pos=text.index('Final live recheck immediately before control dispatch')
+          post_pos=text.index('gh api --method POST')
+          if final_pos>=post_pos: raise SystemExit('final live guard must textually precede the sole dispatch POST')
           if not re.search(r'on:\s*\n\s*push:',text): raise SystemExit('bridge must be push-triggered only')
           if 'workflow_dispatch:' in text: raise SystemExit('bridge itself must not expose workflow_dispatch')
           forbidden=(
@@ -118,7 +128,7 @@ jobs:
           set -euo pipefail
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
-          test "$(git hash-object origin/main:.github/workflows/$CONTROL_WORKFLOW 2>/dev/null || true)" = "$CONTROL_BLOB" || test "$(git show origin/main:.github/workflows/$CONTROL_WORKFLOW | git hash-object --stdin)" = "$CONTROL_BLOB"
+          test "$(git show origin/main:.github/workflows/$CONTROL_WORKFLOW | git hash-object --stdin)" = "$CONTROL_BLOB"
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > prior-control-run-ids.txt
           if test -s prior-control-run-ids.txt; then
             echo 'recovery4 seed/global control already has a workflow_dispatch run' >&2
@@ -144,6 +154,9 @@ jobs:
             'controlWorkflow':os.environ['CONTROL_WORKFLOW'],
             'controlBlob':os.environ['CONTROL_BLOB'],
             'bridgeSha256':hashlib.sha256(Path(os.environ['BRIDGE_WORKFLOW']).read_bytes()).hexdigest(),
+            'liveLedgerRecheckedImmediatelyPreDispatch':True,
+            'workflowQuiescenceRecheckedImmediatelyPreDispatch':True,
+            'targetDuplicateRecheckedImmediatelyPreDispatch':True,
             'candidateSeedsApplied':False,
             'scientificOrdinalAllocated':False,
             'authorizationCreated':False,

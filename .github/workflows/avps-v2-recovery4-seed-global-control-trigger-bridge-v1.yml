@@ -81,7 +81,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/$FENCE_ID" > fence-begin.json
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
           python - <<'PY'
-          import json,os,subprocess
+          import json,os,re,subprocess
           begin=json.load(open('fence-begin.json'))
           main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
           expected=f"WRITE_QUIET_BEGIN | {os.environ['CONTROL_STAGE']} | main={main}"
@@ -92,6 +92,15 @@ jobs:
           if sum(int(c.get('id') or 0)==begin_id for c in comments)!=1: raise SystemExit('fence BEGIN cardinality drift')
           end_prefix=f"WRITE_QUIET_END | {os.environ['CONTROL_STAGE']} | begin={begin_id}"
           if any(str(c.get('body') or '').strip().startswith(end_prefix) for c in comments): raise SystemExit('fence already closed before trigger')
+          open_begins={}
+          for c in comments:
+              cid=int(c.get('id') or 0); b=str(c.get('body') or '').strip()
+              if b.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[cid]=b
+              elif b.startswith('WRITE_QUIET_END'):
+                  m=re.search(r'\bbegin=(\d+)\b',b)
+                  if m: open_begins.pop(int(m.group(1)),None)
+          if set(open_begins)!={begin_id}: raise SystemExit(f'unexpected unmatched WRITE_QUIET set: {sorted(open_begins)}')
           PY
 
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" > workflow-runs-pages.json
@@ -110,18 +119,58 @@ jobs:
             exit 1
           fi
 
-      - name: Dispatch only the exact merged recovery4 seed/global control on main
+      - name: Final live recheck immediately before control dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          MAIN_SHA="$(git rev-parse origin/main)"
+          MARKER_MAIN="$(python -c "import json; print(json.load(open('activation.json'))['main'])")"
           FENCE_ID="$(python -c "import json; print(json.load(open('activation.json'))['fenceBeginCommentId'])")"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$MARKER_MAIN"
+          test "$(git hash-object .github/workflows/$CONTROL_WORKFLOW)" = "$CONTROL_BLOB"
+
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > final-issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" > final-workflow-runs-pages.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > final-prior-control-run-ids.txt
+          python - <<'PY'
+          import json,os,re
+          pages=json.load(open('final-issue60-pages.json')); comments=[c for p in pages for c in p]
+          begin_id=int(json.load(open('activation.json'))['fenceBeginCommentId'])
+          main=json.load(open('activation.json'))['main']
+          target=[c for c in comments if int(c.get('id') or 0)==begin_id]
+          if len(target)!=1: raise SystemExit('final fence BEGIN cardinality drift')
+          expected=f"WRITE_QUIET_BEGIN | {os.environ['CONTROL_STAGE']} | main={main}"
+          if not str(target[0].get('body') or '').strip().startswith(expected): raise SystemExit('final exact recovery4 fence BEGIN mismatch')
+          open_begins={}
+          for c in comments:
+              cid=int(c.get('id') or 0); body=str(c.get('body') or '').strip()
+              if body.startswith('WRITE_QUIET_BEGIN'):
+                  open_begins[cid]=body
+              elif body.startswith('WRITE_QUIET_END'):
+                  m=re.search(r'\bbegin=(\d+)\b',body)
+                  if m: open_begins.pop(int(m.group(1)),None)
+          if set(open_begins)!={begin_id}: raise SystemExit(f'final unexpected unmatched WRITE_QUIET set: {sorted(open_begins)}')
+          blockers=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED','CLOSED')
+          for c in comments:
+              cid=int(c.get('id') or 0)
+              if cid<=begin_id: continue
+              upper=str(c.get('body') or '').upper()
+              relevant=('AVPS' in upper or 'RECOVERY4' in upper or 'RECOVERY 4' in upper)
+              superseding=('SUPERSED' in upper or ('COORDINATOR' in upper and 'RECOVERY' in upper))
+              if relevant and (any(x in upper for x in blockers) or superseding):
+                  raise SystemExit(f'newer relevant fail-closed/closure/recovery directive: {cid}')
+          runs=json.load(open('final-workflow-runs-pages.json')); rows=[r for p in runs for r in p.get('workflow_runs',[])]
+          self_id=int(os.environ['GITHUB_RUN_ID'])
+          active=[(int(r.get('id') or 0),str(r.get('status') or ''),str(r.get('name') or '')) for r in rows if int(r.get('id') or 0)!=self_id and str(r.get('status') or '') in {'queued','in_progress','waiting','requested','pending'}]
+          if active: raise SystemExit(f'final repository workflows not quiescent: {active[:20]}')
+          PY
+          test ! -s final-prior-control-run-ids.txt
+
           python - <<'PY' > dispatch-payload.json
-          import json,os,subprocess
-          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
-          fence=int(json.load(open('activation.json'))['fenceBeginCommentId'])
-          print(json.dumps({'ref':'main','inputs':{'expected_main_sha':main,'fence_begin_comment_id':str(fence)}},separators=(',',':')))
+          import json
+          x=json.load(open('activation.json'))
+          print(json.dumps({'ref':'main','inputs':{'expected_main_sha':x['main'],'fence_begin_comment_id':str(x['fenceBeginCommentId'])}},separators=(',',':')))
           PY
           gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$CONTROL_WORKFLOW/dispatches" --input dispatch-payload.json

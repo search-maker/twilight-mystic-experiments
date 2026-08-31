@@ -1,0 +1,11 @@
+# AVPS v2 Recovery4 ordinal45 execution publication review
+
+Status: **ZERO RUNTIME / EXACT-BYTE PUBLICATION ONLY / NO DISPATCH**.
+
+This gate is downstream of the separately reviewed and allocated Recovery4 ordinal45 authorization (`6e095b4b1603c90dcee0943295909b30cd1b374d`, PR #774) and the zero-runtime generated execution-package review PR #777 at exact head `eb0ff26cbea7485ace9fe9bf6b1cc1a3c9d60489`, run `33372058737`, artifact `9750420831`, digest `sha256:f1c37d44636797ebcffa5eafe467ded0b9243e5b2e9fdbe66f7fd995986d75dd`.
+
+The future publication PR must change exactly five files and must be byte-for-byte identical to the five outputs declared by that immutable artifact manifest: `.github/workflows/avps-v2-postconsumption-recovery4-science.yml` plus the four files under `runtime-avps-v2-recovery4-ordinal45-v1/`. No pycache or review-output byproduct may be published. The review rechecks the artifact/run/head/digest, exact Git blob and SHA-256 identities, exact authorization branch/head/parent/blob and unique allocation marker, and refuses if the ordinal45 consumed marker or dispatch branch already exists.
+
+Frozen science remains unchanged: 360 cases, 72 CRN groups, five vertical-profile states and 20,000,000 histories per case, with the reviewed Recovery4 runtime adapter/executor/aggregator routing and snapshot-fence-release dependency before all four solver-bearing shards. This gate does not create the dispatch branch or consumed marker, execute libRadtran/MYSTIC/uvspec, open results, authorize richer Level-B mapping, open protected holdouts, use Taylor/Jerusalem residuals or change production. Every richer Operational Atmosphere State v2 `newMappingAuthorized` flag remains false.
+
+The infrastructure mode reviews only these two review-infrastructure files. After this infrastructure is independently reviewed and merged to live main, a separate publication branch `publication/avps-v2-recovery4-ordinal45-execution-package-v1` may publish exactly the five immutable generated outputs and must pass a fresh attempt-1 publication-mode run before merge. Publication merge still does not authorize dispatch; dispatch/consumption and the protected science snapshot choreography remain separate later gates.

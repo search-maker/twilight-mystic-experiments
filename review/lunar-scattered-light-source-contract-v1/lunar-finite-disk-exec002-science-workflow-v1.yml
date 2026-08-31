@@ -17,9 +17,9 @@ env:
   EXECUTION_ID: lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002
   AUTHORIZATION_REVIEW_HEAD: 16efed6164670263bb18d960d76cfb8a42e4a36b
   AUTHORIZATION_REVIEW_RUN_ID: '33342878656'
-  AUTHORIZATION_REVIEW_ARTIFACT_ID: '9741235986'
+  AUTHORIZATION_REVIEW_ARTIFACT_ID: '9741082547'
   AUTHORIZATION_REVIEW_ARTIFACT_NAME: lunar-finite-disk-exec002-authorization-review-v1
-  AUTHORIZATION_REVIEW_ARTIFACT_DIGEST: sha256:7f30472329828f90193297129d567c45e8b6dfadcbe83f804c49630c11a530da
+  AUTHORIZATION_REVIEW_ARTIFACT_DIGEST: sha256:3ae40fa83dd12bd74ad022344dd470f94e75dcfa8e3406bc890b1e5a51a731e9
   AUTHORIZATION_RECHECK_RUN_ID: '33340294645'
   AUTHORIZATION_RECHECK_ARTIFACT_ID: '9740536985'
   AUTHORIZATION_RECHECK_ARTIFACT_DIGEST: sha256:3949d8b0b9d7ef7b9a689613b4088a96a82a79c2a04f284ec44eeb64df1bc713
@@ -66,6 +66,25 @@ jobs:
           python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate --json
           mkdir -p final-preflight-evidence control-proof auth-review-proof
           git ls-files -z > final-preflight-evidence/tracked-files.nul
+          git rev-parse HEAD^ > final-preflight-evidence/execution-parent.txt
+
+      - name: Download exact solver-free authorization review artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.AUTHORIZATION_REVIEW_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.AUTHORIZATION_REVIEW_RUN_ID }}
+          path: auth-review-proof
+
+      - name: Download exact fresh-seed control artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.CONTROL_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONTROL_RUN_ID }}
+          path: control-proof
 
       - name: Bind exact solver-free authorization review
         shell: bash
@@ -84,10 +103,6 @@ jobs:
           assert a['id']==int(os.environ['AUTHORIZATION_REVIEW_ARTIFACT_ID'])
           assert a['name']==os.environ['AUTHORIZATION_REVIEW_ARTIFACT_NAME']
           assert a['digest']==os.environ['AUTHORIZATION_REVIEW_ARTIFACT_DIGEST']
-          PY
-          gh run download "$AUTHORIZATION_REVIEW_RUN_ID" -n "$AUTHORIZATION_REVIEW_ARTIFACT_NAME" --dir auth-review-proof
-          python - <<'PY'
-          import json, os
           p=json.load(open('auth-review-proof/authorization-review-receipt.json'))
           assert p['status']=='PASS_LUNAR_FINITE_DISK_EXEC002_AUTHORIZATION_REVIEW_SOLVER_FREE_NOT_DISPATCHED'
           assert p['reviewHead']==os.environ['AUTHORIZATION_REVIEW_HEAD']
@@ -110,7 +125,6 @@ jobs:
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/artifacts/$CONTROL_ARTIFACT_ID --jq .digest)" = "$CONTROL_ARTIFACT_DIGEST"
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$CONTROL_RUN_ID --jq .run_attempt)" = 1
           test "$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$CONTROL_RUN_ID --jq .conclusion)" = success
-          gh run download "$CONTROL_RUN_ID" -n "$CONTROL_ARTIFACT_NAME" --dir control-proof
           test -f control-proof/exec002-candidate-seed-ledger.json
           test -f control-proof/exec002_repository_global_seed_scan.py
           python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate-candidate-ledger --candidate-ledger control-proof/exec002-candidate-seed-ledger.json > final-preflight-evidence/candidate-ledger-validation.json
@@ -135,16 +149,16 @@ jobs:
           import json, os
           pages=json.load(open('final-preflight-evidence/issue60-pages.json'))
           comments=[r for page in pages for r in page]
+          parent=open('final-preflight-evidence/execution-parent.txt').read().strip()
           def body(r): return str(r.get('body') or '')
           begin_rows=[r for r in comments if f"WRITE_QUIET_BEGIN | {os.environ['FENCE_STAGE']}" in body(r) and f"branch={os.environ['GITHUB_REF_NAME']}" in body(r)]
           assert len(begin_rows)==1, ('matching lane-owned begins',len(begin_rows))
           begin=begin_rows[0]; begin_id=int(begin['id'])
-          assert f"parent={os.environ['AUTHORIZATION_REVIEW_HEAD']}" in body(begin)
+          assert f"parent={parent}" in body(begin)
+          assert f"authorizationReviewHead={os.environ['AUTHORIZATION_REVIEW_HEAD']}" in body(begin)
           end_rows=[r for r in comments if f"WRITE_QUIET_END | {os.environ['FENCE_STAGE']}" in body(r)]
           assert not any(f'begin={begin_id}' in body(r) or f'beginComment={begin_id}' in body(r) or f'begin_comment={begin_id}' in body(r) for r in end_rows)
           open('final-preflight-evidence/fence-begin-id.txt','w').write(str(begin_id)+'\n')
-          # Refuse if any later unmatched global BEGIN exists. This makes the execution
-          # preflight consume only the snapshot for which it was actually fenced.
           later_begins=[r for r in comments if int(r['id'])>begin_id and 'WRITE_QUIET_BEGIN |' in body(r)]
           assert not later_begins, ('newer WRITE_QUIET_BEGIN after lane fence', [r['id'] for r in later_begins])
           print('matching_write_quiet_begin='+str(begin_id))
@@ -236,6 +250,8 @@ jobs:
             'status':'PASS_LUNAR_FINITE_DISK_EXEC002_FINAL_PREFLIGHT_GLOBAL_SCAN_NO_SOLVER',
             'executionId':os.environ['EXECUTION_ID'],
             'executionHead':os.environ['GITHUB_SHA'],
+            'executionParent':open('final-preflight-evidence/execution-parent.txt').read().strip(),
+            'authorizationReviewHead':os.environ['AUTHORIZATION_REVIEW_HEAD'],
             'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
             'workflowRunAttempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
             'fenceBeginCommentId':int(open('final-preflight-evidence/fence-begin-id.txt').read().strip()),
@@ -321,19 +337,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.CONTROL_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONTROL_RUN_ID }}
+          path: control-proof
       - name: Bind exact one-shot execution and final preflight
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_REF_NAME" = 'execution/lunar-finite-disk-transfer-kernel-sensitivity-v1-exec002'
           git merge-base --is-ancestor "$AUTHORIZATION_REVIEW_HEAD" HEAD
-          mkdir -p shard-artifact/cases work/prepared control-proof
+          mkdir -p shard-artifact/cases work/prepared
           python tests/test_lunar_finite_disk_exec002_authorization_v1.py
           python tests/test_lunar_finite_disk_exec002_runtime_v1.py
-          gh run download "$CONTROL_RUN_ID" -n "$CONTROL_ARTIFACT_NAME" --dir control-proof
           python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate-candidate-ledger --candidate-ledger control-proof/exec002-candidate-seed-ledger.json >/dev/null
       - uses: actions/download-artifact@v4
         with:
@@ -419,14 +439,18 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.CONTROL_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONTROL_RUN_ID }}
+          path: control-proof
       - name: Recover exact candidate ledger
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p control-proof aggregate-results/cases
-          gh run download "$CONTROL_RUN_ID" -n "$CONTROL_ARTIFACT_NAME" --dir control-proof
+          mkdir -p aggregate-results/cases
           python review/lunar-scattered-light-source-contract-v1/lunar_finite_disk_exec002.py validate-candidate-ledger --candidate-ledger control-proof/exec002-candidate-seed-ledger.json >/dev/null
       - uses: actions/download-artifact@v4
         with:

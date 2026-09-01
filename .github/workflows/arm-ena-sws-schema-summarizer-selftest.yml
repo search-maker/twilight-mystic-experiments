@@ -1,0 +1,60 @@
+name: ARM ENA SWS Schema Summarizer Selftest
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - review/arm-ena-sws-v1-stage0/summarize_ena_sws_schema_probe.py
+      - .github/workflows/arm-ena-sws-schema-summarizer-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build synthetic non-photometric probe fixture
+        run: |
+          mkdir -p /tmp/probe
+          cat > /tmp/probe/ena_sws_e0_stream_summary.json <<'JSON'
+          {"processed_event_count":1,"protected_variable_values_read":false,"raw_sws_files_retained":false}
+          JSON
+          cat > /tmp/probe/ena_sws_e0_stream_ledger.jsonl <<'JSONL'
+          {"case_id":"2017-04-05_dusk","disposition":"E0_PASS_BLIND_CANDIDATE","timing_pass":true,"validity_resolved_without_photometric_values":true,"validity_pass":true,"target_pixel_map":"x|10|550.0","qc_variables_used":"qc_radiance","protected_variable_values_read":false,"raw_sws_files_retained":false}
+          JSONL
+          cat > /tmp/probe/ena_sws_e0_stream_schema.jsonl <<'JSONL'
+          {"kind":"sws","source_file":"enaswsC1.b1.20170405.000000.nc","source_sha256":"abc","dod_version":"1.0","process_version":"x","protected_variable_values_read":false,"variables":[{"name":"radiance","dtype":"f4","dimensions":["time","wavelength"],"shape":[100,300],"protected_photometric_values":true,"safe_qc_values_allowed":false,"long_name":"spectral radiance","standard_name":"","units":"W m-2 nm-1 sr-1"},{"name":"qc_radiance","dtype":"i4","dimensions":["time","wavelength"],"shape":[100,300],"protected_photometric_values":false,"safe_qc_values_allowed":true,"long_name":"quality check for radiance","standard_name":"","units":"1"},{"name":"shutter_state","dtype":"i4","dimensions":["time"],"shape":[100],"protected_photometric_values":false,"safe_qc_values_allowed":false,"long_name":"shutter state","standard_name":"","units":"1"}]}
+          JSONL
+          : > /tmp/probe/ena_sws_e0_stream_provenance.jsonl
+          : > /tmp/probe/ena_sws_e0_query_manifest.jsonl
+      - name: Summarize fixture
+        run: |
+          python review/arm-ena-sws-v1-stage0/summarize_ena_sws_schema_probe.py /tmp/probe --output /tmp/report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/report.json'))
+          assert r['protected_variable_values_read'] is False
+          assert r['raw_sws_files_retained'] is False
+          assert r['safe_qc_candidate_count']==1
+          assert r['housekeeping_metadata_candidate_count']==1
+          assert r['schema_by_kind']['sws']['protected_photometric_metadata_only']['radiance']['units']=='W m-2 nm-1 sr-1'
+          assert r['next_state'].startswith('SAFE_NONPHOTOMETRIC_VALIDITY_PATH_PRESENT')
+          print('SCHEMA_SUMMARIZER_PASS')
+          PY
+      - name: Raw-file refusal test
+        run: |
+          cp -r /tmp/probe /tmp/probe_bad
+          touch /tmp/probe_bad/forbidden.nc
+          (cd /tmp/probe_bad && zip -q -r /tmp/probe_bad.zip .)
+          if python review/arm-ena-sws-v1-stage0/summarize_ena_sws_schema_probe.py /tmp/probe_bad.zip; then
+            echo 'ERROR: raw NetCDF was accepted' >&2
+            exit 1
+          fi
+          echo RAW_NETCDF_REFUSAL_PASS

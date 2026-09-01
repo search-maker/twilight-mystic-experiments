@@ -138,7 +138,7 @@ jobs:
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > comments.json
           gh run download "$SOURCE_RUN" -n "$SOURCE_ARTIFACT_NAME" -D accepted
           python - <<'PY'
-          import json, os
+          import json, os, re
           p=json.load(open('p.json')); r=json.load(open('r.json')); a=json.load(open('a.json')); v=json.load(open('v.json')); auth=json.load(open('auth.json'))
           if p['head']['sha']!=os.environ['SOURCE_HEAD']: raise SystemExit('source head drift')
           if r['run_attempt']!=1 or r['conclusion']!='success' or r['head_sha']!=os.environ['SOURCE_HEAD']: raise SystemExit('source run drift')
@@ -149,20 +149,19 @@ jobs:
           if sum(b.strip()==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation drift')
           if any(b.strip().startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('already consumed')
           active={}
+          end_id_re=re.compile(r'(?:^|[|\s])(begin|beginComment|begin_comment)=([^\s|]+)')
           for c in cs:
               first=(str(c.get('body') or '').splitlines() or [''])[0].strip()
               if first.startswith('WRITE_QUIET_BEGIN'):
                   active[int(c['id'])]=1
               elif first.startswith('WRITE_QUIET_END'):
-                  f={}
-                  for part in first.split('|')[1:]:
-                      if '=' in part:
-                          k,val=part.split('=',1); f[k.strip()]=val.strip()
-                  ids=[]
-                  for k in ('begin','beginComment','begin_comment'):
-                      if k in f:
-                          if not f[k].isdigit(): raise SystemExit('bad END id')
-                          ids.append(int(f[k]))
+                  pairs=end_id_re.findall(first)
+                  ids=[]; by_key={}
+                  for k,val in pairs:
+                      if not val.isdigit(): raise SystemExit('bad END id')
+                      ident=int(val)
+                      if k in by_key and by_key[k]!=ident: raise SystemExit('conflicting repeated END alias')
+                      by_key[k]=ident; ids.append(ident)
                   if len(set(ids))>1: raise SystemExit('conflicting END aliases')
                   if ids: active.pop(ids[0],None)
           if active: raise SystemExit('unmatched WRITE_QUIET')

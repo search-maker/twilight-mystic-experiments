@@ -1,0 +1,50 @@
+name: ARM Order268666 Live3 CSPHOT Recovery V1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-exact8-release-analysis-v1
+    paths:
+      - .github/workflows/arm-order268666-live3-csphot-recovery-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recover exact non-SASZE CSPHOT files
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='ftp://ftp.archive.arm.gov/buchingerp1/268666/sgpcsphotaodfiltqav3C1.a1'
+          mkdir -p recovered
+          cat > expected.tsv <<'EOF'
+          sgpcsphotaodfiltqav3C1.a1.20240127.220837.nc	12860	b40652b5024b5687be7b957ef23fa65b00bc28a175641c265ca92d599b6f324f
+          sgpcsphotaodfiltqav3C1.a1.20240201.171139.nc	17616	ab0f608e59a5c3090867e208487e2be6dc4952489e1a22d1741fb307ff9bdd2f
+          sgpcsphotaodfiltqav3C1.a1.20240328.130728.nc	22864	2cca7c432045103d229e349cb95c7168a0a8b1df0e19671bb4d6e7ff66e513ef
+          EOF
+          printf 'filename,size_bytes,sha256,status\n' > recovery_manifest.csv
+          while IFS=$'\t' read -r name expected_size expected_sha; do
+            case "$name" in *sasze*|*SASZE*) echo 'HOLDOUT FIREWALL VIOLATION' >&2; exit 9;; esac
+            echo "Recovering $name"
+            curl --fail --show-error --silent --retry 2 --retry-delay 2 "$base/$name" -o "recovered/$name"
+            size="$(stat -c %s "recovered/$name")"
+            sha="$(sha256sum "recovered/$name" | awk '{print $1}')"
+            test "$size" = "$expected_size"
+            test "$sha" = "$expected_sha"
+            printf '%s,%s,%s,RECOVERED_VERIFIED\n' "$name" "$size" "$sha" >> recovery_manifest.csv
+          done < expected.tsv
+
+      - name: Upload verified CSPHOT recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM-order268666-live3-csphot-recovery-v1
+          path: |
+            recovered/*.nc
+            recovery_manifest.csv
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7

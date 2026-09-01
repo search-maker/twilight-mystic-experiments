@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,12 @@ MODULE = (
     / "integration"
     / "measurement-operator-provenance-v1"
     / "measurement_operator_contract.py"
+)
+KOOMEN_OPERATOR = (
+    ROOT
+    / "review"
+    / "koomen-tousey-measurement-operator-audit-v1"
+    / "koomen_1952_zenith_operator.partial.json"
 )
 
 
@@ -89,6 +96,12 @@ class MeasurementOperatorContractTests(unittest.TestCase):
         with self.assertRaises(contract.MeasurementOperatorRefusal):
             self.compare(measured, self.operator("synthetic"))
 
+    def test_complete_status_cannot_hide_explicit_null(self):
+        measured = self.operator("measured")
+        measured["operatorSpec"]["spectralResponse"]["responseId"] = None
+        with self.assertRaises(contract.MeasurementOperatorRefusal):
+            contract.validate_operator(measured, "measured")
+
     def test_point_vs_wide_field_is_refused_quantitatively(self):
         measured = self.operator("measured")
         synthetic = self.operator("synthetic")
@@ -141,9 +154,6 @@ class MeasurementOperatorContractTests(unittest.TestCase):
         measured["status"]["spectralResponse"] = "partial"
         measured["status"]["calibration"] = "partial"
         measured["status"]["temporalResponse"] = "partial"
-        synthetic["status"] = {
-            component: "complete" for component in contract.MATERIAL_COMPONENTS
-        }
         result = self.compare(measured, synthetic, claim="diagnostic")
         self.assertEqual(result["status"], "DIAGNOSTIC_ONLY")
         self.assertTrue(result["sameOperatorSpec"])
@@ -151,6 +161,24 @@ class MeasurementOperatorContractTests(unittest.TestCase):
             set(result["incompleteMeasuredComponents"]),
             {"angularResponse", "spectralResponse", "calibration", "temporalResponse"},
         )
+
+    def test_committed_koomen_fixture_is_diagnostic_only(self):
+        koomen = json.loads(KOOMEN_OPERATOR.read_text())
+        result = self.compare(koomen, copy.deepcopy(koomen), claim="diagnostic")
+        self.assertEqual(result["status"], "DIAGNOSTIC_ONLY")
+        self.assertTrue(result["sameOperatorSpec"])
+        self.assertEqual(
+            set(result["incompleteMeasuredComponents"]),
+            {
+                "angularResponse",
+                "spectralResponse",
+                "calibration",
+                "temporalResponse",
+                "geometryConvention",
+            },
+        )
+        with self.assertRaises(contract.MeasurementOperatorRefusal):
+            self.compare(koomen, copy.deepcopy(koomen), claim="quantitative-validation")
 
     def test_diagnostic_reports_operator_mismatch_without_passing_it(self):
         measured = self.operator("measured")

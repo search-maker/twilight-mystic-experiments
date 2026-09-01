@@ -229,25 +229,64 @@ jobs:
           if g.get('repositoryGlobalCollisionCount',g.get('collisionCount'))!=0: raise SystemExit('repository-global candidate-seed collision')
           PY
 
-      - name: Fresh global ordinal review and freeze proposal-only receipt
+      - name: Fresh global ordinal and final live governance review
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_BASE"
+          test "$(git ls-remote origin refs/heads/$AUTH_BRANCH | cut -f1)" = "$AUTH_HEAD"
+          if git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" >/dev/null 2>&1; then
+            echo 'dispatch branch appeared after global scan' >&2
+            exit 1
+          fi
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > dispatch-control/final-issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-postconsumption-recovery4-science.yml/runs?event=workflow_dispatch&per_page=100" > dispatch-control/final-science-run-pages.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > dispatch-control/final-authorization-pr.json
           PYTHONPATH=experiments/aerosol-vertical-profile-sensitivity-v1 python - <<'PY'
-          import json,os
+          import json,os,re
           from pathlib import Path
           import preauthorization_surface, global_ordinal
+          pages=json.load(open('dispatch-control/final-issue60-pages.json'))
+          comments=[c for page in pages for c in page]
+          bodies=[str(c.get('body') or '').strip() for c in comments]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('final allocation marker drift')
+          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=0: raise SystemExit('ordinal45 consumed during review')
+          opens={}
+          aliases=('begin','beginComment','begin_comment')
+          for c in comments:
+              cid=int(c.get('id') or 0); body=str(c.get('body') or '').strip()
+              if body.startswith('WRITE_QUIET_BEGIN'):
+                  opens[cid]=body
+              elif body.startswith('WRITE_QUIET_END'):
+                  first=body.splitlines()[0]; vals=[]
+                  for key in aliases:
+                      vals += re.findall(r'(?<![A-Za-z0-9_])'+re.escape(key)+r'=(\d+)(?![A-Za-z0-9_])',first)
+                  if vals:
+                      if len(set(vals))!=1: raise SystemExit(f'final conflicting WRITE_QUIET_END aliases at {cid}: {vals}')
+                      opens.pop(int(vals[0]),None)
+          if opens: raise SystemExit(f'final unmatched WRITE_QUIET_BEGIN: {sorted(opens)}')
+          relevant=('AVPS','AEROSOL_VERTICAL_PROFILE','ORDINAL45')
+          blockers=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED','QUARANTINE_DOWNSTREAM=TRUE')
+          for c in comments:
+              if int(c.get('id') or 0) <= 5493157205: continue
+              upper=str(c.get('body') or '').upper()
+              if any(x in upper for x in relevant) and any(x in upper for x in blockers):
+                  raise SystemExit(f'final newer AVPS fail-closed/quarantine directive: {c.get("id")}')
+          sr=json.load(open('dispatch-control/final-science-run-pages.json'))
+          runs=[r for page in sr for r in page.get('workflow_runs',[])]
+          if runs: raise SystemExit(f'Recovery4 science workflow_dispatch appeared during review: {[r.get("id") for r in runs]}')
+          pr=json.load(open('dispatch-control/final-authorization-pr.json'))
+          if pr['number']!=774 or pr['state']!='open' or pr['draft'] is not True or pr['merged_at'] is not None or pr['head']['sha']!=os.environ['AUTH_HEAD'] or pr['base']['sha']!=os.environ['AUTH_PARENT']:
+              raise SystemExit('final authorization PR drift')
           payload=preauthorization_surface.collect(os.environ['GITHUB_REPOSITORY'],os.environ['GITHUB_TOKEN'])
           latest=preauthorization_surface.latest_consumed_or_dispatched_ordinal(payload)
           observations=global_ordinal.authoritative_global_ordinal_observations(payload,current_run_id=int(os.environ['GITHUB_RUN_ID']))
           ordinals=sorted({int(row['ordinal']) for row in observations})
           if latest!=44: raise SystemExit(f'latest consumed/dispatched global ordinal drift: {latest}')
           if not ordinals or max(ordinals)!=45: raise SystemExit(f'global ordinal surface drift: {ordinals[-10:]}')
-          bodies=[str(c.get('body') or '').strip() for c in payload.get('issue60Comments',[])]
-          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('ordinal45 allocation marker drift')
-          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=0: raise SystemExit('ordinal45 already consumed')
           proposal={
             'schemaVersion':1,
             'status':'PASS_AVPS_V2_RECOVERY4_ORDINAL45_DISPATCH_CONSUMPTION_CONTROL_PROPOSAL_ZERO_RUNTIME',

@@ -26,6 +26,12 @@ json_filenames = BASE.json_filenames
 iso_day = BASE.iso_day
 plus_one_day = BASE.plus_one_day
 
+# Capture immutable references BEFORE main() replaces the historical module's
+# transport symbols with the sanitized wrappers. Calling BASE.query_day after
+# that replacement would recurse into this shim.
+_BASE_QUERY_DAY = BASE.query_day
+_BASE_DOWNLOAD_NATIVE = BASE.download_native
+
 
 class ARMTransportError(RuntimeError):
     """Sanitized transport failure whose text contains no request URL/secret."""
@@ -37,14 +43,14 @@ def _safe_failure(exc: BaseException) -> ARMTransportError:
 
 def query_day(userpair: str, ds: str, yyyymmdd: str, pattern):
     try:
-        return BASE.query_day(userpair, ds, yyyymmdd, pattern)
+        return _BASE_QUERY_DAY(userpair, ds, yyyymmdd, pattern)
     except Exception as exc:
         raise _safe_failure(exc) from None
 
 
 def download_native(userpair: str, filename: str, destination):
     try:
-        return BASE.download_native(userpair, filename, destination)
+        return _BASE_DOWNLOAD_NATIVE(userpair, filename, destination)
     except Exception as exc:
         raise _safe_failure(exc) from None
 

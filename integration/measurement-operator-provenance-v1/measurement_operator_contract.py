@@ -74,6 +74,16 @@ def _deep_copy_json(value: Any, name: str) -> Any:
     return json.loads(_canonical_json(value, name))
 
 
+def _contains_null(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_null(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_null(item) for item in value)
+    return False
+
+
 def _fingerprint(spec: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(spec, "operatorSpec").encode("utf-8")).hexdigest()
 
@@ -127,6 +137,10 @@ def validate_operator(record: dict[str, Any], name: str = "operator") -> dict[st
         if not section_value:
             raise MeasurementOperatorRefusal(
                 f"{name}.operatorSpec.{section} must be explicit and non-empty"
+            )
+        if status[section] == "complete" and _contains_null(section_value):
+            raise MeasurementOperatorRefusal(
+                f"{name}.status.{section}=complete is inconsistent with explicit null/unknown data"
             )
 
     provenance = _mapping(record.get("provenance"), f"{name}.provenance")

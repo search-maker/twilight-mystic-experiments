@@ -1,0 +1,52 @@
+name: ARM Order268666 Live3 Sonde Recovery V1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-exact8-release-analysis-v1
+    paths:
+      - .github/workflows/arm-order268666-live3-sonde-recovery-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recover exact non-SASZE bracketing sondes
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='ftp://ftp.archive.arm.gov/buchingerp1/268666/sgpsondewnpnC1.b1'
+          mkdir -p recovered
+          cat > expected.tsv <<'EOF'
+          sgpsondewnpnC1.b1.20240127.231800.cdf	430616	b159482b72327eb868861a5cb2a41d517de2df75bf9ca9660f3d42510ab577e8
+          sgpsondewnpnC1.b1.20240128.173000.cdf	522760	3e234ade19970fb76cb38f7b1bd671af112a5fef3861e7d2c29b0ea5c832b0e2
+          sgpsondewnpnC1.b1.20240201.171800.cdf	525464	ff3040a0ea75ad898ec7cf45df6e8c0e3efd8aa59436fbf38b78c51a597490ea
+          sgpsondewnpnC1.b1.20240202.053300.cdf	513816	5cacf58ac48b1d681bc943d4a4232fabe04b59c67535d81f90398cb561bcc40d
+          sgpsondewnpnC1.b1.20240328.192300.cdf	511008	c1e8591aba8efd653cf0b27e3f0b7ee90374bc9c5f93cf3d2351bf09a621f405
+          sgpsondewnpnC1.b1.20240329.113100.cdf	418864	89fe535fdfc0d5b1d9d7b3b5020f155b2756b313dc847cbfc19beedd977b27f4
+          EOF
+          printf 'filename,size_bytes,sha256,status\n' > recovery_manifest.csv
+          while IFS=$'\t' read -r name expected_size expected_sha; do
+            case "$name" in *sasze*|*SASZE*) echo 'HOLDOUT FIREWALL VIOLATION' >&2; exit 9;; esac
+            curl --fail --show-error --silent --retry 2 --retry-delay 2 "$base/$name" -o "recovered/$name"
+            size="$(stat -c %s "recovered/$name")"
+            sha="$(sha256sum "recovered/$name" | awk '{print $1}')"
+            test "$size" = "$expected_size"
+            test "$sha" = "$expected_sha"
+            printf '%s,%s,%s,RECOVERED_VERIFIED\n' "$name" "$size" "$sha" >> recovery_manifest.csv
+          done < expected.tsv
+
+      - name: Upload verified sonde recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM-order268666-live3-sonde-recovery-v1
+          path: |
+            recovered/*.cdf
+            recovery_manifest.csv
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7

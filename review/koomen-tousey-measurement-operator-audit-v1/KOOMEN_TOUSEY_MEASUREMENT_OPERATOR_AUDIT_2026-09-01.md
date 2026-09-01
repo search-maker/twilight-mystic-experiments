@@ -5,9 +5,9 @@
 
 ## Bottom line
 
-The historical Koomen observable used at the zenith is **not a hemispheric or SQM-like wide-field quantity**. The 1952 primary paper describes a recording photometer with a **nominal circular 1.5-degree-diameter field of view**, swept along a meridian through the zenith. Its output `B` is the calibrated brightness of a local place in the sky, published in candles per square foot. The paper separately measures planar illumination `E` on opal glass and states that `E` can be obtained by integrating `B` over the sky; this independently rules out interpreting `B` itself as a hemispheric integral.
+The historical Koomen observable used at the zenith is **not a hemispheric or SQM-like wide-field quantity**. The 1952 primary paper describes a recording photometer with a **nominal circular 1.5-degree-diameter field of view** (0.75-degree half-angle; nominal geometric cone support `5.382957282296464e-4 sr`), swept along a meridian through the zenith. Its output `B` is the calibrated brightness of a local place in the sky, published in candles per square foot. The paper separately measures planar illumination `E` on opal glass and states that `E` can be obtained by integrating `B` over the sky; this independently rules out interpreting `B` itself as a hemispheric integral.
 
-However, the historical operator is **not completely reconstructable from the recovered sources**. The source gives the nominal 1.5-degree field but not the within-field angular weighting/vignetting function; it targets the light-adapted-eye spectral response but does not provide the exact combined response curve in this paper; it explicitly says a later-twilight color/Purkinje correction was needed but was not applied; the 12-second full-meridian sweep is known but the detector/recorder time constant or exact effective integration time is not; no numerical absolute-calibration uncertainty is stated; and `H` is defined only as solar altitude above/below the horizon without stating geometric versus apparent/refracted convention.
+However, the historical operator is **not completely reconstructable from the recovered sources**. The source gives the nominal 1.5-degree field but not the within-field angular weighting/vignetting function, so the quoted solid angle is geometric support only, not a recovered effective weighted solid angle. It targets the light-adapted-eye spectral response but does not provide the exact combined response curve in this paper; it explicitly says a later-twilight color/Purkinje correction was needed but was not applied; the 12-second full-meridian sweep is known but the detector/recorder time constant or exact effective integration time is not; no numerical absolute-calibration uncertainty is stated; and `H` is defined only as solar altitude above/below the horizon without stating geometric versus apparent/refracted convention.
 
 Therefore Issue #828's **-0.2826 mag original-wide-SQM minus true-point-zenith diagnostic must remain a same-atmosphere SQM operator diagnostic, not an attribution of about 72% of the Taylor-Koomen offset to instrument field of view**. The historical Koomen field is narrow enough that a point-zenith quantity may be a useful approximation, but the source does not support silently equating the two, and the Taylor-versus-Koomen offset is also a cross-site/cross-season/reduced-data comparison rather than a controlled two-instrument experiment.
 
@@ -17,7 +17,7 @@ Therefore Issue #828's **-0.2826 mag original-wide-SQM minus true-point-zenith d
 
 M. J. Koomen, C. Lock, D. M. Packer, R. Scolnik, R. Tousey, and E. O. Hulburt, **"Measurements of the Brightness of the Twilight Sky,"** *Journal of the Optical Society of America* **42**(5), 353-356 (1952), DOI `10.1364/JOSA.42.000353`.
 
-- **p.353, instrument paragraph:** nine-stage RCA Type P22 photomultiplier; ground glass and green filter; 0.6-cm circular aperture at the lens focus; the paper explicitly says the **"field of view was therefore 1.5 degrees in diameter"**; the green filter was intended to make the response that of the light-adapted eye; the instrument automatically swept any meridian from horizon to horizon through the zenith in 12 s; a DC amplifier/Brush recorder followed the sweep.
+- **p.353, instrument paragraph:** nine-stage RCA Type P22 photomultiplier; ground glass and green filter; 0.6-cm circular aperture at the lens focus; the paper explicitly says the **"field of view was therefore 1.5 degrees in diameter"**. That gives a nominal half-angle of 0.75 degree and geometric cone support `2*pi*(1-cos(0.75 deg)) = 5.382957282296464e-4 sr`; this is not an inferred weighting. The green filter was intended to make the response that of the light-adapted eye; the instrument automatically swept any meridian from horizon to horizon through the zenith in 12 s; a DC amplifier/Brush recorder followed the sweep.
 - **p.353, calibration paragraph:** daylight-sky response was compared with a calibrated blue-filtered Macbeth illuminometer. Relative response after changes in PMT voltage, amplifier gain, and lens aperture was transferred with a standard tungsten lamp attenuated in a known nonselective manner. A luminous radium-phosphor button was used as an in-series calibration check.
 - **p.353, spectral limitation paragraph:** the authors state that values were photometrically correct in the first half of twilight, but that the second half required a color/Purkinje correction that they did not apply because the needed sky spectral distributions were not known exactly.
 - **p.353, observing sample:** Sacramento Peak: seven clear/cloudless/moonless evenings in May-June 1951; Maryland: January-March 1951. Reported clear-day vertical transmission for sunlight viewed with the light-adapted eye was 85-90% at Sacramento Peak and 75-85% in Maryland.
@@ -29,7 +29,7 @@ For a zenith Koomen series, the directly relevant published source cells are the
 
 ### 1.2 Spectral-correction reference cited by the instrument paper
 
-Koomen et al. p.353 footnote 6 cites W. S. Plymale, *Review of Scientific Instruments* **18**, 535-539 (1947), **"Filters for Spectral Corrections of Multiplier Photo-Tubes Used from Scotopic to Photopic Brightness Levels."** The work concerns correction filters for RCA 1P21/1P22 tubes over the Purkinje range. The exact filter-glass identity/combined response curve used in the 1952 twilight photometer has not yet been recovered with enough source binding to claim an exact spectral operator.
+Koomen et al. p.353 footnote 6 cites W. S. Plymale, *Review of Scientific Instruments* **18**, 535-539 (1947), **"Filters for Spectral Corrections of Multiplier Photo-Tubes Used from Scotopic to Photopic Brightness Levels."** The indexed abstract states that the work gives filter-glass numbers and thicknesses for RCA 1P21/1P22 correction over the Purkinje range. The exact filter-glass identity/combined response curve actually used in the 1952 twilight photometer has not yet been source-bound strongly enough to claim an exact spectral operator.
 
 A related later paper, W. S. Plymale and G. T. Hicks, **"Physical Photometry in the Purkinje Range,"** JOSA **42**, 344-348 (1952), DOI `10.1364/JOSA.42.000344`, documents the difficulty of heterochromatic low-luminance photometry and shows 1P22/filter correction behavior. It supports the importance of the spectral issue but is not treated here as proof of the exact 1952 twilight filter curve.
 
@@ -58,7 +58,8 @@ This means the plotted/modelled "Koomen" curve in Taylor is already a transforme
 | Component | Best-supported reconstruction | Status |
 |---|---|---|
 | Observable class | Local sky brightness/luminance `B`; finite aperture, not hemispheric | **known** |
-| Nominal angular field | Circular, **1.5 degrees diameter / 0.75 degrees radius** | **known** |
+| Nominal angular field | Circular, **1.5 degrees diameter / 0.75 degrees radius**; geometric support `5.38296e-4 sr` | **known** |
+| Effective weighted solid angle | Requires within-field acceptance | **unknown** |
 | Within-field acceptance | Exact radial weighting, vignetting/baffling response | **unknown** |
 | Pointing at zenith | Center crosses `P=90 degrees` during meridian sweep; `Z` degenerate at zenith | **known** |
 | Scan | Horizon-to-horizon through zenith in **12 s** | **known** |
@@ -85,7 +86,7 @@ Q_K = C_K [ integral T_K(t) integral A_K(Omega)
               integral R_K(lambda) L_lambda(Omega,t) d lambda d Omega dt ]
 ```
 
-with the normalization implied by the calibrated luminance/brightness measurement and with `C_K` reproducing the historical photometric calibration/units. For the zenith table datum, `A_K` is centered on zenith with support nominally inside the 1.5-degree circular field. The exact angular weighting is not known, and the exact late-twilight spectral operator is not known.
+with the normalization implied by the calibrated luminance/brightness measurement and with `C_K` reproducing the historical photometric calibration/units. For the zenith table datum, `A_K` is centered on zenith with support nominally inside the 1.5-degree circular field (geometric support `5.38296e-4 sr`). The exact angular weighting and therefore effective weighted solid angle are not known, and the exact late-twilight spectral operator is not known.
 
 The *published table value* adds another reduction layer: it is a value read from a smooth `B`-versus-solar-altitude curve built from many historical record values, not a single instantaneous raw datum. A strict comparison to a table value therefore also inherits historical night-to-night atmospheric/sample variability that cannot be reconstructed from the table alone.
 

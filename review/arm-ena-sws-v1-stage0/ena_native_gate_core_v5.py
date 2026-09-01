@@ -19,6 +19,8 @@ from typing import Any
 import netCDF4
 import numpy as np
 
+import ena_native_gate_core_v1 as V1
+import ena_native_gate_core_v2 as V2
 import ena_native_gate_core_v4 as V4
 from ena_native_gate_core_v4 import *
 
@@ -133,7 +135,7 @@ def _vertical_support_for_variable(
     ntime: int,
     aerosol_mask: np.ndarray,
 ) -> dict[str, Any]:
-    aval = V4._take_time(ds.variables[name], idx, ntime)
+    aval = V1._take_time(ds.variables[name], idx, ntime)
     if aval is None:
         return {"ok": False, "reason": "SCIENCE_TIME_LAYOUT_UNSUPPORTED", "variable": name}
     vals = np.asarray(np.ma.getdata(aval), dtype=float)
@@ -141,10 +143,10 @@ def _vertical_support_for_variable(
     if vals.shape != aerosol_mask.shape:
         return {"ok": False, "reason": "SCIENCE_FEATURE_MASK_SHAPE_MISMATCH", "variable": name}
 
-    qc = V4._qc_for(ds, name)
+    qc = V1._qc_for(ds, name)
     if qc is None:
         return {"ok": False, "reason": "SCIENCE_NATIVE_QC_MISSING", "variable": name}
-    qa = V4._take_time(qc, idx, ntime)
+    qa = V1._take_time(qc, idx, ntime)
     if qa is None or qa.shape != vals.shape:
         return {"ok": False, "reason": "SCIENCE_NATIVE_QC_LAYOUT_UNSUPPORTED", "variable": name}
     qd = np.asarray(np.ma.getdata(qa), dtype=float)
@@ -196,9 +198,9 @@ def _vertical_support_for_variable(
 
 def analyze_raman(path: Path, start: float, end: float) -> dict[str, Any]:
     """Preserve corrected E2 Raman veto and fail-close E3 vertical-shape proof."""
-    # Use the already-reviewed E2-v2 implementation first.  It determines cloud
-    # veto/clear evidence and the historical optical QC counts without any SWS.
-    base = V4.analyze_raman(path, start, end)
+    # Use the already-reviewed E2-v2 implementation directly. It determines
+    # cloud veto/clear evidence and historical optical QC counts without SWS.
+    base = V2.analyze_raman(path, start, end)
     base["e3_profile_usable"] = False
     base["e3_shape_basis"] = None
     base["e3_vertical_support"] = []
@@ -211,13 +213,13 @@ def analyze_raman(path: Path, start: float, end: float) -> dict[str, Any]:
         return base
 
     with netCDF4.Dataset(path) as ds:
-        times = V4.decode_times(ds)
-        idx = V4.in_window(times, start, end)
-        feat = V4._feature_var(ds)
+        times = V1.decode_times(ds)
+        idx = V1.in_window(times, start, end)
+        feat = V1._feature_var(ds)
         if idx.size == 0 or not feat:
             base["reason"] = "PROFILE_EVIDENCE_INSUFFICIENT"
             return base
-        arr = V4._take_time(ds.variables[feat], idx, times.size)
+        arr = V1._take_time(ds.variables[feat], idx, times.size)
         if arr is None:
             base["reason"] = "PROFILE_EVIDENCE_INSUFFICIENT"
             return base
@@ -225,8 +227,8 @@ def analyze_raman(path: Path, start: float, end: float) -> dict[str, Any]:
         fmask = np.ma.getmaskarray(arr) | ~np.isfinite(raw)
         data = np.where(fmask, 0, raw).astype(np.int64)
         aerosol_mask = (
-            ((data & V4.AEROSOL_BIT) != 0)
-            & ((data & V4.CLOUD_BITS) == 0)
+            ((data & V1.AEROSOL_BIT) != 0)
+            & ((data & V1.CLOUD_BITS) == 0)
             & ~fmask
         )
         if not np.any(aerosol_mask):

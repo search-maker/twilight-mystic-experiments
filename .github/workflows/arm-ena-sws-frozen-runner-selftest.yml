@@ -1,0 +1,56 @@
+name: ARM ENA SWS Frozen Runner Selftest
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen.py
+      - review/arm-ena-sws-v1-stage0/generate_ena_event_universe_fast.py
+      - review/arm-ena-sws-v1-stage0/audit_ena_sws_e0.py
+      - .github/workflows/arm-ena-sws-frozen-runner-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check numpy pandas pvlib netCDF4
+      - name: Validate frozen universe without ARM access
+        run: |
+          python review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen.py --dry-validate-universe
+      - name: Verify wrong universe fails closed
+        run: |
+          printf 'case_id,local_civil_date,event,t_minus8_utc,t_minus7_utc,t_minus6_utc\n' > /tmp/bad.csv
+          if python review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen.py --event-universe /tmp/bad.csv --dry-validate-universe; then
+            echo 'ERROR: hash mismatch was accepted' >&2
+            exit 1
+          fi
+          echo FROZEN_UNIVERSE_HASH_REFUSAL_PASS
+      - name: Static no-credential/no-radiance audit
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          p=Path('review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen.py')
+          text=p.read_text(encoding='utf-8')
+          tree=ast.parse(text)
+          assert 'ARM_ACCESS_TOKEN' not in text and 'ARM_USER_ID' not in text
+          forbidden=[]
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Subscript):
+                  full=ast.unparse(node).lower()
+                  if '.variables' in full and any(x in full for x in ('radiance','irradiance','luminance','brightness','intensity','signal','count','spectrum','spectra')):
+                      forbidden.append((node.lineno,full))
+          if forbidden:
+              raise SystemExit(forbidden)
+          print('FROZEN_RUNNER_STATIC_FIREWALL_PASS')
+          PY

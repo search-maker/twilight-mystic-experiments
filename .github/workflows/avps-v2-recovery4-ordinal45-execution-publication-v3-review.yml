@@ -114,6 +114,70 @@ jobs:
               if x not in p: raise SystemExit('missing binding: '+x)
           PY
 
+      - name: Test WRITE_QUIET first-line compatibility parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .review-tmp
+          cat > .review-tmp/write_quiet_parser.py <<'PY'
+          ACCEPTED_KEYS=('begin','beginComment','begin_comment')
+
+          def parse_end_id(first):
+              values={}
+              for token in first.replace('|',' ').split():
+                  if '=' not in token:
+                      continue
+                  k,val=token.split('=',1)
+                  k=k.strip(); val=val.strip()
+                  if k not in ACCEPTED_KEYS:
+                      continue
+                  if k in values and values[k]!=val:
+                      raise SystemExit('conflicting END aliases')
+                  values[k]=val
+              ids=[]
+              for k in ACCEPTED_KEYS:
+                  if k in values:
+                      if not values[k].isdigit():
+                          raise SystemExit('bad END id')
+                      ids.append(int(values[k]))
+              if len(set(ids))>1:
+                  raise SystemExit('conflicting END aliases')
+              return ids[0] if ids else None
+          PY
+          python - <<'PY'
+          import sys
+          sys.path.insert(0,'.review-tmp')
+          from write_quiet_parser import parse_end_id
+
+          # Durable historical fixture: Issue #60 END comment 5471174859 closes BEGIN 5471141095.
+          cases=(
+              ('WRITE_QUIET_END begin=5471141095 token=AVPS_V2_RECOVERY3_ORDINAL44_SNAPSHOT_33333805393 science_run=33334396129',5471141095),
+              ('WRITE_QUIET_END | begin=5471141095 | token=fixture',5471141095),
+              ('WRITE_QUIET_END | beginComment=5471141095 | token=fixture',5471141095),
+              ('WRITE_QUIET_END begin_comment=5471141095 token=fixture',5471141095),
+              ('WRITE_QUIET_END token=fixture',None),
+          )
+          for first,want in cases:
+              got=parse_end_id(first)
+              if got!=want:
+                  raise SystemExit(f'END fixture mismatch: got={got} want={want}')
+          for bad_first in (
+              'WRITE_QUIET_END begin=not-a-number token=fixture',
+              'WRITE_QUIET_END begin=5471141095 beginComment=5471174859 token=fixture',
+              'WRITE_QUIET_END begin=5471141095 begin=5471174859 token=fixture',
+          ):
+              try:
+                  parse_end_id(bad_first)
+              except SystemExit:
+                  pass
+              else:
+                  raise SystemExit('malformed END fixture did not fail closed')
+          active={5471141095:1,9999999999:1}
+          active.pop(parse_end_id(cases[0][0]),None)
+          if 5471141095 in active or 9999999999 not in active:
+              raise SystemExit('historical closure/unmatched preservation fixture failed')
+          PY
+
       - name: Verify exact five publication bytes
         if: env.MODE == 'publication'
         shell: bash
@@ -145,7 +209,10 @@ jobs:
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > comments.json
           gh run download "$SOURCE_RUN" -n "$SOURCE_ARTIFACT_NAME" -D accepted
           python - <<'PY'
-          import json, os
+          import json, os, sys
+          sys.path.insert(0,'.review-tmp')
+          from write_quiet_parser import parse_end_id
+
           p=json.load(open('p.json')); r=json.load(open('r.json')); a=json.load(open('a.json')); v=json.load(open('v.json')); auth=json.load(open('auth.json'))
           if p['head']['sha']!=os.environ['SOURCE_HEAD']: raise SystemExit('source head drift')
           if r['run_attempt']!=1 or r['conclusion']!='success' or r['head_sha']!=os.environ['SOURCE_HEAD']: raise SystemExit('source run drift')
@@ -155,52 +222,6 @@ jobs:
           pages=json.load(open('comments.json')); cs=[c for page in pages for c in page]; bodies=[str(c.get('body') or '') for c in cs]
           if sum(b.strip()==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation drift')
           if any(b.strip().startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('already consumed')
-
-          accepted_keys=('begin','beginComment','begin_comment')
-          def parse_end_id(first):
-              values={}
-              for token in first.replace('|',' ').split():
-                  if '=' not in token:
-                      continue
-                  k,val=token.split('=',1)
-                  k=k.strip(); val=val.strip()
-                  if k not in accepted_keys:
-                      continue
-                  if k in values and values[k]!=val:
-                      raise SystemExit('conflicting END aliases')
-                  values[k]=val
-              ids=[]
-              for k in accepted_keys:
-                  if k in values:
-                      if not values[k].isdigit():
-                          raise SystemExit('bad END id')
-                      ids.append(int(values[k]))
-              if len(set(ids))>1:
-                  raise SystemExit('conflicting END aliases')
-              return ids[0] if ids else None
-
-          # Durable historical fixture: Issue #60 END comment 5471174859 closes BEGIN 5471141095.
-          legacy_first='WRITE_QUIET_END begin=5471141095 token=AVPS_V2_RECOVERY3_ORDINAL44_SNAPSHOT_33333805393 science_run=33334396129'
-          if parse_end_id(legacy_first)!=5471141095:
-              raise SystemExit('legacy space-delimited END fixture failed')
-          pipe_first='WRITE_QUIET_END | beginComment=5471141095 | token=fixture'
-          if parse_end_id(pipe_first)!=5471141095:
-              raise SystemExit('pipe-delimited END fixture failed')
-          alias_first='WRITE_QUIET_END begin_comment=5471141095 token=fixture'
-          if parse_end_id(alias_first)!=5471141095:
-              raise SystemExit('legacy alias END fixture failed')
-          for bad_first in (
-              'WRITE_QUIET_END begin=not-a-number token=fixture',
-              'WRITE_QUIET_END begin=5471141095 beginComment=5471174859 token=fixture',
-              'WRITE_QUIET_END begin=5471141095 begin=5471174859 token=fixture',
-          ):
-              try:
-                  parse_end_id(bad_first)
-              except SystemExit:
-                  pass
-              else:
-                  raise SystemExit('malformed END fixture did not fail closed')
-
           active={}
           for c in cs:
               first=(str(c.get('body') or '').splitlines() or [''])[0].strip()

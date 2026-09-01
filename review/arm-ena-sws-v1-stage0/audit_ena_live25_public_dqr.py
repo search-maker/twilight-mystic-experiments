@@ -15,21 +15,22 @@ import csv
 import datetime as dt
 import importlib.util
 import json
-import math
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
 LIVE25 = HERE / "ena_sws_e4_e7_25_live_cases.json"
-E0 = HERE / "audit_ena_sws_e0.py"
+FAST_UNIVERSE = HERE / "generate_ena_event_universe_fast.py"
 OUT = HERE / "public-dqr-output"
 DQR_BASE = "https://dqr-web-service.arm.gov/dqr_full"
 ASSESSMENT = "incorrect,missing,suspect"
 QUERY_START = "20160101"
 QUERY_END = "20200101"
+QUERY_TIMEOUT_SECONDS = 30
 
 STREAMS: dict[str, list[str]] = {
     "E0_SWS_STRUCTURAL": ["enaswsC1.b1"],
@@ -51,8 +52,8 @@ STREAMS: dict[str, list[str]] = {
 UTC = dt.timezone.utc
 
 
-def load_module(path: Path):
-    spec = importlib.util.spec_from_file_location("ena_e0_for_dqr", path)
+def load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot import {path}")
     mod = importlib.util.module_from_spec(spec)
@@ -71,16 +72,13 @@ def parse_dqr_time(value: Any, *, is_end: bool) -> dt.datetime | None:
     text = str(value).strip()
     if not text:
         return None
-    # ARM DQR dates have historically appeared both as date-only and timestamps.
-    # Date-only end dates are treated as inclusive civil dates for overlap triage.
     if len(text) == 8 and text.isdigit():
         x = dt.datetime.strptime(text, "%Y%m%d").replace(tzinfo=UTC)
         return x + (dt.timedelta(days=1) if is_end else dt.timedelta())
     if len(text) == 10 and text[4] == "-" and text[7] == "-":
         x = dt.datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=UTC)
         return x + (dt.timedelta(days=1) if is_end else dt.timedelta())
-    candidates = [text, text.replace("Z", "+00:00")]
-    for candidate in candidates:
+    for candidate in (text, text.replace("Z", "+00:00")):
         try:
             x = dt.datetime.fromisoformat(candidate)
             if x.tzinfo is None:
@@ -97,18 +95,16 @@ def parse_dqr_time(value: Any, *, is_end: bool) -> dt.datetime | None:
 
 
 def overlap(a0: dt.datetime, a1: dt.datetime, b0: dt.datetime | None, b1: dt.datetime | None) -> bool | None:
-    if b0 is None or b1 is None:
-        return None
-    if b1 < b0:
+    if b0 is None or b1 is None or b1 < b0:
         return None
     return max(a0, b0) <= min(a1, b1)
 
 
 def query_dqr(datastream: str) -> tuple[str, Any]:
     url = f"{DQR_BASE}/{datastream}/{QUERY_START}/{QUERY_END}/{ASSESSMENT}"
-    req = urllib.request.Request(url, headers={"User-Agent": "ena-sws-v1-public-dqr-audit/1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ena-sws-v1-public-dqr-audit/2"})
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             return "OK", json.loads(raw)
     except urllib.error.HTTPError as exc:
@@ -116,7 +112,7 @@ def query_dqr(datastream: str) -> tuple[str, Any]:
             return "NO_DQR_FOUND_HTTP404", None
         body = exc.read().decode("utf-8", errors="replace")[:1000]
         return f"HTTP_{exc.code}", {"error_body_prefix": body}
-    except Exception as exc:  # transport must remain unresolved, never become science PASS/FAIL
+    except Exception as exc:
         return "QUERY_ERROR", {"error_type": type(exc).__name__, "error": str(exc)[:500]}
 
 
@@ -135,20 +131,13 @@ def flatten_docs(datastream: str, payload: Any) -> list[dict[str, Any]]:
                 continue
             dates = doc.get("dates") if isinstance(doc.get("dates"), list) else []
             if not dates:
-                out.append({
-                    "dqr_id": str(dqr_id), "assessment": str(assessment),
-                    "subject": str(doc.get("subject", "")),
-                    "description": str(doc.get("description", "")),
-                    "suggestions": doc.get("suggestions"),
-                    "variables": doc.get("variables", []),
-                    "start_raw": None, "end_raw": None,
-                })
-                continue
+                dates = [{}]
             for interval in dates:
                 if not isinstance(interval, dict):
                     continue
                 out.append({
-                    "dqr_id": str(dqr_id), "assessment": str(assessment),
+                    "dqr_id": str(dqr_id),
+                    "assessment": str(assessment),
                     "subject": str(doc.get("subject", "")),
                     "description": str(doc.get("description", "")),
                     "suggestions": doc.get("suggestions"),
@@ -159,15 +148,16 @@ def flatten_docs(datastream: str, payload: Any) -> list[dict[str, Any]]:
     return out
 
 
-def event_windows(event: Any) -> dict[str, tuple[dt.datetime, dt.datetime]]:
-    t6, t7, t8 = parse_iso(event.t_minus6_utc), parse_iso(event.t_minus7_utc), parse_iso(event.t_minus8_utc)
+def event_windows(event: dict[str, Any]) -> dict[str, tuple[dt.datetime, dt.datetime]]:
+    t6 = parse_iso(event["t_minus6_utc"])
+    t7 = parse_iso(event["t_minus7_utc"])
+    t8 = parse_iso(event["t_minus8_utc"])
     core0, core1 = min(t6, t8), max(t6, t8)
     return {
         "E0_ANCHOR_SUPPORT": (core0 - dt.timedelta(seconds=31), core1 + dt.timedelta(seconds=31)),
         "TWILIGHT_CORE": (core0, core1),
         "E4_E6_PRECEDING_3H": (t6 - dt.timedelta(hours=3), t6),
         "E5_SONDE_PLUSMINUS_6H": (t7 - dt.timedelta(hours=6), t7 + dt.timedelta(hours=6)),
-        # Documentary catch-all only; this is NOT substituted for any frozen gate interval.
         "BROAD_DOCUMENTARY_PLUSMINUS_6H": (core0 - dt.timedelta(hours=6), core1 + dt.timedelta(hours=6)),
     }
 
@@ -179,22 +169,36 @@ def main() -> int:
     if len(live_ids) != 25 or len(set(live_ids)) != 25:
         raise RuntimeError("live25 identity/count mismatch")
 
-    e0 = load_module(E0)
-    all_events = {x.case_id: x for x in e0.build_events()}
+    fast = load_module(FAST_UNIVERSE, "ena_fast_universe_for_dqr")
+    generated = fast.generate_rows()
+    all_events = {x["case_id"]: x for x in generated}
+    if len(all_events) != 906:
+        raise RuntimeError(f"frozen universe count mismatch: {len(all_events)}")
     missing = [x for x in live_ids if x not in all_events]
     if missing:
         raise RuntimeError(f"live25 cases absent from frozen universe: {missing}")
 
+    family_by_ds = {ds: family for family, streams in STREAMS.items() for ds in streams}
+    datastreams = list(family_by_ds)
     raw_receipts: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(datastreams))) as pool:
+        futures = {pool.submit(query_dqr, ds): ds for ds in datastreams}
+        for future in as_completed(futures):
+            ds = futures[future]
+            try:
+                status, payload = future.result()
+            except Exception as exc:
+                status, payload = "QUERY_ERROR", {"error_type": type(exc).__name__, "error": str(exc)[:500]}
+            raw_receipts[ds] = {"family": family_by_ds[ds], "status": status, "payload": payload}
+
     docs_by_stream: dict[str, list[dict[str, Any]]] = {}
     query_unresolved: list[str] = []
-    for family, streams in STREAMS.items():
-        for ds in streams:
-            status, payload = query_dqr(ds)
-            raw_receipts[ds] = {"family": family, "status": status, "payload": payload}
-            if status not in {"OK", "NO_DQR_FOUND_HTTP404"}:
-                query_unresolved.append(ds)
-            docs_by_stream[ds] = flatten_docs(ds, payload) if status == "OK" else []
+    for ds in datastreams:
+        receipt = raw_receipts[ds]
+        status, payload = receipt["status"], receipt["payload"]
+        if status not in {"OK", "NO_DQR_FOUND_HTTP404"}:
+            query_unresolved.append(ds)
+        docs_by_stream[ds] = flatten_docs(ds, payload) if status == "OK" else []
 
     (OUT / "ena_live25_public_dqr_raw.json").write_text(
         json.dumps(raw_receipts, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -238,7 +242,6 @@ def main() -> int:
                         cases_with_core_overlap.add(cid)
                     assessment = str(doc["assessment"]).lower()
                     assessment_counts[assessment] = assessment_counts.get(assessment, 0) + 1
-                    disposition = "KNOWN_DQR_OVERLAP_" + assessment.upper()
                     rows.append({
                         "case_id": cid, "family": family, "datastream": ds, "query_status": qstatus,
                         "dqr_id": doc["dqr_id"], "assessment": assessment, "subject": doc["subject"],
@@ -250,7 +253,7 @@ def main() -> int:
                         "overlap_preceding_3h": overlaps["pre3"],
                         "overlap_sonde_plusminus_6h": overlaps["sonde"],
                         "overlap_broad_plusminus_6h": overlaps["broad"],
-                        "documentary_disposition": disposition,
+                        "documentary_disposition": "KNOWN_DQR_OVERLAP_" + assessment.upper(),
                         "native_disposition_not_inferred": True,
                         "science_gate_changed": False,
                         "protected_sws_values_opened": False,
@@ -276,14 +279,16 @@ def main() -> int:
         writer.writerows(rows)
 
     summary = {
-        "schema": 1,
+        "schema": 2,
         "protocol": "ARM_ENA_SWS_V1_LIVE25_PUBLIC_DQR_DOCUMENTARY_AUDIT",
+        "event_time_source": "generate_ena_event_universe_fast.py frozen vectorized E0-equivalent generator",
         "case_count": 25,
-        "datastream_count": sum(len(x) for x in STREAMS.values()),
+        "datastream_count": len(datastreams),
         "query_start": QUERY_START,
         "query_end": QUERY_END,
         "assessment_query": ASSESSMENT,
-        "query_unresolved_datastreams": query_unresolved,
+        "query_timeout_seconds": QUERY_TIMEOUT_SECONDS,
+        "query_unresolved_datastreams": sorted(query_unresolved),
         "cases_with_any_public_dqr_overlap": sorted(cases_with_any_overlap),
         "cases_with_twilight_core_public_dqr_overlap": sorted(cases_with_core_overlap),
         "overlap_assessment_row_counts": assessment_counts,

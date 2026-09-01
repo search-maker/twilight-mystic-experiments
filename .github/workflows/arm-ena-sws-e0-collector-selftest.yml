@@ -1,0 +1,48 @@
+name: ARM ENA SWS E0 Collector Selftest
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - review/arm-ena-sws-v1-stage0/stream_ena_sws_e0_from_arm_live.py
+      - .github/workflows/arm-ena-sws-e0-collector-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile collector
+        run: python -m py_compile review/arm-ena-sws-v1-stage0/stream_ena_sws_e0_from_arm_live.py
+      - name: Static transport and holdout audit
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          p=Path('review/arm-ena-sws-v1-stage0/stream_ena_sws_e0_from_arm_live.py')
+          text=p.read_text(encoding='utf-8')
+          tree=ast.parse(text)
+          assert 'TemporaryDirectory' in text, 'raw payload must be confined to TemporaryDirectory'
+          assert 'raw_sws_files_retained": False' in text
+          assert 'protected_variable_values_read": False' in text
+          assert 'ARM_USER_ID' in text and 'ARM_ACCESS_TOKEN' in text
+          assert 'print(uid' not in text and 'print(token' not in text and 'write_text(userpair' not in text
+          forbidden=[]
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Subscript):
+                  base=ast.unparse(node.value).lower()
+                  full=ast.unparse(node).lower()
+                  if '.variables' in base and any(x in full for x in ('radiance','irradiance','luminance','brightness','intensity','signal','count','spectrum','spectra')):
+                      forbidden.append((node.lineno, full))
+          if forbidden:
+              raise SystemExit(f'collector contains protected photometric array access: {forbidden}')
+          print('COLLECTOR_STATIC_FIREWALL_PASS')
+          PY

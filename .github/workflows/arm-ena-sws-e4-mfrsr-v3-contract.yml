@@ -1,0 +1,59 @@
+name: ARM ENA SWS E4 MFRSR v3 contract
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - 'review/arm-ena-sws-v1-stage0/ena_native_gate_core_v3.py'
+      - 'review/arm-ena-sws-v1-stage0/test_ena_native_gate_core_v3.py'
+      - 'review/arm-ena-sws-v1-stage0/run_ena_native_live25_v3.py'
+      - 'review/arm-ena-sws-v1-stage0/test_run_ena_native_live25_v3_wiring.py'
+      - '.github/workflows/arm-ena-sws-e4-mfrsr-v3-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install native-gate test dependencies
+        run: python -m pip install --disable-pip-version-check numpy netCDF4
+      - name: Compile versioned ARM ENA native gate code
+        working-directory: review/arm-ena-sws-v1-stage0
+        run: |
+          python -m py_compile ena_native_gate_core_v1.py ena_native_gate_core_v2.py ena_native_gate_core_v3.py
+          python -m py_compile run_ena_native_live25.py run_ena_native_live25_v2.py run_ena_native_live25_v3.py
+      - name: Preserve reviewed v1 and corrected E2 v2 synthetic contracts
+        working-directory: review/arm-ena-sws-v1-stage0
+        run: |
+          python test_ena_native_gate_core_v1.py
+          python test_ena_native_gate_core_v2.py
+          python test_run_ena_native_live25_v2_wiring.py
+      - name: Prove prospective E4 measured-response v3 contract
+        working-directory: review/arm-ena-sws-v1-stage0
+        run: |
+          python test_ena_native_gate_core_v3.py
+          python test_run_ena_native_live25_v3_wiring.py
+      - name: Static holdout boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          root=Path('review/arm-ena-sws-v1-stage0')
+          for name in ('ena_native_gate_core_v3.py','run_ena_native_live25_v3.py','test_ena_native_gate_core_v3.py','test_run_ena_native_live25_v3_wiring.py'):
+              text=(root/name).read_text(encoding='utf-8').lower()
+              assert 'sasze' not in text, name
+          runner=(root/'run_ena_native_live25_v3.py').read_text(encoding='utf-8')
+          assert '_historical.G = gate_core_v3' in runner
+          core=(root/'ena_native_gate_core_v3.py').read_text(encoding='utf-8')
+          assert 'FILTER2_MEASURED_RESPONSE_UNVERIFIED' in core
+          assert 'FILTER2_RESPONSE_PEAK_OUT_OF_FROZEN_500NM_RANGE' in core
+          print('PASS ARM ENA E4 v3 static holdout and wiring boundary')
+          PY

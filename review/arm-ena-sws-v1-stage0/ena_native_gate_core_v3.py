@@ -41,6 +41,10 @@ def _is_response_var(name: str, var: netCDF4.Variable) -> bool:
     low = name.lower()
     if low.startswith("qc_") or low.endswith("_qc"):
         return False
+    # A wavelength coordinate can legitimately mention the spectral response in
+    # its metadata; it is still a coordinate, never the response function itself.
+    if "wavelength" in low or "lambda" in low:
+        return False
     if "aerosol_optical_depth" in text or "optical depth" in text:
         return False
     if "cwl" in text or "center wavelength" in text or "centre wavelength" in text:
@@ -171,7 +175,7 @@ def _response_peak_proof(ds: netCDF4.Dataset) -> dict[str, Any]:
             "rejected_pairs": rejected,
         }
     proof = dict(candidates[0])
-    proof["verified"] = bool(proof["all_peaks_in_frozen_500nm_range"])
+    proof["verified"] = bool(proof["all_peaks_in_frozen_500NM_RANGE"] if "all_peaks_in_frozen_500NM_RANGE" in proof else proof["all_peaks_in_frozen_500nm_range"])
     proof["reason"] = "PASS" if proof["verified"] else "FILTER2_RESPONSE_PEAK_OUT_OF_FROZEN_500NM_RANGE"
     proof["response_candidates"] = response_names
     proof["rejected_pairs"] = rejected

@@ -10,7 +10,10 @@ time/wavelength, QC/HK/calibration metadata.
 This launcher is the cross-platform equivalent of
 ``run_one_ena_sws_schema_probe_v2.ps1`` for authenticated workers that do not
 provide PowerShell. It must run before scaling E0 in a newly attached ARM
-runtime.
+runtime. The probe is pinned to the first chronological case in the already-
+frozen public-gate live25 set and is successful only if an actual SWS native
+file was safely schema-inspected; SOURCE_FILE_MISSING is not enough to prove the
+firewall on real native bytes.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from pathlib import Path
 
 FROZEN_UNIVERSE_SHA256 = "87933189ff56322ce2b5d2821a1c2ab8094d0a472ef6c690cfbd90cd0451fa41"
 EXPECTED_PROTOCOL = "ARM_ENA_SWS_V1_STAGE0_E0_RESULT_BLIND_V2"
+PROBE_CASE_ID = "2017-06-16_dusk"
 
 
 def sha256_file(path: Path) -> str:
@@ -33,6 +37,19 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: fh.read(8 * 1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _load_schema_records(out_dir: Path) -> list[dict]:
+    path = out_dir / "ena_sws_e0_stream_schema.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
 
 
 def validate_safe_probe_output(out_dir: Path) -> dict:
@@ -53,6 +70,18 @@ def validate_safe_probe_output(out_dir: Path) -> dict:
         raise RuntimeError("one-event probe did not process exactly one frozen event")
     if summary.get("stage_b_authorized") is not False:
         raise RuntimeError("probe unexpectedly claims Stage-B authorization")
+
+    sws_schema = [r for r in _load_schema_records(out_dir) if r.get("kind") == "sws"]
+    if not sws_schema:
+        raise RuntimeError("one-event firewall probe did not safely inspect an actual SWS native schema")
+    for record in sws_schema:
+        if record.get("protected_variable_values_read") is not False:
+            raise RuntimeError("HOLDOUT FIREWALL: SWS schema record lacks protected-values=false attestation")
+        digest = str(record.get("source_sha256", ""))
+        if len(digest) != 64:
+            raise RuntimeError("SWS schema record lacks source SHA-256 provenance")
+        if not isinstance(record.get("variables"), list) or not record["variables"]:
+            raise RuntimeError("SWS schema record lacks native variable schema")
     return summary
 
 
@@ -93,6 +122,7 @@ def main() -> int:
         sys.executable,
         str(runner),
         "--output-dir", str(out_dir),
+        "--start-case", PROBE_CASE_ID,
         "--stop-after", "1",
         "--probe-aux-schema",
     ]
@@ -102,11 +132,13 @@ def main() -> int:
 
     validate_safe_probe_output(out_dir)
     receipt = {
-        "schema": 2,
+        "schema": 3,
         "purpose": "ARM_ENA_SWS_V1_E0_V2_ONE_EVENT_SCHEMA_PROBE_PORTABLE",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "frozen_event_universe_sha256": FROZEN_UNIVERSE_SHA256,
+        "probe_case_id": PROBE_CASE_ID,
         "processed_event_count": 1,
+        "actual_sws_native_schema_inspected": True,
         "protected_variable_values_read": False,
         "raw_sws_files_retained": False,
         "credentials_persisted": False,
@@ -119,7 +151,9 @@ def main() -> int:
     )
     print(json.dumps({
         "status": "ONE_EVENT_E0_V2_FIREWALL_PROBE_PASS",
+        "probe_case_id": PROBE_CASE_ID,
         "processed_event_count": 1,
+        "actual_sws_native_schema_inspected": True,
         "protected_variable_values_read": False,
         "raw_sws_files_retained": False,
         "credentials_persisted": False,

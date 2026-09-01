@@ -6,7 +6,7 @@ This module never reads SWS files. It evaluates only atmospheric/support native
 NetCDF/CDF files for E2/E3/E4/E5. Missing or ambiguous schema fails closed.
 """
 from __future__ import annotations
-import datetime as dt, hashlib, math, re
+import datetime as dt, hashlib, math
 from pathlib import Path
 from typing import Any, Iterable
 import netCDF4
@@ -65,11 +65,6 @@ def continuity(times: np.ndarray,start: float,end: float) -> dict[str,Any]:
             'sample_count':int(inside.size),'median_cadence_s':med,'max_interior_gap_s':maxgap,
             'first_time_utc':iso_epoch(t[0]),'last_time_utc':iso_epoch(t[-1]),'bracket':bracket,'gap_ok':gap_ok}
 
-def _finite_unmasked(var: netCDF4.Variable,sl: Any=None) -> tuple[np.ndarray,np.ndarray]:
-    raw=np.ma.asarray(var[:] if sl is None else var[sl]); data=np.asarray(np.ma.getdata(raw)); mask=np.asarray(np.ma.getmaskarray(raw),dtype=bool)
-    if np.issubdtype(data.dtype,np.number): mask=mask|~np.isfinite(data.astype(float))
-    return data,mask
-
 def _candidate(ds: netCDF4.Dataset,names: Iterable[str]) -> str|None:
     for n in names:
         if n in ds.variables: return n
@@ -95,6 +90,11 @@ def _take_time(var: netCDF4.Variable,idx: np.ndarray,ntime: int) -> np.ma.Masked
     sl=[slice(None)]*var.ndim; sl[ax]=idx
     return np.ma.asarray(var[tuple(sl)])
 
+def _same_shape_data(arr: np.ma.MaskedArray|None,shape: tuple[int,...]) -> tuple[np.ndarray,np.ndarray]|None:
+    if arr is None or arr.shape!=shape: return None
+    data=np.asarray(np.ma.getdata(arr),dtype=float); mask=np.ma.getmaskarray(arr)|~np.isfinite(data)
+    return data,mask
+
 def analyze_arscl(path: Path,start: float,end: float) -> dict[str,Any]:
     out={'stream':'ARSCL','source_file':path.name,'sha256':sha256_file(path),'positive':False,'clear_evidence':False,'schema_ok':False}
     with netCDF4.Dataset(path) as ds:
@@ -103,13 +103,42 @@ def analyze_arscl(path: Path,start: float,end: float) -> dict[str,Any]:
         src=_candidate(ds,['cloud_source_flag']); mpl=_candidate(ds,['cloud_mask_mplzwang'])
         bases=[n for n in ds.variables if any(k in n.lower() for k in ('cloud_layer_base','cloud_base_best_estimate'))]
         if not src: out['reason']='NO_CLOUD_SOURCE_FLAG'; return out
-        out['schema_ok']=True
         arr=_take_time(ds.variables[src],idx,times.size)
         if arr is None: out['reason']='CLOUD_SOURCE_LAYOUT_UNSUPPORTED'; return out
         data=np.asarray(np.ma.getdata(arr),dtype=float); mask=np.ma.getmaskarray(arr)|~np.isfinite(data)
-        valid=data[~mask].astype(int); pos=np.isin(valid,[2,3,4,5,6]); missing=np.count_nonzero(valid==0); clear=np.count_nonzero(valid==1)
-        out.update({'cloud_source_positive_cells':int(np.count_nonzero(pos)),'cloud_source_missing_cells':int(missing),'cloud_source_clear_cells':int(clear)})
-        positive=bool(np.any(pos)); mplpos=0
+        flags=np.where(mask,-999999,data).astype(int)
+        out['schema_ok']=True
+
+        missing=int(np.count_nonzero((flags==0)&~mask)); clear=int(np.count_nonzero((flags==1)&~mask))
+        direct_supported=((flags==2)|(flags==4))&~mask
+        unsupported=((flags==5)|(flags==6))&~mask
+
+        # Radar-only flag 3 is a valid veto only when the same cell has a finite
+        # reflectivity estimate whose native QC is explicitly good (QC==0).
+        radar_only=(flags==3)&~mask
+        radar_valid=np.zeros(flags.shape,dtype=bool)
+        radar_schema=None
+        for refl_name,qc_name in (('reflectivity_best_estimate','qc_reflectivity_best_estimate'),('reflectivity','qc_reflectivity')):
+            if refl_name not in ds.variables or qc_name not in ds.variables: continue
+            rpair=_same_shape_data(_take_time(ds.variables[refl_name],idx,times.size),flags.shape)
+            qpair=_same_shape_data(_take_time(ds.variables[qc_name],idx,times.size),flags.shape)
+            if rpair is None or qpair is None: continue
+            rd,rm=rpair; qd,qm=qpair
+            radar_valid=radar_only & ~rm & ~qm & (qd==0)
+            radar_schema=f'{refl_name}+{qc_name}'
+            break
+        radar_positive=int(np.count_nonzero(radar_valid))
+        radar_unresolved=int(np.count_nonzero(radar_only & ~radar_valid))
+        supported_positive=direct_supported|radar_valid
+        out.update({
+            'cloud_source_supported_positive_cells':int(np.count_nonzero(supported_positive)),
+            'cloud_source_radar_only_qc0_positive_cells':radar_positive,
+            'cloud_source_radar_only_unresolved_cells':radar_unresolved,
+            'cloud_source_unsupported_flag5_6_cells':int(np.count_nonzero(unsupported)),
+            'cloud_source_missing_cells':missing,'cloud_source_clear_cells':clear,
+            'radar_qc_schema':radar_schema,
+        })
+        positive=bool(np.any(supported_positive)); mplpos=0
         if mpl:
             marr=_take_time(ds.variables[mpl],idx,times.size)
             if marr is not None:
@@ -121,8 +150,9 @@ def analyze_arscl(path: Path,start: float,end: float) -> dict[str,Any]:
             if a is None: continue
             d=np.asarray(np.ma.getdata(a),dtype=float); m=np.ma.getmaskarray(a)|~np.isfinite(d); basepos+=int(np.count_nonzero((d>=0)&~m))
         out['cloud_base_positive_cells']=basepos; positive|=basepos>0
+        unresolved=bool(missing>0 or radar_unresolved>0 or np.any(unsupported))
         out['positive']=positive
-        out['clear_evidence']=bool(not positive and missing==0 and clear>0 and cont['pass'])
+        out['clear_evidence']=bool(not positive and not unresolved and clear>0 and cont['pass'])
         out['reason']='CLOUD_OR_HYDROMETEOR_PRESENT' if positive else ('CLEAR' if out['clear_evidence'] else 'EVIDENCE_INSUFFICIENT')
         return out
 
@@ -133,8 +163,8 @@ def analyze_ceil(path: Path,start: float,end: float) -> dict[str,Any]:
         det=_candidate(ds,['detection_status']); stat=_candidate(ds,['status_flag'])
         if idx.size==0 or not det or not stat: out['reason']='MISSING_REQUIRED_SCHEMA_OR_SAMPLES'; return out
         d=np.ma.asarray(ds.variables[det][idx]).reshape(-1); s=np.ma.asarray(ds.variables[stat][idx]).reshape(-1)
-        dd=np.asarray(np.ma.getdata(d),dtype=float); ss=np.asarray(np.ma.getdata(s),dtype=float); mask=np.ma.getmaskarray(d)|np.ma.getmaskarray(s)|~np.isfinite(dd)|~np.isfinite(ss)
-        dd=dd[~mask].astype(int); ss=ss[~mask].astype(int); out['schema_ok']=True
+        dd=np.asarray(np.ma.getdata(d),dtype=float); ss=np.asarray(np.ma.getdata(s),dtype=float); m=np.ma.getmaskarray(d)|np.ma.getmaskarray(s)|~np.isfinite(dd)|~np.isfinite(ss)
+        dd=dd[~m].astype(int); ss=ss[~m].astype(int); out['schema_ok']=True
         pos=int(np.count_nonzero(np.isin(dd,[1,2,3,4])&np.isin(ss,[0,1]))); alarms=int(np.count_nonzero(ss==2)); clear=int(np.count_nonzero((dd==0)&np.isin(ss,[0,1])))
         out.update({'positive_samples':pos,'alarm_samples':alarms,'clear_samples':clear}); out['positive']=pos>0
         out['clear_evidence']=bool(pos==0 and alarms==0 and clear==len(dd) and len(dd)>0 and cont['pass'])
@@ -152,7 +182,7 @@ def analyze_raman(path: Path,start: float,end: float) -> dict[str,Any]:
         if idx.size==0 or not feat: out['reason']='NO_FEATURE_MASK_OR_SAMPLES'; return out
         arr=_take_time(ds.variables[feat],idx,times.size)
         if arr is None: out['reason']='FEATURE_MASK_LAYOUT_UNSUPPORTED'; return out
-        d=np.asarray(np.ma.getdata(arr),dtype=np.int64); m=np.ma.getmaskarray(arr)|~np.isfinite(np.asarray(np.ma.getdata(arr),dtype=float)); valid=d[~m]
+        raw=np.asarray(np.ma.getdata(arr),dtype=float); m=np.ma.getmaskarray(arr)|~np.isfinite(raw); d=np.where(m,0,raw).astype(np.int64); valid=d[~m]
         cloud=int(np.count_nonzero((valid&CLOUD_BITS)!=0)); aerosol=int(np.count_nonzero((valid&AEROSOL_BIT)!=0)); out['schema_ok']=True
         out.update({'cloud_feature_cells':cloud,'aerosol_feature_cells':aerosol}); out['cloud_positive']=cloud>0
         out['cloud_clear_evidence']=bool(cloud==0 and valid.size>0 and cont['pass'])
@@ -161,16 +191,19 @@ def analyze_raman(path: Path,start: float,end: float) -> dict[str,Any]:
             if n not in ds.variables: continue
             a=_take_time(ds.variables[n],idx,times.size)
             if a is None: continue
-            data=np.asarray(np.ma.getdata(a),dtype=float); mask=np.ma.getmaskarray(a)|~np.isfinite(data)
+            vals=np.asarray(np.ma.getdata(a),dtype=float); vm=np.ma.getmaskarray(a)|~np.isfinite(vals)
             qc=_qc_for(ds,n)
             if qc is not None:
                 qa=_take_time(qc,idx,times.size)
-                if qa is not None:
-                    qd=np.asarray(np.ma.getdata(qa),dtype=float); qm=np.ma.getmaskarray(qa)|~np.isfinite(qd); mask|=qm|(qd!=0)
-            # same shape expected as feature mask for vertical profile gate
-            if data.shape==d.shape:
+                if qa is not None and qa.shape==vals.shape:
+                    qd=np.asarray(np.ma.getdata(qa),dtype=float); qm=np.ma.getmaskarray(qa)|~np.isfinite(qd); vm|=qm|(qd!=0)
+                else:
+                    vm|=True
+            else:
+                vm|=True
+            if vals.shape==d.shape:
                 aerosol_mask=((d&AEROSOL_BIT)!=0)&((d&CLOUD_BITS)==0)&~m
-                count=int(np.count_nonzero(aerosol_mask&~mask)); usable.append((n,count)); out[n+'_usable_aerosol_cells']=count
+                count=int(np.count_nonzero(aerosol_mask&~vm)); usable.append((n,count)); out[n+'_usable_aerosol_cells']=count
         out['e3_profile_usable']=bool(cont['pass'] and aerosol>0 and any(c>0 for _,c in usable))
         out['reason']='CLOUD_OR_HYDROMETEOR_PRESENT' if cloud else ('PROFILE_USABLE' if out['e3_profile_usable'] else 'PROFILE_EVIDENCE_INSUFFICIENT')
         return out
@@ -183,19 +216,28 @@ def analyze_mfrsr(path: Path,start: float,end: float,aeronet_median: float) -> d
         if idx.size==0 or not name: out['reason']='NO_NATIVE_FILTER2_AOD_OR_SAMPLES'; return out
         qc=_qc_for(ds,name)
         if qc is None: out['reason']='NO_NATIVE_FILTER2_QC'; return out
+
+        # Native 500-nm identity is not inferred from the filter number. The
+        # measured center wavelength itself must be present and lie in 495..505 nm.
+        cwl_name=_candidate(ds,['filter2_CWL_measured'])
+        if not cwl_name:
+            out['reason']='FILTER2_WAVELENGTH_UNVERIFIED'; return out
+        craw=np.ma.asarray(ds.variables[cwl_name][:]); cd=np.asarray(np.ma.getdata(craw),dtype=float).reshape(-1); cm=np.ma.getmaskarray(craw).reshape(-1)|~np.isfinite(cd)
+        cvals=cd[~cm]
+        if cvals.size==0:
+            out['reason']='FILTER2_WAVELENGTH_UNVERIFIED'; return out
+        cwl=float(np.median(cvals)); out['filter2_cwl_measured_nm']=cwl; out['filter2_cwl_sample_count']=int(cvals.size)
+        if not (495.0<=cwl<=505.0) or np.any((cvals<495.0)|(cvals>505.0)):
+            out['reason']='FILTER2_WAVELENGTH_OUT_OF_FROZEN_500NM_RANGE'; return out
+
         a=np.ma.asarray(ds.variables[name][idx]).reshape(-1); q=np.ma.asarray(qc[idx]).reshape(-1)
         d=np.asarray(np.ma.getdata(a),dtype=float); qd=np.asarray(np.ma.getdata(q),dtype=float); mask=np.ma.getmaskarray(a)|np.ma.getmaskarray(q)|~np.isfinite(d)|~np.isfinite(qd)|(qd!=0)
         vals=d[~mask]
-        # Prospective schema proof for nominal 500 nm: discover filter2 wavelength/response metadata.
         evidence=[]
         for n,v in ds.variables.items():
             text=' '.join([n,str(getattr(v,'long_name','')),str(getattr(v,'description',''))]).lower()
-            if 'filter2' in text and ('wavelength' in text or 'response' in text): evidence.append(n)
-        attrs=' '.join(str(getattr(ds,a,'')) for a in ds.ncattrs()).lower()
-        out['filter2_schema_evidence_variables']=evidence
-        # The product semantic name is fixed; if response metadata is unavailable here, do not invent another channel.
-        out['filter2_nominal_500_semantics']=True
-        out['schema_ok']=True; out['valid_count']=int(vals.size)
+            if 'filter2' in text and ('wavelength' in text or 'response' in text or 'cwl' in text): evidence.append(n)
+        out['filter2_schema_evidence_variables']=evidence; out['schema_ok']=True; out['valid_count']=int(vals.size)
         if vals.size:
             med=float(np.median(vals)); p10=float(np.percentile(vals,10)); p90=float(np.percentile(vals,90)); spread=p90-p10; diff=abs(med-aeronet_median)
             out.update({'median_aod500':med,'p10_aod500':p10,'p90_aod500':p90,'p90_minus_p10':spread,'abs_median_diff_vs_aeronet':diff})

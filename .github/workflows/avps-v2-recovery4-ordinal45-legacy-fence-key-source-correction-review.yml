@@ -1,0 +1,162 @@
+name: Review AVPS Recovery4 ordinal45 legacy fence-key source correction
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-review.yml
+      - review/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  zero-runtime-source-correction-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      REVIEW_PARENT: 389992d893e7920d4e4989b119be4e15114f2ec8
+      SOURCE_BRANCH: review/avps-v2-recovery4-ordinal45-execution-publication-v2
+      SOURCE_HEAD: fe9d2ffdfc44ba37b9a57f817f97adf5ade99b3c
+      SOURCE_WORKFLOW_BLOB: df0763b61ce89063de6992bb984dc854024a1aad
+      ADAPTER_BLOB: e4b690c2969fd01ecde5b08f554e47ad50b40914
+      EXECUTOR_BLOB: 7dc38e31c19701b1a1ceef300d75105cff179290
+      AGGREGATOR_BLOB: 6afc8b0d21c2b5553c251dc9ca5524c795ed2646
+      CONTRACT_BLOB: 2d5f71d80b5e573b86775c2806b80dcc1fbe02f4
+      AUTH_HEAD: 6e095b4b1603c90dcee0943295909b30cd1b374d
+      ALLOCATION_MARKER: ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=6e095b4b1603c90dcee0943295909b30cd1b374d parent=5685d5c313071014a94c816ee26b129f1f17a7fc pr=774
+      CONSUMED_PREFIX: ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED
+      DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind fresh direct-child review scope and live governance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$REVIEW_PARENT"
+          git diff --name-only "$REVIEW_PARENT"...HEAD | sort > changed.txt
+          cat > expected.txt <<'EOF'
+          .github/workflows/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-review.yml
+          review/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-v1/correct.py
+          EOF
+          sort -o expected.txt expected.txt
+          diff -u expected.txt changed.txt
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-pages.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('issue60-pages.json')); comments=[c for p in pages for c in p]
+          bodies=[str(c.get('body') or '').strip() for c in comments]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('ordinal45 already consumed')
+          def fields(first):
+              out={}
+              for token in first.replace('|',' ').split():
+                  if '=' in token:
+                      k,v=token.split('=',1); out[k]=v
+              return out
+          closed=set(); begins=[]
+          for c in comments:
+              body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
+              f=fields(first)
+              if first.startswith('WRITE_QUIET_END'):
+                  vals=[]
+                  for key in ('begin','beginComment','begin_comment'):
+                      v=f.get(key,'')
+                      if v.isdigit(): vals.append(int(v))
+                  if vals:
+                      if len(set(vals))!=1: raise SystemExit(f'conflicting WRITE_QUIET_END begin ids: {vals}')
+                      closed.add(vals[0])
+              if first.startswith('WRITE_QUIET_BEGIN'): begins.append(int(c['id']))
+          unmatched=[x for x in begins if x not in closed]
+          if unmatched: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN present: {unmatched}')
+          PY
+          if git ls-remote --exit-code origin "refs/heads/$DISPATCH_BRANCH" >/dev/null 2>&1; then
+            echo 'ordinal45 dispatch branch already exists' >&2
+            exit 1
+          fi
+
+      - name: Materialize exact old publication bytes and apply one parser-only correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/heads/$SOURCE_BRANCH:refs/remotes/origin/$SOURCE_BRANCH"
+          test "$(git rev-parse origin/$SOURCE_BRANCH)" = "$SOURCE_HEAD"
+          mkdir -p source corrected-package/runtime-avps-v2-recovery4-ordinal45-v1
+          git show "$SOURCE_HEAD:.github/workflows/avps-v2-postconsumption-recovery4-science.yml" > source/science.yml
+          test "$(git hash-object source/science.yml)" = "$SOURCE_WORKFLOW_BLOB"
+          for spec in \
+            runtime_adapter.py:$ADAPTER_BLOB \
+            executor.py:$EXECUTOR_BLOB \
+            aggregator.py:$AGGREGATOR_BLOB \
+            runtime_contract.json:$CONTRACT_BLOB
+          do
+            name=${spec%%:*}; blob=${spec#*:}
+            git show "$SOURCE_HEAD:runtime-avps-v2-recovery4-ordinal45-v1/$name" > "corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/$name"
+            test "$(git hash-object "corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/$name")" = "$blob"
+          done
+          python -m py_compile review/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-v1/correct.py
+          python review/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-v1/correct.py \
+            --input source/science.yml \
+            --output corrected-package/avps-v2-postconsumption-recovery4-science.yml \
+            --receipt corrected-package/source-correction-receipt.json
+          test "$(git hash-object corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/runtime_adapter.py)" = "$ADAPTER_BLOB"
+          test "$(git hash-object corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/executor.py)" = "$EXECUTOR_BLOB"
+          test "$(git hash-object corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/aggregator.py)" = "$AGGREGATOR_BLOB"
+          test "$(git hash-object corrected-package/runtime-avps-v2-recovery4-ordinal45-v1/runtime_contract.json)" = "$CONTRACT_BLOB"
+          test "$(git hash-object corrected-package/avps-v2-postconsumption-recovery4-science.yml)" != "$SOURCE_WORKFLOW_BLOB"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.load(open('corrected-package/source-correction-receipt.json'))
+          required={'scientificOrdinal':45,'replacementCount':1,'frozenScienceChanged':False,'seedIdentityChanged':False,'authorizationChanged':False,'dispatchCreated':False,'seedConsumption':False,'solverExecution':False,'resultsOpened':False,'levelBOpeningAuthorized':False,'holdoutOpeningAuthorized':False,'productionAuthorized':False,'taylorOrJerusalemUsed':False,'newMappingAuthorized':False,'conflictingEndBindingIdsFailClosed':True,'laterBodyMentionsIgnored':True}
+          for k,v in required.items():
+              if r.get(k)!=v: raise SystemExit(f'correction receipt drift {k}: {r.get(k)!r} != {v!r}')
+          if r.get('acceptedEndBindingKeys')!=['begin','beginComment','begin_comment']: raise SystemExit('legacy END key set drift')
+          wf=Path('corrected-package/avps-v2-postconsumption-recovery4-science.yml').read_text()
+          if "f.get('begin','').isdigit(): closed.add(int(f['begin']))" in wf: raise SystemExit('legacy begin-only parser remains')
+          for token in ("('begin','beginComment','begin_comment')", 'conflicting WRITE_QUIET_END begin ids'):
+              if token not in wf: raise SystemExit(f'corrected parser token missing: {token}')
+          PY
+
+      - name: Prove correction review is zero-runtime and non-authorizing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/avps-v2-recovery4-ordinal45-legacy-fence-key-source-correction-review.yml').read_text()
+          forbidden=('workflow_'+'dispatch:','setup-'+'micromamba','command -v '+'uvspec','rte_solver '+'mystic','mc_'+'photons 20000000')
+          for token in forbidden:
+              if token in p: raise SystemExit(f'review workflow contains mutating/runtime token: {token}')
+          PY
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-recovery4-ordinal45-legacy-fence-key-source-correction
+          path: |
+            changed.txt
+            corrected-package/
+          if-no-files-found: error
+          compression-level: 0

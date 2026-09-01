@@ -1,0 +1,80 @@
+name: ARM ENA SWS E1 Horizons
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - review/arm-ena-sws-v1-stage0/run_ena_sws_e1_horizons_shard.py
+      - review/arm-ena-sws-v1-stage0/aggregate_ena_sws_e1_horizons.py
+      - review/arm-ena-sws-v1-stage0/generate_ena_event_universe_fast.py
+      - .github/workflows/arm-ena-sws-e1-horizons.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shards:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen event-universe dependencies
+        run: python -m pip install --disable-pip-version-check numpy==2.5.2 pandas==3.0.5 pvlib==0.15.2
+      - name: Execute one deterministic E1 shard
+        run: |
+          python review/arm-ena-sws-v1-stage0/run_ena_sws_e1_horizons_shard.py \
+            --generator review/arm-ena-sws-v1-stage0/generate_ena_event_universe_fast.py \
+            --shard-index '${{ matrix.shard }}' \
+            --shard-count 18 \
+            --output-dir 'arm_ena_sws_e1_shard_${{ matrix.shard }}'
+      - name: Upload raw Horizons evidence for shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-e1-shard-${{ matrix.shard }}
+          path: arm_ena_sws_e1_shard_${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen event-universe dependencies
+        run: python -m pip install --disable-pip-version-check numpy==2.5.2 pandas==3.0.5 pvlib==0.15.2
+      - name: Download all shard evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: arm-ena-sws-e1-shard-*
+          path: e1_shards
+      - name: Verify 906/906 integrity and aggregate only after verification
+        run: |
+          python review/arm-ena-sws-v1-stage0/aggregate_ena_sws_e1_horizons.py \
+            --shards-root e1_shards \
+            --generator review/arm-ena-sws-v1-stage0/generate_ena_event_universe_fast.py \
+            --shard-count 18 \
+            --output-dir arm_ena_sws_e1_aggregate
+      - name: Upload authoritative aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-e1-horizons-aggregate
+          path: arm_ena_sws_e1_aggregate
+          if-no-files-found: warn
+          retention-days: 30

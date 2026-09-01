@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 
 STAGE = "koomen-support-envelope-v1"
-EXECUTION_KEY = "koomen-support-envelope-v1:scientific:49"
+EXECUTION_KEY = "koomen-support-envelope-v1:scientific:50"
 ROWS = list(range(18, 28))
-PAIR_BASES = [1541000000, 1542000000, 1543000000, 1544000000]
+PAIR_BASES = [1545000000, 1546000000, 1547000000, 1548000000]
 PHOTONS = 200000
 RINGS = [0.15, 0.30, 0.45, 0.60, 0.75]
 AZIMUTHS = [22.5 * i for i in range(16)]
@@ -169,7 +169,7 @@ def main():
     tau_meta = profile_base.write_tau_profile(baseline_base, atmosphere, profiles, t, tau_path)
 
     aod = float(obs["aod550_primary_frozen"])
-    seed = PAIR_BASES[a.replicate - 1] + a.row * 1000 + 949
+    seed = PAIR_BASES[a.replicate - 1] + a.row * 1000 + 950
     directions = direction_grid()
     records = {"baseline": [], "profile": []}
 

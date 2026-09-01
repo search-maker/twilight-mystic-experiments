@@ -1,0 +1,76 @@
+name: ARM ENA SWS E0 Selftest
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - review/arm-ena-sws-v1-stage0/audit_ena_sws_e0.py
+      - .github/workflows/arm-ena-sws-e0-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audit dependencies
+        run: python -m pip install --disable-pip-version-check numpy pandas pvlib netCDF4
+      - name: Static holdout firewall audit
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          p=Path('review/arm-ena-sws-v1-stage0/audit_ena_sws_e0.py')
+          tree=ast.parse(p.read_text(encoding='utf-8'))
+          protected={'zenith_radiance','radiance','irradiance','luminance','brightness','intensity','signal','spectra','spectrum'}
+          violations=[]
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.Subscript):
+                  continue
+              base=ast.unparse(node.value).lower()
+              full=ast.unparse(node).lower()
+              if '.variables' not in base:
+                  continue
+              for name in protected:
+                  if f"['{name}']" in full or f'["{name}"]' in full:
+                      violations.append((node.lineno, full))
+          if violations:
+              raise SystemExit(f'protected photometric array access found: {violations}')
+          print('STATIC_HOLDOUT_FIREWALL_PASS')
+          PY
+      - name: Build exhaustive frozen event universe
+        run: |
+          mkdir -p /tmp/ena_e0
+          python review/arm-ena-sws-v1-stage0/audit_ena_sws_e0.py \
+            --archive-root . \
+            --output-dir /tmp/ena_e0 \
+            --events-only
+          python - <<'PY'
+          import csv, hashlib
+          from pathlib import Path
+          p=Path('/tmp/ena_e0/ena_sws_e0_event_universe.csv')
+          raw=p.read_bytes()
+          rows=list(csv.DictReader(raw.decode('utf-8-sig').splitlines()))
+          assert len(rows)==906, len(rows)
+          assert rows[0]['case_id']=='2017-04-05_dusk', rows[0]
+          assert rows[-1]['case_id']=='2019-09-27_dusk', rows[-1]
+          for r in rows:
+              assert r['event']=='dusk'
+              assert r['t_minus6_utc'] < r['t_minus7_utc'] < r['t_minus8_utc']
+          print('EVENT_UNIVERSE_PASS count=906')
+          print('EVENT_UNIVERSE_SHA256='+hashlib.sha256(raw).hexdigest())
+          print('FIRST='+str(rows[0]))
+          print('LAST='+str(rows[-1]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-e0-event-universe
+          path: /tmp/ena_e0/ena_sws_e0_event_universe.csv
+          if-no-files-found: error

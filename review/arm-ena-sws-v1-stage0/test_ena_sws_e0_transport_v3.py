@@ -22,12 +22,12 @@ def expect_system_exit(fn, *args) -> None:
 
 def test_query_error_is_sanitized() -> None:
     tr = importlib.import_module("stream_ena_sws_e0_from_arm_live_v2")
-    original = tr.BASE.query_day
+    original = tr._BASE_QUERY_DAY
     secret = "SECRET_TOKEN_SHOULD_NEVER_PERSIST"
     try:
         def boom(*_args, **_kwargs):
             raise RuntimeError(f"https://adc.arm.gov/armlive/query?user=id:{secret}&ds=enaswsC1.b1")
-        tr.BASE.query_day = boom
+        tr._BASE_QUERY_DAY = boom
         try:
             tr.query_day("id:" + secret, tr.DATASTREAM, "20170616", tr.FILE_RE)
         except Exception as exc:
@@ -39,17 +39,17 @@ def test_query_error_is_sanitized() -> None:
         else:
             raise AssertionError("expected sanitized query error")
     finally:
-        tr.BASE.query_day = original
+        tr._BASE_QUERY_DAY = original
 
 
 def test_download_error_is_sanitized() -> None:
     tr = importlib.import_module("stream_ena_sws_e0_from_arm_live_v2")
-    original = tr.BASE.download_native
+    original = tr._BASE_DOWNLOAD_NATIVE
     secret = "SECRET_DOWNLOAD_TOKEN"
     try:
         def boom(*_args, **_kwargs):
             raise OSError(f"saveData?user=id:{secret}&file=enaswsC1.b1.20170616.test.nc")
-        tr.BASE.download_native = boom
+        tr._BASE_DOWNLOAD_NATIVE = boom
         with tempfile.TemporaryDirectory() as td:
             try:
                 tr.download_native("id:" + secret, "enaswsC1.b1.20170616.test.nc", Path(td) / "x.nc")
@@ -62,7 +62,25 @@ def test_download_error_is_sanitized() -> None:
             else:
                 raise AssertionError("expected sanitized download error")
     finally:
-        tr.BASE.download_native = original
+        tr._BASE_DOWNLOAD_NATIVE = original
+
+
+def test_main_delegation_cannot_recurse() -> None:
+    tr = importlib.import_module("stream_ena_sws_e0_from_arm_live_v2")
+    # The wrappers must retain captured originals even after BASE globals are
+    # rebound by main(); otherwise authenticated execution would recurse.
+    assert tr._BASE_QUERY_DAY is not tr.query_day
+    assert tr._BASE_DOWNLOAD_NATIVE is not tr.download_native
+    original_q = tr.BASE.query_day
+    original_d = tr.BASE.download_native
+    try:
+        tr.BASE.query_day = tr.query_day
+        tr.BASE.download_native = tr.download_native
+        assert tr._BASE_QUERY_DAY is not tr.BASE.query_day
+        assert tr._BASE_DOWNLOAD_NATIVE is not tr.BASE.download_native
+    finally:
+        tr.BASE.query_day = original_q
+        tr.BASE.download_native = original_d
 
 
 def test_explicit_credentials_are_rejected() -> None:
@@ -101,6 +119,7 @@ def test_frozen_v3_keeps_e0_v2_and_sanitized_transport() -> None:
 def main() -> int:
     test_query_error_is_sanitized()
     test_download_error_is_sanitized()
+    test_main_delegation_cannot_recurse()
     test_explicit_credentials_are_rejected()
     test_live25_v3_rejects_execution_overrides()
     test_portable_probe_v3_is_pinned_and_requires_actual_native_schema()

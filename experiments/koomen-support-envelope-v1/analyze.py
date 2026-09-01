@@ -41,6 +41,8 @@ def load_results(root: Path):
         x = json.loads(p.read_text())
         if x.get("status") != "COMPLETED":
             continue
+        if x.get("executionKey") != "koomen-support-envelope-v1:scientific:50":
+            raise RuntimeError(f"wrong result execution identity in {p}")
         key = (int(x["row"]), int(x["replicate"]))
         if key in found:
             raise RuntimeError(f"duplicate result {key}")
@@ -102,7 +104,7 @@ def main():
     a = ap.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     manifest = json.loads(a.manifest.read_text())
-    if manifest.get("executionKey") != "koomen-support-envelope-v1:scientific:49":
+    if manifest.get("executionKey") != "koomen-support-envelope-v1:scientific:50":
         raise RuntimeError("wrong manifest")
     found = load_results(a.results_root)
 

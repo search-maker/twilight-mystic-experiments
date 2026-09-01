@@ -1,0 +1,56 @@
+name: ARM Order268666 Live4 Cloud Recovery V1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-exact8-release-analysis-v1
+    paths:
+      - .github/workflows/arm-order268666-live4-cloud-recovery-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Recover exact non-SASZE cloud files from preserved order
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p recovered
+          cat > expected.tsv <<'EOF'
+          sgparsclkazr1kolliasC1.c0/sgparsclkazr1kolliasC1.c0.20240128.000000.nc	7477269	8e051242195543a7d169059e5e721cd226135ec20a003c12cdf86a6675b079e9
+          sgpceilC1.b1/sgpceilC1.b1.20240128.000012.nc	6288736	d02271b680debbc335e0af2ea4d57ce64f05289ef173e2605dd85b50ff22f194
+          sgparsclkazr1kolliasC1.c0/sgparsclkazr1kolliasC1.c0.20240202.000000.nc	20712269	d3afb5d94969e26662c689b48c6d5bc9e5ca9508ddc5cc5cc2e854352d6d7f82
+          sgpceilC1.b1/sgpceilC1.b1.20240202.000001.nc	6289896	304324f8a7ae2c4774aef18eb06ba536c23b6f81c81e44d2eecbcb264450dfe9
+          sgparsclkazr1kolliasC1.c0/sgparsclkazr1kolliasC1.c0.20240328.000000.nc	14227305	2338210f825cf0b079db124bca9631956e7c14a276c655475ea8e3943c588c31
+          sgpceilC1.b1/sgpceilC1.b1.20240328.000013.nc	6288736	4988c267f7396856b070b82cfb04f91fb477509dd493626513db7a4999d639d3
+          sgparsclkazr1kolliasC1.c0/sgparsclkazr1kolliasC1.c0.20240329.000000.nc	60931545	c60570da880f4535f4672f120e74828592f8022f693675caa28372f555170cc2
+          sgpceilC1.b1/sgpceilC1.b1.20240329.000010.nc	6288736	07b4567676d82bd580ee6920d40417c1ec0452703f057f4c2a584368404ba4ca
+          EOF
+          printf 'relative_path,size_bytes,sha256,status\n' > recovery_manifest.csv
+          while IFS=$'\t' read -r rel expected_size expected_sha; do
+            name="$(basename "$rel")"
+            case "$name" in *sasze*|*SASZE*) echo 'HOLDOUT FIREWALL VIOLATION' >&2; exit 9;; esac
+            url="ftp://ftp.archive.arm.gov/buchingerp1/268666/$rel"
+            echo "Recovering $name"
+            curl --fail --show-error --silent --retry 2 --retry-delay 2 "$url" -o "recovered/$name"
+            actual_size="$(stat -c %s "recovered/$name")"
+            actual_sha="$(sha256sum "recovered/$name" | awk '{print $1}')"
+            test "$actual_size" = "$expected_size"
+            test "$actual_sha" = "$expected_sha"
+            printf '%s,%s,%s,RECOVERED_VERIFIED\n' "$rel" "$actual_size" "$actual_sha" >> recovery_manifest.csv
+          done < expected.tsv
+
+      - name: Upload verified cloud-only recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM-order268666-live4-cloud-recovery-v1
+          path: |
+            recovered/*.nc
+            recovery_manifest.csv
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7

@@ -17,6 +17,9 @@ concurrency:
 
 env:
   CONTROL_ISSUE: '60'
+  TRUSTED_ACCEPTANCE_LOGIN: search-maker
+  TRUSTED_ACCEPTANCE_USER_ID: '304153003'
+  TRUSTED_ACCEPTANCE_ASSOCIATION: OWNER
   ACTIVATION_BRANCH: transport-trigger/avps-v2-recovery4-ordinal45-publication-v4
   ACTIVATION_MARKER: transport-triggers/avps-v2-recovery4-ordinal45-publication-v4.txt
   ACTIVATION_TEXT: AVPS_V2_RECOVERY4_ORDINAL45_CORRECTED_PUBLICATION_MATERIALIZER_V4
@@ -53,6 +56,9 @@ jobs:
   materialize:
     if: >-
       github.event.issue.number == 60 &&
+      github.event.comment.user.login == 'search-maker' &&
+      github.event.comment.user.id == 304153003 &&
+      github.event.comment.author_association == 'OWNER' &&
       startsWith(github.event.comment.body, 'INDEPENDENT_AUDIT::ACCEPT_AVPS_ORDINAL45_PUBLICATION_V4_ACTIVATION_IDENTITY')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -70,6 +76,9 @@ jobs:
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
           EVENT_COMMENT_CREATED: ${{ github.event.comment.created_at }}
           EVENT_COMMENT_UPDATED: ${{ github.event.comment.updated_at }}
+          EVENT_COMMENT_LOGIN: ${{ github.event.comment.user.login }}
+          EVENT_COMMENT_USER_ID: ${{ github.event.comment.user.id }}
+          EVENT_COMMENT_AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_ISSUE: ${{ github.event.issue.number }}
         run: |
@@ -78,6 +87,9 @@ jobs:
           test "$EVENT_ACTION" = created
           test "$EVENT_ISSUE" = "$CONTROL_ISSUE"
           test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_COMMENT_LOGIN" = "$TRUSTED_ACCEPTANCE_LOGIN"
+          test "$EVENT_COMMENT_USER_ID" = "$TRUSTED_ACCEPTANCE_USER_ID"
+          test "$EVENT_COMMENT_AUTHOR_ASSOCIATION" = "$TRUSTED_ACCEPTANCE_ASSOCIATION"
           python - <<'PY'
           import os,re
           body=os.environ['EVENT_COMMENT_BODY'].strip()
@@ -129,6 +141,9 @@ jobs:
           printf '%s\n' "$EVENT_COMMENT_ID" > /tmp/activation-review-id
           printf '%s\n' "$EVENT_COMMENT_CREATED" > /tmp/activation-review-created-at
           printf '%s\n' "$EVENT_COMMENT_UPDATED" > /tmp/activation-review-updated-at
+          printf '%s\n' "$EVENT_COMMENT_LOGIN" > /tmp/activation-review-login
+          printf '%s\n' "$EVENT_COMMENT_USER_ID" > /tmp/activation-review-user-id
+          printf '%s\n' "$EVENT_COMMENT_AUTHOR_ASSOCIATION" > /tmp/activation-review-author-association
 
       - name: Fresh governance and source recheck, then create activation ref only
         shell: bash
@@ -164,11 +179,17 @@ jobs:
           bodies=[(c.get('body') or '').strip() for c in comments]
           if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
           if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('consumed marker already exists')
-          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
-          if len(accepted)!=1: raise SystemExit(f'activation acceptance global cardinality must be exactly one, got {len(accepted)}')
+          def trusted(c):
+              u=c.get('user') or {}
+              return (u.get('login')==os.environ['TRUSTED_ACCEPTANCE_LOGIN'] and str(u.get('id'))==os.environ['TRUSTED_ACCEPTANCE_USER_ID'] and c.get('author_association')==os.environ['TRUSTED_ACCEPTANCE_ASSOCIATION'])
+          matching=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          accepted=[c for c in matching if trusted(c)]
+          if len(accepted)!=1: raise SystemExit(f'trusted activation acceptance global cardinality must be exactly one, got {len(accepted)}; untrusted matching comments ignored={len(matching)-len(accepted)}')
           a=accepted[0]
-          if int(a['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (a.get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('current acceptance event is not the unique durable acceptance')
+          if int(a['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (a.get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('current acceptance event is not the unique durable trusted acceptance')
+          if not trusted(a): raise SystemExit('durable acceptance author trust drift')
           if str(a.get('created_at'))!=open('/tmp/activation-review-created-at').read().strip() or str(a.get('updated_at'))!=open('/tmp/activation-review-updated-at').read().strip(): raise SystemExit('activation acceptance timestamp drift')
+          if (a.get('user') or {}).get('login')!=open('/tmp/activation-review-login').read().strip() or str((a.get('user') or {}).get('id'))!=open('/tmp/activation-review-user-id').read().strip() or a.get('author_association')!=open('/tmp/activation-review-author-association').read().strip(): raise SystemExit('activation acceptance author identity drift')
           acceptance_id=int(a['id'])
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
@@ -273,9 +294,15 @@ jobs:
           bodies=[(c.get('body') or '').strip() for c in comments]
           if sum(b.startswith(os.environ['ALLOCATION_PREFIX']) for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift at final recheck')
           if any(b.startswith(os.environ['CONSUMED_PREFIX']) for b in bodies): raise SystemExit('consumed marker appeared before publication mutation')
-          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
-          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('activation acceptance changed/duplicated at final recheck')
+          def trusted(c):
+              u=c.get('user') or {}
+              return (u.get('login')==os.environ['TRUSTED_ACCEPTANCE_LOGIN'] and str(u.get('id'))==os.environ['TRUSTED_ACCEPTANCE_USER_ID'] and c.get('author_association')==os.environ['TRUSTED_ACCEPTANCE_ASSOCIATION'])
+          matching=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          accepted=[c for c in matching if trusted(c)]
+          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit(f'trusted activation acceptance changed/duplicated at final recheck; trusted={len(accepted)} untrusted_matching={len(matching)-len(accepted)}')
+          if not trusted(accepted[0]): raise SystemExit('trusted acceptance author drift at final recheck')
           if str(accepted[0].get('created_at'))!=open('/tmp/activation-review-created-at').read().strip() or str(accepted[0].get('updated_at'))!=open('/tmp/activation-review-updated-at').read().strip(): raise SystemExit('activation acceptance timestamp mutation detected at final recheck')
+          if (accepted[0].get('user') or {}).get('login')!=open('/tmp/activation-review-login').read().strip() or str((accepted[0].get('user') or {}).get('id'))!=open('/tmp/activation-review-user-id').read().strip() or accepted[0].get('author_association')!=open('/tmp/activation-review-author-association').read().strip(): raise SystemExit('activation acceptance author identity mutation detected at final recheck')
           acceptance_id=int(accepted[0]['id'])
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           for c in comments:
@@ -323,8 +350,14 @@ jobs:
                   closed.add(int(vals[0]))
           u=sorted(set(begins)-closed)
           if u: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN before PR creation: {u}')
-          accepted=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
-          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit('activation acceptance drift before PR creation')
+          def trusted(c):
+              u=c.get('user') or {}
+              return (u.get('login')==os.environ['TRUSTED_ACCEPTANCE_LOGIN'] and str(u.get('id'))==os.environ['TRUSTED_ACCEPTANCE_USER_ID'] and c.get('author_association')==os.environ['TRUSTED_ACCEPTANCE_ASSOCIATION'])
+          matching=[c for c in comments if (c.get('body') or '').strip().startswith(os.environ['ACTIVATION_REVIEW_PREFIX'])]
+          accepted=[c for c in matching if trusted(c)]
+          if len(accepted)!=1 or int(accepted[0]['id'])!=int(os.environ['EVENT_COMMENT_ID']) or (accepted[0].get('body') or '').strip()!=os.environ['EVENT_COMMENT_BODY'].strip(): raise SystemExit(f'trusted activation acceptance drift before PR creation; trusted={len(accepted)} untrusted_matching={len(matching)-len(accepted)}')
+          if not trusted(accepted[0]): raise SystemExit('trusted acceptance author drift before PR creation')
+          if (accepted[0].get('user') or {}).get('login')!=open('/tmp/activation-review-login').read().strip() or str((accepted[0].get('user') or {}).get('id'))!=open('/tmp/activation-review-user-id').read().strip() or accepted[0].get('author_association')!=open('/tmp/activation-review-author-association').read().strip(): raise SystemExit('activation acceptance author identity mutation before PR creation')
           blockers=('INDEPENDENT_AUDIT::CONFIRMED_DEFECT','INDEPENDENT_AUDIT::MATERIAL_RISK','NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
           acceptance_id=int(accepted[0]['id'])
           for c in comments:
@@ -343,7 +376,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nactivationReviewCreatedAt=%s\nactivationReviewUpdatedAt=%s\nactivationRun=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$(cat /tmp/activation-commit 2>/dev/null || true)" "$(cat /tmp/tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$(cat /tmp/activation-review-created-at 2>/dev/null || true)" "$(cat /tmp/activation-review-updated-at 2>/dev/null || true)" "$(cat /tmp/activation-run-id 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
+          printf 'schema=AVPS_V2_RECOVERY4_ORDINAL45_PUBLICATION_MATERIALIZER_V4\nactivation=%s\nactivationTree=%s\nactivationReview=%s\nactivationReviewCreatedAt=%s\nactivationReviewUpdatedAt=%s\nactivationReviewLogin=%s\nactivationReviewUserId=%s\nactivationReviewAuthorAssociation=%s\nactivationRun=%s\nrun=%s\nattempt=%s\nsourceArtifact=%s\npublicationParent=%s\npublicationCommit=%s\npublicationTree=%s\nsolverExecuted=false\nscienceDispatched=false\nresultOpened=false\n' "$(cat /tmp/activation-commit 2>/dev/null || true)" "$(cat /tmp/tree 2>/dev/null || true)" "$(cat /tmp/activation-review-id 2>/dev/null || true)" "$(cat /tmp/activation-review-created-at 2>/dev/null || true)" "$(cat /tmp/activation-review-updated-at 2>/dev/null || true)" "$(cat /tmp/activation-review-login 2>/dev/null || true)" "$(cat /tmp/activation-review-user-id 2>/dev/null || true)" "$(cat /tmp/activation-review-author-association 2>/dev/null || true)" "$(cat /tmp/activation-run-id 2>/dev/null || true)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SOURCE_ARTIFACT" "$PUBLICATION_PARENT" "$(cat /tmp/publication-commit 2>/dev/null || true)" "$(cat /tmp/publication-tree 2>/dev/null || true)" > materializer-v4-receipt.txt
 
       - uses: actions/upload-artifact@v4
         if: always()

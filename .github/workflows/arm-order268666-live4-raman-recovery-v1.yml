@@ -1,0 +1,52 @@
+name: ARM Order268666 Live4 Raman Recovery V1
+
+on:
+  push:
+    branches:
+      - review/arm-sgp-exact8-release-analysis-v1
+    paths:
+      - .github/workflows/arm-order268666-live4-raman-recovery-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Recover exact non-SASZE Raman files from preserved order
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p recovered
+          cat > expected.tsv <<'EOF'
+          sgprlprofbeC1.c1/sgprlprofbeC1.c1.20240128.000500.nc	1277290	d9ce7ee4a70e3e5764f071cb492e6318753ded1621287bf1194a41043c0957d9
+          sgprlprofbeC1.c1/sgprlprofbeC1.c1.20240202.000500.nc	1336029	5e13577e16422839158f368e1c078ff932dd1e4d63a4154110dcd91d81dfc124
+          sgprlprofbeC1.c1/sgprlprofbeC1.c1.20240328.000500.nc	1340794	d5f30ae75b9fba7e6b025033f9d21e9a7b8dad07d129be68bdc24f0d14e625b0
+          sgprlprofbeC1.c1/sgprlprofbeC1.c1.20240329.000500.nc	1359397	ed303102ee0ba5b5370807b81401731003c07d99b1ca230f633fecc288ab917a
+          EOF
+          printf 'relative_path,size_bytes,sha256,status\n' > recovery_manifest.csv
+          while IFS=$'\t' read -r rel expected_size expected_sha; do
+            name="$(basename "$rel")"
+            case "$name" in *sasze*|*SASZE*) echo 'HOLDOUT FIREWALL VIOLATION' >&2; exit 9;; esac
+            url="ftp://ftp.archive.arm.gov/buchingerp1/268666/$rel"
+            echo "Recovering $name"
+            curl --fail --show-error --silent --retry 2 --retry-delay 2 "$url" -o "recovered/$name"
+            actual_size="$(stat -c %s "recovered/$name")"
+            actual_sha="$(sha256sum "recovered/$name" | awk '{print $1}')"
+            test "$actual_size" = "$expected_size"
+            test "$actual_sha" = "$expected_sha"
+            printf '%s,%s,%s,RECOVERED_VERIFIED\n' "$rel" "$actual_size" "$actual_sha" >> recovery_manifest.csv
+          done < expected.tsv
+
+      - name: Upload verified Raman-only recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM-order268666-live4-raman-recovery-v1
+          path: |
+            recovered/*.nc
+            recovery_manifest.csv
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7

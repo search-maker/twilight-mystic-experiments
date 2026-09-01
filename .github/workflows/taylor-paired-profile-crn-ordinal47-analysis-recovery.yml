@@ -1,0 +1,179 @@
+name: Taylor ordinal47 analysis recovery r1
+run-name: Taylor ordinal47 analysis recovery r1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [synchronize]
+    paths:
+      - 'experiments/taylor-paired-profile-crn-v1/ANALYZE_ORDINAL47_R1.txt'
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: taylor-paired-profile-crn-v1-analysis-recovery-r1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/taylor-paired-profile-crn-v1
+  MANIFEST: experiments/taylor-paired-profile-crn-v1/manifest-ordinal47.json
+  SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  SCIENCE_RUN_ID: '33543818095'
+  SCIENCE_HEAD: 2426335c652adacf442122c3a1bcdf9489a10298
+  EXPECTED_BRANCH: science/taylor-paired-profile-crn-v1-ordinal47
+  VEGA_SHA256: '60aebf5c193223f69061cd176d6309730c3210051fffad0dd6ad44475199ceaa'
+
+jobs:
+  analysis-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Guard immutable science and preregistered recovery identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "$EXPECTED_BRANCH"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$PKG/ANALYZE_ORDINAL47_R1.txt"
+          PARENT="$(git rev-parse HEAD^)"
+          test "$(cat "$PKG/ANALYZE_ORDINAL47_R1.txt")" = "AUTHORIZED_ANALYSIS_RECOVERY=taylor-paired-profile-crn-v1:scientific:47:analysis-r1 PARENT=$PARENT SCIENCE_RUN=$SCIENCE_RUN_ID"
+          gh api "repos/$GITHUB_REPOSITORY/issues/828/comments?per_page=100" --paginate --slurp > issue828-comments.json
+          python - "$PARENT" <<'PY'
+          import json,sys
+          parent=sys.argv[1]
+          pages=json.load(open('issue828-comments.json'))
+          comments=[c for page in pages for c in page]
+          token=f'TAYLOR828_ANALYSIS_RECOVERY_R1_HEAD={parent}'
+          hits=[c for c in comments if token in (c.get('body') or '')]
+          if len(hits)!=1:
+              raise SystemExit(f'expected exactly one analysis-recovery preregistration for {parent}, got {len(hits)}')
+          print('ANALYSIS_RECOVERY_PREREG_PASS',hits[0]['id'])
+          PY
+          python -m json.tool "$MANIFEST" >/dev/null
+          python -m py_compile "$PKG/analyze.py"
+          python - <<'PY'
+          import json
+          m=json.load(open('experiments/taylor-paired-profile-crn-v1/manifest-ordinal47.json'))
+          assert m['executionKey']=='taylor-paired-profile-crn-v1:scientific:47'
+          assert m['mystic']['maximumScientificSolverCalls']==7800
+          assert all(m['analysis'][k] is False for k in ('fitOffset','fitAod','fitProfile','fitAnyParameter'))
+          print('FROZEN_ANALYSIS_CONTRACT_PASS')
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SCIENCE_RUN_ID" > science-run.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('science-run.json'))
+          assert str(r['id'])==os.environ['SCIENCE_RUN_ID']
+          assert r['head_sha']==os.environ['SCIENCE_HEAD']
+          assert r['run_attempt']==1
+          assert r['status']=='completed'
+          print('IMMUTABLE_SCIENCE_RUN_PASS',r['conclusion'])
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install analysis-only dependencies
+        run: python -m pip install --disable-pip-version-check numpy==2.3.2 astropy==7.1.0 matplotlib==3.10.5
+
+      - name: Download all 60 immutable science case artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-paired-profile-crn-ordinal47-row-*-pair-*
+          path: all-pair-artifacts
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.SCIENCE_RUN_ID }}
+
+      - name: Verify exact case universe and immutable identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, os
+          files=list(pathlib.Path('all-pair-artifacts').rglob('pair-result.json'))
+          assert len(files)==60, f'expected 60 pair results, got {len(files)}'
+          keys=set()
+          calls=0
+          photons=0
+          for p in files:
+              x=json.loads(p.read_text())
+              assert x['status']=='COMPLETED'
+              assert x['executionKey']=='taylor-paired-profile-crn-v1:scientific:47'
+              assert x['photonsPerRayPerCase']==200000
+              assert x['rayCountWideSQM']==64
+              assert x['commonRandomNumbers'] is True
+              assert x['mcStdFilesNotUsedAsBetweenSeedEstimator'] is True
+              assert x['camsProfileProvenance']['profileSha256']=='6c3a3041b6718db415300323f23da0277752b6c9fc6c806e5eff7c493b060359'
+              keys.add((int(x['row']),int(x['pair'])))
+              calls+=int(x['solverCalls'])
+              photons+=int(x['configuredPhotonHistories'])
+          assert keys=={(r,p) for r in range(18,28) for p in range(1,7)}
+          assert calls==7800, calls
+          assert photons==1560000000, photons
+          print('EXACT_60_CASE_UNIVERSE_PASS',calls,photons)
+          PY
+
+      - name: Materialize frozen original-SQM response
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          mkdir -p frozen-source
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+
+      - name: Fetch exact pinned CALSPEC Vega from current STScI CDBS endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --output alpha_lyr_stis_011.fits https://ssb.stsci.edu/cdbs/calspec/alpha_lyr_stis_011.fits
+          echo "$VEGA_SHA256  alpha_lyr_stis_011.fits" | sha256sum -c -
+
+      - name: Produce frozen paired empirical-MC analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze.py" \
+            --results-root all-pair-artifacts \
+            --response frozen-source/sqm_response.csv \
+            --vega alpha_lyr_stis_011.fits \
+            --manifest "$MANIFEST" \
+            --output analysis-output
+          cat analysis-output/report.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-paired-profile-crn-ordinal47-analysis-recovery-r1
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Publish compact immutable result to Issue 828
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            cat analysis-output/issue-summary.md
+            echo
+            echo "Analysis recovery: taylor-paired-profile-crn-v1:scientific:47:analysis-r1"
+            echo "Immutable science run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SCIENCE_RUN_ID"
+            echo "Immutable science head: $SCIENCE_HEAD"
+            echo "Analysis recovery run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (attempt $GITHUB_RUN_ATTEMPT)"
+            echo "Reason for recovery: original analysis job failed before analysis because its retired STScI Vega URL returned HTTP 404; no solver was rerun."
+          } > issue-comment.md
+          gh issue comment 828 --repo "$GITHUB_REPOSITORY" --body-file issue-comment.md

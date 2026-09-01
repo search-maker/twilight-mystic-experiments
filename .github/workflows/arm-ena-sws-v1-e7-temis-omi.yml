@@ -1,0 +1,98 @@
+name: ARM ENA SWS V1 E7 TEMIS OMI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - 'review/arm-ena-sws-v1-stage0/screen_ena_e7_temis_omi_v1.py'
+      - 'review/arm-ena-sws-v1-stage0/ena_sws_e4_csphot_side_37_survivors.json'
+      - 'review/arm-ena-sws-v1-stage0/build_ena_e1_acquisition_windows.py'
+      - '.github/workflows/arm-ena-sws-v1-e7-temis-omi.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+
+jobs:
+  e7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen geometry dependencies
+        run: python -m pip install --disable-pip-version-check 'numpy==2.3.2' 'pandas==2.3.1' 'pvlib==0.13.0'
+      - name: Rebuild exact acquisition windows
+        run: |
+          python review/arm-ena-sws-v1-stage0/build_ena_e1_acquisition_windows.py \
+            --ranges review/arm-ena-sws-v1-stage0/ena_sws_e1_pass_survivor_ranges.json \
+            --output-dir work/windows
+      - name: Discover and download exact TEMIS Graciosa OMI overpass file
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from urllib.request import Request,urlopen
+          from urllib.parse import urljoin
+          from pathlib import Path
+          import json
+          PAGE='https://www.temis.nl/protocols/o3col/overpass_omi.php'
+          class P(HTMLParser):
+              def __init__(self): super().__init__(); self.href=None; self.cur=None; self.text=''
+              def handle_starttag(self,tag,attrs):
+                  if tag.lower()=='a': self.cur=dict(attrs).get('href'); self.text=''
+              def handle_data(self,data):
+                  if self.cur is not None: self.text+=data
+              def handle_endtag(self,tag):
+                  if tag.lower()=='a' and self.cur is not None:
+                      if 'Graciosa_Island' in self.text: self.href=self.cur
+                      self.cur=None; self.text=''
+          req=Request(PAGE,headers={'User-Agent':'twilight-mystic-experiments-result-blind-e7/1.0'})
+          html=urlopen(req,timeout=120).read().decode('utf-8','replace')
+          p=P(); p.feed(html)
+          if not p.href: raise SystemExit('Graciosa_Island OMI href not found')
+          url=urljoin(PAGE,p.href)
+          req=Request(url,headers={'User-Agent':'twilight-mystic-experiments-result-blind-e7/1.0'})
+          raw=urlopen(req,timeout=180).read()
+          if len(raw)<100: raise SystemExit('TEMIS OMI response unexpectedly small')
+          Path('work').mkdir(exist_ok=True)
+          Path('work/temis_graciosa_omi_overpass.txt').write_bytes(raw)
+          Path('work/temis_source.json').write_text(json.dumps({'page_url':PAGE,'overpass_url':url},sort_keys=True,indent=2)+'\n')
+          print('Downloaded TEMIS overpass bytes',len(raw),'from',url)
+          PY
+      - name: Execute frozen E7 rule
+        run: |
+          SOURCE_URL=$(python -c "import json; print(json.load(open('work/temis_source.json'))['overpass_url'])")
+          python review/arm-ena-sws-v1-stage0/screen_ena_e7_temis_omi_v1.py \
+            --windows work/windows/ena_sws_e1_380_acquisition_windows.csv \
+            --survivors review/arm-ena-sws-v1-stage0/ena_sws_e4_csphot_side_37_survivors.json \
+            --temis work/temis_graciosa_omi_overpass.txt \
+            --source-url "$SOURCE_URL" \
+            --output-dir work/e7
+          python - <<'PY'
+          import csv,json,pathlib
+          root=pathlib.Path('work/e7')
+          rows=list(csv.DictReader((root/'ena_sws_e7_temis_omi_37.csv').open()))
+          s=json.loads((root/'ena_sws_e7_temis_omi_summary.json').read_text())
+          assert len(rows)==37 and s['case_count']==37
+          assert s['protected_sws_values_opened'] is False and s['stage_b_authorized'] is False
+          assert sum(s['disposition_counts'].values())==37
+          print('PASS E7 boundary',json.dumps(s['disposition_counts'],sort_keys=True))
+          PY
+      - name: Remove raw OMI response before artifact upload
+        run: rm -f work/temis_graciosa_omi_overpass.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ARM-ENA-SWS-V1-E7-TEMIS-OMI-37
+          path: |
+            work/windows/ena_sws_e1_380_acquisition_windows.csv
+            work/windows/ena_sws_e1_380_acquisition_windows_summary.json
+            work/temis_source.json
+            work/e7/ena_sws_e7_temis_omi_37.csv
+            work/e7/ena_sws_e7_temis_omi_summary.json
+          if-no-files-found: error
+          retention-days: 90

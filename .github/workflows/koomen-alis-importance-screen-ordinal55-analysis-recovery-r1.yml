@@ -1,0 +1,277 @@
+name: Koomen ordinal55 analysis recovery r1
+run-name: Koomen ordinal55 analysis recovery r1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [synchronize]
+    paths:
+      - 'experiments/koomen-alis-importance-screen-v1/ANALYZE_ORDINAL55_R1.txt'
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: koomen-alis-importance-screen-v1-ordinal55-analysis-r1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/koomen-alis-importance-screen-v1
+  ANALYZER: experiments/koomen-alis-importance-screen-v1/analyze.py
+  MANIFEST: experiments/koomen-alis-importance-screen-v1/manifest.json
+  EXPECTED_BRANCH: analysis/koomen-alis-importance-screen-v1-ordinal55-r1
+  RECOVERY_KEY: koomen-alis-importance-screen-v1:scientific:55:analysis-r1
+  SCIENCE_RUN_ID: '33576935572'
+  SCIENCE_HEAD: 23611d13e2e00f85d2e11077cafb4f654c744d08
+  ANALYZER_BLOB: 5eb1022e58ee66f0f567e1763a6a917c05f352c1
+  MANIFEST_BLOB: 3a8aa456917cec42df8fac2d3125b7de10aba34b
+  FAILURE_COMMENT_ID: '5503121066'
+
+jobs:
+  analysis-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Guard frozen science, artifacts, analyzer, and recovery identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$PKG/ANALYZE_ORDINAL55_R1.txt"
+          PARENT="$(git rev-parse HEAD^)"
+          test "$(cat "$PKG/ANALYZE_ORDINAL55_R1.txt")" = "AUTHORIZED_ANALYSIS_RECOVERY=$RECOVERY_KEY PARENT=$PARENT SCIENCE_RUN=$SCIENCE_RUN_ID"
+
+          gh api "repos/$GITHUB_REPOSITORY/issues/861/comments?per_page=100" --paginate --slurp > issue861-comments.json
+          python - "$PARENT" <<'PY'
+          import json,sys
+          parent=sys.argv[1]
+          pages=json.load(open('issue861-comments.json'))
+          comments=[c for page in pages for c in page]
+          token=f'KOOMEN861_ANALYSIS_RECOVERY_R1_HEAD={parent}'
+          hits=[c for c in comments if token in (c.get('body') or '')]
+          if len(hits)!=1:
+              raise SystemExit(f'expected exactly one ordinal55 analysis-r1 preregistration for {parent}, got {len(hits)}')
+          print('ANALYSIS_RECOVERY_R1_PREREG_PASS', hits[0]['id'])
+          PY
+
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --paginate --slurp > issue60-comments.json
+          python - <<'PY'
+          import json,re
+          pages=json.load(open('issue60-comments.json'))
+          comments=[c for page in pages for c in page]
+          active={}
+          pat=re.compile(r'(?:^|[|\s])(begin|beginComment|begin_comment)=([^\s|]+)')
+          for c in comments:
+              first=((c.get('body') or '').splitlines() or [''])[0].strip()
+              if first.startswith('WRITE_QUIET_BEGIN'):
+                  active[int(c['id'])]=first
+              elif first.startswith('WRITE_QUIET_END'):
+                  vals=[]
+                  for _,v in pat.findall(first):
+                      if not v.isdigit():
+                          raise SystemExit(f'non-numeric WRITE_QUIET_END id {c["id"]}')
+                      vals.append(int(v))
+                  if vals:
+                      if len(set(vals))!=1:
+                          raise SystemExit(f'conflicting WRITE_QUIET_END ids {c["id"]}')
+                      active.pop(vals[0],None)
+          if active:
+              raise SystemExit(f'unmatched WRITE_QUIET_BEGIN: {active}')
+          print('ISSUE60_FENCE_CLEAR', len(comments))
+          PY
+
+          git fetch --no-tags --depth=1 origin "$SCIENCE_HEAD"
+          test "$(git rev-parse "$SCIENCE_HEAD:$ANALYZER")" = "$ANALYZER_BLOB"
+          test "$(git rev-parse "$SCIENCE_HEAD:$MANIFEST")" = "$MANIFEST_BLOB"
+          test "$(git rev-parse "HEAD:$ANALYZER")" = "$ANALYZER_BLOB"
+          test "$(git rev-parse "HEAD:$MANIFEST")" = "$MANIFEST_BLOB"
+          git show "$SCIENCE_HEAD:$ANALYZER" > frozen-analyze.py
+          test "$(git hash-object frozen-analyze.py)" = "$ANALYZER_BLOB"
+          python -m py_compile frozen-analyze.py
+          python -m json.tool "$MANIFEST" >/dev/null
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SCIENCE_RUN_ID" > science-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SCIENCE_RUN_ID/jobs?per_page=100" > science-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$FAILURE_COMMENT_ID" > failure-comment.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('science-run.json'))
+          assert str(r['id'])==os.environ['SCIENCE_RUN_ID']
+          assert r['head_sha']==os.environ['SCIENCE_HEAD']
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='failure'
+          jobs=json.load(open('science-jobs.json'))['jobs']
+          by={j['name']:j for j in jobs}
+          assert by['preflight']['conclusion']=='success'
+          assert all(by[f'cases ({i})']['conclusion']=='success' for i in range(1,7))
+          assert by['analysis']['conclusion']=='failure'
+          steps={s['name']:s for s in by['analysis']['steps']}
+          assert steps['Run actions/download-artifact@v4']['conclusion']=='success'
+          assert steps['Apply frozen importance-center screening analysis']['conclusion']=='failure'
+          c=json.load(open('failure-comment.json'))
+          body=c.get('body') or ''
+          assert 'ORDINAL55_SOLVER_SUCCESS__ANALYSIS_ENV_MISSING_NUMPY__ZERO_SCREENING_RESULT' in body
+          assert 'ModuleNotFoundError: No module named' in body and 'numpy' in body
+          assert 'do NOT rerun/retry/resume' in body
+          print('SOURCE_FAILURE_SHAPE_BOUND')
+          PY
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SCIENCE_RUN_ID/artifacts?per_page=100" > science-artifacts.json
+          python - <<'PY'
+          import json
+          expected={
+            'koomen-alis-importance-screen-ordinal55-rep1':(9827153397,'sha256:9a628409c259b4f17fe9a7bfd3ac745d10ba06d0771b8e90036933549be80e28'),
+            'koomen-alis-importance-screen-ordinal55-rep2':(9827120783,'sha256:7b14381d941c90b12b57c8e3993e6c06f41281709f45a574366878bac2a081df'),
+            'koomen-alis-importance-screen-ordinal55-rep3':(9827152649,'sha256:6fe47756d4fe012e5d030fc13cb4a7cad1f6ea44dd646497e8c20a3e42b5558e'),
+            'koomen-alis-importance-screen-ordinal55-rep4':(9827152840,'sha256:5f7e71d4988cb5bd99ed72ef8ab544446705c902991da9f3efaed0d577934d11'),
+            'koomen-alis-importance-screen-ordinal55-rep5':(9827158048,'sha256:6f8e8e6d5a286c5febcd39a82ecd25e040102cd7eade63ed45f04b85ec3e37c7'),
+            'koomen-alis-importance-screen-ordinal55-rep6':(9827153100,'sha256:c6531365440e489c2d956013f28df0528eff6123419ed67ca75346ecfae9e2e9'),
+          }
+          rows=json.load(open('science-artifacts.json'))['artifacts']
+          got={a['name']:(int(a['id']),a['digest'],bool(a['expired'])) for a in rows if a['name'] in expected}
+          assert set(got)==set(expected), (set(expected)-set(got), set(got)-set(expected))
+          for name,(aid,digest) in expected.items():
+              x=got[name]
+              assert x[0]==aid and x[1]==digest and x[2] is False, (name,x)
+          print('IMMUTABLE_SIX_ARTIFACTS_BOUND')
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+
+      - name: Install pinned analysis-only dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check numpy==2.3.2
+          python - <<'PY'
+          import numpy
+          assert numpy.__version__=='2.3.2'
+          print('NUMPY_PIN_PASS', numpy.__version__)
+          PY
+          if command -v uvspec >/dev/null 2>&1; then
+            echo 'uvspec unexpectedly available in analysis-only recovery' >&2
+            exit 1
+          fi
+          echo 'NO_UVSPEC_PASS'
+
+      - name: Download exact immutable ordinal55 solver artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: koomen-alis-importance-screen-ordinal55-rep*
+          path: all-results
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.SCIENCE_RUN_ID }}
+
+      - name: Verify frozen result universe before analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib
+          files=sorted(pathlib.Path('all-results').rglob('screen-result.json'))
+          assert len(files)==6, len(files)
+          reps=set()
+          for p in files:
+              x=json.loads(p.read_text())
+              assert x['stageId']=='koomen-alis-importance-screen-v1'
+              assert x['executionKey']=='koomen-alis-importance-screen-v1:scientific:55'
+              assert x['status']=='COMPLETED'
+              rep=int(x['replicate']); assert rep not in reps; reps.add(rep)
+              assert [int(v) for v in x['importanceCentersNm']]==[500,550,600]
+              assert [int(d['directionIndex']) for d in x['directions']]==[0,13,14,15,18]
+              assert set(x['results'])=={'500','550','600'}
+              for center in ('500','550','600'):
+                  assert set(x['results'][center])=={'baseline','profile'}
+                  for case in ('baseline','profile'):
+                      rows=x['results'][center][case]
+                      assert [int(r['directionIndex']) for r in rows]==[0,13,14,15,18]
+          assert reps==set(range(1,7)), reps
+          print('EXACT_SIX_RESULT_UNIVERSE_PASS')
+          PY
+
+      - name: Apply exact preregistered analyzer bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object frozen-analyze.py)" = "$ANALYZER_BLOB"
+          python frozen-analyze.py --results-root all-results --output analysis-output
+          python - <<'PY'
+          import json
+          x=json.load(open('analysis-output/summary.json'))
+          assert x['classification'] in ('ALIS_IMPORTANCE_SCREEN_NOMINATES_500','ALIS_IMPORTANCE_SCREEN_NOMINATES_600','ALIS_IMPORTANCE_SCREEN_RETAINS_550','ALIS_IMPORTANCE_SCREEN_INVALID')
+          assert x['TaylorResidualUsed'] is False
+          assert x['ordinal54Salvage'] is False
+          assert x['quadraticSurrogateRehabilitated'] is False
+          assert x['physicalKoomenCorrectionComputed'] is False
+          assert x['physicalSupportEnvelopeAuthorized'] is False
+          assert x['full81DirectionGridAuthorized'] is False
+          assert x['productionAuthorized'] is False
+          print(json.dumps({
+            'classification':x['classification'],
+            'nominatedImportanceCenterNm':x['nominatedImportanceCenterNm'],
+            'screeningScore':x['screeningScore'],
+            'equivalenceFailureCount':x['equivalenceFailureCount'],
+          },indent=2,sort_keys=True))
+          PY
+
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: koomen-alis-importance-screen-ordinal55-analysis-recovery-r1
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Publish compact immutable recovery result to Issue 861
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANALYSIS_ARTIFACT_ID: ${{ steps.upload.outputs['artifact-id'] }}
+          ANALYSIS_ARTIFACT_DIGEST: ${{ steps.upload.outputs['artifact-digest'] }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > issue-comment.md
+          import json,os
+          x=json.load(open('analysis-output/summary.json'))
+          print('ORDINAL55 ANALYSIS-ONLY RECOVERY R1 — TERMINAL RESULT')
+          print()
+          print(f"Classification: `{x['classification']}`")
+          print(f"Nominated importance center: `{x['nominatedImportanceCenterNm']}` nm")
+          print(f"Eligibility: `{json.dumps(x['eligibility'],sort_keys=True)}`")
+          print(f"Equivalence failures: `{json.dumps(x['equivalenceFailureCount'],sort_keys=True)}`")
+          print(f"Screening scores: `{json.dumps(x['screeningScore'],sort_keys=True)}`")
+          print()
+          print('Recovery provenance:')
+          print('- analysis only; zero solver calls; original ordinal55 run was not rerun/retried/resumed')
+          print('- exact frozen analyzer blob `5eb1022e58ee66f0f567e1763a6a917c05f352c1`')
+          print('- exact six immutable solver artifacts from run `33576935572`')
+          print('- pinned `numpy==2.3.2`; `uvspec` absent')
+          print(f"- recovery run `{os.environ['GITHUB_RUN_ID']}`, attempt `{os.environ['GITHUB_RUN_ATTEMPT']}`")
+          print(f"- recovery head `{os.environ['GITHUB_SHA']}`")
+          print(f"- analysis artifact `{os.environ['ANALYSIS_ARTIFACT_ID']}`, digest `{os.environ['ANALYSIS_ARTIFACT_DIGEST']}`")
+          print()
+          if x['classification'] in ('ALIS_IMPORTANCE_SCREEN_NOMINATES_500','ALIS_IMPORTANCE_SCREEN_NOMINATES_600'):
+              print('Frozen consequence: this is screening-only nomination. A separate fresh independent confirmation with the nominated center fixed before new values is required; do not return to the quadratic route and do not launch the 81-direction grid.')
+          elif x['classification']=='ALIS_IMPORTANCE_SCREEN_RETAINS_550':
+              print('Frozen consequence: stop post-hoc ALIS importance-wavelength tuning and redesign via a different numerical strategy under a fresh identity; do not return to the quadratic route and do not launch the 81-direction grid.')
+          else:
+              print('Frozen consequence: screening is invalid; no estimator nomination or downstream Koomen angular claim is authorized.')
+          print()
+          print('No Taylor residual use, Koomen correction/support-envelope claim, 81-direction-grid authority, production/Level-B authority, or post-result retuning is created by this recovery.')
+          PY
+          gh issue comment 861 --repo "$GITHUB_REPOSITORY" --body-file issue-comment.md

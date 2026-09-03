@@ -1,0 +1,155 @@
+name: POST_V1 exact runtime serializer audit v1
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/post-v1-exact-runtime-serializer-audit-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-v1-exact-runtime-serializer-audit-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  exact-runtime-static-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PACKAGE_URL: https://conda.anaconda.org/conda-forge/linux-64/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda
+      PACKAGE_SHA256: 9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2
+      UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Bind reference-only execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "${{ github.event.pull_request.head.sha }}" = "$GITHUB_SHA"
+          test "${{ github.event.pull_request.base.sha }}" = "91727a1c051c6ba52523f4642f29c138020c44b5"
+          test "${{ github.event.pull_request.head.ref }}" = "post-v1/exact-runtime-serializer-audit-v1"
+          test "$(git diff --name-only '${{ github.event.pull_request.base.sha }}'...HEAD | wc -l)" -eq 1
+          git diff --name-only '${{ github.event.pull_request.base.sha }}'...HEAD | grep -Fx '.github/workflows/post-v1-exact-runtime-serializer-audit-v1.yml'
+          # This workflow is a static binary audit only. It must never execute
+          # uvspec/MYSTIC, open protected outputs, dispatch science, or mutate V1.
+          ! grep -F 'workflow_dispatch:' .github/workflows/post-v1-exact-runtime-serializer-audit-v1.yml
+
+      - name: Download and bind exact historical runtime package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit/package audit/evidence
+          curl --fail --location --retry 2 --retry-delay 2 \
+            --output audit/runtime.conda "$PACKAGE_URL"
+          echo "$PACKAGE_SHA256  audit/runtime.conda" | sha256sum -c -
+          unzip -l audit/runtime.conda > audit/evidence/conda-members.txt
+          pkg_member="$(unzip -Z1 audit/runtime.conda | grep '^pkg-.*\.tar\.zst$' | head -n1)"
+          test -n "$pkg_member"
+          command -v zstd
+          unzip -p audit/runtime.conda "$pkg_member" | tar --zstd -xf - -C audit/package
+          test -f audit/package/bin/uvspec
+          echo "$UVSPEC_SHA256  audit/package/bin/uvspec" | sha256sum -c -
+          sha256sum audit/package/lib/libRadtran_c.a > audit/evidence/libRadtran_c.a.sha256
+          sha256sum audit/package/bin/uvspec > audit/evidence/uvspec.sha256
+          sha256sum audit/runtime.conda > audit/evidence/package.sha256
+
+      - name: Locate exact compiled spectral writer without executing solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=audit/package/lib/libRadtran_c.a
+          test -f "$lib"
+          nm -A --defined-only "$lib" > audit/evidence/libRadtran_c.nm.txt
+          grep -E '[[:space:]][Tt][[:space:]]+write_spectral3D$' audit/evidence/libRadtran_c.nm.txt \
+            > audit/evidence/write_spectral3D-symbol.txt
+          object="$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text=Path('audit/evidence/write_spectral3D-symbol.txt').read_text().splitlines()[0]
+          m=re.search(r'libRadtran_c\.a:([^:]+):', text)
+          if not m:
+              raise SystemExit('could not parse archive member containing write_spectral3D')
+          print(m.group(1))
+          PY
+          )"
+          test -n "$object"
+          printf '%s\n' "$object" > audit/evidence/write_spectral3D-object.txt
+          ar p "$lib" "$object" > audit/evidence/write_spectral3D-object.o
+          test -s audit/evidence/write_spectral3D-object.o
+          readelf -SWs audit/evidence/write_spectral3D-object.o > audit/evidence/write_spectral3D-readelf.txt
+          readelf -rW audit/evidence/write_spectral3D-object.o > audit/evidence/write_spectral3D-relocations.txt
+          objdump -drwC audit/evidence/write_spectral3D-object.o > audit/evidence/write_spectral3D-objdump.txt
+          strings -a audit/evidence/write_spectral3D-object.o > audit/evidence/write_spectral3D-strings.txt
+          grep -F '.rad.spc' audit/evidence/write_spectral3D-strings.txt > audit/evidence/rad-spc-strings.txt
+          grep -F '%g' audit/evidence/write_spectral3D-strings.txt > audit/evidence/percent-g-strings.txt
+          python - <<'PY'
+          from pathlib import Path
+          lines=Path('audit/evidence/write_spectral3D-objdump.txt').read_text(errors='replace').splitlines()
+          start=None
+          for i,line in enumerate(lines):
+              if '<write_spectral3D>:' in line:
+                  start=i
+                  break
+          if start is None:
+              raise SystemExit('write_spectral3D disassembly block absent')
+          block=[]
+          for line in lines[start:]:
+              if block and line and not line[0].isspace() and '<' in line and '>:' in line:
+                  break
+              block.append(line)
+          text='\n'.join(block)+'\n'
+          Path('audit/evidence/write_spectral3D-function.txt').write_text(text)
+          if not any(name in text for name in ('fprintf','sprintf','snprintf','fopen')):
+              raise SystemExit('writer function lacks expected libc output call relocation')
+          PY
+
+      - name: Emit fail-closed serializer provenance report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          def sha(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(1<<20),b''):
+                      h.update(chunk)
+              return h.hexdigest()
+          report={
+            'status':'REFERENCE_ONLY_STATIC_AUDIT',
+            'package':Path('audit/runtime.conda').name,
+            'package_sha256':sha('audit/runtime.conda'),
+            'package_sha_matches_expected':sha('audit/runtime.conda')=='9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2',
+            'uvspec_sha256':sha('audit/package/bin/uvspec'),
+            'uvspec_sha_matches_expected':sha('audit/package/bin/uvspec')=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'static_archive_sha256':sha('audit/package/lib/libRadtran_c.a'),
+            'writer_symbol_present':bool(Path('audit/evidence/write_spectral3D-symbol.txt').read_text().strip()),
+            'writer_object_contains_rad_spc':bool(Path('audit/evidence/rad-spc-strings.txt').read_text().strip()),
+            'writer_object_contains_percent_g':bool(Path('audit/evidence/percent-g-strings.txt').read_text().strip()),
+            'solver_executed':False,
+            'protected_result_opened':False,
+            'source_equivalent_999_claimed':False,
+            'physical_zero_claimed':False,
+            'upstream_underflow_excluded':False,
+          }
+          Path('audit/evidence/report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          if not all((report['package_sha_matches_expected'],report['uvspec_sha_matches_expected'],report['writer_symbol_present'],report['writer_object_contains_rad_spc'],report['writer_object_contains_percent_g'])):
+              raise SystemExit('required exact-runtime static evidence missing')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-v1-exact-runtime-serializer-audit-v1
+          path: audit/evidence
+          if-no-files-found: error
+          retention-days: 30

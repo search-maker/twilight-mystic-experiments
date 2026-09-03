@@ -1,0 +1,464 @@
+name: AVPS v2 Recovery4 ordinal45 final one-use dispatch publisher v1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: avps-v2-recovery4-ordinal45-final-dispatch-publisher-v1
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  bootstrap-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: avps-v2-postconsumption-recovery4-ordinal-45-science
+      cancel-in-progress: false
+    steps:
+      - name: Canonical publisher runtime identity and cardinality guard
+        shell: /usr/bin/python3 -I -S {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # BEGIN_CANONICAL_PUBLISHER_BOOTSTRAP_GUARD_STEP_V1
+          # BEGIN_PUBLISHER_RUN_CARDINALITY_GUARD_V1
+          ACTIVE_PUBLISHER_STATUSES={'queued','in_progress','pending','waiting','requested'}
+          TERMINAL_PUBLISHER_STATUSES={'completed'}
+          class PublisherRunGuardError(RuntimeError): pass
+          def _require(condition,message):
+              if not condition: raise PublisherRunGuardError(message)
+          def normalize_publisher_run_pages(pages):
+              _require(isinstance(pages,list) and len(pages)>0,'publisher run pagination/API drift: pages')
+              runs=[]; totals=set()
+              for page in pages:
+                  _require(isinstance(page,dict),'publisher run pagination/API drift: page')
+                  _require(isinstance(page.get('total_count'),int) and page['total_count']>=0,'publisher run pagination/API drift: total_count')
+                  _require(isinstance(page.get('workflow_runs'),list),'publisher run pagination/API drift: workflow_runs')
+                  totals.add(page['total_count']); runs.extend(page['workflow_runs'])
+              _require(len(totals)==1,'publisher run pagination/API drift: inconsistent total_count')
+              total=next(iter(totals)); _require(total==len(runs),f'publisher run pagination/API drift: expected_total={total} enumerated={len(runs)}')
+              ids=[]; normalized=[]
+              for run in runs:
+                  _require(isinstance(run,dict),'publisher run pagination/API drift: run object')
+                  rid=run.get('id'); _require(isinstance(rid,int) and rid>0,'publisher run pagination/API drift: run id'); ids.append(rid)
+                  normalized.append((rid,run.get('status'),run.get('run_attempt'),run.get('event'),run.get('run_number'),run.get('head_sha'),run.get('head_branch'),run.get('path'),run.get('conclusion')))
+              _require(len(ids)==len(set(ids)),'publisher run pagination/API drift: duplicate run id')
+              return tuple(sorted(normalized))
+          def validate_publisher_run_pages(pages,expected):
+              normalized=normalize_publisher_run_pages(pages); flat=[]
+              for page in pages: flat.extend(page['workflow_runs'])
+              self_runs=[r for r in flat if r.get('id')==expected['run_id']]; _require(len(self_runs)==1,'publisher current-run identity cardinality drift')
+              cur=self_runs[0]
+              _require(cur.get('run_attempt')==1 and expected['run_attempt']==1,'publisher current run attempt drift')
+              _require(cur.get('event')=='workflow_dispatch' and expected['event']=='workflow_dispatch','publisher current run event drift')
+              _require(cur.get('run_number')==expected['run_number'],'publisher current run number drift')
+              _require(cur.get('head_sha')==expected['head_sha'],'publisher current run head drift')
+              _require(cur.get('head_branch')==expected['head_branch'],'publisher current run ref drift')
+              _require(cur.get('path')==expected['workflow_path'],'publisher current run workflow drift')
+              _require(cur.get('status')=='in_progress','publisher current run must be in_progress while guard executes')
+              for run in flat:
+                  if run.get('id')==expected['run_id']: continue
+                  status=run.get('status')
+                  if status in ACTIVE_PUBLISHER_STATUSES: raise PublisherRunGuardError(f"competing final publisher workflow_dispatch exists: run_id={run.get('id')} status={status}")
+                  _require(status in TERMINAL_PUBLISHER_STATUSES,f"publisher run status/API drift: run_id={run.get('id')} status={status}")
+              return {'currentRunId':expected['run_id'],'enumeratedRunCount':len(flat),'normalized':normalized}
+          def run_publisher_guard_fixtures():
+              expected={'run_id':1001,'run_attempt':1,'event':'workflow_dispatch','run_number':7,'head_sha':'abc123','head_branch':'main','workflow_path':'.github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v1.yml'}
+              current={'id':1001,'status':'in_progress','run_attempt':1,'event':'workflow_dispatch','run_number':7,'head_sha':'abc123','head_branch':'main','path':expected['workflow_path'],'conclusion':None}
+              def pages(runs): return [{'total_count':len(runs),'workflow_runs':runs}]
+              validate_publisher_run_pages(pages([current]),expected)
+              for status in ('queued','in_progress','pending','waiting','requested'):
+                  competitor={'id':1002,'status':status,'run_attempt':1,'event':'workflow_dispatch','run_number':8,'head_sha':'other','head_branch':'main','path':expected['workflow_path'],'conclusion':None}
+                  try: validate_publisher_run_pages(pages([current,competitor]),expected)
+                  except PublisherRunGuardError as e: _require(str(e)==f'competing final publisher workflow_dispatch exists: run_id=1002 status={status}',f'active competitor blocker drift: {e}')
+                  else: raise PublisherRunGuardError(f'active competitor fixture unexpectedly passed: {status}')
+              completed={'id':900,'status':'completed','run_attempt':1,'event':'workflow_dispatch','run_number':6,'head_sha':'old','head_branch':'main','path':expected['workflow_path'],'conclusion':'cancelled'}
+              validate_publisher_run_pages(pages([completed,current]),expected)
+              wrong=dict(current); wrong['head_sha']='drift'
+              try: validate_publisher_run_pages(pages([wrong]),expected)
+              except PublisherRunGuardError as e: _require(str(e)=='publisher current run head drift',f'head drift blocker mismatch: {e}')
+              else: raise PublisherRunGuardError('head drift fixture unexpectedly passed')
+              duplicate=dict(current)
+              try: validate_publisher_run_pages(pages([current,duplicate]),expected)
+              except PublisherRunGuardError as e: _require('duplicate run id' in str(e),'duplicate self fixture blocker mismatch')
+              else: raise PublisherRunGuardError('duplicate self fixture unexpectedly passed')
+              return True
+          # END_PUBLISHER_RUN_CARDINALITY_GUARD_V1
+          # BEGIN_PUBLISHER_RUNTIME_WIRING_V2
+          import json,os,subprocess,time
+          PUBLISHER_WORKFLOW_PATH='.github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v1.yml'
+          def _runtime_expected_from_github_env():
+              required=('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_EVENT_NAME','GITHUB_RUN_NUMBER','GITHUB_SHA','GITHUB_REF','GITHUB_REF_NAME','GITHUB_WORKFLOW_REF','GITHUB_REPOSITORY')
+              missing=[k for k in required if not os.environ.get(k)]; _require(not missing,f'publisher runtime GITHUB_* identity missing: {missing}')
+              _require(os.environ['GITHUB_EVENT_NAME']=='workflow_dispatch','publisher runtime event must be workflow_dispatch')
+              _require(os.environ['GITHUB_RUN_ATTEMPT']=='1','publisher runtime attempt must be 1')
+              _require(os.environ['GITHUB_REF']==f"refs/heads/{os.environ['GITHUB_REF_NAME']}",'publisher runtime GITHUB_REF/GITHUB_REF_NAME drift')
+              _require(os.environ['GITHUB_REF_NAME']=='main','publisher runtime ref must be main')
+              expected_workflow_ref=f"{os.environ['GITHUB_REPOSITORY']}/{PUBLISHER_WORKFLOW_PATH}@{os.environ['GITHUB_REF']}"
+              _require(os.environ['GITHUB_WORKFLOW_REF']==expected_workflow_ref,'publisher runtime workflow_ref drift')
+              return {'run_id':int(os.environ['GITHUB_RUN_ID']),'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'event':os.environ['GITHUB_EVENT_NAME'],'run_number':int(os.environ['GITHUB_RUN_NUMBER']),'head_sha':os.environ['GITHUB_SHA'],'head_branch':os.environ['GITHUB_REF_NAME'],'workflow_path':PUBLISHER_WORKFLOW_PATH}
+          def _real_actions_workflow_pages():
+              endpoint=f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v1.yml/runs?event=workflow_dispatch&per_page=100"
+              cp=subprocess.run(['/usr/bin/gh','api','--hostname','github.com','--paginate','--slurp',endpoint],capture_output=True,text=True,check=False)
+              _require(cp.returncode==0,f'publisher run API failure: rc={cp.returncode} stderr={cp.stderr.strip()}')
+              try: pages=json.loads(cp.stdout)
+              except Exception as e: raise PublisherRunGuardError(f'publisher run API JSON drift: {e}')
+              normalize_publisher_run_pages(pages); return pages
+          def run_real_publisher_runtime_guard():
+              expected=_runtime_expected_from_github_env()
+              for attempt in range(1,4):
+                  pages_a=_real_actions_workflow_pages(); pages_b=_real_actions_workflow_pages()
+                  if normalize_publisher_run_pages(pages_a)!=normalize_publisher_run_pages(pages_b):
+                      if attempt==3: raise PublisherRunGuardError('publisher run complete-enumeration metadata changed across three fresh attempts')
+                      time.sleep(attempt*5); continue
+                  result=validate_publisher_run_pages(pages_b,expected); result['stableEnumerationAttempt']=attempt; result['expectedRunNumber']=expected['run_number']; result['workflowRef']=os.environ['GITHUB_WORKFLOW_REF']; return result
+              raise PublisherRunGuardError('publisher run complete-enumeration metadata changed')
+          RUNTIME_GUARD_RESULT=run_real_publisher_runtime_guard()
+          with open('publisher-runtime-guard.json','w') as f: json.dump(RUNTIME_GUARD_RESULT,f,sort_keys=True,indent=2); f.write('\n')
+          # END_PUBLISHER_RUNTIME_WIRING_V2
+          # END_CANONICAL_PUBLISHER_BOOTSTRAP_GUARD_STEP_V1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fresh repository-global candidate-seed recheck and one-use guard
+        shell: /usr/bin/python3 -I -S {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # BEGIN_CANONICAL_AVPS_ORDINAL45_PREFENCE_V1
+          import json,os,subprocess,time
+          from pathlib import Path
+          REPO=os.environ['GITHUB_REPOSITORY']
+          AUTH_HEAD='6e095b4b1603c90dcee0943295909b30cd1b374d'
+          AUTH_PARENT='5685d5c313071014a94c816ee26b129f1f17a7fc'
+          ALLOCATION_MARKER='ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=6e095b4b1603c90dcee0943295909b30cd1b374d parent=5685d5c313071014a94c816ee26b129f1f17a7fc pr=774'
+          CONSUMED_MARKER='ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED'
+          DISPATCH_BRANCH='dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45'
+          SEED_SHA='ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de'
+          ROWS_SHA='c439de417520b330c037e2628df02b6955f652563300aa5ef30477abf7661a98'
+          KNOWN_DEFECT=5513956928
+          def run(cmd,**kw):
+              cp=subprocess.run(cmd,text=True,capture_output=True,**kw)
+              if cp.returncode!=0: raise SystemExit(f'command failed rc={cp.returncode} cmd={cmd!r} stderr={cp.stderr.strip()}')
+              return cp
+          def gh_pages(endpoint):
+              cp=run(['/usr/bin/gh','api','--hostname','github.com','--paginate','--slurp',endpoint])
+              try: pages=json.loads(cp.stdout)
+              except Exception as e: raise SystemExit(f'GitHub API JSON drift: {e}')
+              if not isinstance(pages,list): raise SystemExit('GitHub API pagination drift')
+              return pages
+          import re
+          B={5502130170,5502135669,5502242617,5502609968,5502625148,5502816535,5502874645,5502893055,5502911050,5503344359,5503366764,5504279593,5504707042,5505333133,5505363933,5505375232,5505891941,5506559518,5507216934,5507972995,5508005095,5508005691,5508022840,5508037828,5508102035,5508214692,5508235083,5509304642,5510140594,5510937307,5511003079,5511070934,5511888009,5512794498,5512796556,5513122138,5513125067,5513956928}
+          MAX_BODY_CHARS=131072
+          MAX_LINE_CHARS=16384
+          MAX_WORK=4096
+          OPEN=('```','***','___','**','__','~~','`','*','_')
+          def _prefix_once(s):
+              old=s; s=re.sub(r'^\s*>\s?','',s,count=1)
+              if s!=old:return s.strip(),True
+              s=re.sub(r'^\s*(?:[-+*]|\d+[.)])\s+','',s,count=1)
+              if s!=old:return s.strip(),True
+              s=re.sub(r'^\s*\[[ xX]\]\s*','',s,count=1)
+              if s!=old:return s.strip(),True
+              s=re.sub(r'^\s{0,3}#{1,6}(?:\s+|$)','',s,count=1)
+              if s!=old:return s.strip(),True
+              s=s.strip()
+              for m in OPEN:
+                  if s.startswith(m):return s[len(m):].lstrip(),True
+              return s,False
+          def strip(line):
+              s=str(line or '').strip()
+              if len(s)>MAX_LINE_CHARS:return s,True
+              work=0
+              while work<MAX_WORK:
+                  n,changed=_prefix_once(s)
+                  if not changed:return s,False
+                  s=n;work+=1
+              _,residual=_prefix_once(s)
+              return s,residual
+          def _rest_once(r):
+              s=r.lstrip(); changed=s!=r
+              for m in OPEN:
+                  if s.startswith(m):return s[len(m):].lstrip(),True
+              n=re.sub(r'^[:=|\u2013\u2014-]+','',s,count=1)
+              if n!=s:return n.lstrip(),True
+              return s,changed
+          def structured(line):
+              s,exhausted=strip(line)
+              if exhausted:return None,True
+              m=re.match(r'^(DIRECTIVE|STATUS|STATE|DISPOSITION|ADMISSIBILITY|CLASSIFICATION)(?=$|[\s:=|\u2013\u2014*_~`-])',s,re.I)
+              if not m:return None,False
+              k=m.group(1).upper();r=s[m.end():];work=0
+              while work<MAX_WORK:
+                  n,changed=_rest_once(r)
+                  if not changed:break
+                  r=n;work+=1
+              if work>=MAX_WORK:
+                  _,residual=_rest_once(r)
+                  if residual:return None,True
+              return k+((' '+r.strip()) if r.strip() else ''),False
+          def first_state(line):
+              s,exhausted=strip(line)
+              if exhausted:return False,True
+              head=s.split('|',1)[0].strip();work=0
+              while work<MAX_WORK:
+                  q=head.rstrip(); changed=False
+                  for m in OPEN:
+                      if q.endswith(m):
+                          head=q[:-len(m)].rstrip();changed=True;work+=1;break
+                  if not changed:break
+              if work>=MAX_WORK and any(head.rstrip().endswith(m) for m in OPEN):return False,True
+              h=head.upper()
+              ok=bool(re.fullmatch(r'AVPS(?:_[A-Z0-9]+)*_(?:CLOSED|NOT_ADMISSIBLE|DO_NOT_USE|COORDINATOR_RECOVERY|SUPERSEDING_DIRECTIVE)',h))
+              return ok,False
+          def avps_governance_blocker(body,cid=None):
+              if cid is not None and int(cid) in B:return False
+              t=str(body or '');u=t.upper()
+              if 'AVPS' not in u:return False
+              if len(t)>MAX_BODY_CHARS:return True
+              if any(len(x)>MAX_LINE_CHARS for x in t.splitlines()):return True
+              if any(x in u for x in ('CONFIRMED_DEFECT','MATERIAL_RISK','QUARANTINE_DOWNSTREAM=TRUE','FAIL_CLOSED','FAIL-CLOSED','BLOCKER')):return True
+              raw=[x for x in t.splitlines() if x.strip()];surfaces=[]
+              if raw:
+                  fatal,exhausted=first_state(raw[0])
+                  if exhausted:return True
+                  if fatal:return True
+                  x,exhausted=structured(raw[0])
+                  if exhausted:return True
+                  if x:surfaces.append(x)
+                  first,exhausted=strip(raw[0])
+                  if exhausted:return True
+                  for seg in first.split('|')[1:]:
+                      x,exhausted=structured(seg)
+                      if exhausted:return True
+                      if x:surfaces.append(x)
+              for y in raw[1:]:
+                  x,exhausted=structured(y)
+                  if exhausted:return True
+                  if x:surfaces.append(x)
+              for x in map(str.upper,surfaces):
+                  if re.search(r'NOT[\s_-]+ADMISSIBLE',x) or re.search(r'DO[\s_-]+NOT[\s_-]+USE',x) or re.search(r'COORDINATOR[\s_-]+RECOVERY',x) or re.search(r'SUPERSEDING[\s_-]+DIRECTIVE',x) or re.search(r'(?<![A-Z0-9_])CLOSED(?![A-Z0-9_])',x):return True
+              return False
+          def state_check():
+              ref=subprocess.run(['/usr/bin/git','ls-remote','--exit-code','--heads','origin',DISPATCH_BRANCH],text=True,capture_output=True)
+              if ref.returncode==0: raise SystemExit('ordinal45 dispatch ref already exists')
+              if ref.returncode not in (0,2): raise SystemExit(f'dispatch ref read failure: {ref.stderr.strip()}')
+              comments=[c for p in gh_pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
+              bodies=[str(c.get('body') or '').strip() for c in comments]
+              if sum(b==ALLOCATION_MARKER for b in bodies)!=1: raise SystemExit('ordinal45 allocation marker cardinality drift')
+              if any(b.startswith(CONSUMED_MARKER) for b in bodies): raise SystemExit('ordinal45 consumed marker already exists')
+              runs=[r for p in gh_pages(f'repos/{REPO}/actions/workflows/avps-v2-postconsumption-recovery4-science.yml/runs?event=workflow_dispatch&per_page=100') for r in p.get('workflow_runs',[])]
+              if runs: raise SystemExit(f'ordinal45 science workflow_dispatch already exists: {[r.get("id") for r in runs]}')
+              closed=set(); begins=[]
+              for c in comments:
+                  body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; fields={}
+                  for tok in first.replace('|',' ').split():
+                      if '=' in tok:
+                          k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
+                  if first.startswith('WRITE_QUIET_END'):
+                      vals=[]
+                      for key in ('begin','beginComment','begin_comment'):
+                          for v in fields.get(key,[]):
+                              if not v.isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END alias: {v!r}')
+                              vals.append(int(v))
+                      if len(set(vals))>1: raise SystemExit(f'conflicting WRITE_QUIET_END aliases: {vals}')
+                      if vals: closed.add(vals[0])
+                  elif first.startswith('WRITE_QUIET_BEGIN'): begins.append(int(c['id']))
+                  if int(c.get('id') or 0)>KNOWN_DEFECT:
+                      b=str(c.get('body') or '')
+                      if avps_governance_blocker(b,int(c.get('id') or 0)): raise SystemExit(f'newer AVPS blocker/defect exists: {c.get("id")}')
+              unmatched=[x for x in begins if x not in closed]
+              if unmatched: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN blocks publisher: {unmatched}')
+          state_check()
+          Path('tracked-files.nul').write_bytes(run(['/usr/bin/git','ls-files','-z']).stdout.encode())
+          Path('authorization.json').write_text(run(['/usr/bin/git','show',AUTH_HEAD+':review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorization.json']).stdout)
+          run(['/usr/bin/python3','review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-science-transport-v1/native_authorization_seed_transport.py','--repo-root','.','--authorization-head',AUTH_HEAD,'--authorization-parent',AUTH_PARENT,'--authorization-ledger-path','review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-v1/seed_ledger.py','--authorization-ledger-blob','16af5c68ae7e3cfc0cfbef4c8e2022517bf2ae91','--candidate-seed-sha256',SEED_SHA,'--candidate-rows-sha256',ROWS_SHA,'--historical-head','e627a689ada0493a8a5b9cdafc4aba0198fbabec','--historical-ledger-path','review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py','--historical-ledger-blob','491d1b6653bea0fcc5275269723a76aa1af52300','--work-root','candidate-transport','--output-ledger','candidate-seed-ledger.json','--output-context','candidate-context.json'])
+          Path('empty-self-ledger.json').write_text('{"schemaVersion":2,"requiredTrackedSelfLedgerPaths":[],"futureEvidenceSelfLedgerPaths":[]}\n')
+          run(['/usr/bin/python3','review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py','--repo-root','.','--file-list','tracked-files.nul','--candidate-seed-ledger','candidate-seed-ledger.json','--allow-self-ledger-json','empty-self-ledger.json','--output','tracked-seed-scan.json'])
+          if json.load(open('tracked-seed-scan.json')).get('trackedTreeExternalCollisionCount')!=0: raise SystemExit('tracked candidate seed collision')
+          Path('publisher-global-scan-attempts').mkdir(exist_ok=True)
+          success=False
+          for n in range(1,4):
+              out=f'publisher-global-scan-attempts/report-{n}.json'
+              cp=subprocess.run(['/usr/bin/python3','review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/repository_global_seed_scan.py','--repository',REPO,'--issue-number','60','--candidate-seed-ledger','candidate-seed-ledger.json','--current-run-id',os.environ['GITHUB_RUN_ID'],'--audit-mode','authorization-recheck','--expected-branch-name','main','--expected-repo-head',os.environ['GITHUB_SHA'],'--output',out],text=True,capture_output=True)
+              Path(f'publisher-global-scan-attempts/stdout-{n}.txt').write_text(cp.stdout)
+              Path(f'publisher-global-scan-attempts/stderr-{n}.txt').write_text(cp.stderr)
+              if cp.returncode==0:
+                  Path('repository-global-seed-scan.json').write_text(Path(out).read_text()); Path('repository-global-scan-success-attempt.txt').write_text(str(n)+'\n'); success=True; break
+              if 'snapshot-fenced repository-global metadata changed between two complete enumerations' not in cp.stderr: raise SystemExit(f'non-retryable repository-global scan failure attempt={n}: {cp.stderr.strip()}')
+              if n==3: break
+              time.sleep(n*5)
+          if not success: raise SystemExit('repository-global scan remained unstable across three fresh complete attempts')
+          g=json.load(open('repository-global-seed-scan.json'))
+          if g.get('repositoryGlobalCollisionCount',g.get('collisionCount'))!=0: raise SystemExit('repository-global candidate seed collision')
+          if g.get('repositoryGlobalDoubleEnumerationStable') is not True: raise SystemExit('repository-global enumeration not stable')
+          if g.get('auditedBranchHeadMatchesRepositoryHead') is not True: raise SystemExit('audited branch/head mismatch')
+          if int(g.get('repositoryGlobalPostFenceCandidateSeedCollisionCount',0) or 0)!=0: raise SystemExit('post-fence candidate-seed collision')
+          state_check()
+          token='AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_'+os.environ['GITHUB_RUN_ID']
+          body=f'WRITE_QUIET_BEGIN | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | token={token} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | expected_science_workflow=avps-v2-postconsumption-recovery4-science.yml | science_run=PENDING | execution_key=aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4:numerical:45 | guard=repository-global-candidate-seed-recheck'
+          cp=run(['/usr/bin/gh','api','--hostname','github.com','--method','POST',f'repos/{REPO}/issues/60/comments','-f',f'body={body}'])
+          begin=json.loads(cp.stdout)
+          if not isinstance(begin.get('id'),int): raise SystemExit('WRITE_QUIET_BEGIN comment id missing')
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'FENCE_BEGIN={begin["id"]}\nFENCE_TOKEN={token}\n')
+          # END_CANONICAL_AVPS_ORDINAL45_PREFENCE_V1
+
+      - name: Protected dispatch consumption and same-BEGIN science binding
+        shell: /usr/bin/python3 -I -S {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # BEGIN_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2
+          import json,os,subprocess,time
+          from pathlib import Path
+          REPO=os.environ['GITHUB_REPOSITORY']
+          AUTH_HEAD='6e095b4b1603c90dcee0943295909b30cd1b374d'
+          DISPATCH_BRANCH='dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45'
+          CONSUMED_MARKER='ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED'
+          SCIENCE_WORKFLOW='avps-v2-postconsumption-recovery4-science.yml'
+          EXECUTION_KEY='aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4:numerical:45'
+          TOKEN_PREFIX='AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_'
+          def api(args,slurp=False):
+              cmd=['/usr/bin/gh','api','--hostname','github.com']
+              if slurp: cmd += ['--paginate','--slurp']
+              cp=subprocess.run(cmd+args,text=True,capture_output=True)
+              if cp.returncode!=0: raise SystemExit(f'GitHub API failure args={args!r} rc={cp.returncode} stderr={cp.stderr.strip()}')
+              return cp
+          def pages(endpoint): return json.loads(api([endpoint],slurp=True).stdout)
+          begin=int(os.environ['FENCE_BEGIN']); token=os.environ['FENCE_TOKEN']
+          if not token.startswith(TOKEN_PREFIX): raise SystemExit('fence token prefix incompatible with frozen science')
+          if subprocess.run(['/usr/bin/git','ls-remote','--exit-code','--heads','origin',DISPATCH_BRANCH],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0: raise SystemExit('dispatch ref exists immediately before fenced mutation')
+          comments=[c for p in pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
+          closed=set(); begins=[]
+          for c in comments:
+              body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; f={}
+              for item in first.replace('|',' ').split():
+                  if '=' in item:
+                      k,v=item.split('=',1); f[k]=v
+              if first.startswith('WRITE_QUIET_END'):
+                  ids=[]
+                  for key in ('begin','beginComment','begin_comment'):
+                      if key in f:
+                          if not f[key].isdigit(): raise SystemExit('non-numeric END alias')
+                          ids.append(int(f[key]))
+                  if len(set(ids))>1: raise SystemExit('conflicting END aliases')
+                  if ids: closed.add(ids[0])
+              elif first.startswith('WRITE_QUIET_BEGIN'): begins.append((int(c['id']),f))
+          unmatched=[x for x in begins if x[0] not in closed]
+          exact=[x for x in unmatched if x[0]==begin and x[1].get('token')==token and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('science_run')=='PENDING' and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck']
+          if len(exact)!=1 or len(unmatched)!=1: raise SystemExit(f'exact sole PENDING publisher BEGIN required before mutation, unmatched={unmatched}')
+          if any(str(c.get('body') or '').strip().startswith(CONSUMED_MARKER) for c in comments): raise SystemExit('consumed marker exists immediately before fenced mutation')
+          prior=[r for p in pages(f'repos/{REPO}/actions/workflows/{SCIENCE_WORKFLOW}/runs?event=workflow_dispatch&per_page=100') for r in p.get('workflow_runs',[])]
+          if prior: raise SystemExit(f'prior science workflow_dispatch exists immediately before fenced mutation: {[r.get("id") for r in prior]}')
+          ref=json.loads(api(['--method','POST',f'repos/{REPO}/git/refs','-f',f'ref=refs/heads/{DISPATCH_BRANCH}','-f',f'sha={AUTH_HEAD}']).stdout)
+          if ref.get('ref')!=f'refs/heads/{DISPATCH_BRANCH}' or ref.get('object',{}).get('sha')!=AUTH_HEAD: raise SystemExit('dispatch ref creation response drift')
+          consumed=f'{CONSUMED_MARKER} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | begin={begin}'
+          c=json.loads(api(['--method','POST',f'repos/{REPO}/issues/60/comments','-f',f'body={consumed}']).stdout)
+          consumed_id=int(c['id'])
+          api(['--method','POST',f'repos/{REPO}/actions/workflows/{SCIENCE_WORKFLOW}/dispatches','-f','ref=main','-f',f'inputs[dispatch_ref]={DISPATCH_BRANCH}'])
+          science_run=None
+          endpoint=f'repos/{REPO}/actions/workflows/{SCIENCE_WORKFLOW}/runs?event=workflow_dispatch&per_page=100'
+          for _ in range(90):
+              runs=[r for p in pages(endpoint) for r in p.get('workflow_runs',[])]
+              if len(runs)==1:
+                  science_run=runs[0]; break
+              if len(runs)>1: raise SystemExit(f'science workflow_dispatch cardinality drift: {[r.get("id") for r in runs]}')
+              time.sleep(2)
+          if science_run is None: raise SystemExit('exact dispatched science run not observed')
+          required={'run_attempt':1,'event':'workflow_dispatch','head_branch':'main','path':f'.github/workflows/{SCIENCE_WORKFLOW}','head_sha':os.environ['GITHUB_SHA']}
+          for k,v in required.items():
+              if science_run.get(k)!=v: raise SystemExit(f'science run identity drift {k}: {science_run.get(k)!r} != {v!r}')
+          if science_run.get('status') not in {'queued','pending','waiting','requested'}: raise SystemExit(f'science run escaped shared bootstrap concurrency lock before BEGIN binding: {science_run.get("status")}')
+          science_id=int(science_run['id'])
+          final_begin=f'WRITE_QUIET_BEGIN | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | token={token} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | expected_science_workflow={SCIENCE_WORKFLOW} | science_run={science_id} | execution_key={EXECUTION_KEY} | guard=repository-global-candidate-seed-recheck'
+          patched=json.loads(api(['--method','PATCH',f'repos/{REPO}/issues/comments/{begin}','-f',f'body={final_begin}']).stdout)
+          if int(patched.get('id') or 0)!=begin or str(patched.get('body') or '').strip()!=final_begin: raise SystemExit('same-BEGIN PATCH identity/body drift')
+          Path('publisher-dispatch-receipt.json').write_text(json.dumps({'schemaVersion':2,'beginCommentId':begin,'consumedCommentId':consumed_id,'scienceRunId':science_id,'scienceHeadSha':science_run['head_sha'],'dispatchBranch':DISPATCH_BRANCH,'authorizationHead':AUTH_HEAD,'fenceToken':token},sort_keys=True,indent=2)+'\n')
+          # END_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2
+  monitor-fence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: bootstrap-lock
+    if: always()
+    steps:
+      - name: Close exact fence only after science preflight guard terminal
+        shell: /usr/bin/python3 -I -S {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_RESULT: ${{ needs.bootstrap-lock.result }}
+        run: |
+          # BEGIN_CANONICAL_AVPS_ORDINAL45_FENCE_MONITOR_V2
+          import json,os,subprocess,time
+          REPO=os.environ['GITHUB_REPOSITORY']
+          AUTH_HEAD='6e095b4b1603c90dcee0943295909b30cd1b374d'
+          DISPATCH_BRANCH='dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45'
+          CONSUMED_MARKER='ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED'
+          SCIENCE_WORKFLOW='avps-v2-postconsumption-recovery4-science.yml'
+          EXECUTION_KEY='aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4:numerical:45'
+          TOKEN_PREFIX='AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_'
+          BOOTSTRAP=os.environ['BOOTSTRAP_RESULT']
+          def pages(endpoint):
+              cp=subprocess.run(['/usr/bin/gh','api','--hostname','github.com','--paginate','--slurp',endpoint],text=True,capture_output=True)
+              if cp.returncode!=0: raise SystemExit(f'GitHub API failure endpoint={endpoint} rc={cp.returncode} stderr={cp.stderr.strip()}')
+              return json.loads(cp.stdout)
+          comments=[c for p in pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
+          closed=set(); begins=[]
+          for c in comments:
+              body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; f={}
+              for item in first.replace('|',' ').split():
+                  if '=' in item:
+                      k,v=item.split('=',1); f[k]=v
+              if first.startswith('WRITE_QUIET_END'):
+                  ids=[]
+                  for key in ('begin','beginComment','begin_comment'):
+                      if key in f:
+                          if not f[key].isdigit(): raise SystemExit('non-numeric END alias')
+                          ids.append(int(f[key]))
+                  if len(set(ids))>1: raise SystemExit('conflicting END aliases')
+                  if ids: closed.add(ids[0])
+              elif first.startswith('WRITE_QUIET_BEGIN'): begins.append((int(c['id']),f))
+          unmatched=[x for x in begins if x[0] not in closed]
+          matching=[x for x in unmatched if x[1].get('token','').startswith(TOKEN_PREFIX) and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck' and (x[1].get('science_run')=='PENDING' or str(x[1].get('science_run','')).isdigit())]
+          if not matching:
+              if BOOTSTRAP!='success': raise SystemExit(0)
+              raise SystemExit('bootstrap reported success but no exact unmatched publisher BEGIN exists')
+          if len(matching)!=1: raise SystemExit(f'exactly one matching publisher BEGIN required, got {matching}')
+          begin,fields=matching[0]; token=fields['token']
+          conclusion='failure'; science_id=None
+          if str(fields.get('science_run','')).isdigit(): science_id=int(fields['science_run'])
+          runs=[r for p in pages(f'repos/{REPO}/actions/workflows/{SCIENCE_WORKFLOW}/runs?event=workflow_dispatch&per_page=100') for r in p.get('workflow_runs',[])]
+          if science_id is None and len(runs)==1: science_id=int(runs[0]['id'])
+          if science_id is not None:
+              exact_runs=[r for r in runs if int(r.get('id') or 0)==science_id]
+              if len(exact_runs)!=1 or exact_runs[0].get('run_attempt')!=1 or exact_runs[0].get('event')!='workflow_dispatch' or exact_runs[0].get('head_branch')!='main' or exact_runs[0].get('path')!=f'.github/workflows/{SCIENCE_WORKFLOW}': conclusion='failure'
+              else:
+                  pre_conclusion=None
+                  for _ in range(180):
+                      jobs=[j for p in pages(f'repos/{REPO}/actions/runs/{science_id}/jobs?per_page=100') for j in (p.get('jobs',[]) if isinstance(p,dict) else [])]
+                      pre=[j for j in jobs if j.get('name')=='preflight']
+                      if len(pre)==1 and pre[0].get('status')=='completed': pre_conclusion=str(pre[0].get('conclusion') or 'failure'); break
+                      time.sleep(5)
+                  if BOOTSTRAP=='success' and fields.get('science_run')==str(science_id) and pre_conclusion=='success': conclusion='success'
+          comments=[c for p in pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
+          consumed=[c for c in comments if str(c.get('body') or '').strip().startswith(CONSUMED_MARKER)]
+          consumed_ids={int(c['id']) for c in consumed if int(c['id'])>begin}
+          allowed={begin}|consumed_ids
+          unexpected=[int(c['id']) for c in comments if int(c['id'])>begin and int(c['id']) not in allowed]
+          if len(unmatched)!=1 or len(consumed_ids)!=1 or unexpected: conclusion='failure'
+          science_field=str(science_id) if science_id is not None else str(fields.get('science_run') or 'PENDING')
+          end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | begin={begin} | token={token} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | science_run={science_field} | guard=repository-global-candidate-seed-recheck | step_conclusion={conclusion}'
+          cp=subprocess.run(['/usr/bin/gh','api','--hostname','github.com','--method','POST',f'repos/{REPO}/issues/60/comments','-f',f'body={end_body}'],text=True,capture_output=True)
+          if cp.returncode!=0: raise SystemExit(f'WRITE_QUIET_END post failed: {cp.stderr.strip()}')
+          if conclusion!='success': raise SystemExit(f'publisher/science fence failed closed; bootstrap={BOOTSTRAP} science={science_field} consumed={sorted(consumed_ids)} unexpected={unexpected}')
+          # END_CANONICAL_AVPS_ORDINAL45_FENCE_MONITOR_V2

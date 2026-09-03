@@ -73,8 +73,12 @@ def audit_source_root(root: Path) -> dict[str, Any]:
     )
     require_regex(
         ancillary,
-        r"fprintf\s*\(\s*frad\s*,\s*\"%9\.5f\s+%4d\s+%4d\s+%4d\s+%g\\n\""
-        r".*?output->radiance3d\s*\[",
+        r"fprintf\s*\(\s*frad\s*,\s*\"%9\.5f\s+%4d\s+%4d\s+%4d\s+%g\\n\"\s*,"
+        r"\s*output->wl\.lambda_h\s*\[\s*iv\s*\]\s*,"
+        r"\s*is\s*,\s*js\s*,\s*ks\s*,"
+        r"\s*output->radiance3d\s*\[\s*ks\s*\]\s*\[\s*is\s*\]\s*"
+        r"\[\s*js\s*\]\s*\[\s*ip\s*\]\s*\[\s*ic\s*\]\s*"
+        r"\[\s*iv\s*\]\s*\)\s*;",
         "direct %g serialization of output->radiance3d",
     )
     require_regex(
@@ -152,9 +156,7 @@ class ReferenceTests(unittest.TestCase):
         )
         temp, root = self.make_root(ancillary=bad)
         self.addCleanup(temp.cleanup)
-        # The regex deliberately requires the radiance array to be the direct
-        # argument following the format block; an injected threshold must fail.
-        with self.assertRaises(AuditRefusal):
+        with self.assertRaisesRegex(AuditRefusal, "direct %g serialization"):
             audit_source_root(root)
 
     def test_missing_multi_wavelength_gate_fails_closed(self) -> None:

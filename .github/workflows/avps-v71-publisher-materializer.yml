@@ -1,0 +1,95 @@
+name: AVPS V71 accepted publisher byte materializer
+
+on:
+  push:
+    branches:
+      - prep/avps-v71-publisher-materializer-1
+    paths:
+      - .github/workflows/avps-v71-publisher-materializer.yml
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: avps-v71-publisher-byte-materializer-1
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      REPO: search-maker/twilight-mystic-experiments
+      MAIN_SHA: 172e646cf6716cbd4680053202a6b22188dac713
+      MAIN_TREE: 9f9bd5afaa68ad79b1b6009c834937a6673efb99
+      TARGET_BRANCH: review/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3-v71
+      HELPER_BRANCH: prep/avps-v71-publisher-materializer-1
+      TARGET_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      SOURCE_RUN: '33785860618'
+      SOURCE_ARTIFACT: '9905390223'
+      SOURCE_ARTIFACT_NAME: avps-v2-recovery4-ordinal45-final-publisher-governance-review-v71
+      SOURCE_ARTIFACT_DIGEST: sha256:46a78a7d7fd0e77fc2cddaa9f4b4fb6c5cc80d83e5e1c2ebe399cb58f41be235
+      CANONICAL_SHA256: 9b61da35e7eee5e2db057e17ac2f81cbc5bfa006fab5142feada3095f62f83d8
+      CANONICAL_GIT_BLOB: c444306cd5f7e3e44182062d565ccc770345f00d
+      ISSUE60_EXPECTED_COMMENTS: '989'
+      ISSUE60_EXPECTED_LATEST_ID: '5529816152'
+    steps:
+      - name: Materialize exact accepted bytes as direct child
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$HELPER_BRANCH"
+
+          meta=$(gh api "repos/$REPO/actions/artifacts/$SOURCE_ARTIFACT")
+          test "$(jq -r .digest <<<"$meta")" = "$SOURCE_ARTIFACT_DIGEST"
+          test "$(jq -r .expired <<<"$meta")" = false
+          test "$(jq -r .workflow_run.head_sha <<<"$meta")" = 9f9f1ffb05c406af7dc733025d52daff84be1708
+
+          d="$RUNNER_TEMP/v71"
+          mkdir -p "$d"
+          gh run download "$SOURCE_RUN" -R "$REPO" -n "$SOURCE_ARTIFACT_NAME" -D "$d"
+          canon="$d/canonical-final-publisher-v3.yml"
+          test -f "$canon"
+          test "$(sha256sum "$canon" | awk '{print $1}')" = "$CANONICAL_SHA256"
+          test "$(git hash-object "$canon")" = "$CANONICAL_GIT_BLOB"
+
+          blob=$(jq -Rs '{content:.,encoding:"utf-8"}' "$canon" | gh api --method POST "repos/$REPO/git/blobs" --input - --jq .sha)
+          test "$blob" = "$CANONICAL_GIT_BLOB"
+
+          tree=$(jq -n --arg base "$MAIN_TREE" --arg path "$TARGET_PATH" --arg sha "$blob" '{base_tree:$base,tree:[{path:$path,mode:"100644",type:"blob",sha:$sha}]}' | gh api --method POST "repos/$REPO/git/trees" --input - --jq .sha)
+          commit=$(jq -n --arg msg "Publish accepted AVPS V71 final publisher v3" --arg tree "$tree" --arg parent "$MAIN_SHA" '{message:$msg,tree:$tree,parents:[$parent]}' | gh api --method POST "repos/$REPO/git/commits" --input - --jq .sha)
+
+          c=$(gh api "repos/$REPO/git/commits/$commit")
+          test "$(jq '.parents|length' <<<"$c")" = 1
+          test "$(jq -r '.parents[0].sha' <<<"$c")" = "$MAIN_SHA"
+          test "$(jq -r .tree.sha <<<"$c")" = "$tree"
+
+          # Fresh authoritative boundary immediately before the only visible target mutation.
+          test "$(gh api "repos/$REPO/commits/main" --jq .sha)" = "$MAIN_SHA"
+          test "$(gh api "repos/$REPO/git/ref/heads/$TARGET_BRANCH" --jq .object.sha)" = "$MAIN_SHA"
+          issue=$(gh api "repos/$REPO/issues/60")
+          test "$(jq -r .comments <<<"$issue")" = "$ISSUE60_EXPECTED_COMMENTS"
+          latest=$(gh api "repos/$REPO/issues/60/comments?per_page=1&page=$ISSUE60_EXPECTED_COMMENTS")
+          test "$(jq -r '.[0].id' <<<"$latest")" = "$ISSUE60_EXPECTED_LATEST_ID"
+
+          jq -n --arg sha "$commit" '{sha:$sha,force:false}' | gh api --method PATCH "repos/$REPO/git/refs/heads/$TARGET_BRANCH" --input - >/dev/null
+          test "$(gh api "repos/$REPO/git/ref/heads/$TARGET_BRANCH" --jq .object.sha)" = "$commit"
+
+          cmp=$(gh api "repos/$REPO/compare/$MAIN_SHA...$commit")
+          test "$(jq -r .ahead_by <<<"$cmp")" = 1
+          test "$(jq -r .total_commits <<<"$cmp")" = 1
+          test "$(jq '.files|length' <<<"$cmp")" = 1
+          test "$(jq -r '.files[0].filename' <<<"$cmp")" = "$TARGET_PATH"
+          test "$(jq -r '.files[0].status' <<<"$cmp")" = added
+
+          echo "publisher_commit=$commit" >> "$GITHUB_STEP_SUMMARY"
+          echo "publisher_blob=$blob" >> "$GITHUB_STEP_SUMMARY"
+          echo "canonical_sha256=$CANONICAL_SHA256" >> "$GITHUB_STEP_SUMMARY"
+
+          # Remove the transient materializer ref after the exact target ref is proven.
+          gh api --method DELETE "repos/$REPO/git/refs/heads/$HELPER_BRANCH"

@@ -1,0 +1,134 @@
+name: AVPS accepted publisher v3 exact-byte transport v3
+
+on:
+  push:
+    branches:
+      - transport/avps-v2-recovery4-ordinal45-final-publisher-v3-exact-bytes-3
+    paths:
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-publisher-v3-exact-byte-transport-v3.yml
+
+permissions:
+  contents: write
+  actions: read
+  issues: read
+
+jobs:
+  exact-byte-transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Transport accepted canonical bytes with fresh fail-closed guards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, io, json, os, subprocess, urllib.request, zipfile
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          issue_no = 60
+          expected_comments = 980
+          expected_updated = '2026-09-03T16:13:08Z'
+          expected_latest = 5528609190
+          main_sha = '868753d269d2641911b485e57cbc8c360b438da9'
+          base_tree = 'bfdedd2363ab535d3f12863d2839ef0e3262a080'
+          target_branch = 'review/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3'
+          target_path = '.github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml'
+          artifact_id = 9901458948
+          expected_sha256 = '11e56b376ce5da3cb87f9d6cb741405bbc48c6bb58f47546b487d935ebe485a1'
+          expected_blob = '1cbb9f3c68ed658fb4f3834a0169bb52bc7d2801'
+          science_workflow = 'avps-v2-postconsumption-recovery4-science.yml'
+          consumed_prefix = 'ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED'
+
+          def request(method, path, data=None):
+              body = None if data is None else json.dumps(data, separators=(',', ':')).encode()
+              req = urllib.request.Request(
+                  'https://api.github.com/' + path,
+                  data=body,
+                  method=method,
+                  headers={
+                      'Authorization': 'Bearer ' + token,
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'avps-exact-byte-transport-v3',
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read() or b'{}')
+
+          def all_comments():
+              out = []
+              page = 1
+              while True:
+                  batch = request('GET', f'repos/{repo}/issues/{issue_no}/comments?per_page=100&page={page}')
+                  out.extend(batch)
+                  if len(batch) < 100:
+                      return out
+                  page += 1
+
+          def fresh():
+              issue = request('GET', f'repos/{repo}/issues/{issue_no}')
+              comments = all_comments()
+              assert issue['comments'] == expected_comments, ('issue comment drift', issue['comments'])
+              assert issue['updated_at'] == expected_updated, ('issue update drift', issue['updated_at'])
+              assert len(comments) == expected_comments and comments[-1]['id'] == expected_latest, 'latest Issue #60 drift'
+              assert not any(str(c.get('body') or '').strip().startswith(consumed_prefix) for c in comments), 'ordinal45 consumed marker exists'
+              main = request('GET', f'repos/{repo}/git/ref/heads/main')
+              target = request('GET', f'repos/{repo}/git/ref/heads/{target_branch}')
+              assert main['object']['sha'] == main_sha, ('main drift', main['object']['sha'])
+              assert target['object']['sha'] == main_sha, ('target drift', target['object']['sha'])
+              runs = request('GET', f'repos/{repo}/actions/workflows/{science_workflow}/runs?event=workflow_dispatch&per_page=100')
+              assert runs.get('total_count', 0) == 0, 'ordinal45 science workflow_dispatch exists'
+
+          fresh()
+          cp = subprocess.run([
+              '/usr/bin/curl', '--fail', '--silent', '--show-error', '--location',
+              '-H', f'Authorization: Bearer {token}',
+              '-H', 'Accept: application/vnd.github+json',
+              '-H', 'X-GitHub-Api-Version: 2022-11-28',
+              '-o', 'artifact.zip',
+              f'https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip',
+          ], text=True, capture_output=True)
+          assert cp.returncode == 0, ('artifact curl failed', cp.returncode, cp.stderr)
+          rawzip = open('artifact.zip', 'rb').read()
+          with zipfile.ZipFile(io.BytesIO(rawzip)) as zf:
+              names = [n for n in zf.namelist() if n.endswith('canonical-final-publisher-v3.yml')]
+              assert len(names) == 1, ('canonical artifact cardinality', names)
+              publisher = zf.read(names[0])
+          assert len(publisher) == 38127, ('canonical size drift', len(publisher))
+          assert hashlib.sha256(publisher).hexdigest() == expected_sha256, 'canonical sha256 drift'
+          git_blob = hashlib.sha1(b'blob ' + str(len(publisher)).encode() + b'\0' + publisher).hexdigest()
+          assert git_blob == expected_blob, ('canonical git blob drift', git_blob)
+
+          fresh()
+          blob = request('POST', f'repos/{repo}/git/blobs', {'content': base64.b64encode(publisher).decode(), 'encoding': 'base64'})
+          assert blob['sha'] == expected_blob, ('created blob drift', blob['sha'])
+
+          fresh()
+          tree = request('POST', f'repos/{repo}/git/trees', {
+              'base_tree': base_tree,
+              'tree': [{'path': target_path, 'mode': '100644', 'type': 'blob', 'sha': expected_blob}],
+          })
+
+          fresh()
+          commit = request('POST', f'repos/{repo}/git/commits', {
+              'message': 'Propose accepted AVPS Recovery4 ordinal45 final publisher v3',
+              'tree': tree['sha'],
+              'parents': [main_sha],
+          })
+          commit_sha = commit['sha']
+          created = request('GET', f'repos/{repo}/commits/{commit_sha}')
+          assert [p['sha'] for p in created['parents']] == [main_sha], 'publisher commit parent drift'
+          assert created['commit']['tree']['sha'] == tree['sha'], 'publisher commit tree drift'
+
+          fresh()
+          request('PATCH', f'repos/{repo}/git/refs/heads/{target_branch}', {'sha': commit_sha, 'force': False})
+
+          target = request('GET', f'repos/{repo}/git/ref/heads/{target_branch}')
+          assert target['object']['sha'] == commit_sha, 'target ref update drift'
+          compare = request('GET', f'repos/{repo}/compare/{main_sha}...{commit_sha}')
+          assert compare['ahead_by'] == 1 and compare['behind_by'] == 0 and compare['total_commits'] == 1, 'publisher topology drift'
+          assert len(compare['files']) == 1 and compare['files'][0]['filename'] == target_path and compare['files'][0]['status'] == 'added', 'publisher one-file drift'
+          contents = request('GET', f'repos/{repo}/contents/{target_path}?ref={commit_sha}')
+          assert contents['sha'] == expected_blob and contents['size'] == 38127, 'publisher installed blob drift'
+          print(json.dumps({'publisherCommit': commit_sha, 'tree': tree['sha'], 'blob': expected_blob, 'sha256': expected_sha256}, sort_keys=True))

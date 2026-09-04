@@ -1,4 +1,4 @@
-name: LOWALT pinned static callgraph v11
+name: LOWALT pinned static callgraph v12
 run-name: LOWALT pinned static callgraph ${{ github.sha }}
 
 on:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lowalt-pinned-static-callgraph-v11
+  group: lowalt-pinned-static-callgraph-v12
   cancel-in-progress: false
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Inspect exact pinned solver objects without execution
+      - name: Inspect exact pinned solver and geometry objects without execution
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +37,7 @@ jobs:
 
           python -m pip install --quiet --disable-pip-version-check zstandard
           python - "$PINNED" <<'PY'
-          import io, pathlib, subprocess, sys, tarfile, zipfile
+          import io, json, pathlib, re, subprocess, sys, tarfile, zipfile
           import zstandard as zstd
 
           pinned=sys.argv[1]
@@ -62,15 +62,34 @@ jobs:
 
           lib=root/'pkg'/'libRadtran_f.a'
           members=subprocess.check_output(['ar','t',str(lib)],text=True).splitlines()
+          target_symbols=('geofast_','chpman2_','chapman4_')
+          archive_nm=subprocess.check_output(['nm','-A','--defined-only',str(lib)],text=True,errors='replace')
+          (root/'static'/'archive-defined.nm.txt').write_text(archive_nm)
+          providers={}
+          for sym in target_symbols:
+              matches=[]
+              for line in archive_nm.splitlines():
+                  if re.search(rf'\b{re.escape(sym)}$',line):
+                      m=re.search(r'\.a:([^:]+):',line)
+                      if m: matches.append(m.group(1))
+              providers[sym]=sorted(set(matches))
+              if len(providers[sym]) != 1:
+                  raise SystemExit(f'provider ambiguity for {sym}: {providers[sym]!r}')
+
           targets=['spsdisort.o','dpsdisort.o','DISORT.o','DISORT2.o']
+          for names in providers.values():
+              for name in names:
+                  if name not in targets: targets.append(name)
           for name in targets:
               if name not in members:
                   raise SystemExit(f'missing archive member {name}')
               data=subprocess.check_output(['ar','p',str(lib),name])
               (root/'objects'/name).write_bytes(data)
+          (root/'static'/'providers.json').write_text(json.dumps(providers,indent=2,sort_keys=True)+'\n')
+          (root/'static'/'targets.txt').write_text('\n'.join(targets)+'\n')
           PY
 
-          for obj in spsdisort.o dpsdisort.o DISORT.o DISORT2.o; do
+          while IFS= read -r obj; do
             nm -a "out/objects/$obj" > "out/static/$obj.nm.txt"
             readelf -Ws "out/objects/$obj" > "out/static/$obj.symbols.txt"
             readelf -SW "out/objects/$obj" > "out/static/$obj.sections.txt"
@@ -78,12 +97,13 @@ jobs:
             objdump -drwC -Mintel "out/objects/$obj" > "out/static/$obj.objdump.txt"
             strings -a "out/objects/$obj" > "out/static/$obj.strings.txt"
             sha256sum "out/objects/$obj" >> out/static/object-sha256.txt
-          done
+          done < out/static/targets.txt
 
           python - <<'PY'
           import json, pathlib, re
           root=pathlib.Path('out/static')
-          objects=['spsdisort.o','dpsdisort.o','DISORT.o','DISORT2.o']
+          objects=[x for x in (root/'targets.txt').read_text().splitlines() if x]
+          providers=json.loads((root/'providers.json').read_text())
           key_terms=[
               'sdisort','dpsdisort','geofast','opathfast','chapman','chpman',
               'points_of_incidence','optical_path','spline'
@@ -95,11 +115,7 @@ jobs:
               nm=(root/f'{obj}.nm.txt').read_text(errors='replace')
               dis=(root/f'{obj}.objdump.txt').read_text(errors='replace')
               comment=(root/f'{obj}.comment.txt').read_text(errors='replace')
-              symbols=[]
-              for line in nm.splitlines():
-                  low=line.lower()
-                  if any(t in low for t in key_terms):
-                      symbols.append(line.strip())
+              symbols=[line.strip() for line in nm.splitlines() if any(t in line.lower() for t in key_terms)]
               relocs=[]
               for line in dis.splitlines():
                   low=line.lower()
@@ -108,13 +124,14 @@ jobs:
                       or any(re.search(rf'\b{re.escape(x)}\b',low) for x in libm_single+libm_double)
                   ):
                       relocs.append(line.strip())
-              def count_pat(p):
-                  return len(re.findall(p,dis,re.I))
+              def count_pat(p): return len(re.findall(p,dis,re.I))
               precision={
                   'scalar_single_ops':count_pat(r'\b(?:add|sub|mul|div|sqrt)ss\b'),
                   'scalar_double_ops':count_pat(r'\b(?:add|sub|mul|div|sqrt)sd\b'),
                   'cvtss2sd':count_pat(r'\bcvtss2sd\b'),
                   'cvtsd2ss':count_pat(r'\bcvtsd2ss\b'),
+                  'cvtps2pd':count_pat(r'\bcvtps2pd\b'),
+                  'cvtpd2ps':count_pat(r'\bcvtpd2ps\b'),
                   'movss':count_pat(r'\bmovss\b'),
                   'movsd':count_pat(r'\bmovsd\b'),
               }
@@ -128,20 +145,34 @@ jobs:
                   'math_reference_counts':{k:v for k,v in refs.items() if v},
                   'comment':comment.strip(),
               }
-          (root/'summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+
+          dps=rows['dpsdisort.o']['interesting_relocations']
+          wrapper_call=any('dpsdisort_' in x.lower() for x in dps)
+          geofast_call=any('geofast_' in x.lower() for x in dps)
+          chp2_call=any('chpman2_' in x.lower() for x in dps)
+          facts={
+              'execution':'NONE; static exact-package inspection only',
+              'providers':providers,
+              'sdisort_wrapper_in_dpsdisort_object': any(' t sdisort_' in (' '+x.lower()) for x in rows['dpsdisort.o']['interesting_nm_symbols']) or any(' t sdisort_' in (' '+x.lower()) for x in rows['dpsdisort.o']['interesting_nm_symbols']),
+              'dpsdisort_object_calls_dpsdisort':wrapper_call,
+              'dpsdisort_object_calls_geofast':geofast_call,
+              'dpsdisort_object_calls_chpman2':chp2_call,
+          }
+          if not wrapper_call or not geofast_call or not chp2_call:
+              raise SystemExit(f'expected static callpath missing: {facts!r}')
+          out={'facts':facts,'objects':rows}
+          (root/'summary.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
           with (root/'summary.txt').open('w') as fh:
-              fh.write('LOWALT_PINNED_STATIC_CALLGRAPH_V11\n')
-              fh.write('execution=NONE; static exact-package inspection only\n')
+              fh.write('LOWALT_PINNED_STATIC_CALLGRAPH_V12\n')
+              fh.write(json.dumps(facts,sort_keys=True)+'\n')
               for obj,row in rows.items():
                   fh.write(f'\n[{obj}]\n')
                   fh.write('precision='+json.dumps(row['precision_instruction_counts'],sort_keys=True)+'\n')
                   fh.write('math_refs='+json.dumps(row['math_reference_counts'],sort_keys=True)+'\n')
                   fh.write('symbols:\n')
-                  for x in row['interesting_nm_symbols']:
-                      fh.write('  '+x+'\n')
+                  for x in row['interesting_nm_symbols']: fh.write('  '+x+'\n')
                   fh.write('relocations:\n')
-                  for x in row['interesting_relocations']:
-                      fh.write('  '+x+'\n')
+                  for x in row['interesting_relocations']: fh.write('  '+x+'\n')
           PY
 
           cat out/static/summary.txt
@@ -151,7 +182,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-pinned-static-callgraph-v11
+          name: lowalt-pinned-static-callgraph-v12
           path: out/static/
           if-no-files-found: warn
           retention-days: 90

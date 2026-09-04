@@ -1,4 +1,4 @@
-name: LOWALT exact-package reconstruction v6
+name: LOWALT exact-package ABI reconstruction v7
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Compare historical build-0 to exact pinned build-1
+      - name: Compare build-0 and pinned build-1 ABI/code surfaces
         shell: bash
         run: |
           set -euo pipefail
@@ -22,10 +22,10 @@ jobs:
           PINNED='rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda'
           CHANNEL='https://conda.anaconda.org/conda-forge/linux-64'
           mkdir -p out/raw out/extracted
-          REPORT='out/exact-package-reconstruction-v6.txt'
+          REPORT='out/exact-package-abi-reconstruction-v7.txt'
           : > "$REPORT"
           {
-            echo 'LOWALT_EXACT_PACKAGE_RECONSTRUCTION_V6'
+            echo 'LOWALT_EXACT_PACKAGE_ABI_RECONSTRUCTION_V7'
             echo "expected_source_sha256=$EXPECTED_SOURCE"
             echo "build0=$BUILD0"
             echo "pinned=$PINNED"
@@ -94,15 +94,7 @@ jobs:
 
           python -m pip install --quiet --disable-pip-version-check zstandard
           python - "$BUILD0" "$PINNED" "$EXPECTED_SOURCE" "$REPORT" <<'PY'
-          import hashlib
-          import io
-          import json
-          import pathlib
-          import re
-          import subprocess
-          import sys
-          import tarfile
-          import zipfile
+          import hashlib, io, json, pathlib, re, subprocess, sys, tarfile, zipfile
           import zstandard as zstd
 
           build0, pinned, expected_source, report_name = sys.argv[1:]
@@ -127,7 +119,6 @@ jobs:
               payload_paths = []
               header_hashes = {}
               selected_hashes = {}
-              source_archive_members = []
               extract_dir = extracted_root / label
               extract_dir.mkdir(parents=True, exist_ok=True)
               with zipfile.ZipFile(package_path) as zf:
@@ -137,19 +128,19 @@ jobs:
                   info_blob = zf.read(info_inner)
                   pkg_blob = zf.read(pkg_inner)
 
+              wanted_info = {
+                  'info/recipe/meta.yaml', 'info/recipe/meta.yaml.template',
+                  'info/recipe/build.sh', 'info/hash_input.json', 'info/index.json'
+              }
               def handle_info(tf, member):
-                  if not member.isfile():
+                  if not member.isfile() or member.name not in wanted_info:
                       return
-                  if member.name in {
-                      'info/recipe/meta.yaml', 'info/recipe/meta.yaml.template',
-                      'info/recipe/build.sh', 'info/hash_input.json', 'info/index.json'
-                  }:
-                      f = tf.extractfile(member)
-                      if f is not None:
-                          data = f.read()
-                          info_text[member.name] = data
-                          out_name = member.name.replace('/', '__')
-                          (root / f'{label}-{out_name}').write_bytes(data)
+                  f = tf.extractfile(member)
+                  if f is None:
+                      return
+                  data = f.read()
+                  info_text[member.name] = data
+                  (root / f'{label}-{member.name.replace("/", "__")}').write_bytes(data)
               stream_tar(info_blob, handle_info)
 
               selected_names = {'bin/uvspec', 'lib/libRadtran_c.a', 'lib/libRadtran_f.a'}
@@ -158,8 +149,6 @@ jobs:
                   payload_paths.append(name)
                   if not member.isfile():
                       return
-                  if name.endswith('libRadtran-2.0.6.tar.gz'):
-                      source_archive_members.append(name)
                   want_header = name.startswith('include/libRadtran/') and name.endswith(('.h', '.hpp'))
                   want_selected = name in selected_names
                   if not (want_header or want_selected):
@@ -172,23 +161,28 @@ jobs:
                       header_hashes[name] = sha_bytes(data)
                   if want_selected:
                       selected_hashes[name] = sha_bytes(data)
-                      dst = extract_dir / pathlib.Path(name).name
-                      dst.write_bytes(data)
+                      (extract_dir / pathlib.Path(name).name).write_bytes(data)
               stream_tar(pkg_blob, handle_pkg)
 
               payload_paths = sorted(set(payload_paths))
               (root / f'{label}-payload-paths.txt').write_text('\n'.join(payload_paths) + '\n')
               (root / f'{label}-header-manifest.json').write_text(json.dumps(header_hashes, indent=2, sort_keys=True) + '\n')
               (root / f'{label}-selected-binary-hashes.json').write_text(json.dumps(selected_hashes, indent=2, sort_keys=True) + '\n')
-              recipe_blob = info_text.get('info/recipe/meta.yaml', b'') + b'\n' + info_text.get('info/recipe/meta.yaml.template', b'')
+
+              meta = info_text.get('info/recipe/meta.yaml', b'').decode('utf-8', errors='replace')
+              template = info_text.get('info/recipe/meta.yaml.template', b'').decode('utf-8', errors='replace')
+              source_sha_match = bool(re.search(r'^\s*sha256:\s*' + re.escape(expected_source) + r'\s*$', meta, re.M))
+              source_url_m = re.search(r'^\s*url:\s*(\S+)\s*$', meta, re.M)
+              normalized_template = re.sub(r'(?m)^(\s*number:\s*)\d+\s*$', r'\1<BUILD_NUMBER>', template)
               state[label] = {
                   'payload_paths': set(payload_paths),
                   'header_hashes': header_hashes,
                   'selected_hashes': selected_hashes,
-                  'source_archive_members': source_archive_members,
-                  'recipe_expected_mentions': recipe_blob.decode('utf-8', errors='replace').count(expected_source),
-                  'recipe_build_sh_sha256': sha_bytes(info_text.get('info/recipe/build.sh', b'')),
-                  'recipe_meta_sha256': sha_bytes(info_text.get('info/recipe/meta.yaml', b'')),
+                  'source_sha_match': source_sha_match,
+                  'source_url': source_url_m.group(1) if source_url_m else '',
+                  'build_sh_sha': sha_bytes(info_text.get('info/recipe/build.sh', b'')),
+                  'template_sha': sha_bytes(template.encode()),
+                  'normalized_template_sha': sha_bytes(normalized_template.encode()),
               }
 
           a, b = state['build0'], state['pinned']
@@ -207,108 +201,149 @@ jobs:
           (root / 'payload-only-pinned.txt').write_text('\n'.join(only_b_paths) + ('\n' if only_b_paths else ''))
 
           def run_tool(args, out_path):
-              try:
-                  cp = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=120)
-                  pathlib.Path(out_path).write_text(cp.stdout)
-                  return cp.returncode
-              except Exception as exc:
-                  pathlib.Path(out_path).write_text(f'ERROR: {exc}\n')
-                  return 127
+              cp = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=120)
+              pathlib.Path(out_path).write_text(cp.stdout)
+              return cp.returncode
 
           symbol_sets = {}
+          ar_members = {}
           needed_sets = {}
+          section_hashes = {}
+          section_names = ('.text', '.rodata', '.init', '.fini', '.eh_frame')
           for label in labels:
               d = extracted_root / label
               symbol_sets[label] = {}
-              for lib in ('libRadTran_c.a', 'libRadTran_f.a'):
+              ar_members[label] = {}
+              for lib in ('libRadtran_c.a', 'libRadtran_f.a'):
                   p = d / lib
-                  out = root / f'{label}-{lib}.nm.txt'
-                  rc = run_tool(['nm', '-g', '--defined-only', str(p)], out) if p.exists() else 127
+                  nm_out = root / f'{label}-{lib}.nm.txt'
+                  rc = run_tool(['nm', '-g', '--defined-only', str(p)], nm_out)
                   symbols = set()
-                  if out.exists():
-                      for line in out.read_text(errors='replace').splitlines():
+                  if rc == 0:
+                      for line in nm_out.read_text(errors='replace').splitlines():
                           parts = line.split()
-                          if rc == 0 and parts and not line.endswith(':'):
+                          if parts and not line.endswith(':'):
                               symbols.add(parts[-1])
                   symbol_sets[label][lib] = symbols
+                  ar_out = root / f'{label}-{lib}.ar-t.txt'
+                  arc = run_tool(['ar', 't', str(p)], ar_out)
+                  ar_members[label][lib] = ar_out.read_text(errors='replace').splitlines() if arc == 0 else []
+
               uvspec = d / 'uvspec'
               dyn = root / f'{label}-uvspec-readelf-dynamic.txt'
-              rc = run_tool(['readelf', '-d', str(uvspec)], dyn) if uvspec.exists() else 127
+              run_tool(['readelf', '-d', str(uvspec)], dyn)
               needed = set()
-              if dyn.exists():
-                  for line in dyn.read_text(errors='replace').splitlines():
-                      if '(NEEDED)' in line:
-                          needed.add(line.strip())
+              for line in dyn.read_text(errors='replace').splitlines():
+                  if '(NEEDED)' in line:
+                      needed.add(line.strip())
               needed_sets[label] = needed
+              sec = {}
+              for section in section_names:
+                  out_bin = d / f'uvspec{section}.bin'
+                  cp = subprocess.run(['objcopy', '--dump-section', f'{section}={out_bin}', str(uvspec)],
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=120)
+                  if cp.returncode == 0 and out_bin.exists():
+                      sec[section] = sha_bytes(out_bin.read_bytes())
+              section_hashes[label] = sec
+              (root / f'{label}-uvspec-section-hashes.json').write_text(json.dumps(sec, indent=2, sort_keys=True) + '\n')
 
           symbol_comparison = {}
-          for lib in ('libRadTran_c.a', 'libRadTran_f.a'):
+          ar_comparison = {}
+          for lib in ('libRadtran_c.a', 'libRadtran_f.a'):
               sa, sb = symbol_sets['build0'][lib], symbol_sets['pinned'][lib]
               symbol_comparison[lib] = {
-                  'build0_count': len(sa), 'pinned_count': len(sb),
-                  'common_count': len(sa & sb),
+                  'build0_count': len(sa), 'pinned_count': len(sb), 'common_count': len(sa & sb),
                   'only_build0_count': len(sa - sb), 'only_pinned_count': len(sb - sa),
                   'only_build0': sorted(sa - sb)[:200], 'only_pinned': sorted(sb - sa)[:200],
               }
+              aa, ab = ar_members['build0'][lib], ar_members['pinned'][lib]
+              ar_comparison[lib] = {
+                  'build0_count': len(aa), 'pinned_count': len(ab),
+                  'member_lists_identical': aa == ab,
+                  'only_build0': sorted(set(aa) - set(ab))[:200],
+                  'only_pinned': sorted(set(ab) - set(aa))[:200],
+              }
           (root / 'static-library-symbol-comparison.json').write_text(json.dumps(symbol_comparison, indent=2, sort_keys=True) + '\n')
+          (root / 'static-library-member-comparison.json').write_text(json.dumps(ar_comparison, indent=2, sort_keys=True) + '\n')
+
+          needed_only_build0 = sorted(needed_sets['build0'] - needed_sets['pinned'])
+          needed_only_pinned = sorted(needed_sets['pinned'] - needed_sets['build0'])
+          (root / 'uvspec-needed-comparison.json').write_text(json.dumps({
+              'identical': needed_sets['build0'] == needed_sets['pinned'],
+              'only_build0': needed_only_build0,
+              'only_pinned': needed_only_pinned,
+          }, indent=2, sort_keys=True) + '\n')
 
           with pathlib.Path(report_name).open('a') as fh:
               for label in ('build0', 'pinned'):
                   s = state[label]
+                  fh.write(f'{label}_source_sha_match={"YES" if s["source_sha_match"] else "NO"}\n')
+                  fh.write(f'{label}_source_url={s["source_url"]}\n')
+                  fh.write(f'{label}_build_sh_sha256={s["build_sh_sha"]}\n')
+                  fh.write(f'{label}_template_sha256={s["template_sha"]}\n')
+                  fh.write(f'{label}_normalized_template_sha256={s["normalized_template_sha"]}\n')
                   fh.write(f'{label}_payload_path_count={len(s["payload_paths"])}\n')
                   fh.write(f'{label}_header_count={len(s["header_hashes"])}\n')
-                  fh.write(f'{label}_source_archive_payload_count={len(s["source_archive_members"])}\n')
-                  fh.write(f'{label}_recipe_expected_source_mentions={s["recipe_expected_mentions"]}\n')
-                  fh.write(f'{label}_recipe_meta_sha256={s["recipe_meta_sha256"]}\n')
-                  fh.write(f'{label}_recipe_build_sh_sha256={s["recipe_build_sh_sha256"]}\n')
                   for name, digest in sorted(s['selected_hashes'].items()):
                       fh.write(f'{label}_selected_sha256={name}|{digest}\n')
+                  for section, digest in sorted(section_hashes[label].items()):
+                      fh.write(f'{label}_uvspec_section_sha256={section}|{digest}\n')
+              fh.write(f'normalized_recipe_template_identical={"YES" if a["normalized_template_sha"] == b["normalized_template_sha"] else "NO"}\n')
+              fh.write(f'build_sh_identical={"YES" if a["build_sh_sha"] == b["build_sh_sha"] else "NO"}\n')
               fh.write(f'common_header_count={len(common_headers)}\n')
               fh.write(f'identical_header_count={len(identical_headers)}\n')
               fh.write(f'changed_header_count={len(changed_headers)}\n')
-              fh.write(f'only_build0_header_count={len(only_a_headers)}\n')
-              fh.write(f'only_pinned_header_count={len(only_b_headers)}\n')
               fh.write(f'payload_path_only_build0_count={len(only_a_paths)}\n')
               fh.write(f'payload_path_only_pinned_count={len(only_b_paths)}\n')
               fh.write(f'uvspec_needed_lines_identical={"YES" if needed_sets["build0"] == needed_sets["pinned"] else "NO"}\n')
+              fh.write(f'uvspec_needed_only_build0={json.dumps(needed_only_build0, sort_keys=True)}\n')
+              fh.write(f'uvspec_needed_only_pinned={json.dumps(needed_only_pinned, sort_keys=True)}\n')
+              common_sections = sorted(set(section_hashes['build0']) & set(section_hashes['pinned']))
+              for section in common_sections:
+                  fh.write(f'uvspec_section_identical={section}|{"YES" if section_hashes["build0"][section] == section_hashes["pinned"][section] else "NO"}\n')
               for lib, comp in symbol_comparison.items():
                   fh.write(f'{lib}_symbol_build0_count={comp["build0_count"]}\n')
                   fh.write(f'{lib}_symbol_pinned_count={comp["pinned_count"]}\n')
                   fh.write(f'{lib}_symbol_common_count={comp["common_count"]}\n')
                   fh.write(f'{lib}_symbol_only_build0_count={comp["only_build0_count"]}\n')
                   fh.write(f'{lib}_symbol_only_pinned_count={comp["only_pinned_count"]}\n')
+                  fh.write(f'{lib}_member_lists_identical={"YES" if ar_comparison[lib]["member_lists_identical"] else "NO"}\n')
           PY
 
           rm -rf out/raw out/extracted
           cat "$REPORT"
-          echo '--- header comparison ---'
-          cat out/header-comparison.json
           echo '--- static library symbol comparison ---'
           cat out/static-library-symbol-comparison.json
-          echo '--- build0-only payload paths ---'
-          cat out/payload-only-build0.txt
-          echo '--- pinned-only payload paths ---'
-          cat out/payload-only-pinned.txt
+          echo '--- static library member comparison ---'
+          cat out/static-library-member-comparison.json
+          echo '--- uvspec needed comparison ---'
+          cat out/uvspec-needed-comparison.json
 
-      - name: Upload immutable reconstruction evidence
+      - name: Upload immutable ABI reconstruction evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-exact-package-reconstruction-v6
+          name: lowalt-exact-package-abi-reconstruction-v7
           path: |
-            out/exact-package-reconstruction-v6.txt
+            out/exact-package-abi-reconstruction-v7.txt
             out/*-repodata-record.json
             out/*-info__recipe__meta.yaml
             out/*-info__recipe__meta.yaml.template
             out/*-info__recipe__build.sh
+            out/*-info__hash_input.json
             out/*-header-manifest.json
             out/*-selected-binary-hashes.json
             out/header-comparison.json
             out/payload-only-build0.txt
             out/payload-only-pinned.txt
             out/static-library-symbol-comparison.json
+            out/static-library-member-comparison.json
+            out/*-libRadtran_c.a.nm.txt
+            out/*-libRadtran_f.a.nm.txt
+            out/*-libRadtran_c.a.ar-t.txt
+            out/*-libRadtran_f.a.ar-t.txt
             out/*-uvspec-readelf-dynamic.txt
-            out/*-libRadTran_c.a.nm.txt
-            out/*-libRadTran_f.a.nm.txt
+            out/*-uvspec-section-hashes.json
+            out/uvspec-needed-comparison.json
           if-no-files-found: warn
           retention-days: 90

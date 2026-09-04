@@ -288,6 +288,40 @@ def _self_test() -> None:
         relative_error = abs(got - reference) / reference
         assert relative_error <= 8e-15, (h, observer, lo, hi, got, reference, relative_error)
 
+    # Rationalized shell arithmetic must remain additive under thin-shell
+    # partitioning, including very small positive altitudes and elevated
+    # observers. Fixed synthetic cases keep this deterministic/result-blind.
+    partition_cases = (
+        (0.3, 0.0, (0.0, 1e-6, 3e-6, 1e-5)),
+        (1e-7, 0.8, (0.8, 0.800001, 0.800003, 0.80001)),
+        (5.0, 2.5, (2.5, 2.500001, 2.501, 3.0)),
+        (0.0001, 2.5, (2.5, 2.500001, 2.5001, 2.51)),
+    )
+    for h, observer, edges in partition_cases:
+        whole = shell_path_length_km(
+            earth_radius_km=R,
+            observer_altitude_km=observer,
+            geometric_altitude_deg=h,
+            z_lo_km=edges[0],
+            z_hi_km=edges[-1],
+        )
+        parts = math.fsum(
+            shell_path_length_km(
+                earth_radius_km=R,
+                observer_altitude_km=observer,
+                geometric_altitude_deg=h,
+                z_lo_km=lo,
+                z_hi_km=hi,
+            )
+            for lo, hi in zip(edges, edges[1:])
+        )
+        assert math.isclose(parts, whole, rel_tol=2e-15, abs_tol=1e-15), (
+            h,
+            observer,
+            parts,
+            whole,
+        )
+
     # Observer-elevation truncation is explicit in the retained layers.
     elevated = (
         RadialLayer(2.5, 4.0, 0.12),

@@ -24,10 +24,11 @@ import argparse
 import json
 import unittest
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, localcontext
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
 from fractions import Fraction
 
 _DECIMAL_PRECISION = 120
+_CERTIFICATION_PRECISIONS = (120, 240, 480, 960)
 _MAX_UNITS = 10**15
 
 
@@ -54,7 +55,33 @@ def _require_nonnegative(name: str, value: Fraction) -> None:
 
 
 def _to_decimal(value: Fraction) -> Decimal:
+    """Nearest Decimal conversion for candidate generation only, never proof."""
     return Decimal(value.numerator) / Decimal(value.denominator)
+
+
+def _fraction_decimal_bounds(value: Fraction, precision: int) -> tuple[Decimal, Decimal]:
+    """Outward Decimal enclosure of a positive exact Fraction."""
+    with localcontext() as ctx:
+        ctx.prec = precision
+        ctx.rounding = ROUND_FLOOR
+        lower = Decimal(value.numerator) / Decimal(value.denominator)
+        ctx.rounding = ROUND_CEILING
+        upper = Decimal(value.numerator) / Decimal(value.denominator)
+    if lower <= 0 or upper <= 0:
+        raise ArithmeticError("positive rational could not be enclosed at reference precision")
+    return lower, upper
+
+
+def _ln_fraction_bounds(value: Fraction, precision: int) -> tuple[Decimal, Decimal]:
+    """Outward enclosure of ln(value), including rational-to-Decimal error."""
+    lower, upper = _fraction_decimal_bounds(value, precision)
+    with localcontext() as ctx:
+        ctx.prec = precision
+        # Decimal.ln is correctly rounded. Expand one representable value on
+        # each side so the interval also encloses transcendental rounding.
+        log_lower = lower.ln().next_minus()
+        log_upper = upper.ln().next_plus()
+    return log_lower, log_upper
 
 
 def zero_upper_common_q(alpha: Fraction | int | str, independent_units: int) -> Decimal:
@@ -65,11 +92,13 @@ def zero_upper_common_q(alpha: Fraction | int | str, independent_units: int) -> 
         raise ValueError("independent_units must be a positive integer")
     with localcontext() as ctx:
         ctx.prec = _DECIMAL_PRECISION
-        log_a = _to_decimal(a).ln()
-        root = (log_a / Decimal(independent_units)).exp()
-        # q=1-root is monotone decreasing in root. next_minus() makes the
-        # survival value conservative downward, hence q conservative upward.
-        survival_lower = root.next_minus()
+        # Use a certified lower log(alpha) bound. A lower survival value gives
+        # a conservative upper q value. Every subsequent transcendental or
+        # arithmetic step is expanded outward rather than assuming that a
+        # nearest Decimal conversion of the exact Fraction was exact.
+        log_a_lower, _log_a_upper = _ln_fraction_bounds(a, _DECIMAL_PRECISION)
+        exponent_lower = (log_a_lower / Decimal(independent_units)).next_minus()
+        survival_lower = exponent_lower.exp().next_minus()
         return (Decimal(1) - survival_lower).next_plus()
 
 
@@ -77,38 +106,68 @@ def required_independent_units(
     alpha: Fraction | int | str,
     q_target: Fraction | int | str,
 ) -> int:
-    """Minimum m with 1-alpha**(1/m) <= q_target, fail-closed near boundaries."""
+    """Minimum m with 1-alpha**(1/m) <= q_target, fail-closed near boundaries.
+
+    Candidate generation may use nearest high-precision Decimal arithmetic, but
+    certification never does. Exact rational alpha and survival=1-q_target are
+    first enclosed with directed Decimal rounding; monotone logarithms are then
+    expanded outward. This matters for adversarial targets beyond the working
+    precision: one-ulp bounds around ln(nearest_decimal(exact_fraction)) do not
+    in general enclose ln(exact_fraction).
+    """
     a = _fraction(alpha)
     q = _fraction(q_target)
     _require_probability("alpha", a)
     _require_probability("q_target", q)
+    survival = 1 - q
+    saw_over_range_candidate = False
 
-    # Equivalent inequality: m*ln(1-q) <= ln(alpha).  Both logs are negative.
-    # Use high-precision Decimal for the candidate, then certify m and m-1 with
-    # outward one-ulp log bounds rather than trusting a rounded quotient alone.
-    for precision in (_DECIMAL_PRECISION, _DECIMAL_PRECISION * 2):
+    # Equivalent inequality: m*ln(1-q) <= ln(alpha). Both logs are negative.
+    # Precision escalates only when the exact rational target is too close to a
+    # unit boundary for the current outward interval to prove both sufficiency
+    # and one-unit minimality.
+    for precision in _CERTIFICATION_PRECISIONS:
         with localcontext() as ctx:
             ctx.prec = precision
-            log_a = _to_decimal(a).ln()
-            log_s = (Decimal(1) - _to_decimal(q)).ln()
-            raw = log_a / log_s
-            m = int(raw.to_integral_value(rounding=ROUND_CEILING))
-            m = max(1, m)
-            if m > _MAX_UNITS:
-                raise ValueError("required independent units exceed bounded reference range")
+            approx_a = _to_decimal(a)
+            approx_survival = _to_decimal(survival)
+            if approx_survival == 1:
+                # Target is smaller than this candidate precision can resolve.
+                # Escalate rather than divide by ln(1)=0 or infer a result.
+                continue
+            raw = approx_a.ln() / approx_survival.ln()
+            guess = max(1, int(raw.to_integral_value(rounding=ROUND_CEILING)))
+            if guess > _MAX_UNITS:
+                saw_over_range_candidate = True
 
-            # True logs lie between adjacent representable Decimals around the
-            # rounded results. To prove m sufficient, use the least-favourable
-            # (least negative) survival log and most-negative alpha log.
-            log_a_lo = log_a.next_minus()
-            log_a_hi = log_a.next_plus()
-            log_s_lo = log_s.next_minus()
-            log_s_hi = log_s.next_plus()
-            sufficient = Decimal(m) * log_s_hi <= log_a_lo
-            minimal = m == 1 or Decimal(m - 1) * log_s_lo > log_a_hi
-            if sufficient and minimal:
-                return m
-    raise ArithmeticError("could not certify one-unit minimality; increase reference precision")
+            log_a_lo, log_a_hi = _ln_fraction_bounds(a, precision)
+            log_s_lo, log_s_hi = _ln_fraction_bounds(survival, precision)
+
+            # Rounding of the candidate quotient can move by one at an integer
+            # boundary. Test the adjacent candidates with the certified log
+            # intervals instead of trusting the rounded quotient itself.
+            candidates = sorted(
+                {
+                    candidate
+                    for candidate in (guess - 1, guess, guess + 1)
+                    if 1 <= candidate <= _MAX_UNITS
+                }
+            )
+            for candidate in candidates:
+                # To prove sufficiency, use the least-negative possible
+                # survival log and most-negative possible alpha log.
+                sufficient = Decimal(candidate) * log_s_hi <= log_a_lo
+                # To prove minimality, show candidate-1 fails using the
+                # most-negative survival log and least-negative alpha log.
+                minimal = candidate == 1 or Decimal(candidate - 1) * log_s_lo > log_a_hi
+                if sufficient and minimal:
+                    return candidate
+
+    if saw_over_range_candidate:
+        raise ValueError("required independent units exceed bounded reference range")
+    raise ArithmeticError(
+        "could not certify one-unit minimality within bounded reference precision"
+    )
 
 
 def q_target_from_mean_budget(
@@ -195,7 +254,7 @@ def zero_only_target_met(
     """Fail-closed campaign check for an all-zero observation path.
 
     For the independent-unit tiers, decide against the exact rational target by
-    comparing observed unit count with the certified minimum-unit oracle.  Do
+    comparing observed unit count with the certified minimum-unit oracle. Do
     not compare a conservative Decimal endpoint with a context-rounded Decimal
     conversion of q_target: near the boundary that can round the target upward
     and falsely accept an insufficient campaign.
@@ -222,6 +281,12 @@ class ReferenceTests(unittest.TestCase):
     def test_200m_photon_iid_reference(self) -> None:
         q = zero_upper_common_q(Fraction(1, 20), 200_000_000)
         self.assertAlmostEqual(float(q), 1.4978661255589807e-8, places=20)
+
+    def test_zero_upper_is_conservative_for_nonterminating_rationals(self) -> None:
+        # Keep exponents small enough that this is an exact Fraction oracle.
+        for alpha, units in ((Fraction(1, 3), 37), (Fraction(7, 13), 111)):
+            q_upper = Fraction(zero_upper_common_q(alpha, units))
+            self.assertLessEqual((1 - q_upper) ** units, alpha)
 
     def test_single_block_200m_has_no_block_only_gain(self) -> None:
         alpha = Fraction(1, 20)
@@ -289,8 +354,8 @@ class ReferenceTests(unittest.TestCase):
     def test_exact_rational_target_boundary_is_context_independent(self) -> None:
         alpha = Fraction(1, 20)
         # Exact target is 1e-30 below the true four-unit boundary
-        # 1-alpha**(1/4).  At ordinary Decimal precision it rounds upward to
-        # 0.5271291954984120933491519401, which is above that boundary.  The
+        # 1-alpha**(1/4). At ordinary Decimal precision it rounds upward to
+        # 0.5271291954984120933491519401, which is above that boundary. The
         # decision must nevertheless remain fail-closed and require five
         # independent units because q_target itself is an exact Fraction.
         target = Fraction(
@@ -332,6 +397,36 @@ class ReferenceTests(unittest.TestCase):
                         independent_blocks=5,
                     )
                 )
+
+    def test_fraction_conversion_error_cannot_certify_insufficient_units(self) -> None:
+        alpha = Fraction(1, 10)
+        # This exact 245-digit rational is a truncation just below the true
+        # 26-unit boundary. The previous implementation converted it to a
+        # nearest 120-digit Decimal and then put one-ulp bounds around the log
+        # of that rounded input; that incorrectly returned 26. Exact rational
+        # powers provide an independent oracle: 26 fails and 27 succeeds.
+        target = Fraction(
+            "0.08475268912261102517473706390630667852817299944483826920399415052423477419565996897020140194852974207282586404105582494081711061659208388218990083500654772939913222133575396246593393988586746324786394812432023628876866503560875366978810280905500"
+        )
+        self.assertGreater((1 - target) ** 26, alpha)
+        self.assertLessEqual((1 - target) ** 27, alpha)
+        self.assertEqual(required_independent_units(alpha, target), 27)
+        self.assertFalse(
+            zero_only_target_met(
+                alpha=alpha,
+                q_target=target,
+                assumption_tier="photon_iid",
+                photon_histories=26,
+            )
+        )
+        self.assertTrue(
+            zero_only_target_met(
+                alpha=alpha,
+                q_target=target,
+                assumption_tier="photon_iid",
+                photon_histories=27,
+            )
+        )
 
     def test_same_unit_count_different_semantics(self) -> None:
         plan = plan_zero_only_tiers(

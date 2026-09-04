@@ -54,7 +54,7 @@ import json
 import math
 import unittest
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
 from fractions import Fraction
 
 _MAX_BLOCKS_PER_GROUP = 512
@@ -180,36 +180,74 @@ def clopper_pearson_two_sided_interval(
     return lower, upper
 
 
-def _decimal_fraction(value: Fraction) -> Decimal:
-    return Decimal(value.numerator) / Decimal(value.denominator)
+def _fraction_decimal_bounds(value: Fraction) -> tuple[Decimal, Decimal]:
+    """Outward Decimal enclosure of an exact nonnegative Fraction."""
+    if value < 0:
+        raise ValueError("fraction bound input must be nonnegative")
+    with localcontext() as ctx:
+        ctx.prec = _DECIMAL_PRECISION
+        ctx.rounding = ROUND_FLOOR
+        lower = Decimal(value.numerator) / Decimal(value.denominator)
+        ctx.rounding = ROUND_CEILING
+        upper = Decimal(value.numerator) / Decimal(value.denominator)
+    if not (lower <= upper):
+        raise ArithmeticError("fraction Decimal enclosure is inverted")
+    return lower, upper
 
 
 def hit_probability_to_theta_interval(
     photon_count: int,
     h_interval: tuple[Fraction, Fraction],
 ) -> tuple[Decimal, Decimal]:
-    """Monotone map h -> theta=-log(1-h)/n with outward Decimal rounding."""
+    """Certified map h -> theta=-log(1-h)/n.
+
+    The input endpoints are exact Fractions.  Convert the exact survival
+    probabilities 1-h directly with directed Decimal rounding; do not first
+    round h and then subtract from one, because cancellation can move the
+    transformed endpoint inward.  Monotonicity of -log(survival) then gives a
+    proof-oriented outward theta interval.
+    """
     _require_count("photon_count", photon_count)
     lower_h, upper_h = h_interval
     if not (Fraction(0) <= lower_h <= upper_h <= Fraction(1)):
         raise ValueError("h_interval must lie in [0,1] with lower<=upper")
 
-    with localcontext() as ctx:
-        ctx.prec = _DECIMAL_PRECISION
-        if lower_h == 0:
-            lower_theta = Decimal(0)
-        else:
-            lower_survival = Decimal(1) - _decimal_fraction(lower_h)
-            lower_theta = (-(lower_survival.ln()) / Decimal(photon_count)).next_minus()
+    if lower_h == 0:
+        lower_theta = Decimal(0)
+    elif lower_h == 1:
+        lower_theta = Decimal("Infinity")
+    else:
+        lower_survival = 1 - lower_h
+        _survival_lo, survival_hi = _fraction_decimal_bounds(lower_survival)
+        if survival_hi <= 0:
+            raise ArithmeticError("positive lower-endpoint survival lost in Decimal enclosure")
+        with localcontext() as ctx:
+            ctx.prec = _DECIMAL_PRECISION
+            # survival_hi >= exact survival, so -ln(survival_hi) is a lower
+            # bound.  Expand ln upward, negate, then divide downward.
+            log_hi = survival_hi.ln().next_plus()
+            ctx.rounding = ROUND_FLOOR
+            lower_theta = (-log_hi) / Decimal(photon_count)
             if lower_theta < 0:
                 lower_theta = Decimal(0)
 
-        if upper_h == 1:
-            upper_theta = Decimal("Infinity")
-        else:
-            upper_survival = Decimal(1) - _decimal_fraction(upper_h)
-            upper_theta = (-(upper_survival.ln()) / Decimal(photon_count)).next_plus()
+    if upper_h == 1:
+        upper_theta = Decimal("Infinity")
+    else:
+        upper_survival = 1 - upper_h
+        survival_lo, _survival_hi = _fraction_decimal_bounds(upper_survival)
+        if survival_lo <= 0:
+            raise ArithmeticError("positive upper-endpoint survival lost in Decimal enclosure")
+        with localcontext() as ctx:
+            ctx.prec = _DECIMAL_PRECISION
+            # survival_lo <= exact survival, so -ln(survival_lo) is an upper
+            # bound.  Expand ln downward, negate, then divide upward.
+            log_lo = survival_lo.ln().next_minus()
+            ctx.rounding = ROUND_CEILING
+            upper_theta = (-log_lo) / Decimal(photon_count)
 
+    if lower_theta > upper_theta:
+        raise ArithmeticError("theta interval mapping produced an inverted enclosure")
     return lower_theta, upper_theta
 
 
@@ -316,6 +354,22 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(low_n[0], Decimal(0))
         self.assertEqual(high_n[0], Decimal(0))
         self.assertLess(high_n[1], low_n[1])
+
+    def test_theta_interval_encloses_adversarial_dyadics_beyond_context_precision(self) -> None:
+        # These 100-bit singleton intervals expose both cancellation directions
+        # in the old implementation.  Rounding h first and then computing 1-h
+        # put the lower endpoint above truth for h=2^-100 and the upper endpoint
+        # below truth for h=1-2^-100.  The exact-survival mapping must enclose a
+        # substantially higher-precision reference in both cases.
+        denominator = 1 << 100
+        for h in (Fraction(1, denominator), Fraction(denominator - 1, denominator)):
+            lower, upper = hit_probability_to_theta_interval(1, (h, h))
+            with localcontext() as ctx:
+                ctx.prec = 250
+                survival = Decimal((1 - h).numerator) / Decimal((1 - h).denominator)
+                reference = -(survival.ln())
+            self.assertLessEqual(lower, reference)
+            self.assertGreaterEqual(upper, reference)
 
     def test_consistent_synthetic_groups_have_common_theta(self) -> None:
         groups = (

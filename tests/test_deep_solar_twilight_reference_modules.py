@@ -42,6 +42,9 @@ class DeepSolarTwilightReferenceModulesTest(unittest.TestCase):
     def test_serializer_zero_semantics_reference(self) -> None:
         self._run_self_test("serializer_zero_semantics_reference.py")
 
+    def test_independent_block_zero_bound_reference(self) -> None:
+        self._run_self_test("independent_block_zero_bound_reference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

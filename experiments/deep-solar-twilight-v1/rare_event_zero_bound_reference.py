@@ -26,6 +26,11 @@ the first exclusion time n* has probability (1-q)**n* < alpha.  Thus the same
 fixed-alpha zero-only boundary is anytime-valid while every observed score
 remains exactly zero and all envelope/tail inputs were frozen independently of
 the scores.  If a positive score appears, this zero-only path is terminated.
+
+The binary64 formulas in this file remain useful for reporting/reference
+values, but integer stopping decisions are certified against exact decimal
+inputs by the sibling exact-rational oracle.  A rounded binary64 endpoint must
+never be allowed to decide that a campaign has crossed a one-sample boundary.
 """
 
 from __future__ import annotations
@@ -34,6 +39,10 @@ import argparse
 import json
 import math
 import unittest
+from fractions import Fraction
+
+from assumption_tier_budget_reference import required_independent_units
+from negligibility_amplification_reference import magnitude_ratio_budget_lower
 
 MAG_TOL_DEFAULT = 0.0100
 _MAX_CERTIFIABLE_INTEGER_COUNT = (1 << 53) - 1
@@ -64,8 +73,35 @@ def _require_certifiable_integer_boundary(name: str, raw_count: float) -> None:
         )
 
 
+def _decimal_fraction(value: float) -> Fraction:
+    """Interpret the caller-visible decimal value exactly for certification.
+
+    Python's shortest round-trip ``str(float)`` is used deliberately.  The
+    public reference API historically accepts binary64 values such as ``0.05``;
+    stopping certification must therefore use the decimal value the API exposes
+    rather than a rounded transcendental endpoint computed from that binary64.
+    """
+    return Fraction(str(value))
+
+
+def _required_all_zero_count_exact(alpha: Fraction, q_target: Fraction) -> int:
+    try:
+        return required_independent_units(alpha, q_target)
+    except ValueError as exc:
+        if "bounded reference range" in str(exc):
+            raise ValueError(
+                "required all-zero count exceeds the bounded exact-reference range; "
+                "use a separately reviewed higher-precision reference"
+            ) from exc
+        raise
+
+
 def zero_event_probability_upper(alpha: float, n: int) -> float:
-    """Exact upper bound for q=P(X>0) after n independent exact zeros."""
+    """Stable binary64 report value for 1-alpha**(1/n).
+
+    This return value is not used to certify an integer stopping boundary.
+    ``required_all_zero_count`` uses exact-rational certification instead.
+    """
     _require_probability("alpha", alpha)
     if not isinstance(n, int) or n <= 0:
         raise ValueError("n must be a positive integer")
@@ -74,7 +110,7 @@ def zero_event_probability_upper(alpha: float, n: int) -> float:
 
 
 def bounded_zero_mean_upper(alpha: float, n: int, envelope: float) -> float:
-    """Mean upper bound when 0 <= X <= envelope and all n scores are zero."""
+    """Binary64 report value when 0 <= X <= envelope and all n scores are zero."""
     _require_nonnegative("envelope", envelope)
     return envelope * zero_event_probability_upper(alpha, n)
 
@@ -85,7 +121,7 @@ def hybrid_zero_upper(
     finite_order_envelope: float,
     deterministic_tail_upper: float,
 ) -> float:
-    """Finite-order exact-zero cap plus deterministic unresolved-tail cap."""
+    """Binary64 finite-order report value plus deterministic unresolved-tail cap."""
     _require_nonnegative("finite_order_envelope", finite_order_envelope)
     _require_nonnegative("deterministic_tail_upper", deterministic_tail_upper)
     return (
@@ -95,29 +131,28 @@ def hybrid_zero_upper(
 
 
 def radiance_ratio_budget(magnitude_tolerance: float = MAG_TOL_DEFAULT) -> float:
-    """Largest additive radiance ratio compatible with a magnitude tolerance."""
+    """Binary64 report value for the magnitude-to-radiance materiality budget."""
     _require_positive("magnitude_tolerance", magnitude_tolerance)
     # expm1 avoids cancellation when the requested magnitude budget is tiny.
     return math.expm1(_LN10_OVER_2P5 * magnitude_tolerance)
 
 
 def required_all_zero_count(alpha: float, q_target: float) -> int:
-    """Smallest n such that the exact all-zero upper bound is <= q_target."""
+    """Smallest n with 1-alpha**(1/n) <= q_target, exactly certified.
+
+    Candidate/stopping decisions do not compare the rounded binary64 value from
+    ``zero_event_probability_upper`` against ``q_target``.  Such a comparison
+    can be fail-open at a one-sample boundary when the transcendental endpoint
+    rounds downward.  Instead the caller-visible decimal values are converted
+    to exact Fractions and the sibling outward-certified oracle proves both
+    sufficiency and minimality.
+    """
     _require_probability("alpha", alpha)
     _require_probability("q_target", q_target)
-    raw = math.log(alpha) / math.log1p(-q_target)
-    _require_certifiable_integer_boundary("required all-zero count", raw)
-    n = max(1, math.ceil(raw))
-    # Guard the exact integer contract against floating-point boundary rounding.
-    while zero_event_probability_upper(alpha, n) > q_target:
-        if n >= _MAX_CERTIFIABLE_INTEGER_COUNT:
-            raise ValueError(
-                "required all-zero count crossed the binary64 exact-integer audit range"
-            )
-        n += 1
-    while n > 1 and zero_event_probability_upper(alpha, n - 1) <= q_target:
-        n -= 1
-    return n
+    return _required_all_zero_count_exact(
+        _decimal_fraction(alpha),
+        _decimal_fraction(q_target),
+    )
 
 
 def stopping_count_for_materiality(
@@ -134,20 +169,36 @@ def stopping_count_for_materiality(
     are opened.  If any positive score occurs, this zero-only stopping rule no
     longer applies and must fail closed or hand off to a separately frozen
     nonzero-score protocol.
+
+    The integer decision is made from exact decimal Fractions and the directed
+    lower enclosure of the magnitude budget.  Binary64 report values therefore
+    cannot round the allowed budget upward or the q target outward into a false
+    PASS.
     """
+    _require_probability("alpha", alpha)
     _require_nonnegative("finite_order_envelope", finite_order_envelope)
     _require_nonnegative("deterministic_tail_upper", deterministic_tail_upper)
     _require_positive("non_solar_lower", non_solar_lower)
-    budget = radiance_ratio_budget(magnitude_tolerance) * non_solar_lower
-    residual = budget - deterministic_tail_upper
-    if residual <= 0.0:
+    _require_positive("magnitude_tolerance", magnitude_tolerance)
+
+    alpha_exact = _decimal_fraction(alpha)
+    envelope_exact = _decimal_fraction(finite_order_envelope)
+    tail_exact = _decimal_fraction(deterministic_tail_upper)
+    non_solar_exact = _decimal_fraction(non_solar_lower)
+    tolerance_exact = _decimal_fraction(magnitude_tolerance)
+
+    ratio_budget_lower = magnitude_ratio_budget_lower(tolerance_exact)
+    residual = ratio_budget_lower * non_solar_exact - tail_exact
+    if residual <= 0:
         raise ValueError("deterministic tail already exhausts the materiality budget")
-    if finite_order_envelope == 0.0:
+    if envelope_exact == 0:
         return 1
-    q_target = residual / finite_order_envelope
-    if q_target >= 1.0:
+    q_target = residual / envelope_exact
+    if q_target >= 1:
         return 1
-    return required_all_zero_count(alpha, q_target)
+    if q_target <= 0:
+        raise ValueError("nonpositive q target is not certifiable by finite zero sampling")
+    return _required_all_zero_count_exact(alpha_exact, q_target)
 
 
 def all_zero_crossing_probability(q: float, alpha: float) -> tuple[int, float]:
@@ -202,8 +253,25 @@ class ReferenceTests(unittest.TestCase):
     def test_required_count_is_minimal(self) -> None:
         target = 1e-8
         n = required_all_zero_count(0.05, target)
-        self.assertLessEqual(zero_event_probability_upper(0.05, n), target)
-        self.assertGreater(zero_event_probability_upper(0.05, n - 1), target)
+        self.assertEqual(
+            n,
+            required_independent_units(Fraction("0.05"), Fraction("1e-8")),
+        )
+        self.assertTrue(
+            n == 1 or not required_independent_units(
+                Fraction("0.05"), Fraction("1e-8")
+            ) < n
+        )
+
+    def test_binary64_endpoint_cannot_create_one_sample_false_pass(self) -> None:
+        # For exact decimal alpha=0.05 and n=3, the true endpoint is
+        # 0.6315968501359613394... . The historical binary64 report rounds it
+        # down to 0.6315968501359613. Reusing that rounded value as q_target
+        # would let a binary64 endpoint comparison accept n=3, even though the
+        # exact decimal target is below the true boundary and requires n=4.
+        target = 0.6315968501359613
+        self.assertLessEqual(zero_event_probability_upper(0.05, 3), target)
+        self.assertEqual(required_all_zero_count(0.05, target), 4)
 
     def test_hybrid_m_order(self) -> None:
         expected = 7.0 * zero_event_probability_upper(0.05, 12345) + 0.25
@@ -238,19 +306,21 @@ class ReferenceTests(unittest.TestCase):
                 non_solar_lower=10.0,
             )
 
-    def test_materiality_stopping_count_is_minimal(self) -> None:
+    def test_materiality_stopping_count_uses_exact_composed_budget(self) -> None:
         n = stopping_count_for_materiality(
             alpha=0.05,
             finite_order_envelope=10.0,
             deterministic_tail_upper=0.001,
             non_solar_lower=100.0,
         )
-        upper = hybrid_zero_upper(0.05, n, 10.0, 0.001)
-        budget = radiance_ratio_budget() * 100.0
-        self.assertLessEqual(upper, budget)
-        if n > 1:
-            previous = hybrid_zero_upper(0.05, n - 1, 10.0, 0.001)
-            self.assertGreater(previous, budget)
+        budget_lower = magnitude_ratio_budget_lower(Fraction("0.0100"))
+        q_target = (
+            budget_lower * Fraction(100) - Fraction("0.001")
+        ) / Fraction(10)
+        self.assertEqual(
+            n,
+            required_independent_units(Fraction("0.05"), q_target),
+        )
 
     def test_all_zero_sequential_boundary_is_anytime_valid(self) -> None:
         for q in (1e-2, 1e-4, 1e-8, 1e-12):
@@ -273,6 +343,7 @@ def _summary() -> dict[str, float | int | str]:
         "q_upper_95_n_200m": zero_event_probability_upper(0.05, 200_000_000),
         "q_upper_99_n_200m": zero_event_probability_upper(0.01, 200_000_000),
         "ratio_budget_0p0100_mag": radiance_ratio_budget(0.0100),
+        "integer_stopping_certification": "EXACT_RATIONAL_OUTWARD_CERTIFIED",
     }
 
 

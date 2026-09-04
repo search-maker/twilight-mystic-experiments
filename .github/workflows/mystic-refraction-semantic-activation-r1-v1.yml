@@ -1,0 +1,242 @@
+name: MYSTIC refraction semantic activation R1 v1
+
+on:
+  push:
+    branches:
+      - review/mystic-refraction-semantic-activation-r1-v1
+
+permissions:
+  contents: read
+
+jobs:
+  exact-runtime-semantic-probe:
+    if: github.ref == 'refs/heads/review/mystic-refraction-semantic-activation-r1-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mystic-refraction-r1-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Run result-blind deterministic semantic activation probe
+        shell: bash -el {0}
+        run: |
+          set -u
+          mkdir -p r1/raw
+
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          DIAGNOSTIC_SEED='1531041536'
+          PHOTON_HISTORIES='20000'
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          printf '%s\n' "$UVSPEC" > r1/uvspec_path.txt
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > r1/uvspec_sha256.txt
+          printf '%s\n' "$DIAGNOSTIC_SEED" > r1/diagnostic_seed.txt
+          printf '%s\n' "$PHOTON_HISTORIES" > r1/photon_histories.txt
+          micromamba list -n mystic-refraction-r1-v1 rubin-libradtran > r1/package_identity.txt
+          if [ "$ACTUAL_UVSPEC_SHA256" != "$EXPECTED_UVSPEC_SHA256" ]; then
+            echo "REFUSAL: exact uvspec SHA-256 drift" | tee r1/refusal.txt
+            exit 20
+          fi
+
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          DATA="$PREFIX/share/libRadtran/data"
+          test -f "$DATA/atmmod/afglus.dat"
+          test -e "$DATA/solar_flux/atlas_plus_modtran"
+          printf '%s\n' "$DATA" > r1/data_path.txt
+
+          make_input() {
+            name="$1"
+            refraction="$2"
+            refraction_line=''
+            if [ "$refraction" = 'yes' ]; then
+              refraction_line='mc_refraction'
+            fi
+            cat > "r1/${name}.inp" <<EOF_INP
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550 550
+          sza 96.000000
+          phi0 0.000000
+          rte_solver mystic
+          mc_spherical 1D
+          $refraction_line
+          mc_photons $PHOTON_HISTORIES
+          mc_vroom off
+          mc_std
+          mc_randomseed $DIAGNOSTIC_SEED
+          mc_basename $PWD/r1/raw/${name}_mc
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          EOF_INP
+          }
+
+          make_input baseline_a no
+          make_input baseline_b no
+          make_input refraction_a yes
+          make_input refraction_b yes
+
+          run_one() {
+            name="$1"
+            inp="r1/${name}.inp"
+            out="r1/${name}.stdout"
+            err="r1/${name}.stderr"
+            start_ns="$(date +%s%N)"
+            set +e
+            timeout 120s "$UVSPEC" < "$inp" > "$out" 2> "$err"
+            rc=$?
+            set -e
+            end_ns="$(date +%s%N)"
+            elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+            printf '%s\n' "$rc" > "r1/${name}_exit_code.txt"
+            printf '%s\n' "$elapsed_ms" > "r1/${name}_elapsed_ms.txt"
+            sha256sum "$inp" | awk '{print $1}' > "r1/${name}_input_sha256.txt"
+            grep -Eai 'refraction|refract|unknown|not implemented|unsupported|warning|error|fatal' "$err" > "r1/${name}_diagnostic_keywords.txt" || true
+            grep -Eai 'refraction|refract|unknown|not implemented|unsupported|warning|error|fatal' "$out" > "r1/${name}_stdout_diagnostic_keywords.txt" || true
+            find r1/raw -maxdepth 1 -type f -name "${name}_mc*" -printf '%f\t%s\n' | sort > "r1/${name}_generated_file_manifest.tsv"
+            while IFS= read -r f; do
+              sha256sum "$f"
+            done < <(find r1/raw -maxdepth 1 -type f -name "${name}_mc*" -print | sort) > "r1/${name}_generated_file_sha256.txt"
+            rm -f "$out"
+          }
+
+          set -e
+          run_one baseline_a
+          run_one baseline_b
+          run_one refraction_a
+          run_one refraction_b
+
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('r1')
+          raw = root / 'raw'
+          arms = ('baseline_a', 'baseline_b', 'refraction_a', 'refraction_b')
+          suffixes = ('.flx.spc', '.flx.std.spc', '.rad.spc', '.rad.std.spc', '0.rad', '0.rad.std')
+          radiance_suffixes = ('.rad.spc', '.rad.std.spc', '0.rad', '0.rad.std')
+
+          def text(name):
+              return (root / name).read_text(errors='replace').strip()
+
+          def lines(name):
+              value = text(name)
+              return [] if not value else value.splitlines()
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def arm_hashes(arm):
+              out = {}
+              for suffix in suffixes:
+                  path = raw / f'{arm}_mc{suffix}'
+                  if not path.exists():
+                      raise SystemExit(f'missing expected generated output: {path}')
+                  out[suffix] = {'sha256': digest(path), 'bytes': path.stat().st_size}
+              return out
+
+          rc = {arm: int(text(f'{arm}_exit_code.txt')) for arm in arms}
+          hashes = {arm: arm_hashes(arm) for arm in arms}
+          baseline_repeat_equal = all(hashes['baseline_a'][s]['sha256'] == hashes['baseline_b'][s]['sha256'] for s in suffixes)
+          refraction_repeat_equal = all(hashes['refraction_a'][s]['sha256'] == hashes['refraction_b'][s]['sha256'] for s in suffixes)
+          cross_equal = {s: hashes['baseline_a'][s]['sha256'] == hashes['refraction_a'][s]['sha256'] for s in suffixes}
+          radiance_difference_detected = any(not cross_equal[s] for s in radiance_suffixes)
+
+          if any(value != 0 for value in rc.values()):
+              disposition = 'INVALID_R1_ONE_OR_MORE_SOLVER_ARMS_DID_NOT_COMPLETE'
+          elif not baseline_repeat_equal or not refraction_repeat_equal:
+              disposition = 'INVALID_R1_NONDETERMINISTIC_OR_RUNTIME_DRIFT'
+          elif radiance_difference_detected:
+              disposition = 'TOKEN_DETERMINISTICALLY_CHANGES_RADIANCE_OUTPUT_SEMANTIC_ACTIVATION_SUPPORTED_PHYSICAL_CORRECTNESS_UNPROVEN'
+          else:
+              disposition = 'NO_DETERMINISTIC_RADIANCE_OUTPUT_EFFECT_DETECTED_IN_R1_GEOMETRY'
+
+          summary = {
+              'schemaVersion': 1,
+              'probeId': 'mystic-refraction-semantic-activation-r1-v1',
+              'scope': 'NON_SCIENTIFIC_SEMANTIC_ACTIVATION_ONLY_NO_RADIANCE_VALUE_INTERPRETATION',
+              'parentProbe': {
+                  'probeId': 'mystic-refraction-capability-r0-v1',
+                  'commit': '3eeeccffbbdce068ac0384dcf515bde629dc295f',
+                  'run': 33883126409,
+                  'artifact': 9940691340,
+              },
+              'runtimePackage': 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256': text('uvspec_sha256.txt'),
+              'geometry': {
+                  'solarZenithAngleDeg': 96.0,
+                  'viewAltitudeDeg': 30.0,
+                  'relativeAzimuthDeg': 90.0,
+                  'surfaceAlbedo': 0.0,
+              },
+              'wavelengthNm': 550.0,
+              'photonHistories': int(text('photon_histories.txt')),
+              'vroom': False,
+              'diagnosticSeed': int(text('diagnostic_seed.txt')),
+              'diagnosticSeedPurpose': 'fresh non-protected deterministic semantic probe only; not a scientific campaign identity',
+              'arms': {
+                  arm: {
+                      'mcRefraction': arm.startswith('refraction_'),
+                      'exitCode': rc[arm],
+                      'elapsedMs': int(text(f'{arm}_elapsed_ms.txt')),
+                      'stderrDiagnostics': lines(f'{arm}_diagnostic_keywords.txt'),
+                      'stdoutDiagnostics': lines(f'{arm}_stdout_diagnostic_keywords.txt'),
+                      'outputFingerprints': hashes[arm],
+                  }
+                  for arm in arms
+              },
+              'baselineRepeatAllFingerprintsEqual': baseline_repeat_equal,
+              'refractionRepeatAllFingerprintsEqual': refraction_repeat_equal,
+              'baselineVsRefractionFingerprintEqualByFileClass': cross_equal,
+              'radianceFingerprintDifferenceDetected': radiance_difference_detected,
+              'disposition': disposition,
+              'interpretationBoundary': (
+                  'This probe may establish deterministic solver-output activation only. '
+                  'No radiance values, signs, effect magnitudes, visibility shifts, physical correctness, '
+                  'reflection validity, or Level-B materiality are opened or inferred. '
+                  'The black surface avoids the exact-runtime warning that refraction is not yet working for reflection. '
+                  'A separate independently bounded reference/physics test is required before any refractive correction claim.'
+              ),
+              'forbiddenInferences': [
+                  'apparent-SZA shift is full refractive RT',
+                  'physical refraction correctness',
+                  'radiance effect magnitude or sign',
+                  'V1 blocker status',
+                  'Taylor/Jerusalem fit or residual use',
+                  'protected holdout or Level-B admission',
+              ],
+          }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(disposition)
+          if disposition.startswith('INVALID_R1_'):
+              raise SystemExit(2)
+          PY
+
+          rm -rf r1/raw
+
+      - name: Upload result-blind R1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mystic-refraction-semantic-activation-r1-v1
+          path: |
+            r1/*.txt
+            r1/*.tsv
+            r1/*.inp
+            r1/summary.json
+          if-no-files-found: error
+          retention-days: 90

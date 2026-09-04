@@ -155,12 +155,13 @@ def max_multiplicative_amplification(
     non_solar_lower: Fraction | int | str,
     magnitude_tolerance: Fraction | int | str,
 ) -> Fraction:
-    """Largest total multiplicative factor that the deterministic gate can allow.
+    """Largest admissible total multiplicative factor allowed by the gate.
 
     The returned factor uses the conservative *lower* allowed-ratio enclosure.
     A separately certified optical-property factor A is safe only when
-    A <= returned_factor. A negative residual is returned as zero rather than
-    silently crediting negative headroom.
+    A <= returned_factor. Because admissible amplification factors satisfy
+    A >= 1, this function returns zero when even A=1 cannot satisfy the gate;
+    it never reports an attenuation-like factor below one as usable headroom.
     """
     base = _fraction(base_solar_upper)
     additive = _fraction(additive_solar_upper)
@@ -176,7 +177,10 @@ def max_multiplicative_amplification(
     residual = budget * non_solar - additive
     if residual <= 0:
         return Fraction(0)
-    return residual / base
+    limit = residual / base
+    if limit < 1:
+        return Fraction(0)
+    return limit
 
 
 @dataclass(frozen=True)
@@ -315,6 +319,27 @@ class ReferenceTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_unamplified_base_failure_has_no_admissible_headroom(self) -> None:
+        budget = magnitude_ratio_budget_lower(Fraction(1, 100))
+        base = budget
+        additive = budget / 2
+        self.assertEqual(
+            max_multiplicative_amplification(
+                base_solar_upper=base,
+                additive_solar_upper=additive,
+                non_solar_lower=1,
+                magnitude_tolerance=Fraction(1, 100),
+            ),
+            0,
+        )
+        cert = negligibility_certificate(
+            base_solar_upper=base,
+            additive_solar_upper=additive,
+            non_solar_lower=1,
+            magnitude_tolerance=Fraction(1, 100),
+        )
+        self.assertFalse(cert.negligible)
 
     def test_float_inputs_fail_closed(self) -> None:
         with self.assertRaises(TypeError):

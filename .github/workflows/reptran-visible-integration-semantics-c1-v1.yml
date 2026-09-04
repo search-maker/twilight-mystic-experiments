@@ -1,0 +1,265 @@
+name: REPTRAN visible integration semantics C1 v1
+
+on:
+  push:
+    branches:
+      - review/reptran-visible-integration-semantics-c1-v1
+
+permissions:
+  contents: read
+
+jobs:
+  exact-runtime-result-blind-semantics:
+    if: github.ref == 'refs/heads/review/reptran-visible-integration-semantics-c1-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-visible-c1-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Run result-blind REPTRAN ALIS and integration-semantics probe
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')" = "1"
+          test "$(git rev-parse HEAD^)" = "fe6e063c568394ae7b4e90222de270d3f2460455"
+
+          mkdir -p c1
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$ACTUAL_UVSPEC_SHA256" = "$EXPECTED_UVSPEC_SHA256"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > c1/uvspec_sha256.txt
+          micromamba list -n reptran-visible-c1-v1 rubin-libradtran > c1/package_identity.txt
+
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          DATA="$PREFIX/share/libRadtran/data"
+          test -f "$DATA/atmmod/afglus.dat"
+          test -e "$DATA/solar_flux/atlas_plus_modtran"
+
+          write_input() {
+            name="$1"
+            spectral_is="$2"
+            cat > "c1/${name}.inp" <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param reptran
+          wavelength 380 780
+          sza 96.000000
+          phi0 0.000000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1000
+          mc_vroom off
+          mc_std
+          mc_basename $PWD/c1/${name}_mc
+          ${spectral_is}
+          albedo 0.150000
+          aerosol_default
+          aerosol_set_tau_at_wvl 550 0.150000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          quiet
+          EOF
+          }
+          write_input direct ''
+          write_input alis 'mc_spectral_is 550.0'
+
+          run_arm() {
+            name="$1"
+            start_ns="$(date +%s%N)"
+            set +e
+            timeout 480s "$UVSPEC" < "c1/${name}.inp" > "c1/${name}.stdout" 2> "c1/${name}.stderr"
+            rc=$?
+            set -e
+            end_ns="$(date +%s%N)"
+            printf '%s\n' "$rc" > "c1/${name}_exit_code.txt"
+            printf '%s\n' "$(( (end_ns-start_ns)/1000000 ))" > "c1/${name}_elapsed_ms.txt"
+            sha256sum "c1/${name}.stdout" | awk '{print $1}' > "c1/${name}_stdout_sha256.txt"
+            sha256sum "c1/${name}.stderr" | awk '{print $1}' > "c1/${name}_stderr_sha256.txt"
+            grep -Eai 'reptran|spectral|unknown|not implemented|unsupported|warning|error|fatal' "c1/${name}.stderr" > "c1/${name}_diagnostics.txt" || true
+            find c1 -maxdepth 1 -type f -name "${name}_mc*" -printf '%f\t%s\n' | sort > "c1/${name}_generated_manifest.tsv"
+            while IFS= read -r f; do sha256sum "$f"; done < <(find c1 -maxdepth 1 -type f -name "${name}_mc*" -print | sort) > "c1/${name}_generated_sha256.txt"
+          }
+          run_arm direct
+          run_arm alis
+
+          python - <<'PY'
+          import hashlib, importlib.util, json, math
+          from pathlib import Path
+
+          root=Path.cwd()
+          p=root/'c1'
+          DERIVED=root/'experiments/aerosol-family-challenge-v2/derived_channels.py'
+          STAGE1=root/'experiments/tier2-stage1-execution-v1/executor_v1.py'
+
+          def module(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              if spec is None or spec.loader is None:
+                  raise RuntimeError(f'cannot import {path}')
+              m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+          derived=module('reptran_c1_derived',DERIVED)
+          stage1=module('reptran_c1_stage1',STAGE1)
+
+          def txt(name): return (p/name).read_text(errors='replace').strip()
+          def integer(name): return int(txt(name))
+          def parse_raw(path):
+              wl=[]; rad=[]
+              for line in path.read_text(errors='strict').splitlines():
+                  q=line.split()
+                  if len(q)<2: continue
+                  try: w=float(q[0]); v=float(q[-1])
+                  except ValueError: continue
+                  if not (math.isfinite(w) and math.isfinite(v) and v>=0):
+                      raise RuntimeError('nonfinite-or-negative raw spectrum member')
+                  wl.append(w); rad.append(v)
+              return wl,rad
+
+          target_keys=('photopicLuminanceCdM2','scotopicLuminanceScotCdM2','johnsonVEffectiveRadiance_mW_m2_nm_sr')
+          arms={}
+          grids={}
+          for name,has_alis in [('direct',False),('alis',True)]:
+              rc=integer(f'{name}_exit_code.txt')
+              radpath=p/f'{name}_mc.rad.spc'; stdpath=p/f'{name}_mc.rad.std.spc'
+              wl=[]; rad=[]
+              if rc==0 and radpath.is_file(): wl,rad=parse_raw(radpath)
+              grids[name]=wl
+              point_dev=max((abs(w-(380.0+i*0.05)) for i,w in enumerate(wl)),default=None)
+              step_dev=max((abs((wl[i+1]-wl[i])-0.05) for i in range(len(wl)-1)),default=None)
+
+              stage1_ok=False; stage1_reason=None
+              if radpath.is_file():
+                  try:
+                      stage1.parse_full_spectrum(radpath); stage1_ok=True
+                  except Exception as exc:
+                      stage1_reason=f'{type(exc).__name__}: {exc}'
+
+              validator_ok=False; channels_ok=False
+              if wl and rad:
+                  try:
+                      derived.validate_raw_grid(wl,rad); validator_ok=True
+                      ch=derived.derive_channels(wl,rad)
+                      channels_ok=all(isinstance(ch[k],(int,float)) and math.isfinite(float(ch[k])) and float(ch[k])>=0 for k in target_keys)
+                  except Exception:
+                      validator_ok=False; channels_ok=False
+
+              synthetic={}
+              if wl:
+                  ideal=[380.0+i*0.05 for i in range(8001)]
+                  shapes={
+                      'flat':[1.0 for _ in wl],
+                      'linear':[1.0+(w-380.0)/400.0 for w in wl],
+                  }
+                  for shape,values in shapes.items():
+                      actual=derived.derive_channels(wl,values)
+                      ideal_values=[1.0 for _ in ideal] if shape=='flat' else [1.0+(w-380.0)/400.0 for w in ideal]
+                      ref=derived.derive_channels(ideal,ideal_values)
+                      synthetic[shape]={k:(abs(actual[k]-ref[k])/abs(ref[k]) if ref[k] else 0.0) for k in target_keys}
+
+              (p/f'{name}_wavelengths.txt').write_text(''.join(f'{w:.12g}\n' for w in wl))
+              arms[name]={
+                  'exitCode':rc,
+                  'elapsedMs':integer(f'{name}_elapsed_ms.txt'),
+                  'mcSpectralIsDirectivePresent':has_alis,
+                  'rawSpectralRadianceFilePresent':radpath.is_file(),
+                  'rawStdSpectralRadianceFilePresent':stdpath.is_file(),
+                  'wavelengthNodeCount':len(wl),
+                  'wavelengthFirstNm':wl[0] if wl else None,
+                  'wavelengthLastNm':wl[-1] if wl else None,
+                  'maximumPointDeviationFromIdeal005nmGridNm':point_dev,
+                  'maximumStepDeviationFrom005nmNm':step_dev,
+                  'currentStage1StrictParserAccepted':stage1_ok,
+                  'currentStage1StrictParserFailure':stage1_reason,
+                  'existingDerivedChannelsPointwiseValidatorAccepted':validator_ok,
+                  'existingDerivedChannelsComputationFiniteNonnegative':channels_ok,
+                  'syntheticOnlyPrintedGridVsIdealGridRelativeIntegrationDelta':synthetic,
+              }
+
+          grids_identical=bool(grids['direct']) and grids['direct']==grids['alis']
+          reptran_alis_supported=(arms['alis']['exitCode']==0 and arms['alis']['rawSpectralRadianceFilePresent'] and arms['alis']['existingDerivedChannelsPointwiseValidatorAccepted'])
+          integrator_compatible=all(arms[n]['existingDerivedChannelsPointwiseValidatorAccepted'] and arms[n]['existingDerivedChannelsComputationFiniteNonnegative'] for n in arms)
+          strict_parser_compatible=all(arms[n]['currentStage1StrictParserAccepted'] for n in arms)
+          receipt={
+              'schemaVersion':1,
+              'probeId':'reptran-visible-integration-semantics-c1-v1',
+              'scope':'RESULT_BLIND_CAPABILITY_AND_INTEGRATION_SEMANTICS_ONLY_NO_SOLVER_RADIANCE_VALUES_RETAINED_OR_REPORTED',
+              'baseMain':'fe6e063c568394ae7b4e90222de270d3f2460455',
+              'priorC0':{
+                  'head':'d536e58f5b1b68f22e6e2f7497f18ee8cc253fc6',
+                  'run':33923369587,
+                  'artifact':9955882194,
+                  'artifactDigest':'sha256:650c456b8f917eb90bc1a81586079c079139e6bf4c48f6e948bb984b24b4d10c',
+              },
+              'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':txt('uvspec_sha256.txt'),
+              'geometry':{'sunDepressionDeg':6.0,'targetAltitudeDeg':30.0,'relativeAzimuthDeg':90.0,'observerElevationM':0.0,'aod550':0.15,'albedo':0.15},
+              'randomSeedDirectivePresent':False,
+              'arms':arms,
+              'directAndAlisSerializedWavelengthGridsExactlyIdentical':grids_identical,
+              'reptranPlusMcSpectralIsSupportedInExactRuntime':reptran_alis_supported,
+              'existingDerivedChannelIntegratorAcceptsReptranSerialization':integrator_compatible,
+              'currentTier2Stage1StrictParserAcceptsReptranSerialization':strict_parser_compatible,
+              'integrationSemantics':{
+                  'channelImplementationPath':'experiments/aerosol-family-challenge-v2/derived_channels.py',
+                  'gridValidation':'8001 points, 380..780 nm, each serialized coordinate within 0.00005 nm of 380+i*0.05, strictly increasing',
+                  'photopicAndScotopic':'trapezoidal integration using actual serialized wavelength deltas with linearly interpolated CIE response tables and fixed Km',
+                  'johnsonV':'trapezoidal photon-weighted Bessell-V effective radiance using actual serialized wavelength deltas',
+                  'solverRadianceChannelValuesRetainedOrReported':False,
+              },
+              'materialityComparisonReadyOnlyAfterFreshGovernedComparatorIdentity':reptran_alis_supported and integrator_compatible,
+              'crsVsReptranMaterialityQuantified':False,
+              'frozenV3ModelModified':False,
+              'protectedHoldoutOpened':False,
+              'taylorOrJerusalemUsed':False,
+              'publisherInvocationAuthorized':False,
+              'writeQuietEntered':False,
+              'dispatchCreated':False,
+              'scientificProtectedExecutionPerformed':False,
+              'resultOpeningAuthorized':False,
+              'newMappingAuthorized':False,
+          }
+          (p/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+
+          # Destroy all solver radiance values and stdout before artifact upload.
+          for q in list(p.glob('direct_mc*'))+list(p.glob('alis_mc*'))+[p/'direct.stdout',p/'alis.stdout']:
+              if q.exists(): q.unlink()
+          PY
+
+          cat c1/receipt.json
+          test ! -e c1/direct_mc.rad.spc
+          test ! -e c1/alis_mc.rad.spc
+
+      - name: Upload immutable result-blind integration-semantics receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: reptran-visible-integration-semantics-c1-v1
+          path: |
+            c1/receipt.json
+            c1/package_identity.txt
+            c1/uvspec_sha256.txt
+            c1/direct.inp
+            c1/alis.inp
+            c1/*_exit_code.txt
+            c1/*_elapsed_ms.txt
+            c1/*_sha256.txt
+            c1/*_diagnostics.txt
+            c1/*_generated_manifest.tsv
+            c1/*_generated_sha256.txt
+            c1/*_wavelengths.txt
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,134 @@
+name: MYSTIC backward writeback format R0 v3
+
+on:
+  push:
+    branches:
+      - review/mystic-backward-writeback-format-r0-v3
+
+permissions:
+  contents: read
+
+jobs:
+  exact-runtime-format-probe:
+    if: github.ref == 'refs/heads/review/mystic-backward-writeback-format-r0-v3'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mystic-backward-writeback-format-r0-v3
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Run exact-runtime non-scientific default-grid writeback probe
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p f0
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          UVSPEC="$(command -v uvspec)"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > f0/uvspec_sha256.txt
+          test "$ACTUAL_UVSPEC_SHA256" = "$EXPECTED_UVSPEC_SHA256"
+          micromamba list -n mystic-backward-writeback-format-r0-v3 rubin-libradtran > f0/package_identity.txt
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          DATA="$PREFIX/share/libRadtran/data"
+          test -f "$DATA/atmmod/afglus.dat"
+          test -e "$DATA/solar_flux/atlas_plus_modtran"
+
+          cat > f0/probe.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550 550
+          sza 96.000000
+          phi0 0.000000
+          rte_solver montecarlo
+          mc_spherical 1D
+          mc_backward_writeback
+          mc_photons 3000
+          mc_vroom off
+          mc_basename $PWD/f0/writeback_mc
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          EOF
+
+          set +e
+          timeout 120s "$UVSPEC" < f0/probe.inp > f0/probe.stdout 2> f0/probe.stderr
+          RC=$?
+          set -e
+          printf '%s\n' "$RC" > f0/exit_code.txt
+          sha256sum f0/probe.inp > f0/input_sha256.txt
+          find f0 -maxdepth 1 -type f -printf '%f\t%s\n' | sort > f0/file_manifest.tsv
+          find f0 -maxdepth 1 -type f -name '*.bac' -print | sort > f0/bac_files.txt
+          grep -Eai 'backward|writeback|sample.grid|unknown|not implemented|unsupported|warning|error|fatal' f0/probe.stderr > f0/stderr_diagnostics.txt || true
+          grep -Eai 'backward|writeback|sample.grid|unknown|not implemented|unsupported|warning|error|fatal' f0/probe.stdout > f0/stdout_diagnostics.txt || true
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('f0')
+          files=[]
+          for p in sorted(root.glob('*.bac')):
+              rows=[]
+              comments=[]
+              for line in p.read_text(errors='replace').splitlines():
+                  s=line.strip()
+                  if not s:
+                      continue
+                  if s.startswith('#'):
+                      comments.append(s)
+                      continue
+                  rows.append(s.split())
+              files.append({
+                  'name':p.name,
+                  'bytes':p.stat().st_size,
+                  'dataRowCount':len(rows),
+                  'columnCounts':sorted(set(map(len, rows))),
+                  'commentLines':comments[:20],
+                  'firstRows':rows[:20],
+              })
+          report={
+              'schemaVersion':3,
+              'probeId':'mystic-backward-writeback-format-r0-v3',
+              'scope':'NON_SCIENTIFIC_DEFAULT_GRID_FORMAT_ONLY_NO_FOOTPRINT_MATERIALITY',
+              'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':(root/'uvspec_sha256.txt').read_text().strip(),
+              'solverToken':'montecarlo',
+              'mcSampleGridDirectivePresent':False,
+              'priorFailuresPreserved':[
+                  'run 33920001256 attempt1: rte_solver mystic + mc_sample_grid rejected as unknown',
+                  'run 33920217832 attempt1: rte_solver montecarlo + mc_sample_grid rejected as unknown'
+              ],
+              'geometry':{'szaDeg':96.0,'viewAltitudeDeg':30.0,'relativeAzimuthDeg':90.0,'albedo':0.0},
+              'wavelengthNm':550.0,
+              'photonHistories':3000,
+              'randomSeedDirectivePresent':False,
+              'exitCode':int((root/'exit_code.txt').read_text().strip()),
+              'bacFiles':files,
+              'interpretationBoundary':[
+                  'default-grid format/capability probe only',
+                  'no radiance or footprint magnitude interpretation',
+                  'no protected case or observation used',
+                  'raw writeback values are not assumed normalized probabilities'
+              ]
+          }
+          (root/'format_report.json').write_text(json.dumps(report,indent=2)+'\n')
+          PY
+
+          test "$RC" -eq 0
+          test -s f0/bac_files.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mystic-backward-writeback-format-r0-v3
+          path: f0
+          if-no-files-found: error
+          retention-days: 90

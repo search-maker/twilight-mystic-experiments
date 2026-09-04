@@ -90,7 +90,7 @@ jobs:
           root=Path('.').resolve()
           spec=importlib.util.spec_from_file_location('phase',root/'review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py')
           if spec is None or spec.loader is None: raise SystemExit('phase module unavailable')
-          phase=importlib.util.module_from_spec(spec); spec.loader.exec_module(phase)
+          phase=importlib.util.module_from_spec(spec); sys.modules[spec.name]=phase; spec.loader.exec_module(phase)
           zgrid=phase.elevated_site_grid_ascending(data/'atmmod'/'afglus.dat',640.0)
           text='\n'.join([
               f'data_files_path {data}',
@@ -169,17 +169,19 @@ jobs:
           test -s lowalt-presolver-abi-v10/capture.json
 
           python - <<'PY'
-          import importlib.util, json, math
+          import importlib.util, json, math, sys
           from pathlib import Path
           root=Path('.').resolve()
           spec=importlib.util.spec_from_file_location('ref',root/'review/low-altitude-stellar-transport-v3/qa001_geofast_reference.py')
           if spec is None or spec.loader is None: raise SystemExit('qa001 reference unavailable')
-          ref=importlib.util.module_from_spec(spec); spec.loader.exec_module(ref)
+          ref=importlib.util.module_from_spec(spec); sys.modules[spec.name]=ref; spec.loader.exec_module(ref)
           d=json.loads(Path('lowalt-presolver-abi-v10/capture.json').read_text())
           n=d['nlyr']; zd=tuple(float(x) for x in d['zd']); vn_desc=tuple(float(x) for x in d['vn']); dtau=tuple(float(x) for x in d['dtauc'])
           if len(zd)!=n+1 or len(vn_desc)!=n+1 or len(dtau)!=n: raise SystemExit('captured array length mismatch')
           if not all(zd[i] > zd[i+1] for i in range(n)): raise SystemExit(f'ZD ordering drift: {zd[:3]} ... {zd[-3:]}')
-          if abs(zd[-1]-0.64)>2e-6: raise SystemExit(f'surface ZD drift: {zd[-1]}')
+          # SDISORT receives ZD relative to the solver surface; the forced 0.640 km
+          # site is therefore ZD=0 while TOA is 120-0.640=119.360 km.
+          if abs(zd[-1])>2e-7 or abs(zd[0]-119.36)>2e-4: raise SystemExit(f'relative ZD drift: top={zd[0]} surface={zd[-1]}')
           sza=math.degrees(math.acos(float(d['umu0'])))
           z_cm=tuple(zd[n-i]*1.0e5 for i in range(n+1))
           vn=tuple(vn_desc[n-i] for i in range(n+1))
@@ -193,6 +195,7 @@ jobs:
           summary={
               'capturePoint':'exact pinned REAL*4 sdisort entry, killed before solver execution',
               'physicalCoordinates':{'altitudeDeg':0.41,'observerElevationM':640.0,'wavelengthNm':400.0},
+              'zdConvention':'relative to forced solver surface; surface=0 km',
               'nlyr':n,'szaFromCapturedUmu0Deg':sza,'radiusKm':d['radiusKm'],
               'nrefrac':d['nrefrac'],'ichap':d['ichap'],
               'tauVerticalFromCapturedDtauc':tauv,'taupBottomMidpoint':taup,

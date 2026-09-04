@@ -227,7 +227,16 @@ class ReferenceTests(unittest.TestCase):
                 photon_histories=200_000_000,
             )
         )
-        self.assertEqual(zero_upper_common_q(alpha, 1), Decimal("0.95").next_plus())
+        with localcontext() as ctx:
+            ctx.prec = _DECIMAL_PRECISION
+            expected = Decimal("0.95").next_plus()
+        # The returned conservative endpoint is defined at the module's frozen
+        # precision, not at the caller's ambient Decimal context. Guard this
+        # explicitly so a low/default context cannot make the test itself lie.
+        for ambient_precision in (9, 28, 50):
+            with localcontext() as ctx:
+                ctx.prec = ambient_precision
+                self.assertEqual(zero_upper_common_q(alpha, 1), expected)
 
     def test_photon_iid_can_meet_target_that_one_block_cannot(self) -> None:
         target = Fraction(1, 1_000_000)

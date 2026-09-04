@@ -1,0 +1,157 @@
+name: LOWALT pinned static callgraph v11
+run-name: LOWALT pinned static callgraph ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - review/lowalt-pinned-static-callgraph-v11
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-pinned-static-callgraph-v11
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Inspect exact pinned solver objects without execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = review/lowalt-pinned-static-callgraph-v11
+
+          PINNED='rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda'
+          PINNED_SHA='9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2'
+          CHANNEL='https://conda.anaconda.org/conda-forge/linux-64'
+          mkdir -p out/raw out/pkg out/objects out/static
+
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 600 --retry 0 \
+            --output "out/raw/$PINNED" "$CHANNEL/$PINNED"
+          printf '%s  %s\n' "$PINNED_SHA" "out/raw/$PINNED" | sha256sum -c -
+
+          python -m pip install --quiet --disable-pip-version-check zstandard
+          python - "$PINNED" <<'PY'
+          import io, pathlib, subprocess, sys, tarfile, zipfile
+          import zstandard as zstd
+
+          pinned=sys.argv[1]
+          root=pathlib.Path('out')
+          wanted={'lib/libRadtran_f.a'}
+          with zipfile.ZipFile(root/'raw'/pinned) as zf:
+              pkg=next(n for n in zf.namelist() if n.startswith('pkg-') and n.endswith('.tar.zst'))
+              blob=zf.read(pkg)
+          found=set()
+          with zstd.ZstdDecompressor().stream_reader(io.BytesIO(blob)) as reader:
+              with tarfile.open(fileobj=reader, mode='r|') as tf:
+                  for m in tf:
+                      if m.isfile() and m.name in wanted:
+                          f=tf.extractfile(m)
+                          if f is None:
+                              continue
+                          dst=root/'pkg'/pathlib.Path(m.name).name
+                          dst.write_bytes(f.read())
+                          found.add(m.name)
+          if found != wanted:
+              raise SystemExit(f'missing libraries: {sorted(wanted-found)}')
+
+          lib=root/'pkg'/'libRadtran_f.a'
+          members=subprocess.check_output(['ar','t',str(lib)],text=True).splitlines()
+          targets=['spsdisort.o','dpsdisort.o','DISORT.o','DISORT2.o']
+          for name in targets:
+              if name not in members:
+                  raise SystemExit(f'missing archive member {name}')
+              data=subprocess.check_output(['ar','p',str(lib),name])
+              (root/'objects'/name).write_bytes(data)
+          PY
+
+          for obj in spsdisort.o dpsdisort.o DISORT.o DISORT2.o; do
+            nm -a "out/objects/$obj" > "out/static/$obj.nm.txt"
+            readelf -Ws "out/objects/$obj" > "out/static/$obj.symbols.txt"
+            readelf -SW "out/objects/$obj" > "out/static/$obj.sections.txt"
+            readelf -p .comment "out/objects/$obj" > "out/static/$obj.comment.txt" 2>&1 || true
+            objdump -drwC -Mintel "out/objects/$obj" > "out/static/$obj.objdump.txt"
+            strings -a "out/objects/$obj" > "out/static/$obj.strings.txt"
+            sha256sum "out/objects/$obj" >> out/static/object-sha256.txt
+          done
+
+          python - <<'PY'
+          import json, pathlib, re
+          root=pathlib.Path('out/static')
+          objects=['spsdisort.o','dpsdisort.o','DISORT.o','DISORT2.o']
+          key_terms=[
+              'sdisort','dpsdisort','geofast','opathfast','chapman','chpman',
+              'points_of_incidence','optical_path','spline'
+          ]
+          libm_single=['sinf','cosf','tanf','asinf','acosf','atanf','atan2f','sqrtf','expf','logf']
+          libm_double=['sin','cos','tan','asin','acos','atan','atan2','sqrt','exp','log']
+          rows={}
+          for obj in objects:
+              nm=(root/f'{obj}.nm.txt').read_text(errors='replace')
+              dis=(root/f'{obj}.objdump.txt').read_text(errors='replace')
+              comment=(root/f'{obj}.comment.txt').read_text(errors='replace')
+              symbols=[]
+              for line in nm.splitlines():
+                  low=line.lower()
+                  if any(t in low for t in key_terms):
+                      symbols.append(line.strip())
+              relocs=[]
+              for line in dis.splitlines():
+                  low=line.lower()
+                  if 'r_x86_64_' in low and (
+                      any(t in low for t in key_terms)
+                      or any(re.search(rf'\b{re.escape(x)}\b',low) for x in libm_single+libm_double)
+                  ):
+                      relocs.append(line.strip())
+              def count_pat(p):
+                  return len(re.findall(p,dis,re.I))
+              precision={
+                  'scalar_single_ops':count_pat(r'\b(?:add|sub|mul|div|sqrt)ss\b'),
+                  'scalar_double_ops':count_pat(r'\b(?:add|sub|mul|div|sqrt)sd\b'),
+                  'cvtss2sd':count_pat(r'\bcvtss2sd\b'),
+                  'cvtsd2ss':count_pat(r'\bcvtsd2ss\b'),
+                  'movss':count_pat(r'\bmovss\b'),
+                  'movsd':count_pat(r'\bmovsd\b'),
+              }
+              refs={}
+              for name in libm_single+libm_double:
+                  refs[name]=len(re.findall(rf'(?<![A-Za-z0-9_]){re.escape(name)}(?:@plt)?(?![A-Za-z0-9_])',dis,re.I))
+              rows[obj]={
+                  'interesting_nm_symbols':symbols,
+                  'interesting_relocations':relocs,
+                  'precision_instruction_counts':precision,
+                  'math_reference_counts':{k:v for k,v in refs.items() if v},
+                  'comment':comment.strip(),
+              }
+          (root/'summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          with (root/'summary.txt').open('w') as fh:
+              fh.write('LOWALT_PINNED_STATIC_CALLGRAPH_V11\n')
+              fh.write('execution=NONE; static exact-package inspection only\n')
+              for obj,row in rows.items():
+                  fh.write(f'\n[{obj}]\n')
+                  fh.write('precision='+json.dumps(row['precision_instruction_counts'],sort_keys=True)+'\n')
+                  fh.write('math_refs='+json.dumps(row['math_reference_counts'],sort_keys=True)+'\n')
+                  fh.write('symbols:\n')
+                  for x in row['interesting_nm_symbols']:
+                      fh.write('  '+x+'\n')
+                  fh.write('relocations:\n')
+                  for x in row['interesting_relocations']:
+                      fh.write('  '+x+'\n')
+          PY
+
+          cat out/static/summary.txt
+          rm -rf out/raw out/pkg out/objects
+
+      - name: Upload immutable static evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-pinned-static-callgraph-v11
+          path: out/static/
+          if-no-files-found: warn
+          retention-days: 90

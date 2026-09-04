@@ -1,0 +1,468 @@
+name: REPTRAN CRS materiality C2 v2 atm-z-grid
+
+on:
+  push:
+    branches:
+      - review/reptran-crs-materiality-c2-v2-atm-z-grid
+
+permissions:
+  contents: read
+  issues: read
+  actions: read
+
+jobs:
+  frozen-crs-reptran-materiality:
+    if: github.ref == 'refs/heads/review/reptran-crs-materiality-c2-v2-atm-z-grid'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact fresh comparator head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v2
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Fail-closed governance and fresh-seed preflight
+        shell: bash -el {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')" = "1"
+          test "$(git rev-parse HEAD^)" = "fe6e063c568394ae7b4e90222de270d3f2460455"
+
+          REPO_API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json")
+
+          main_sha="$(curl -fsS "${auth[@]}" "$REPO_API/git/ref/heads/main" | jq -r '.object.sha')"
+          test "$main_sha" = "fe6e063c568394ae7b4e90222de270d3f2460455"
+
+          issue_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60")"
+          test "$(jq -r '.comments' <<<"$issue_json")" = "1024"
+          last_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60/comments?per_page=1&page=1024")"
+          test "$(jq -r '.[0].id' <<<"$last_json")" = "5546868259"
+          grep -Fq 'FAIL_CLOSED_NO_PUBLISHER_INVOCATION_NO_NEW_REVIEW_LAYER' <<<"$(jq -r '.[0].body' <<<"$last_json")"
+          grep -Fq 'Recovery4_ordinal45=AUTHORIZED/ALLOCATED_NOT_DISPATCHED' <<<"$(jq -r '.[0].body' <<<"$last_json")"
+
+          runs_json="$(curl -fsS "${auth[@]}" "$REPO_API/actions/runs?event=workflow_dispatch&per_page=100")"
+          test "$(jq -r '.total_count' <<<"$runs_json")" = "57"
+          test "$(jq -r '[.workflow_runs[] | select(.path==".github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml" or .path==".github/workflows/avps-v2-postconsumption-recovery4-science.yml")] | length' <<<"$runs_json")" = "0"
+
+          set +e
+          ref_status="$(curl -sS -o /tmp/ordinal45-ref.json -w '%{http_code}' "${auth[@]}" "$REPO_API/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45")"
+          set -e
+          test "$ref_status" = "404"
+
+          for seed in 911705831 911705832 911705833; do
+            if git grep -n -F "$seed" HEAD^ -- . >/tmp/seed-hit.txt 2>/dev/null; then
+              echo "seed collision in parent tree: $seed" >&2
+              cat /tmp/seed-hit.txt >&2
+              exit 1
+            fi
+          done
+
+          : > /tmp/issue60-comments.txt
+          for page in $(seq 1 11); do
+            curl -fsS "${auth[@]}" "$REPO_API/issues/60/comments?per_page=100&page=${page}" | jq -r '.[].body // ""' >> /tmp/issue60-comments.txt
+          done
+          for seed in 911705831 911705832 911705833; do
+            if grep -Fq "$seed" /tmp/issue60-comments.txt; then
+              echo "seed collision in Issue 60 ledger: $seed" >&2
+              exit 1
+            fi
+          done
+
+      - name: Freeze exact comparator protocol before results
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p c2v2/raw c2v2/inputs c2v2/work
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          UVSPEC="$(command -v uvspec)"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$ACTUAL_UVSPEC_SHA256" = "$EXPECTED_UVSPEC_SHA256"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > c2v2/uvspec_sha256.txt
+          micromamba list -n reptran-crs-c2-v2 rubin-libradtran > c2v2/package_identity.txt
+
+          python - <<'PY'
+          import hashlib, json, math
+          from pathlib import Path
+
+          root=Path.cwd()
+          contract_path=root/'review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json'
+          contract=json.loads(contract_path.read_text())
+          by_id={g['geometryId']:g for g in contract['geometryManifest']}
+          chosen=['train-0054','train-0062','train-0064','train-0066']
+          expected={
+            'train-0054': {'sunDepressionDeg':8.75,'targetAltitudeDeg':6.851852,'relativeAzimuthDeg':146.88,'observerElevationM':1793.002915,'aod550':0.379752},
+            'train-0062': {'sunDepressionDeg':9.75,'targetAltitudeDeg':73.518519,'relativeAzimuthDeg':89.28,'observerElevationM':2201.166181,'aod550':0.28719},
+            'train-0064': {'sunDepressionDeg':2.125,'targetAltitudeDeg':34.62963,'relativeAzimuthDeg':161.28,'observerElevationM':466.472303,'aod550':0.350826},
+            'train-0066': {'sunDepressionDeg':6.125,'targetAltitudeDeg':17.962963,'relativeAzimuthDeg':60.48,'observerElevationM':1180.758017,'aod550':0.067355},
+          }
+          for gid in chosen:
+              g=by_id.get(gid)
+              if g is None or g.get('role')!='surrogate-training' or g.get('executionStage')!='TRAINING_ACQUISITION':
+                  raise SystemExit(f'non-training or missing geometry: {gid}')
+              for k,v in expected[gid].items():
+                  if not math.isclose(float(g[k]),float(v),rel_tol=0,abs_tol=1e-12):
+                      raise SystemExit(f'geometry drift {gid} {k}: {g[k]} != {v}')
+          raw=contract_path.read_bytes()
+          protocol={
+            'schemaVersion':2,
+            'protocolId':'reptran-crs-materiality-c2-v2-atm-z-grid',
+            'frozenBeforeAnyC2v2SolverResult':True,
+            'baseMain':'fe6e063c568394ae7b4e90222de270d3f2460455',
+            'priorCapabilityEvidence':{
+              'c1':{'head':'7e975254fa28eec94f2c305323c14302d294a933','run':33923676021,'artifact':9955987212,'artifactDigest':'sha256:a922107321babd62da914d30e05f3c47d660c48a25c9f1760aaba5b68f1bb18b'},
+            },
+            'retiredFailedComparator':{
+              'protocolId':'reptran-crs-materiality-c2-v1',
+              'head':'b17a85d208c4a58c0e8bb62a7971cfaf12bbbda3',
+              'run':33924304344,
+              'job':101189329378,
+              'attempt':1,
+              'conclusion':'failure',
+              'materialityResultExists':False,
+              'rerunRetryResumeForbidden':True,
+              'retiredSeeds':[926090451,926090452,926090453],
+            },
+            'sourceGeometryContract':{'path':str(contract_path.relative_to(root)),'sha256':hashlib.sha256(raw).hexdigest()},
+            'selectionRule':'exact same four non-protected already-frozen Level-B training geometries preregistered by failed C2-v1; no result-driven reselection',
+            'selectedGeometryIds':chosen,
+            'geometries':{gid:expected[gid] for gid in chosen},
+            'molecularArms':['crs','reptran'],
+            'onlyIntendedPhysicalArmDifference':'mol_abs_param crs versus mol_abs_param reptran',
+            'numericalMethod':'MYSTIC spherical 1D backward ALIS, mc_vroom off, mc_spectral_is 550.0',
+            'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'wavelengthDomainNm':[380.0,780.0],
+            'serializedGridValidation':'existing derived_channels.validate_raw_grid; production Stage1 strict successive-step parser is not modified',
+            'photonHistoriesPerArm':100000,
+            'independentBlocks':3,
+            'pairedCommonSeeds':[911705831,911705832,911705833],
+            'commonSeedRationale':'fresh three-block paired common-seed design; same geometry and all solver directives except molecular absorption; seeds are never reused from C2-v1',
+            'elevatedSiteSemantics':'validated atm_z_grid local-ground transformation with detector at zout 0.000000',
+            'elevationHelperPath':'experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py',
+            'elevationHelperBlob':'b00252709ca9ea41c6bf8b3ab59f8cdb8a2fc7bd',
+            'forbiddenElevationMechanisms':['altitude','mc_elevation_file'],
+            'atmosphere':'AFGLUS exact installed runtime file',
+            'solarFlux':'atlas_plus_modtran exact installed runtime file',
+            'albedo':0.15,
+            'aerosol':'aerosol_default plus aerosol_set_tau_at_wvl 550 to frozen geometry AOD550',
+            'fixedSpectralAttributionBandsNm':[[380,500],[500,600],[600,686],[686,700],[700,750],[750,770],[770,780]],
+            'primaryChannels':['photopicLuminanceCdM2','scotopicLuminanceScotCdM2','johnsonVEffectiveRadiance_mW_m2_nm_sr'],
+            'statistics':'per geometry/channel: three paired REPTRAN-minus-CRS blocks; report mean signed delta, relative delta, magnitude-equivalent -2.5log10(REPTRAN/CRS), sample SD and SE; exact zero remains exact',
+            'classification':'NO_NEW_THRESHOLD; Atmosphere returns measured signed effects plus MC evidence; A/B/C error-budget classification remains Physics Completeness owned',
+            'postResultRetuningAuthorized':False,
+            'frozenV3ModelModified':False,
+            'protectedHoldoutOpened':False,
+            'taylorOrJerusalemUsed':False,
+            'publisherInvocationAuthorized':False,
+            'publisherInvoked':False,
+            'writeQuietEntered':False,
+            'dispatchCreated':False,
+            'consumedMarkerCreated':False,
+            'workflowDispatchPerformed':False,
+            'scientificProtectedExecutionPerformed':False,
+            'resultOpeningAuthorizedForProtectedData':False,
+            'newMappingAuthorized':False,
+          }
+          (root/'c2v2/protocol.json').write_text(json.dumps(protocol,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+      - name: Render validated local-ground paired inputs
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          export C2V2_DATA="$PREFIX/share/libRadtran/data"
+          export C2V2_ROOT="$PWD"
+          test -f "$C2V2_DATA/atmmod/afglus.dat"
+          test -e "$C2V2_DATA/solar_flux/atlas_plus_modtran"
+
+          python - <<'PY'
+          import importlib.util, json, math, os
+          from pathlib import Path
+
+          root=Path(os.environ['C2V2_ROOT'])
+          data=Path(os.environ['C2V2_DATA'])
+          p=json.loads((root/'c2v2/protocol.json').read_text())
+          helper_path=root/p['elevationHelperPath']
+          spec=importlib.util.spec_from_file_location('c2v2_reviewed_elevation',helper_path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot load reviewed elevation helper')
+          elev=importlib.util.module_from_spec(spec); spec.loader.exec_module(elev)
+          out=root/'c2v2/inputs'
+          semantics={}
+
+          for gid,g in p['geometries'].items():
+              semantics[gid]={}
+              for block,seed in enumerate(p['pairedCommonSeeds'],1):
+                  pair=f'{gid}-b{block}'
+                  work=(root/'c2v2/work'/pair).resolve()
+                  rendered={}
+                  for arm in p['molecularArms']:
+                      sza=90.0+float(g['sunDepressionDeg'])
+                      umu=-math.sin(math.radians(float(g['targetAltitudeDeg'])))
+                      lines=[
+                        f'data_files_path {data}',
+                        f'atmosphere_file {data}/atmmod/afglus.dat',
+                        f'source solar {data}/solar_flux/atlas_plus_modtran',
+                        f'mol_abs_param {arm}',
+                        'wavelength 380 780',
+                        f'sza {sza:.6f}',
+                        'phi0 0.000000',
+                        'rte_solver mystic',
+                        'mc_spherical 1D',
+                        f'mc_photons {p["photonHistoriesPerArm"]}',
+                        'mc_vroom off',
+                        'mc_std',
+                        f'mc_randomseed {seed}',
+                        f'mc_basename {work}/mc',
+                        'mc_spectral_is 550.0',
+                        f'albedo {p["albedo"]:.6f}',
+                        'aerosol_default',
+                        f'aerosol_set_tau_at_wvl 550 {float(g["aod550"]):.6f}',
+                        f'zout {float(g["observerElevationM"])/1000.0:.6f}',
+                        f'umu {umu:.8f}',
+                        f'phi {float(g["relativeAzimuthDeg"]):.6f}',
+                        'quiet',
+                      ]
+                      base='\n'.join(lines)+'\n'
+                      corrected,site_km,grid=elev.apply_ground_site_atm_z_grid(base,float(g['observerElevationM']))
+                      rows=corrected.splitlines()
+                      if rows.count('zout 0.000000') != 1: raise SystemExit(f'local zout failure {pair} {arm}')
+                      grid_rows=[x for x in rows if x.startswith('atm_z_grid ')]
+                      if len(grid_rows)!=1: raise SystemExit(f'atm_z_grid cardinality failure {pair} {arm}')
+                      if any(x.startswith('altitude ') or x.startswith('mc_elevation_file ') for x in rows): raise SystemExit(f'forbidden elevation mechanism {pair} {arm}')
+                      expected_site=float(g['observerElevationM'])/1000.0
+                      if not math.isclose(site_km,expected_site,rel_tol=0,abs_tol=1e-12): raise SystemExit(f'site altitude mismatch {pair} {arm}')
+                      if not grid or not math.isclose(grid[0],expected_site,rel_tol=0,abs_tol=1e-12): raise SystemExit(f'grid bottom mismatch {pair} {arm}')
+                      rendered[arm]=corrected
+                      (out/f'{pair}-{arm}.inp').write_text(corrected)
+                  crs=rendered['crs'].splitlines(); rep=rendered['reptran'].splitlines()
+                  if len(crs)!=len(rep): raise SystemExit(f'arm input length mismatch {pair}')
+                  diffs=[(a,b) for a,b in zip(crs,rep) if a!=b]
+                  if diffs != [('mol_abs_param crs','mol_abs_param reptran')]:
+                      raise SystemExit(f'non-molecular arm difference {pair}: {diffs}')
+                  semantics[pair]={
+                    'observerElevationM':g['observerElevationM'],
+                    'siteAltitudeKm':float(g['observerElevationM'])/1000.0,
+                    'zoutKmAboveLocalSurface':0.0,
+                    'atmosphereGridBottomKm':float(g['observerElevationM'])/1000.0,
+                    'pairInputsDifferOnlyByMolAbsParam':True,
+                  }
+          (root/'c2v2/input_semantics.json').write_text(json.dumps(semantics,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+      - name: Execute frozen paired CRS and REPTRAN ALIS comparator
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          for inp in c2v2/inputs/*.inp; do
+            name="$(basename "$inp" .inp)"
+            pair="${name%-crs}"
+            pair="${pair%-reptran}"
+            raw="c2v2/raw/$name"
+            work="c2v2/work/$pair"
+            rm -rf "$work"
+            mkdir -p "$work" "$raw"
+            start_ns="$(date +%s%N)"
+            set +e
+            timeout 300s "$UVSPEC" < "$inp" > "$raw/solver.stdout" 2> "$raw/solver.stderr"
+            rc=$?
+            set -e
+            end_ns="$(date +%s%N)"
+            printf '%s\n' "$rc" > "$raw/exit_code.txt"
+            printf '%s\n' "$(( (end_ns-start_ns)/1000000 ))" > "$raw/elapsed_ms.txt"
+            test "$rc" = "0"
+            test -s "$work/mc.rad.spc"
+            test -s "$work/mc.rad.std.spc"
+            cp "$work/mc.rad.spc" "$raw/mc.rad.spc"
+            cp "$work/mc.rad.std.spc" "$raw/mc.rad.std.spc"
+            sha256sum "$raw/mc.rad.spc" > "$raw/mc.rad.spc.sha256"
+            sha256sum "$raw/mc.rad.std.spc" > "$raw/mc.rad.std.spc.sha256"
+          done
+
+      - name: Analyze preregistered one-factor materiality
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, math, statistics
+          from pathlib import Path
+
+          root=Path.cwd(); c2=root/'c2v2'
+          spec=importlib.util.spec_from_file_location('derived',root/'experiments/aerosol-family-challenge-v2/derived_channels.py')
+          if spec is None or spec.loader is None: raise SystemExit('cannot import derived_channels')
+          d=importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
+          p=json.loads((c2/'protocol.json').read_text())
+          channels=p['primaryChannels']; bands=[tuple(x) for x in p['fixedSpectralAttributionBandsNm']]
+
+          def parse(path):
+              wl=[]; val=[]
+              for line in path.read_text(errors='strict').splitlines():
+                  q=line.split()
+                  if len(q)<2: continue
+                  try: w=float(q[0]); v=float(q[-1])
+                  except ValueError: continue
+                  if not (math.isfinite(w) and math.isfinite(v) and v>=0): raise ValueError(f'invalid spectrum member {path}')
+                  wl.append(w); val.append(v)
+              d.validate_raw_grid(wl,val)
+              return wl,val
+
+          def johnson_den(wl):
+              den=0.0
+              for i in range(len(wl)-1):
+                  dl=wl[i+1]-wl[i]
+                  den += 0.5*(d._bessell_response(wl[i])*wl[i]+d._bessell_response(wl[i+1])*wl[i+1])*dl
+              if den<=0: raise ValueError('zero Johnson denominator')
+              return den
+
+          def band_channel(wl,rad,channel,lo,hi):
+              total=0.0; jden=johnson_den(wl) if channel.startswith('johnson') else None
+              for i in range(len(wl)-1):
+                  w0,w1=wl[i],wl[i+1]
+                  if w0 < lo-1e-9 or w1 > hi+1e-9: continue
+                  dl=w1-w0
+                  if channel.startswith('photopic'):
+                      a=d._interp(d.V_PHOT,w0)*rad[i]; b=d._interp(d.V_PHOT,w1)*rad[i+1]
+                      total += d.KM_PHOTOPIC*1e-3*0.5*(a+b)*dl
+                  elif channel.startswith('scotopic'):
+                      a=d._interp(d.V_SCOT,w0)*rad[i]; b=d._interp(d.V_SCOT,w1)*rad[i+1]
+                      total += d.KM_SCOTOPIC*1e-3*0.5*(a+b)*dl
+                  else:
+                      a=d._bessell_response(w0)*w0*rad[i]; b=d._bessell_response(w1)*w1*rad[i+1]
+                      total += 0.5*(a+b)*dl/jden
+              return total
+
+          arm_data={}
+          for gid in p['selectedGeometryIds']:
+              arm_data[gid]={}
+              for block in range(1,p['independentBlocks']+1):
+                  arm_data[gid][str(block)]={}
+                  for arm in p['molecularArms']:
+                      name=f'{gid}-b{block}-{arm}'; q=c2/'raw'/name
+                      wl,rad=parse(q/'mc.rad.spc'); swl,std=parse(q/'mc.rad.std.spc')
+                      if wl != swl: raise ValueError(f'radiance/std grid mismatch {name}')
+                      vals=d.derive_channels(wl,rad)
+                      mcdiag=d.marginal_mc_std_diagnostics(wl,rad,std)
+                      bandvals={}
+                      for lo,hi in bands:
+                          label=f'{lo:g}-{hi:g}'
+                          bandvals[label]={ch:band_channel(wl,rad,ch,lo,hi) for ch in channels}
+                      arm_data[gid][str(block)][arm]={
+                          'channels':{ch:vals[ch] for ch in channels},
+                          'marginalMcStdDiagnostic':mcdiag,
+                          'fixedBandChannelContributions':bandvals,
+                          'elapsedMs':int((q/'elapsed_ms.txt').read_text().strip()),
+                          'rawSpectrumSha256':(q/'mc.rad.spc.sha256').read_text().split()[0],
+                          'rawStdSpectrumSha256':(q/'mc.rad.std.spc.sha256').read_text().split()[0],
+                      }
+
+          by_geometry={}
+          for gid in p['selectedGeometryIds']:
+              blocks=[]
+              for block in range(1,p['independentBlocks']+1):
+                  a=arm_data[gid][str(block)]['crs']; b=arm_data[gid][str(block)]['reptran']
+                  rec={'block':block,'seed':p['pairedCommonSeeds'][block-1],'channels':{},'fixedBandSignedDelta':{}}
+                  for ch in channels:
+                      x=float(a['channels'][ch]); y=float(b['channels'][ch]); delta=y-x
+                      ratio=None if x<=0 or y<=0 else y/x
+                      rec['channels'][ch]={
+                          'crs':x,'reptran':y,'signedDeltaReptranMinusCrs':delta,'absoluteDelta':abs(delta),
+                          'relativeDelta':None if x<=0 else delta/x,
+                          'ratioReptranOverCrs':ratio,
+                          'magnitudeDeltaReptranMinusCrs':None if ratio is None else -2.5*math.log10(ratio),
+                          'exactZeroCrs':x==0.0,'exactZeroReptran':y==0.0,
+                      }
+                  for lo,hi in bands:
+                      label=f'{lo:g}-{hi:g}'; rec['fixedBandSignedDelta'][label]={}
+                      for ch in channels:
+                          rec['fixedBandSignedDelta'][label][ch]=b['fixedBandChannelContributions'][label][ch]-a['fixedBandChannelContributions'][label][ch]
+                  blocks.append(rec)
+
+              summary={}
+              for ch in channels:
+                  ds=[r['channels'][ch]['signedDeltaReptranMinusCrs'] for r in blocks]
+                  rel=[r['channels'][ch]['relativeDelta'] for r in blocks]
+                  mag=[r['channels'][ch]['magnitudeDeltaReptranMinusCrs'] for r in blocks]
+                  usable_rel=[x for x in rel if x is not None]; usable_mag=[x for x in mag if x is not None]
+                  sd=statistics.stdev(ds) if len(ds)>1 else None
+                  summary[ch]={
+                      'meanSignedDelta':statistics.fmean(ds),
+                      'meanAbsoluteBlockDelta':statistics.fmean(abs(x) for x in ds),
+                      'sampleSdPairedSignedDelta':sd,
+                      'sePairedSignedDelta':None if sd is None else sd/math.sqrt(len(ds)),
+                      'meanRelativeDelta':statistics.fmean(usable_rel) if len(usable_rel)==len(ds) else None,
+                      'meanMagnitudeDeltaReptranMinusCrs':statistics.fmean(usable_mag) if len(usable_mag)==len(ds) else None,
+                      'allBlocksRatioDefined':len(usable_rel)==len(ds),
+                  }
+              band_summary={}
+              for lo,hi in bands:
+                  label=f'{lo:g}-{hi:g}'
+                  band_summary[label]={ch:statistics.fmean(r['fixedBandSignedDelta'][label][ch] for r in blocks) for ch in channels}
+              by_geometry[gid]={'geometry':p['geometries'][gid],'blocks':blocks,'summary':summary,'meanFixedBandSignedDelta':band_summary}
+
+          result={
+            'schemaVersion':2,
+            'resultId':'reptran-crs-materiality-c2-v2-atm-z-grid',
+            'protocol':p,
+            'status':'COMPLETED_FROZEN_ONE_FACTOR_MATERIALITY_MEASUREMENT',
+            'inputSemantics':json.loads((c2/'input_semantics.json').read_text()),
+            'armResults':arm_data,
+            'geometryResults':by_geometry,
+            'interpretationBoundary':'Measured effects only. A/B/C classification and cumulative physical-error-budget interpretation remain Physics Completeness owned; no new materiality tolerance is introduced here.',
+            'frozenV3ModelModified':False,
+            'protectedHoldoutOpened':False,
+            'taylorOrJerusalemUsed':False,
+            'postResultRetuningPerformed':False,
+            'publisherInvocationAuthorized':False,
+            'publisherInvoked':False,
+            'writeQuietEntered':False,
+            'dispatchCreated':False,
+            'consumedMarkerCreated':False,
+            'workflowDispatchPerformed':False,
+            'scientificProtectedExecutionPerformed':False,
+            'resultOpeningAuthorizedForProtectedData':False,
+            'newMappingAuthorized':False,
+          }
+          (c2/'result.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+          sha256sum c2v2/protocol.json c2v2/input_semantics.json c2v2/result.json > c2v2/summary_sha256.txt
+          find c2v2/raw -type f \( -name 'mc.rad.spc' -o -name 'mc.rad.std.spc' \) -print0 | sort -z | xargs -0 sha256sum > c2v2/all_raw_spectra_sha256.txt
+
+      - name: Upload immutable C2 v2 comparator evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: reptran-crs-materiality-c2-v2-atm-z-grid
+          path: |
+            c2v2/protocol.json
+            c2v2/input_semantics.json
+            c2v2/result.json
+            c2v2/package_identity.txt
+            c2v2/uvspec_sha256.txt
+            c2v2/summary_sha256.txt
+            c2v2/all_raw_spectra_sha256.txt
+            c2v2/inputs/*.inp
+            c2v2/raw/**/exit_code.txt
+            c2v2/raw/**/elapsed_ms.txt
+            c2v2/raw/**/solver.stdout
+            c2v2/raw/**/solver.stderr
+            c2v2/raw/**/mc.rad.spc
+            c2v2/raw/**/mc.rad.std.spc
+            c2v2/raw/**/mc.rad.spc.sha256
+            c2v2/raw/**/mc.rad.std.spc.sha256
+          if-no-files-found: error
+          retention-days: 90

@@ -36,6 +36,8 @@ import math
 import unittest
 
 MAG_TOL_DEFAULT = 0.0100
+_MAX_CERTIFIABLE_INTEGER_COUNT = (1 << 53) - 1
+_LN10_OVER_2P5 = math.log(10.0) / 2.5
 
 
 def _require_probability(name: str, value: float) -> None:
@@ -51,6 +53,15 @@ def _require_positive(name: str, value: float) -> None:
 def _require_nonnegative(name: str, value: float) -> None:
     if not (math.isfinite(value) and value >= 0.0):
         raise ValueError(f"{name} must be finite and >= 0")
+
+
+def _require_certifiable_integer_boundary(name: str, raw_count: float) -> None:
+    """Fail closed when binary64 cannot certify one-sample integer minimality."""
+    if not math.isfinite(raw_count) or raw_count >= _MAX_CERTIFIABLE_INTEGER_COUNT:
+        raise ValueError(
+            f"{name} exceeds the binary64 exact-integer audit range; "
+            "use a separately reviewed higher-precision reference"
+        )
 
 
 def zero_event_probability_upper(alpha: float, n: int) -> float:
@@ -86,7 +97,8 @@ def hybrid_zero_upper(
 def radiance_ratio_budget(magnitude_tolerance: float = MAG_TOL_DEFAULT) -> float:
     """Largest additive radiance ratio compatible with a magnitude tolerance."""
     _require_positive("magnitude_tolerance", magnitude_tolerance)
-    return math.pow(10.0, magnitude_tolerance / 2.5) - 1.0
+    # expm1 avoids cancellation when the requested magnitude budget is tiny.
+    return math.expm1(_LN10_OVER_2P5 * magnitude_tolerance)
 
 
 def required_all_zero_count(alpha: float, q_target: float) -> int:
@@ -94,9 +106,14 @@ def required_all_zero_count(alpha: float, q_target: float) -> int:
     _require_probability("alpha", alpha)
     _require_probability("q_target", q_target)
     raw = math.log(alpha) / math.log1p(-q_target)
+    _require_certifiable_integer_boundary("required all-zero count", raw)
     n = max(1, math.ceil(raw))
     # Guard the exact integer contract against floating-point boundary rounding.
     while zero_event_probability_upper(alpha, n) > q_target:
+        if n >= _MAX_CERTIFIABLE_INTEGER_COUNT:
+            raise ValueError(
+                "required all-zero count crossed the binary64 exact-integer audit range"
+            )
         n += 1
     while n > 1 and zero_event_probability_upper(alpha, n - 1) <= q_target:
         n -= 1
@@ -137,13 +154,25 @@ def all_zero_crossing_probability(q: float, alpha: float) -> tuple[int, float]:
     """Return first false-q exclusion time and its all-zero crossing probability."""
     _require_probability("q", q)
     _require_probability("alpha", alpha)
-    raw = math.log(alpha) / math.log1p(-q)
+    log_alpha = math.log(alpha)
+    log_survival = math.log1p(-q)
+    raw = log_alpha / log_survival
+    _require_certifiable_integer_boundary("all-zero crossing count", raw)
     n = max(1, math.floor(raw) + 1)
-    while math.pow(1.0 - q, n) >= alpha:
+
+    def log_crossing_probability(count: int) -> float:
+        return count * log_survival
+
+    # Compare in log space: forming (1-q) first can round to exactly 1 for tiny q.
+    while log_crossing_probability(n) >= log_alpha:
+        if n >= _MAX_CERTIFIABLE_INTEGER_COUNT:
+            raise ValueError(
+                "all-zero crossing count crossed the binary64 exact-integer audit range"
+            )
         n += 1
-    while n > 1 and math.pow(1.0 - q, n - 1) < alpha:
+    while n > 1 and log_crossing_probability(n - 1) < log_alpha:
         n -= 1
-    return n, math.pow(1.0 - q, n)
+    return n, math.exp(log_crossing_probability(n))
 
 
 class ReferenceTests(unittest.TestCase):
@@ -187,6 +216,18 @@ class ReferenceTests(unittest.TestCase):
             places=15,
         )
 
+    def test_tiny_materiality_ratio_does_not_cancel_to_zero(self) -> None:
+        tiny = radiance_ratio_budget(1e-16)
+        self.assertGreater(tiny, 0.0)
+        self.assertTrue(
+            math.isclose(
+                tiny,
+                _LN10_OVER_2P5 * 1e-16,
+                rel_tol=2e-16,
+                abs_tol=0.0,
+            )
+        )
+
     def test_tail_exhaustion_fails_closed(self) -> None:
         budget = radiance_ratio_budget() * 10.0
         with self.assertRaisesRegex(ValueError, "tail already exhausts"):
@@ -212,11 +253,18 @@ class ReferenceTests(unittest.TestCase):
             self.assertGreater(previous, budget)
 
     def test_all_zero_sequential_boundary_is_anytime_valid(self) -> None:
-        for q in (1e-2, 1e-4, 1e-8):
+        for q in (1e-2, 1e-4, 1e-8, 1e-12):
             n, crossing_probability = all_zero_crossing_probability(q, 0.05)
             self.assertLess(crossing_probability, 0.05)
             if n > 1:
-                self.assertGreaterEqual(math.pow(1.0 - q, n - 1), 0.05)
+                previous_log_probability = (n - 1) * math.log1p(-q)
+                self.assertGreaterEqual(previous_log_probability, math.log(0.05))
+
+    def test_unverifiable_huge_count_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "higher-precision reference"):
+            required_all_zero_count(0.05, 1e-16)
+        with self.assertRaisesRegex(ValueError, "higher-precision reference"):
+            all_zero_crossing_probability(1e-16, 0.05)
 
 
 def _summary() -> dict[str, float | int | str]:

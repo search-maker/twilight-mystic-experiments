@@ -141,7 +141,7 @@ def slant_optical_depth(
     observer = _finite("observer_altitude_km", observer_altitude_km)
     _validate_layers(layer_seq, observer)
 
-    total = 0.0
+    contributions = []
     for layer in layer_seq:
         dz = layer.z_hi_km - layer.z_lo_km
         ds = shell_path_length_km(
@@ -154,7 +154,8 @@ def slant_optical_depth(
         contribution = layer.vertical_tau * (ds / dz)
         if not math.isfinite(contribution) or contribution < 0.0:
             raise DirectPathRefusal("nonfinite or negative optical-depth contribution")
-        total += contribution
+        contributions.append(contribution)
+    total = math.fsum(contributions)
     if not math.isfinite(total) or total < 0.0:
         raise DirectPathRefusal("nonfinite or negative total optical depth")
     return total
@@ -239,6 +240,28 @@ def _self_test() -> None:
         layers=layers,
     )
     assert math.isclose(vertical, 0.60, rel_tol=0.0, abs_tol=2e-12), vertical
+
+    # Compensated accumulation must retain individually sub-ulp shell terms.
+    # At 90 deg each shell path factor is exactly one in this synthetic setup.
+    # A plain left-to-right sum loses all 64 tiny terms after the leading 1.0,
+    # while math.fsum retains their aggregate. This is arithmetic QA only.
+    accumulation_edges = tuple(float(i) for i in range(66))
+    accumulation_layers = (
+        RadialLayer(accumulation_edges[0], accumulation_edges[1], 1.0),
+        *(
+            RadialLayer(accumulation_edges[i], accumulation_edges[i + 1], 2.0**-54)
+            for i in range(1, 65)
+        ),
+    )
+    accumulation = slant_optical_depth(
+        earth_radius_km=R,
+        observer_altitude_km=0.0,
+        geometric_altitude_deg=90.0,
+        layers=accumulation_layers,
+    )
+    expected_accumulation = math.fsum(layer.vertical_tau for layer in accumulation_layers)
+    assert accumulation == expected_accumulation, (accumulation, expected_accumulation)
+    assert accumulation > 1.0, accumulation
 
     # Splitting a constant-extinction layer must not change the integral.
     unsplit = (RadialLayer(0.0, 10.0, 0.50),)

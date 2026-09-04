@@ -197,10 +197,15 @@ class ReferenceTests(unittest.TestCase):
         n = 20
         alpha = Fraction(1, 20)
         lo, hi = clopper_pearson_upper_bracket(n, 0, alpha, bits=90)
-        analytic = 1.0 - 0.05 ** (1.0 / n)
-        self.assertLess(float(lo), analytic)
-        self.assertGreaterEqual(float(hi), analytic)
-        self.assertLess(float(hi - lo), 2.0**-89)
+        # For k=0, the binomial CDF is exactly (1-q)^n.  Check the
+        # defining formula in exact rational arithmetic rather than converting
+        # the 90-bit bracket to binary64, which can collapse both endpoints to
+        # the same float and spuriously fail a correct certificate.
+        self.assertEqual(binomial_cdf_exact(n, 0, lo), (1 - lo) ** n)
+        self.assertEqual(binomial_cdf_exact(n, 0, hi), (1 - hi) ** n)
+        self.assertGreater((1 - lo) ** n, alpha)
+        self.assertLessEqual((1 - hi) ** n, alpha)
+        self.assertLessEqual(hi - lo, Fraction(1, 2**90))
 
     def test_finite_hit_boundary_is_exactly_bracketed(self) -> None:
         alpha = Fraction(1, 20)

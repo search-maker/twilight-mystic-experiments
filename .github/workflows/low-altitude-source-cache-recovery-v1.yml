@@ -1,4 +1,4 @@
-name: LOWALT source-cache recovery v4
+name: LOWALT source-cache recovery v5
 
 on:
   push:
@@ -11,146 +11,252 @@ permissions:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Recover retained GitHub Check annotations from failed historical build
+      - name: Inspect historical conda package for source survivorship
         shell: bash
         run: |
           set -euo pipefail
           EXPECTED='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
           PRIOR='64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
-          FAILED_COMMIT='34661f6d1776374c409908256c38055b6641f4e1'
-          API='https://api.github.com/repos/conda-forge/rubin-libradtran-feedstock'
-          mkdir -p out/annotations
-          REPORT='out/github-check-annotation-recovery.txt'
+          CHANNEL='https://conda.anaconda.org/conda-forge/linux-64'
+          mkdir -p out/package-info out/raw
+          REPORT='out/historical-conda-package-source-survivorship.txt'
           : > "$REPORT"
           {
-            echo 'LOWALT_SOURCE_RECOVERY_V4_GITHUB_CHECK_ANNOTATIONS'
+            echo 'LOWALT_SOURCE_RECOVERY_V5_HISTORICAL_CONDA_PACKAGE'
             echo "expected_sha256=$EXPECTED"
             echo "prior_sha256=$PRIOR"
-            echo "failed_commit=$FAILED_COMMIT"
             echo "probe_head=${GITHUB_SHA:-unknown}"
             date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
           } >> "$REPORT"
 
-          curl_json() {
-            local url="$1"
-            local dst="$2"
-            local hdr="$3"
-            local code
-            set +e
-            code=$(curl --location --silent --show-error \
-              --connect-timeout 20 --max-time 120 --retry 0 \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              -H 'User-Agent: lowalt-source-provenance-probe' \
-              --dump-header "$hdr" \
-              --output "$dst" \
-              --write-out '%{http_code}' \
-              "$url")
-            rc=$?
-            set -e
-            echo "curl_rc=$rc http_code=$code url=$url" >> "$REPORT"
-            if [[ $rc -ne 0 || "$code" != '200' ]]; then
-              return 1
-            fi
-            return 0
-          }
+          REPODATA='out/raw/repodata.json.bz2'
+          set +e
+          repodata_code=$(curl --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 0 \
+            --output "$REPODATA" --write-out '%{http_code}' \
+            "$CHANNEL/repodata.json.bz2")
+          repodata_rc=$?
+          set -e
+          echo "repodata_curl_rc=$repodata_rc http_code=$repodata_code" >> "$REPORT"
+          if [[ $repodata_rc -ne 0 || "$repodata_code" != '200' ]]; then
+            echo 'repodata_disposition=UNAVAILABLE' >> "$REPORT"
+            exit 0
+          fi
+          echo "repodata_bytes=$(wc -c < "$REPODATA" | tr -d ' ')" >> "$REPORT"
+          echo "repodata_sha256=$(sha256sum "$REPODATA" | awk '{print $1}')" >> "$REPORT"
 
-          CHECKS='out/check-runs.json'
-          if ! curl_json "$API/commits/$FAILED_COMMIT/check-runs?per_page=100" "$CHECKS" 'out/check-runs.headers.txt'; then
-            echo 'check_run_inventory=UNAVAILABLE' >> "$REPORT"
-          else
-            python - "$CHECKS" > out/check-run-inventory.tsv <<'PY'
+          python - "$REPODATA" "$REPORT" <<'PY'
+          import bz2
           import json
           import pathlib
           import sys
 
-          d = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          print('id\tname\tconclusion\tannotations_count\tannotations_url')
-          for r in d.get('check_runs') or []:
-              o = r.get('output') or {}
-              print('\t'.join(str(x) for x in (
-                  r.get('id'),
-                  (r.get('name') or '').replace('\t', ' '),
-                  r.get('conclusion'),
-                  o.get('annotations_count', 0),
-                  o.get('annotations_url') or '',
-              )))
+          repodata_name, report_name = sys.argv[1:]
+          with bz2.open(repodata_name, 'rt') as fh:
+              data = json.load(fh)
+          records = {}
+          records.update(data.get('packages') or {})
+          records.update(data.get('packages.conda') or {})
+          matches = []
+          for fn, rec in records.items():
+              if rec.get('name') == 'rubin-libradtran' and rec.get('version') == '2.0.6':
+                  matches.append((fn, rec))
+          matches.sort(key=lambda x: (x[1].get('build_number', -1), x[0]))
+          pathlib.Path('out/all-linux-2.0.6-records.json').write_text(
+              json.dumps([{'filename': fn, **rec} for fn, rec in matches], indent=2, sort_keys=True) + '\n'
+          )
+          build0 = [(fn, rec) for fn, rec in matches if rec.get('build_number') == 0]
+          py312 = [(fn, rec) for fn, rec in build0 if 'py312' in str(rec.get('build', ''))]
+          selected = py312[0] if len(py312) == 1 else None
+          if selected is None and py312:
+              selected = sorted(py312, key=lambda x: x[0])[0]
+          if selected is None and build0:
+              selected = sorted(build0, key=lambda x: x[0])[0]
+          with pathlib.Path(report_name).open('a') as fh:
+              fh.write(f'linux_2_0_6_record_count={len(matches)}\n')
+              fh.write(f'linux_build0_record_count={len(build0)}\n')
+              fh.write(f'linux_build0_py312_count={len(py312)}\n')
+              for fn, rec in build0:
+                  fh.write('build0_record=' + '|'.join(str(x) for x in (
+                      fn, rec.get('build'), rec.get('build_number'), rec.get('size'), rec.get('sha256'), rec.get('md5')
+                  )) + '\n')
+              if selected is None:
+                  fh.write('selected_package=NONE\n')
+              else:
+                  fn, rec = selected
+                  fh.write(f'selected_package={fn}\n')
+                  fh.write(f'selected_build={rec.get("build")}\n')
+                  fh.write(f'selected_build_number={rec.get("build_number")}\n')
+                  fh.write(f'selected_size={rec.get("size")}\n')
+                  fh.write(f'selected_repodata_sha256={rec.get("sha256")}\n')
+                  fh.write(f'selected_repodata_md5={rec.get("md5")}\n')
+                  pathlib.Path('out/selected-package.txt').write_text(fn + '\n')
+                  pathlib.Path('out/selected-record.json').write_text(
+                      json.dumps({'filename': fn, **rec}, indent=2, sort_keys=True) + '\n'
+                  )
           PY
-            total=$(tail -n +2 out/check-run-inventory.tsv | wc -l | tr -d ' ')
-            annotated=$(tail -n +2 out/check-run-inventory.tsv | awk -F '\t' '$4+0 > 0 {n++} END {print n+0}')
-            echo "check_run_count=$total" >> "$REPORT"
-            echo "annotated_check_run_count=$annotated" >> "$REPORT"
 
-            while IFS=$'\t' read -r id name conclusion count url; do
-              [[ "$id" == 'id' ]] && continue
-              [[ "${count:-0}" -gt 0 ]] || continue
-              [[ -n "${url:-}" ]] || continue
-              dst="out/annotations/check-${id}.json"
-              hdr="out/annotations/check-${id}.headers.txt"
-              if ! curl_json "${url}?per_page=100" "$dst" "$hdr"; then
-                echo "annotation_fetch_failed check=$id name=$name" >> "$REPORT"
-              fi
-            done < out/check-run-inventory.tsv
+          if [[ ! -s out/selected-package.txt ]]; then
+            echo 'package_disposition=NO_HISTORICAL_BUILD0_PACKAGE_IN_CURRENT_REPODATA' >> "$REPORT"
+            cat "$REPORT"
+            exit 0
           fi
 
-          python - "$EXPECTED" "$PRIOR" "$REPORT" <<'PY'
+          PKG=$(tr -d '\r\n' < out/selected-package.txt)
+          PKG_PATH="out/raw/$PKG"
+          set +e
+          pkg_code=$(curl --location --silent --show-error \
+            --connect-timeout 20 --max-time 600 --retry 0 \
+            --output "$PKG_PATH" --write-out '%{http_code}' \
+            "$CHANNEL/$PKG")
+          pkg_rc=$?
+          set -e
+          echo "package_curl_rc=$pkg_rc http_code=$pkg_code" >> "$REPORT"
+          if [[ $pkg_rc -ne 0 || "$pkg_code" != '200' ]]; then
+            echo 'package_disposition=SELECTED_PACKAGE_UNAVAILABLE' >> "$REPORT"
+            rm -f "$PKG_PATH"
+            cat "$REPORT"
+            exit 0
+          fi
+          ACTUAL_SHA=$(sha256sum "$PKG_PATH" | awk '{print $1}')
+          ACTUAL_SIZE=$(wc -c < "$PKG_PATH" | tr -d ' ')
+          EXPECTED_PACKAGE_SHA=$(python - <<'PY'
+          import json
+          print(json.load(open('out/selected-record.json')).get('sha256') or '')
+          PY
+          )
+          echo "package_bytes=$ACTUAL_SIZE" >> "$REPORT"
+          echo "package_sha256=$ACTUAL_SHA" >> "$REPORT"
+          if [[ -n "$EXPECTED_PACKAGE_SHA" && "$ACTUAL_SHA" == "$EXPECTED_PACKAGE_SHA" ]]; then
+            echo 'package_repodata_sha256_match=PASS' >> "$REPORT"
+          else
+            echo 'package_repodata_sha256_match=FAIL_OR_UNAVAILABLE' >> "$REPORT"
+          fi
+
+          python -m pip install --quiet --disable-pip-version-check zstandard
+          python - "$PKG_PATH" "$EXPECTED" "$PRIOR" "$REPORT" <<'PY'
+          import io
           import json
           import pathlib
           import re
           import sys
+          import tarfile
+          import zipfile
+          import zstandard as zstd
 
-          expected, prior, report_name = sys.argv[1:]
-          rows = []
-          for p in sorted(pathlib.Path('out/annotations').glob('check-*.json')):
-              try:
-                  data = json.loads(p.read_text())
-              except Exception as exc:
-                  rows.append((p.name, 'PARSE_ERROR', str(exc)))
-                  continue
-              if not isinstance(data, list):
-                  rows.append((p.name, 'NON_LIST', repr(data)[:1000]))
-                  continue
-              for i, a in enumerate(data):
-                  fields = [
-                      str(a.get('annotation_level') or ''),
-                      str(a.get('title') or ''),
-                      str(a.get('message') or ''),
-                      str(a.get('raw_details') or ''),
-                      str(a.get('path') or ''),
-                  ]
-                  text = ' | '.join(x.replace('\n', '\\n') for x in fields)
-                  rows.append((p.name, str(i), text))
-          out = pathlib.Path('out/all-check-annotations.txt')
-          out.write_text('\n'.join('\t'.join(r) for r in rows) + ('\n' if rows else ''))
-          text = out.read_text(errors='replace')
-          needle = re.compile(
-              r'(libradtran|checksum|sha(?:256)?|hash|source|download|expected|actual|mismatch)',
+          pkg_name, expected, prior, report_name = sys.argv[1:]
+          root = pathlib.Path('out')
+          info_out = root / 'package-info'
+          info_out.mkdir(parents=True, exist_ok=True)
+          source_name = re.compile(
+              r'(^|/)(src|source)(/|$)|libRadtran-2\.0\.6\.tar\.gz$|\.(?:c|h|cc|cpp|cxx|f|f90|f95|for|inc|m4|am|in)$|'
+              r'(^|/)(?:Makefile|configure(?:\.ac)?|CMakeLists\.txt)$',
               re.I,
           )
-          relevant = [line for line in text.splitlines() if needle.search(line)]
-          pathlib.Path('out/relevant-check-annotations.txt').write_text(
-              '\n'.join(relevant) + ('\n' if relevant else '')
-          )
+          text_needle = re.compile(r'(999e47f4|64930cc4|libRadtran-2\.0\.6\.tar\.gz|libradtran|sha256|source:|url:)', re.I)
+          info_members = []
+          payload_members = []
+          source_like = []
+          text_hits = []
+          source_archive_members = []
+          inner_inventory = []
+
+          def stream_tar(blob, callback):
+              dctx = zstd.ZstdDecompressor()
+              with dctx.stream_reader(io.BytesIO(blob)) as reader:
+                  with tarfile.open(fileobj=reader, mode='r|') as tf:
+                      for member in tf:
+                          callback(tf, member)
+
+          with zipfile.ZipFile(pkg_name) as zf:
+              names = zf.namelist()
+              inner_inventory.extend(names)
+              info_name = next((n for n in names if n.startswith('info-') and n.endswith('.tar.zst')), None)
+              pkg_inner = next((n for n in names if n.startswith('pkg-') and n.endswith('.tar.zst')), None)
+              if info_name:
+                  info_blob = zf.read(info_name)
+                  def handle_info(tf, member):
+                      if not member.isfile():
+                          return
+                      name = member.name
+                      info_members.append(name)
+                      keep = (
+                          name.startswith('info/recipe/') or
+                          name in {'info/about.json','info/index.json','info/paths.json','info/hash_input.json','info/files'}
+                      )
+                      if not keep:
+                          return
+                      f = tf.extractfile(member)
+                      if f is None:
+                          return
+                      data = f.read()
+                      safe = pathlib.Path(name)
+                      if any(part in ('..', '') for part in safe.parts):
+                          return
+                      dst = info_out / safe.relative_to('info')
+                      dst.parent.mkdir(parents=True, exist_ok=True)
+                      dst.write_bytes(data)
+                      if len(data) <= 5_000_000:
+                          text = data.decode('utf-8', errors='replace')
+                          for no, line in enumerate(text.splitlines(), 1):
+                              if text_needle.search(line):
+                                  text_hits.append(f'{name}:{no}:{line[:1500]}')
+                  stream_tar(info_blob, handle_info)
+              if pkg_inner:
+                  pkg_blob = zf.read(pkg_inner)
+                  def handle_pkg(tf, member):
+                      name = member.name
+                      payload_members.append(name)
+                      if source_name.search(name):
+                          source_like.append(name)
+                      if name.endswith('libRadtran-2.0.6.tar.gz'):
+                          source_archive_members.append(name)
+                  stream_tar(pkg_blob, handle_pkg)
+
+          (root / 'conda-inner-zip-members.txt').write_text('\n'.join(inner_inventory) + '\n')
+          (root / 'info-member-list.txt').write_text('\n'.join(info_members) + '\n')
+          (root / 'payload-file-list.txt').write_text('\n'.join(payload_members) + '\n')
+          (root / 'source-like-payload-files.txt').write_text('\n'.join(source_like) + ('\n' if source_like else ''))
+          (root / 'embedded-recipe-source-hits.txt').write_text('\n'.join(text_hits) + ('\n' if text_hits else ''))
+
+          all_info_text = '\n'.join(text_hits).lower()
           with pathlib.Path(report_name).open('a') as fh:
-              fh.write(f'annotation_row_count={len(rows)}\n')
-              fh.write(f'relevant_annotation_row_count={len(relevant)}\n')
-              fh.write(f'expected_hash_mentions={text.lower().count(expected.lower())}\n')
-              fh.write(f'prior_hash_mentions={text.lower().count(prior.lower())}\n')
-              fh.write(f'expected_prefix_mentions={text.lower().count(expected[:8].lower())}\n')
-              fh.write(f'prior_prefix_mentions={text.lower().count(prior[:8].lower())}\n')
+              fh.write(f'conda_inner_member_count={len(inner_inventory)}\n')
+              fh.write(f'info_member_count={len(info_members)}\n')
+              fh.write(f'payload_member_count={len(payload_members)}\n')
+              fh.write(f'source_like_payload_member_count={len(source_like)}\n')
+              fh.write(f'exact_source_archive_payload_count={len(source_archive_members)}\n')
+              fh.write(f'embedded_recipe_source_hit_count={len(text_hits)}\n')
+              fh.write(f'embedded_expected_hash_prefix_mentions={all_info_text.count(expected[:8].lower())}\n')
+              fh.write(f'embedded_prior_hash_prefix_mentions={all_info_text.count(prior[:8].lower())}\n')
+              fh.write('full_source_archive_survived_in_payload=' + ('YES' if source_archive_members else 'NO') + '\n')
+              fh.write('source_tree_candidate_survived_in_payload=' + ('YES' if source_like else 'NO_OR_ONLY_INSTALLED_SOURCE_LIKE_FILES') + '\n')
           PY
 
+          rm -f "$PKG_PATH" "$REPODATA"
           cat "$REPORT"
-          echo '--- retained relevant GitHub Check annotations ---'
-          cat out/relevant-check-annotations.txt
+          echo '--- embedded recipe/source hits ---'
+          cat out/embedded-recipe-source-hits.txt || true
+          echo '--- source-like payload members ---'
+          cat out/source-like-payload-files.txt || true
 
       - name: Upload immutable recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-source-cache-recovery-v4-check-annotations
-          path: out/
-          if-no-files-found: error
+          name: lowalt-source-cache-recovery-v5-historical-conda-package
+          path: |
+            out/historical-conda-package-source-survivorship.txt
+            out/all-linux-2.0.6-records.json
+            out/selected-package.txt
+            out/selected-record.json
+            out/conda-inner-zip-members.txt
+            out/info-member-list.txt
+            out/payload-file-list.txt
+            out/source-like-payload-files.txt
+            out/embedded-recipe-source-hits.txt
+            out/package-info/
+          if-no-files-found: warn
           retention-days: 90

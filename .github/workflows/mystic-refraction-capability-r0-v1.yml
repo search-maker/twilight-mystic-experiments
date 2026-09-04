@@ -1,0 +1,202 @@
+name: MYSTIC refraction capability R0 v1
+
+on:
+  push:
+    branches:
+      - review/mystic-refraction-capability-r0-v1
+
+permissions:
+  contents: read
+
+jobs:
+  exact-runtime-capability-probe:
+    if: github.ref == 'refs/heads/review/mystic-refraction-capability-r0-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: mystic-refraction-r0-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Run result-blind parser/solver capability probe
+        shell: bash -el {0}
+        run: |
+          set -u
+          mkdir -p r0
+
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          printf '%s\n' "$UVSPEC" > r0/uvspec_path.txt
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > r0/uvspec_sha256.txt
+          micromamba list -n mystic-refraction-r0-v1 rubin-libradtran > r0/package_identity.txt
+          if [ "$ACTUAL_UVSPEC_SHA256" != "$EXPECTED_UVSPEC_SHA256" ]; then
+            echo "REFUSAL: exact uvspec SHA-256 drift" | tee r0/refusal.txt
+            exit 20
+          fi
+
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          DATA="$PREFIX/share/libRadtran/data"
+          test -f "$DATA/atmmod/afglus.dat"
+          test -e "$DATA/solar_flux/atlas_plus_modtran"
+          printf '%s\n' "$DATA" > r0/data_path.txt
+
+          cat > r0/baseline.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550 550
+          sza 96.000000
+          phi0 0.000000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1000
+          mc_vroom off
+          mc_std
+          mc_basename $PWD/r0/baseline_mc
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          EOF
+
+          cat > r0/refraction.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550 550
+          sza 96.000000
+          phi0 0.000000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_refraction
+          mc_photons 1000
+          mc_vroom off
+          mc_std
+          mc_basename $PWD/r0/refraction_mc
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          EOF
+
+          run_one() {
+            name="$1"
+            inp="r0/${name}.inp"
+            out="r0/${name}.stdout"
+            err="r0/${name}.stderr"
+            start_ns="$(date +%s%N)"
+            set +e
+            timeout 120s "$UVSPEC" < "$inp" > "$out" 2> "$err"
+            rc=$?
+            set -e
+            end_ns="$(date +%s%N)"
+            elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+            printf '%s\n' "$rc" > "r0/${name}_exit_code.txt"
+            printf '%s\n' "$elapsed_ms" > "r0/${name}_elapsed_ms.txt"
+            sha256sum "$inp" | awk '{print $1}' > "r0/${name}_input_sha256.txt"
+            sha256sum "$out" | awk '{print $1}' > "r0/${name}_stdout_sha256.txt"
+            sha256sum "$err" | awk '{print $1}' > "r0/${name}_stderr_sha256.txt"
+            wc -c < "$out" | tr -d ' ' > "r0/${name}_stdout_bytes.txt"
+            wc -c < "$err" | tr -d ' ' > "r0/${name}_stderr_bytes.txt"
+            grep -Eai 'refraction|refract|unknown|not implemented|unsupported|warning|error|fatal' "$err" > "r0/${name}_diagnostic_keywords.txt" || true
+            grep -Eai 'refraction|refract|unknown|not implemented|unsupported|warning|error|fatal' "$out" > "r0/${name}_stdout_diagnostic_keywords.txt" || true
+            find r0 -maxdepth 1 -type f -name "${name}_mc*" -printf '%f\t%s\n' | sort > "r0/${name}_generated_file_manifest.tsv"
+            while IFS= read -r f; do sha256sum "$f"; done < <(find r0 -maxdepth 1 -type f -name "${name}_mc*" -print | sort) > "r0/${name}_generated_file_sha256.txt"
+            rm -f "$out"
+          }
+
+          set -e
+          run_one baseline
+          run_one refraction
+
+          BASELINE_RC="$(cat r0/baseline_exit_code.txt)"
+          REFRACTION_RC="$(cat r0/refraction_exit_code.txt)"
+          if [ "$REFRACTION_RC" -eq 0 ]; then
+            R0_DISPOSITION='TOKEN_ACCEPTED_THROUGH_SOLVER_COMPLETION_SEMANTIC_ACTIVATION_UNPROVEN'
+          else
+            R0_DISPOSITION='TOKEN_REFUSED_OR_RUNTIME_FAILED_IN_EXACT_R0_CONFIGURATION'
+          fi
+          if [ "$BASELINE_RC" -ne 0 ]; then
+            R0_DISPOSITION='INVALID_R0_BASELINE_DID_NOT_COMPLETE'
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('r0')
+          def text(name):
+              return (p/name).read_text(errors='replace').strip()
+          def lines(name):
+              v=text(name)
+              return [] if not v else v.splitlines()
+          baseline_rc=int(text('baseline_exit_code.txt'))
+          refraction_rc=int(text('refraction_exit_code.txt'))
+          if baseline_rc != 0:
+              disposition='INVALID_R0_BASELINE_DID_NOT_COMPLETE'
+          elif refraction_rc == 0:
+              disposition='TOKEN_ACCEPTED_THROUGH_SOLVER_COMPLETION_SEMANTIC_ACTIVATION_UNPROVEN'
+          else:
+              disposition='TOKEN_REFUSED_OR_RUNTIME_FAILED_IN_EXACT_R0_CONFIGURATION'
+          obj={
+              'schemaVersion':1,
+              'probeId':'mystic-refraction-capability-r0-v1',
+              'scope':'NON_SCIENTIFIC_CAPABILITY_ONLY_NO_RADIANCE_INTERPRETATION',
+              'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':text('uvspec_sha256.txt'),
+              'geometry':{'solarZenithAngleDeg':96.0,'viewAltitudeDeg':30.0,'relativeAzimuthDeg':90.0,'surfaceAlbedo':0.0},
+              'wavelengthNm':550.0,
+              'photonHistories':1000,
+              'vroom':False,
+              'randomSeedDirectivePresent':False,
+              'baseline':{
+                  'exitCode':baseline_rc,
+                  'elapsedMs':int(text('baseline_elapsed_ms.txt')),
+                  'stdoutSha256':text('baseline_stdout_sha256.txt'),
+                  'stderrSha256':text('baseline_stderr_sha256.txt'),
+                  'stderrDiagnostics':lines('baseline_diagnostic_keywords.txt'),
+                  'stdoutDiagnostics':lines('baseline_stdout_diagnostic_keywords.txt'),
+              },
+              'withMcRefraction':{
+                  'exitCode':refraction_rc,
+                  'elapsedMs':int(text('refraction_elapsed_ms.txt')),
+                  'stdoutSha256':text('refraction_stdout_sha256.txt'),
+                  'stderrSha256':text('refraction_stderr_sha256.txt'),
+                  'stderrDiagnostics':lines('refraction_diagnostic_keywords.txt'),
+                  'stdoutDiagnostics':lines('refraction_stdout_diagnostic_keywords.txt'),
+              },
+              'disposition':disposition,
+              'interpretationBoundary':'Success can prove parser/solver acceptance only; it does not by itself prove that refractive photon-path bending is active or physically correct. Failure proves this exact R0 configuration is not a clean supported path. No radiance values are opened or interpreted by this probe.'
+          }
+          (p/'summary.json').write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(obj,indent=2,sort_keys=True))
+          PY
+
+          cat r0/summary.json >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BASELINE_RC" -ne 0 ]; then
+            exit 30
+          fi
+
+      - name: Upload bounded R0 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mystic-refraction-capability-r0-v1
+          path: |
+            r0/*.inp
+            r0/*.json
+            r0/*.txt
+            r0/*.tsv
+          if-no-files-found: error
+          retention-days: 30

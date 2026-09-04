@@ -1,0 +1,101 @@
+name: LOWALT source-cache recovery v1
+
+on:
+  push:
+    branches:
+      - review/low-altitude-source-cache-recovery-v1
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Probe historical libRadtran 2.0.6 source candidates
+        shell: bash
+        run: |
+          set -u -o pipefail
+          EXPECTED='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+          mkdir -p out/work
+          REPORT=out/source-recovery-report.txt
+          : > "$REPORT"
+          {
+            echo "LOWALT_SOURCE_RECOVERY_V1"
+            echo "expected_sha256=$EXPECTED"
+            echo "runner_os=${RUNNER_OS:-unknown}"
+            echo "github_sha=${GITHUB_SHA:-unknown}"
+            date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
+          } >> "$REPORT"
+
+          probe_url() {
+            local label="$1"
+            local url="$2"
+            local body="out/work/${label}.bin"
+            local headers="out/${label}.headers.txt"
+            echo >> "$REPORT"
+            echo "candidate=$label" >> "$REPORT"
+            echo "url=$url" >> "$REPORT"
+            rm -f "$body" "$headers"
+            set +e
+            curl --fail --location --silent --show-error \
+              --connect-timeout 20 --max-time 300 --retry 0 \
+              --dump-header "$headers" --output "$body" "$url"
+            rc=$?
+            set -e
+            echo "curl_rc=$rc" >> "$REPORT"
+            if [[ $rc -ne 0 ]]; then
+              rm -f "$body"
+              return 0
+            fi
+            bytes=$(wc -c < "$body" | tr -d ' ')
+            sha=$(sha256sum "$body" | awk '{print $1}')
+            echo "bytes=$bytes" >> "$REPORT"
+            echo "sha256=$sha" >> "$REPORT"
+            file "$body" | sed 's/^/file=/' >> "$REPORT" || true
+            if [[ "$sha" == "$EXPECTED" ]]; then
+              echo "expected_match=true" >> "$REPORT"
+              cp "$body" out/libRadtran-2.0.6-EXPECTED-999e47f4.tar.gz
+            else
+              echo "expected_match=false" >> "$REPORT"
+            fi
+            rm -f "$body"
+          }
+
+          set -e
+          probe_url sources_conda_https 'https://sources.conda.io/libRadtran-2.0.6.tar.gz'
+          probe_url anaconda_main_src_cache 'https://repo.anaconda.com/pkgs/main/src_cache/libRadtran-2.0.6.tar.gz'
+          probe_url libradtran_https 'https://www.libradtran.org/download/libRadtran-2.0.6.tar.gz'
+          probe_url libradtran_http 'http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz'
+
+          CDX='https://web.archive.org/cdx/search/cdx?url=www.libradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz&output=json&filter=statuscode%3A200&fl=timestamp%2Coriginal%2Cdigest%2Clength%2Cstatuscode%2Cmimetype&collapse=digest'
+          echo >> "$REPORT"
+          echo "wayback_cdx_url=$CDX" >> "$REPORT"
+          set +e
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 120 --retry 0 \
+            --dump-header out/wayback-cdx.headers.txt \
+            --output out/wayback-cdx.json "$CDX"
+          cdx_rc=$?
+          set -e
+          echo "wayback_cdx_curl_rc=$cdx_rc" >> "$REPORT"
+          if [[ $cdx_rc -eq 0 ]]; then
+            echo "wayback_cdx_bytes=$(wc -c < out/wayback-cdx.json | tr -d ' ')" >> "$REPORT"
+            sha256sum out/wayback-cdx.json | sed 's/^/wayback_cdx_sha256=/' >> "$REPORT"
+            head -c 4096 out/wayback-cdx.json > out/wayback-cdx-prefix.txt
+          else
+            rm -f out/wayback-cdx.json
+          fi
+
+          rm -rf out/work
+          cat "$REPORT"
+
+      - name: Upload immutable recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-source-cache-recovery-v1
+          path: out/
+          if-no-files-found: error
+          retention-days: 90

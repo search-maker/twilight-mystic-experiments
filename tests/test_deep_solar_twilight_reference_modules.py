@@ -48,6 +48,9 @@ class DeepSolarTwilightReferenceModulesTest(unittest.TestCase):
     def test_block_independence_zero_bound_reference(self) -> None:
         self._run_self_test("block_independence_zero_bound_reference.py")
 
+    def test_finite_hit_fixed_horizon_reference(self) -> None:
+        self._run_self_test("finite_hit_fixed_horizon_reference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,15 +6,20 @@ optical-property bound. Instead it composes already-frozen conservative bounds
 for a solar contribution and tests whether that entire contribution is
 material relative to a separately frozen lower bound on non-solar radiance.
 
-If U_s is an upper bound on solar radiance, A_i >= 1 are independently
-certified multiplicative amplification bounds, U_add is a nonnegative additive
-solar/tail bound, and L_ns > 0 is a lower bound on non-solar radiance, then
+If U_s is an upper bound on solar radiance, A_i >= 1 are multiplicative
+amplification bounds, U_add is a nonnegative additive solar/tail bound, and
+L_ns > 0 is a lower bound on non-solar radiance, then
 
     R = (U_s * product(A_i) + U_add) / L_ns
 
 is a deterministic upper bound on the fractional total-radiance increase from
-retaining the solar term. Ignoring the solar term changes sky magnitude by at
-most
+retaining the solar term only when the multiplicative factors are jointly
+composable. Separate one-at-a-time or marginal sensitivities are not, by
+themselves, a proof that their product is a joint upper bound. Therefore this
+reference refuses to multiply more than one factor unless the caller explicitly
+asserts that a separate reviewed joint/conditional composability proof exists.
+
+Ignoring the solar term changes sky magnitude by at most
 
     delta_m = 2.5 * log10(1 + R).
 
@@ -55,6 +60,47 @@ def _fraction(value: Fraction | int | str) -> Fraction:
 def _require_nonnegative(name: str, value: Fraction) -> None:
     if value < 0:
         raise ValueError(f"{name} must be nonnegative")
+
+
+def _joint_factor_product(
+    multiplicative_factors: tuple[Fraction | int | str, ...],
+    *,
+    jointly_composable: bool,
+) -> Fraction:
+    """Return an exact product only under an explicit composition contract.
+
+    A single factor may already be a reviewed joint upper bound and therefore
+    needs no extra flag. More than one factor is rejected by default because
+    separately certified marginal/one-factor sensitivities need not remain
+    valid under simultaneous perturbation. Setting jointly_composable=True is
+    an assertion that a separate reviewed proof establishes that the supplied
+    factors are uniform conditional bounds whose product is a valid joint upper
+    bound; the flag is not itself that proof.
+    """
+    if not isinstance(jointly_composable, bool):
+        raise TypeError("jointly_composable must be a bool")
+
+    factors: list[Fraction] = []
+    for raw_factor in multiplicative_factors:
+        factor = _fraction(raw_factor)
+        if factor < 1:
+            raise ValueError(
+                "multiplicative amplification factors must be >= 1; attenuation-only "
+                "credit requires a separately reviewed bound"
+            )
+        factors.append(factor)
+
+    if len(factors) > 1 and not jointly_composable:
+        raise ValueError(
+            "multiple amplification factors are not automatically composable; "
+            "separate marginal/one-at-a-time bounds cannot be multiplied without "
+            "a reviewed joint or uniform-conditional composability proof"
+        )
+
+    product = Fraction(1)
+    for factor in factors:
+        product *= factor
+    return product
 
 
 def _fraction_decimal_bounds(value: Fraction, precision: int) -> tuple[Decimal, Decimal]:
@@ -109,23 +155,24 @@ def amplified_solar_upper(
     base_solar_upper: Fraction | int | str,
     *,
     multiplicative_factors: tuple[Fraction | int | str, ...] = (),
+    jointly_composable: bool = False,
     additive_solar_upper: Fraction | int | str = 0,
 ) -> Fraction:
-    """Exact composition of frozen multiplicative and additive solar bounds."""
+    """Exact composition of frozen multiplicative and additive solar bounds.
+
+    More than one multiplicative factor requires jointly_composable=True, which
+    asserts that an external reviewed joint/conditional proof makes the product
+    a valid upper bound. Marginal factors are rejected by default.
+    """
     base = _fraction(base_solar_upper)
     additive = _fraction(additive_solar_upper)
     _require_nonnegative("base_solar_upper", base)
     _require_nonnegative("additive_solar_upper", additive)
 
-    factor_product = Fraction(1)
-    for raw_factor in multiplicative_factors:
-        factor = _fraction(raw_factor)
-        if factor < 1:
-            raise ValueError(
-                "multiplicative amplification factors must be >= 1; attenuation-only "
-                "credit requires a separately reviewed bound"
-            )
-        factor_product *= factor
+    factor_product = _joint_factor_product(
+        multiplicative_factors,
+        jointly_composable=jointly_composable,
+    )
     return base * factor_product + additive
 
 
@@ -134,6 +181,7 @@ def solar_to_nonsolar_ratio_upper(
     non_solar_lower: Fraction | int | str,
     *,
     multiplicative_factors: tuple[Fraction | int | str, ...] = (),
+    jointly_composable: bool = False,
     additive_solar_upper: Fraction | int | str = 0,
 ) -> Fraction:
     """Exact upper bound U_s/L_ns after frozen amplification composition."""
@@ -143,6 +191,7 @@ def solar_to_nonsolar_ratio_upper(
     solar = amplified_solar_upper(
         base_solar_upper,
         multiplicative_factors=multiplicative_factors,
+        jointly_composable=jointly_composable,
         additive_solar_upper=additive_solar_upper,
     )
     return solar / non_solar
@@ -198,6 +247,7 @@ def negligibility_certificate(
     non_solar_lower: Fraction | int | str,
     magnitude_tolerance: Fraction | int | str,
     multiplicative_factors: tuple[Fraction | int | str, ...] = (),
+    jointly_composable: bool = False,
     additive_solar_upper: Fraction | int | str = 0,
 ) -> NegligibilityCertificate:
     """Return a fail-closed deterministic U_s/L_ns materiality certificate."""
@@ -207,6 +257,7 @@ def negligibility_certificate(
     solar = amplified_solar_upper(
         base_solar_upper,
         multiplicative_factors=multiplicative_factors,
+        jointly_composable=jointly_composable,
         additive_solar_upper=additive_solar_upper,
     )
     ratio = solar / non_solar
@@ -227,14 +278,47 @@ class ReferenceTests(unittest.TestCase):
         self.assertGreater(budget, Fraction("0.00925288607668440"))
         self.assertLess(budget, Fraction("0.00925288607668442"))
 
-    def test_exact_ratio_composition(self) -> None:
+    def test_exact_ratio_composition_with_joint_contract(self) -> None:
         ratio = solar_to_nonsolar_ratio_upper(
             Fraction(3, 1000),
             Fraction(2),
             multiplicative_factors=(Fraction(3, 2), Fraction(4, 3)),
+            jointly_composable=True,
             additive_solar_upper=Fraction(1, 1000),
         )
         self.assertEqual(ratio, Fraction(7, 2000))
+
+    def test_multiple_marginal_factors_rejected_by_default(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not automatically composable"):
+            amplified_solar_upper(
+                Fraction(1, 1000),
+                multiplicative_factors=(2, 2),
+            )
+
+    def test_joint_flag_is_assertion_not_needed_for_single_factor(self) -> None:
+        self.assertEqual(
+            amplified_solar_upper(
+                Fraction(1, 1000),
+                multiplicative_factors=(Fraction(3, 2),),
+            ),
+            Fraction(3, 2000),
+        )
+        self.assertEqual(
+            amplified_solar_upper(
+                Fraction(1, 1000),
+                multiplicative_factors=(Fraction(3, 2), Fraction(4, 3)),
+                jointly_composable=True,
+            ),
+            Fraction(1, 500),
+        )
+
+    def test_joint_flag_must_be_bool(self) -> None:
+        with self.assertRaises(TypeError):
+            amplified_solar_upper(
+                1,
+                multiplicative_factors=(2, 2),
+                jointly_composable="yes",  # type: ignore[arg-type]
+            )
 
     def test_amplification_factor_below_one_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
@@ -361,6 +445,10 @@ def _summary() -> dict[str, object]:
         "magnitude_tolerance": str(tolerance),
         "ratio_budget_lower": str(budget),
         "rule": "PASS only when exact ratio_upper <= conservative ratio_budget_lower",
+        "multiple_factor_policy": (
+            "REJECT unless jointly_composable=True asserts a separate reviewed "
+            "joint/uniform-conditional composability proof"
+        ),
         "no_epsilon_substitution": True,
     }
 

@@ -63,6 +63,9 @@ class DeepSolarTwilightReferenceModulesTest(unittest.TestCase):
     def test_assumption_tier_budget_reference(self) -> None:
         self._run_self_test("assumption_tier_budget_reference.py")
 
+    def test_negligibility_amplification_reference(self) -> None:
+        self._run_self_test("negligibility_amplification_reference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,244 @@
+name: REPTRAN visible capability C0 v1
+
+on:
+  push:
+    branches:
+      - review/reptran-visible-capability-c0-v1
+
+permissions:
+  contents: read
+
+jobs:
+  exact-runtime-result-blind-capability:
+    if: github.ref == 'refs/heads/review/reptran-visible-capability-c0-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-visible-c0-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Run result-blind REPTRAN syntax and output-grid capability probe
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-list --count HEAD^)" -ge 1
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')" = "1"
+          test "$(git rev-parse HEAD^)" = "fe6e063c568394ae7b4e90222de270d3f2460455"
+
+          mkdir -p c0
+          EXPECTED_UVSPEC_SHA256='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA256="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$ACTUAL_UVSPEC_SHA256" = "$EXPECTED_UVSPEC_SHA256"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA256" > c0/uvspec_sha256.txt
+          micromamba list -n reptran-visible-c0-v1 rubin-libradtran > c0/package_identity.txt
+
+          PREFIX="$(cd "$(dirname "$UVSPEC")/.." && pwd)"
+          DATA="$PREFIX/share/libRadtran/data"
+          test -f "$DATA/atmmod/afglus.dat"
+          test -e "$DATA/solar_flux/atlas_plus_modtran"
+
+          cat > c0/default-disort.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          wavelength 500 600
+          sza 60.000000
+          rte_solver disort
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          quiet
+          EOF
+
+          cat > c0/explicit-reptran-disort.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param reptran
+          wavelength 500 600
+          sza 60.000000
+          rte_solver disort
+          albedo 0.000000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          quiet
+          EOF
+
+          run_det() {
+            name="$1"
+            set +e
+            timeout 120s "$UVSPEC" < "c0/${name}.inp" > "c0/${name}.stdout" 2> "c0/${name}.stderr"
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "c0/${name}_exit_code.txt"
+            sha256sum "c0/${name}.stdout" | awk '{print $1}' > "c0/${name}_stdout_sha256.txt"
+            sha256sum "c0/${name}.stderr" | awk '{print $1}' > "c0/${name}_stderr_sha256.txt"
+            wc -c < "c0/${name}.stdout" | tr -d ' ' > "c0/${name}_stdout_bytes.txt"
+            grep -Eai 'reptran|unknown|not implemented|unsupported|warning|error|fatal' "c0/${name}.stderr" > "c0/${name}_diagnostics.txt" || true
+          }
+          run_det default-disort
+          run_det explicit-reptran-disort
+
+          cat > c0/default-reptran-mystic.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          wavelength 380 780
+          sza 96.000000
+          phi0 0.000000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1000
+          mc_vroom off
+          mc_std
+          mc_basename $PWD/c0/reptran_mc
+          albedo 0.150000
+          aerosol_default
+          aerosol_set_tau_at_wvl 550 0.150000
+          zout 0.000000
+          umu -0.50000000
+          phi 90.000000
+          quiet
+          EOF
+
+          start_ns="$(date +%s%N)"
+          set +e
+          timeout 420s "$UVSPEC" < c0/default-reptran-mystic.inp > c0/mystic.stdout 2> c0/mystic.stderr
+          mystic_rc=$?
+          set -e
+          end_ns="$(date +%s%N)"
+          printf '%s\n' "$mystic_rc" > c0/mystic_exit_code.txt
+          printf '%s\n' "$(( (end_ns-start_ns)/1000000 ))" > c0/mystic_elapsed_ms.txt
+          sha256sum c0/mystic.stdout | awk '{print $1}' > c0/mystic_stdout_sha256.txt
+          sha256sum c0/mystic.stderr | awk '{print $1}' > c0/mystic_stderr_sha256.txt
+          grep -Eai 'reptran|unknown|not implemented|unsupported|warning|error|fatal' c0/mystic.stderr > c0/mystic_diagnostics.txt || true
+          find c0 -maxdepth 1 -type f -name 'reptran_mc*' -printf '%f\t%s\n' | sort > c0/generated_manifest.tsv
+          while IFS= read -r f; do sha256sum "$f"; done < <(find c0 -maxdepth 1 -type f -name 'reptran_mc*' -print | sort) > c0/generated_sha256.txt
+
+          python - <<'PY'
+          import hashlib, json, math
+          from pathlib import Path
+          p=Path('c0')
+          def txt(name):
+              return (p/name).read_text(errors='replace').strip()
+          def integer(name):
+              return int(txt(name))
+          def sh(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          default_rc=integer('default-disort_exit_code.txt')
+          explicit_rc=integer('explicit-reptran-disort_exit_code.txt')
+          deterministic_equivalent=(
+              default_rc == 0 and explicit_rc == 0 and
+              txt('default-disort_stdout_sha256.txt') == txt('explicit-reptran-disort_stdout_sha256.txt') and
+              txt('default-disort_stdout_bytes.txt') == txt('explicit-reptran-disort_stdout_bytes.txt')
+          )
+          mystic_rc=integer('mystic_exit_code.txt')
+          rad=p/'reptran_mc.rad.spc'
+          std=p/'reptran_mc.rad.std.spc'
+          wavelengths=[]
+          if mystic_rc == 0 and rad.is_file():
+              for line in rad.read_text(errors='strict').splitlines():
+                  parts=line.split()
+                  if not parts:
+                      continue
+                  try:
+                      w=float(parts[0])
+                  except ValueError:
+                      continue
+                  if math.isfinite(w):
+                      wavelengths.append(w)
+          (p/'reptran_wavelengths.txt').write_text(''.join(f'{w:.12g}\n' for w in wavelengths))
+          legacy=False
+          if len(wavelengths)==8001 and abs(wavelengths[0]-380.0)<1e-8 and abs(wavelengths[-1]-780.0)<1e-8:
+              legacy=all(wavelengths[i+1]>wavelengths[i] and abs((wavelengths[i+1]-wavelengths[i])-0.05)<1e-7 for i in range(len(wavelengths)-1))
+          disposition=(
+              'DEFAULT_REPTRAN_MYSTIC_COMPLETES_OUTPUT_GRID_CAPTURED'
+              if mystic_rc == 0 and rad.is_file() and wavelengths else
+              'DEFAULT_REPTRAN_MYSTIC_REFUSED_OR_NO_SPECTRAL_RADIANCE_FILE'
+          )
+          receipt={
+              'schemaVersion':1,
+              'probeId':'reptran-visible-capability-c0-v1',
+              'scope':'RESULT_BLIND_CAPABILITY_AND_OUTPUT_GRID_SEMANTICS_ONLY_NO_RADIANCE_VALUES_RETAINED_OR_INTERPRETED',
+              'baseMain':'fe6e063c568394ae7b4e90222de270d3f2460455',
+              'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':txt('uvspec_sha256.txt'),
+              'defaultVsExplicitReptranDisort':{
+                  'defaultExitCode':default_rc,
+                  'explicitExitCode':explicit_rc,
+                  'stdoutByteAndShaIdentical':deterministic_equivalent,
+              },
+              'mysticProbe':{
+                  'exitCode':mystic_rc,
+                  'elapsedMs':integer('mystic_elapsed_ms.txt'),
+                  'geometry':{'sunDepressionDeg':6.0,'targetAltitudeDeg':30.0,'relativeAzimuthDeg':90.0,'observerElevationM':0.0,'aod550':0.15,'albedo':0.15},
+                  'wavelengthDomainNm':[380,780],
+                  'molAbsParamDirectivePresent':False,
+                  'wavelengthGridFileDirectivePresent':False,
+                  'randomSeedDirectivePresent':False,
+                  'rawSpectralRadianceFilePresent':rad.is_file(),
+                  'rawStdSpectralRadianceFilePresent':std.is_file(),
+                  'wavelengthNodeCount':len(wavelengths),
+                  'wavelengthFirstNm':wavelengths[0] if wavelengths else None,
+                  'wavelengthLastNm':wavelengths[-1] if wavelengths else None,
+                  'legacy8001Node005nmParserCompatible':legacy,
+              },
+              'disposition':disposition,
+              'integrationSemanticsAuthorized':False,
+              'radianceValuesOpened':False,
+              'radianceValuesRetained':False,
+              'crsVsReptranMaterialityQuantified':False,
+              'frozenV3ModelModified':False,
+              'protectedHoldoutOpened':False,
+              'taylorOrJerusalemUsed':False,
+              'newMappingAuthorized':False,
+          }
+          (p/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          # Destroy all numeric solver outputs before artifact upload. Preserve only hashes,
+          # diagnostics, inputs, wavelength coordinates, and the result-blind receipt.
+          for q in list(p.glob('reptran_mc*')) + [p/'mystic.stdout',p/'default-disort.stdout',p/'explicit-reptran-disort.stdout']:
+              if q.exists(): q.unlink()
+          PY
+
+          cat c0/receipt.json
+          test ! -e c0/reptran_mc.rad.spc
+          test ! -e c0/reptran_mc.rad.std.spc
+
+      - name: Upload immutable result-blind capability receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: reptran-visible-capability-c0-v1
+          path: |
+            c0/receipt.json
+            c0/package_identity.txt
+            c0/uvspec_sha256.txt
+            c0/default-disort.inp
+            c0/explicit-reptran-disort.inp
+            c0/default-reptran-mystic.inp
+            c0/*_exit_code.txt
+            c0/*_sha256.txt
+            c0/*_bytes.txt
+            c0/*_diagnostics.txt
+            c0/mystic_elapsed_ms.txt
+            c0/generated_manifest.tsv
+            c0/generated_sha256.txt
+            c0/reptran_wavelengths.txt
+          if-no-files-found: error
+          retention-days: 90

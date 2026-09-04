@@ -1,0 +1,255 @@
+name: LOWALT pinned GEOFAST helper v13
+run-name: LOWALT pinned GEOFAST helper ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - review/lowalt-pinned-static-callgraph-v11
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-pinned-geofast-helper-v13
+  cancel-in-progress: false
+
+env:
+  EXACT_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+  QA001_BLACKBOX_TAU: '9.43164899864486'
+
+jobs:
+  exact-helper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact diagnostic head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up exact pinned libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-pinned-geofast-v13
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Install debugger and linker tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb gfortran binutils
+          command -v gdb
+          command -v gfortran
+
+      - name: Capture exact pre-solver boundary and execute geometry helper only
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = review/lowalt-pinned-static-callgraph-v11
+          test "$(uname -m)" = x86_64
+          mkdir -p lowalt-geofast-v13
+
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          PACKAGE_SPEC="$(python - <<'PY'
+          import subprocess
+          rows=[]
+          for raw in subprocess.check_output(['micromamba','list','rubin-libradtran'],text=True).splitlines():
+              p=raw.split()
+              if len(p)>=3 and p[0]=='rubin-libradtran': rows.append(p[:3])
+          if len(rows)!=1: raise SystemExit(f'package identity ambiguity: {rows!r}')
+          print('='.join(rows[0]))
+          PY
+          )"
+          test "$PACKAGE_SPEC" = "$EXACT_PACKAGE"
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data',u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+
+          # Reconstruct the same non-protected qa-001 physical coordinates only to
+          # capture the exact REAL*4 boundary.  GDB kills uvspec at sdisort_ entry,
+          # before the first solver instruction.  No DISORT science result exists.
+          python - "$DATA_DIR" <<'PY'
+          import importlib.util, sys
+          from pathlib import Path
+          data=Path(sys.argv[1]); root=Path('.').resolve()
+          spec=importlib.util.spec_from_file_location('phase',root/'review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py')
+          if spec is None or spec.loader is None: raise SystemExit('phase module unavailable')
+          phase=importlib.util.module_from_spec(spec); sys.modules[spec.name]=phase; spec.loader.exec_module(phase)
+          zgrid=phase.elevated_site_grid_ascending(data/'atmmod'/'afglus.dat',640.0)
+          text='\n'.join([
+              f'data_files_path {data}',
+              f'atmosphere_file {data / "atmmod" / "afglus.dat"}',
+              f'source solar {data / "solar_flux" / "atlas_plus_modtran"}',
+              'mol_abs_param crs',
+              f'wavelength_grid_file {root / "experiments" / "aerosol-family-challenge-v2-r8" / "wavelength-grid-1nm.dat"}',
+              'wavelength 400 400',
+              'sza 89.59000000',
+              'atm_z_grid ' + ' '.join(f'{z:.6f}' for z in zgrid),
+              'zout 0.000000',
+              'albedo 0.15000000',
+              'rte_solver sdisort',
+              'sdisort nscat 1',
+              'output_quantity transmittance',
+              'output_user lambda edir',
+              '',
+          ])
+          Path('lowalt-geofast-v13/diag.inp').write_text(text)
+          PY
+
+          nm -a "$UVSPEC" > lowalt-geofast-v13/nm.txt
+          SYMBOL="$(awk '$3=="sdisort_" || $3=="sdisort" {if (symbol=="") symbol=$3} END {if (symbol!="") print symbol}' lowalt-geofast-v13/nm.txt)"
+          test -n "$SYMBOL"
+          {
+            echo 'set pagination off'
+            echo 'set confirm off'
+            echo 'set breakpoint pending off'
+            printf 'break %s\n' "$SYMBOL"
+            cat <<'GDB'
+          run < lowalt-geofast-v13/diag.inp
+          python
+          import gdb, json, struct
+          inf=gdb.selected_inferior(); rsp=int(gdb.parse_and_eval('$rsp'))
+          regs={1:'rdi',2:'rsi',3:'rdx',4:'rcx',5:'r8',6:'r9'}
+          def mem(addr,n): return bytes(inf.read_memory(addr,n))
+          def argptr(n):
+              if n <= 6: return int(gdb.parse_and_eval('$'+regs[n]))
+              return struct.unpack('<Q',mem(rsp+8*(n-6),8))[0]
+          def i32p(n): return struct.unpack('<i',mem(argptr(n),4))[0]
+          def f32p(n): return struct.unpack('<f',mem(argptr(n),4))[0]
+          def f32arr(n,count): return list(struct.unpack('<'+'f'*count,mem(argptr(n),4*count)))
+          nlyr=i32p(1)
+          out={
+            'capturePoint':'sdisort wrapper entry; killed before solver instruction',
+            'nlyr':nlyr,
+            'dtauc':f32arr(2,nlyr),
+            'umu0':f32p(20),
+            'zd':f32arr(23,nlyr+1),
+            'radiusKm':f32p(25),
+            'nrefrac':i32p(55),
+            'ichap':i32p(56),
+            'vn':f32arr(57,nlyr+1),
+          }
+          open('lowalt-geofast-v13/capture.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print('CAPTURED',json.dumps({k:out[k] for k in ('nlyr','umu0','radiusKm','nrefrac','ichap')},sort_keys=True))
+          end
+          kill
+          quit
+          GDB
+          } > lowalt-geofast-v13/capture.gdb
+          gdb -q -nx -batch -x lowalt-geofast-v13/capture.gdb "$UVSPEC" | tee lowalt-geofast-v13/gdb.txt
+          test -s lowalt-geofast-v13/capture.json
+
+          # Link only the exact pinned dpmisc.o geometry helper.  No DISORT solver
+          # object is linked into this helper library.
+          F_LIB="$CONDA_PREFIX/lib/libRadtran_f.a"
+          test -f "$F_LIB"
+          ar p "$F_LIB" dpmisc.o > lowalt-geofast-v13/dpmisc.o
+          test -s lowalt-geofast-v13/dpmisc.o
+          sha256sum lowalt-geofast-v13/dpmisc.o | tee lowalt-geofast-v13/dpmisc.sha256
+          nm -g --defined-only lowalt-geofast-v13/dpmisc.o > lowalt-geofast-v13/dpmisc.defined.txt
+          grep -qE '[[:space:]]geofast_$' lowalt-geofast-v13/dpmisc.defined.txt
+          grep -qE '[[:space:]]chpman2_$' lowalt-geofast-v13/dpmisc.defined.txt
+          gfortran -shared -o lowalt-geofast-v13/libdpmisc_exact.so lowalt-geofast-v13/dpmisc.o
+
+          python - <<'PY'
+          import ctypes as C, importlib.util, json, math, sys
+          from pathlib import Path
+          root=Path('.').resolve(); outdir=root/'lowalt-geofast-v13'
+          d=json.loads((outdir/'capture.json').read_text())
+          n=int(d['nlyr'])
+          if n != 49: raise SystemExit(f'unexpected layer count: {n}')
+          if abs(float(d['zd'][-1])) > 2e-7: raise SystemExit('surface ZD drift')
+
+          # Exact libRadtran-2.0.6 public-source family fixes MXCLY=128.  Allocate
+          # substantially larger backing storage so even a hidden larger compile-time
+          # stride cannot overrun this diagnostic; CHPMAN2 is explicitly called with
+          # the source-family dimension 128.  A mismatched hidden dimension would
+          # manifest as numerical disagreement and remains fail-closed.
+          MXCLY=128; BACKING=1024
+          D=C.c_double; I=C.c_int
+          lib=C.CDLL(str(outdir/'libdpmisc_exact.so'))
+          geofast=lib.geofast_; chpman2=lib.chpman2_
+
+          brosza=I(0); sza_bro=(D*1024)()
+          fac=(D*(BACKING*BACKING))(); fac2=(D*(BACKING*BACKING))()
+          szaloc=(D*(BACKING*(BACKING+1)))(); szaloc2=(D*(BACKING*(BACKING+1)))()
+          nfac=(I*BACKING)(); nfac2=(I*BACKING)()
+          zlay=D(0.5); nlyr=I(n)
+          zd=(D*(n+1))(*map(float,d['zd']))
+          zenang=D(math.degrees(math.acos(float(d['umu0']))))
+          radius=D(float(d['radiusKm']))
+          vn=(D*(n+1))(*map(float,d['vn']))
+
+          geofast(C.byref(brosza),sza_bro,fac,nfac,szaloc,fac2,nfac2,szaloc2,
+                  C.byref(zlay),C.byref(nlyr),zd,C.byref(zenang),C.byref(radius),vn)
+
+          dtauc=(D*n)(*map(float,d['dtauc'])); chp=(D*BACKING)(); mxcly=I(MXCLY)
+          chpman2(C.byref(nlyr),C.byref(zenang),dtauc,nfac,fac,nfac2,fac2,chp,C.byref(mxcly))
+          exact_chp=float(chp[n-1])
+          tauv=sum(map(float,d['dtauc']))
+          taup=sum(map(float,d['dtauc'][:-1]))+0.5*float(d['dtauc'][-1])
+          exact_pred=tauv*exact_chp/taup
+
+          spec=importlib.util.spec_from_file_location('ref',root/'review/low-altitude-stellar-transport-v3/qa001_geofast_reference.py')
+          if spec is None or spec.loader is None: raise SystemExit('qa001 reference unavailable')
+          ref=importlib.util.module_from_spec(spec); sys.modules[spec.name]=ref; spec.loader.exec_module(ref)
+          z_cm=tuple(float(d['zd'][n-i])*1.0e5 for i in range(n+1))
+          vn_asc=tuple(float(d['vn'][n-i]) for i in range(n+1))
+          factors,nfac_py=ref._opathfast_bottom_factors(float(zenang.value),z_cm,vn_asc,float(d['radiusKm'])*1.0e5,0.5)
+          py_chp=sum(f*t for f,t in zip(factors,map(float,d['dtauc']),strict=True))
+          py_pred=tauv*py_chp/taup
+          blackbox=float('9.43164899864486')
+          helper_delta=exact_pred-py_pred
+          classification='EXACT_HELPER_PYTHON_EQUIVALENT' if abs(helper_delta) <= 1.0e-10 else 'EXACT_HELPER_PYTHON_NOT_EQUIVALENT'
+          summary={
+            'execution':'exact pinned dpmisc.o GEOFAST+CHPMAN2 only; no DISORT solver object linked or executed',
+            'package': 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'nlyr':n,
+            'szaFromCapturedUmu0Deg':float(zenang.value),
+            'geofastRadiusAfterCallCm':float(radius.value),
+            'nfacBottom':int(nfac[n-1]),
+            'nfac2Bottom':int(nfac2[n-1]),
+            'exactHelperChpBottom':exact_chp,
+            'pythonReferenceChpBottom':py_chp,
+            'exactHelperPredictedTau':exact_pred,
+            'pythonReferencePredictedTau':py_pred,
+            'helperMinusPythonTau':helper_delta,
+            'preregisteredDiagnosticToleranceTau':1.0e-10,
+            'helperVsPythonClassification':classification,
+            'frozenConsumedQa001BlackboxTauForComparisonOnly':blackbox,
+            'exactHelperMinusBlackboxTau':exact_pred-blackbox,
+            'pythonReferenceMinusBlackboxTau':py_pred-blackbox,
+            'sourceByteProvenance':'NOT_PASS; unchanged',
+          }
+          (outdir/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          # Fail only on structural impossibility; numerical mismatch is itself useful
+          # immutable diagnostic evidence and must not trigger a retry/rerun.
+          if not math.isfinite(exact_pred) or exact_chp <= 0:
+              raise SystemExit('invalid exact helper output')
+          PY
+
+          rm -f lowalt-geofast-v13/libdpmisc_exact.so lowalt-geofast-v13/dpmisc.o
+
+      - name: Upload immutable helper evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-pinned-geofast-helper-v13
+          path: lowalt-geofast-v13/
+          if-no-files-found: warn
+          retention-days: 90

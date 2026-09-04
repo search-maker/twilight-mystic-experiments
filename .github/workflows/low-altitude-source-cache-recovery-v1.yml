@@ -1,4 +1,4 @@
-name: LOWALT exact-package ABI reconstruction v7
+name: LOWALT solver-object equivalence v8
 
 on:
   push:
@@ -9,341 +9,187 @@ permissions:
   contents: read
 
 jobs:
-  reconstruct:
+  compare:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Compare build-0 and pinned build-1 ABI/code surfaces
+      - name: Compare exact solver-library object code across historical and pinned packages
         shell: bash
         run: |
           set -euo pipefail
-          EXPECTED_SOURCE='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
           BUILD0='rubin-libradtran-2.0.6-py312pl5321hffb8e61_0.conda'
+          BUILD0_SHA='485886cdef4fad72f60d8407aec2c53648b85129572894ca2672015f85a38e8f'
           PINNED='rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda'
+          PINNED_SHA='9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2'
+          EXPECTED_SOURCE='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
           CHANNEL='https://conda.anaconda.org/conda-forge/linux-64'
-          mkdir -p out/raw out/extracted
-          REPORT='out/exact-package-abi-reconstruction-v7.txt'
+          mkdir -p out/raw out/libs out/tmp
+          REPORT='out/solver-object-equivalence-v8.txt'
           : > "$REPORT"
           {
-            echo 'LOWALT_EXACT_PACKAGE_ABI_RECONSTRUCTION_V7'
-            echo "expected_source_sha256=$EXPECTED_SOURCE"
-            echo "build0=$BUILD0"
-            echo "pinned=$PINNED"
+            echo 'LOWALT_SOLVER_OBJECT_EQUIVALENCE_V8'
             echo "probe_head=${GITHUB_SHA:-unknown}"
+            echo "expected_source_sha256=$EXPECTED_SOURCE"
             date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
           } >> "$REPORT"
 
-          REPODATA='out/raw/repodata.json.bz2'
-          curl --fail --location --silent --show-error \
-            --connect-timeout 20 --max-time 180 --retry 0 \
-            --output "$REPODATA" "$CHANNEL/repodata.json.bz2"
-
-          python - "$REPODATA" "$BUILD0" "$PINNED" "$REPORT" <<'PY'
-          import bz2, json, pathlib, sys
-          repodata_name, build0, pinned, report_name = sys.argv[1:]
-          with bz2.open(repodata_name, 'rt') as fh:
-              d = json.load(fh)
-          records = {}
-          records.update(d.get('packages') or {})
-          records.update(d.get('packages.conda') or {})
-          selected = {}
-          for label, fn in [('build0', build0), ('pinned', pinned)]:
-              rec = records.get(fn)
-              selected[label] = rec
-              if rec is not None:
-                  pathlib.Path(f'out/{label}-repodata-record.json').write_text(
-                      json.dumps({'filename': fn, **rec}, indent=2, sort_keys=True) + '\n'
-                  )
-          with pathlib.Path(report_name).open('a') as fh:
-              for label, fn in [('build0', build0), ('pinned', pinned)]:
-                  rec = selected[label]
-                  fh.write(f'{label}_repodata_present={"YES" if rec else "NO"}\n')
-                  if rec:
-                      fh.write(f'{label}_repodata_sha256={rec.get("sha256")}\n')
-                      fh.write(f'{label}_repodata_size={rec.get("size")}\n')
-                      fh.write(f'{label}_build={rec.get("build")}\n')
-                      fh.write(f'{label}_build_number={rec.get("build_number")}\n')
-                      fh.write(f'{label}_timestamp_ms={rec.get("timestamp")}\n')
-          if not all(selected.values()):
-              raise SystemExit('required package record missing from current repodata')
-          PY
-
-          for spec in "build0:$BUILD0" "pinned:$PINNED"; do
+          for spec in "build0:$BUILD0:$BUILD0_SHA" "pinned:$PINNED:$PINNED_SHA"; do
             label=${spec%%:*}
-            fn=${spec#*:}
+            rest=${spec#*:}
+            fn=${rest%%:*}
+            expected=${rest#*:}
             dst="out/raw/$fn"
             curl --fail --location --silent --show-error \
               --connect-timeout 20 --max-time 600 --retry 0 \
               --output "$dst" "$CHANNEL/$fn"
             actual=$(sha256sum "$dst" | awk '{print $1}')
-            size=$(wc -c < "$dst" | tr -d ' ')
-            expected=$(python - "$label" <<'PY'
-          import json,sys
-          print(json.load(open(f'out/{sys.argv[1]}-repodata-record.json')).get('sha256') or '')
-          PY
-            )
-            echo "${label}_download_bytes=$size" >> "$REPORT"
-            echo "${label}_download_sha256=$actual" >> "$REPORT"
-            if [[ -n "$expected" && "$actual" == "$expected" ]]; then
-              echo "${label}_repodata_integrity=PASS" >> "$REPORT"
-            else
-              echo "${label}_repodata_integrity=FAIL" >> "$REPORT"
+            echo "${label}_package_sha256=$actual" >> "$REPORT"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "${label}_package_integrity=FAIL" >> "$REPORT"
               exit 1
             fi
+            echo "${label}_package_integrity=PASS" >> "$REPORT"
           done
 
           python -m pip install --quiet --disable-pip-version-check zstandard
-          python - "$BUILD0" "$PINNED" "$EXPECTED_SOURCE" "$REPORT" <<'PY'
-          import hashlib, io, json, pathlib, re, subprocess, sys, tarfile, zipfile
+          python - "$BUILD0" "$PINNED" "$REPORT" <<'PY'
+          import hashlib, io, json, pathlib, subprocess, sys, tarfile, zipfile
           import zstandard as zstd
 
-          build0, pinned, expected_source, report_name = sys.argv[1:]
+          build0, pinned, report_name = sys.argv[1:]
           root = pathlib.Path('out')
-          extracted_root = root / 'extracted'
-          extracted_root.mkdir(parents=True, exist_ok=True)
           labels = {'build0': build0, 'pinned': pinned}
-          state = {}
+          lib_paths = ('lib/libRadtran_c.a', 'lib/libRadtran_f.a')
+          selected = {
+              'lib/libRadtran_c.a': ['cdisort.o'],
+              'lib/libRadtran_f.a': [
+                  'DISORT.o', 'DISORT2.o', 'dpsdisort.o', 'spsdisort.o',
+                  'DISORTblas.o', 'DISORTlapack.o', 'twostr.o'
+              ],
+          }
 
-          def sha_bytes(data):
+          def sha(data):
               return hashlib.sha256(data).hexdigest()
 
-          def stream_tar(blob, callback):
-              with zstd.ZstdDecompressor().stream_reader(io.BytesIO(blob)) as reader:
+          def extract_payload_members(conda_path, wanted, outdir):
+              found = set()
+              with zipfile.ZipFile(conda_path) as zf:
+                  pkg_name = next(n for n in zf.namelist() if n.startswith('pkg-') and n.endswith('.tar.zst'))
+                  pkg_blob = zf.read(pkg_name)
+              with zstd.ZstdDecompressor().stream_reader(io.BytesIO(pkg_blob)) as reader:
                   with tarfile.open(fileobj=reader, mode='r|') as tf:
                       for member in tf:
-                          callback(tf, member)
+                          if member.isfile() and member.name in wanted:
+                              f = tf.extractfile(member)
+                              if f is None:
+                                  continue
+                              dst = outdir / pathlib.Path(member.name).name
+                              dst.write_bytes(f.read())
+                              found.add(member.name)
+              missing = set(wanted) - found
+              if missing:
+                  raise SystemExit(f'missing payload members: {sorted(missing)}')
 
-          for label, filename in labels.items():
-              package_path = root / 'raw' / filename
-              info_text = {}
-              payload_paths = []
-              header_hashes = {}
-              selected_hashes = {}
-              extract_dir = extracted_root / label
-              extract_dir.mkdir(parents=True, exist_ok=True)
-              with zipfile.ZipFile(package_path) as zf:
-                  names = zf.namelist()
-                  info_inner = next(n for n in names if n.startswith('info-') and n.endswith('.tar.zst'))
-                  pkg_inner = next(n for n in names if n.startswith('pkg-') and n.endswith('.tar.zst'))
-                  info_blob = zf.read(info_inner)
-                  pkg_blob = zf.read(pkg_inner)
+          for label, fn in labels.items():
+              d = root / 'libs' / label
+              d.mkdir(parents=True, exist_ok=True)
+              extract_payload_members(root / 'raw' / fn, set(lib_paths), d)
 
-              wanted_info = {
-                  'info/recipe/meta.yaml', 'info/recipe/meta.yaml.template',
-                  'info/recipe/build.sh', 'info/hash_input.json', 'info/index.json'
+          def ar_members(path):
+              cp = subprocess.run(['ar', 't', str(path)], check=True, stdout=subprocess.PIPE, text=True)
+              return [x for x in cp.stdout.splitlines() if x]
+
+          def ar_bytes(path, member):
+              cp = subprocess.run(['ar', 'p', str(path), member], check=True, stdout=subprocess.PIPE)
+              return cp.stdout
+
+          def normalized_objdump(blob, tag):
+              tmp = root / 'tmp' / (tag.replace('/', '_') + '.o')
+              tmp.write_bytes(blob)
+              cp = subprocess.run(['objdump', '-drwC', str(tmp)], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              lines = cp.stdout.splitlines()
+              # Drop the filename banner so identical code is not made different by temp paths.
+              if lines and lines[0].endswith(':     file format elf64-x86-64'):
+                  lines = lines[1:]
+              text = '\n'.join(lines).strip() + '\n'
+              return sha(text.encode()), text
+
+          result = {'libraries': {}, 'selected_solver_members': {}}
+          for rel in lib_paths:
+              name = pathlib.Path(rel).name
+              p0 = root / 'libs' / 'build0' / name
+              p1 = root / 'libs' / 'pinned' / name
+              m0, m1 = ar_members(p0), ar_members(p1)
+              common = sorted(set(m0) & set(m1))
+              byte_same = []
+              disasm_same = []
+              member_rows = {}
+              for member in common:
+                  b0, b1 = ar_bytes(p0, member), ar_bytes(p1, member)
+                  h0, h1 = sha(b0), sha(b1)
+                  d0, _ = normalized_objdump(b0, f'build0-{name}-{member}')
+                  d1, _ = normalized_objdump(b1, f'pinned-{name}-{member}')
+                  if h0 == h1:
+                      byte_same.append(member)
+                  if d0 == d1:
+                      disasm_same.append(member)
+                  member_rows[member] = {
+                      'build0_object_sha256': h0,
+                      'pinned_object_sha256': h1,
+                      'object_bytes_identical': h0 == h1,
+                      'build0_objdump_drwC_sha256': d0,
+                      'pinned_objdump_drwC_sha256': d1,
+                      'normalized_disassembly_identical': d0 == d1,
+                  }
+              result['libraries'][name] = {
+                  'build0_member_count': len(m0),
+                  'pinned_member_count': len(m1),
+                  'member_order_identical': m0 == m1,
+                  'common_count': len(common),
+                  'only_build0': sorted(set(m0) - set(m1)),
+                  'only_pinned': sorted(set(m1) - set(m0)),
+                  'byte_identical_member_count': len(byte_same),
+                  'normalized_disassembly_identical_member_count': len(disasm_same),
+                  'byte_identical_members': byte_same,
+                  'normalized_disassembly_identical_members': disasm_same,
+                  'members': member_rows,
               }
-              def handle_info(tf, member):
-                  if not member.isfile() or member.name not in wanted_info:
-                      return
-                  f = tf.extractfile(member)
-                  if f is None:
-                      return
-                  data = f.read()
-                  info_text[member.name] = data
-                  (root / f'{label}-{member.name.replace("/", "__")}').write_bytes(data)
-              stream_tar(info_blob, handle_info)
+              for member in selected[rel]:
+                  if member not in member_rows:
+                      result['selected_solver_members'][f'{name}:{member}'] = {'missing': True}
+                  else:
+                      result['selected_solver_members'][f'{name}:{member}'] = member_rows[member]
 
-              selected_names = {'bin/uvspec', 'lib/libRadtran_c.a', 'lib/libRadtran_f.a'}
-              def handle_pkg(tf, member):
-                  name = member.name
-                  payload_paths.append(name)
-                  if not member.isfile():
-                      return
-                  want_header = name.startswith('include/libRadtran/') and name.endswith(('.h', '.hpp'))
-                  want_selected = name in selected_names
-                  if not (want_header or want_selected):
-                      return
-                  f = tf.extractfile(member)
-                  if f is None:
-                      return
-                  data = f.read()
-                  if want_header:
-                      header_hashes[name] = sha_bytes(data)
-                  if want_selected:
-                      selected_hashes[name] = sha_bytes(data)
-                      (extract_dir / pathlib.Path(name).name).write_bytes(data)
-              stream_tar(pkg_blob, handle_pkg)
-
-              payload_paths = sorted(set(payload_paths))
-              (root / f'{label}-payload-paths.txt').write_text('\n'.join(payload_paths) + '\n')
-              (root / f'{label}-header-manifest.json').write_text(json.dumps(header_hashes, indent=2, sort_keys=True) + '\n')
-              (root / f'{label}-selected-binary-hashes.json').write_text(json.dumps(selected_hashes, indent=2, sort_keys=True) + '\n')
-
-              meta = info_text.get('info/recipe/meta.yaml', b'').decode('utf-8', errors='replace')
-              template = info_text.get('info/recipe/meta.yaml.template', b'').decode('utf-8', errors='replace')
-              source_sha_match = bool(re.search(r'^\s*sha256:\s*' + re.escape(expected_source) + r'\s*$', meta, re.M))
-              source_url_m = re.search(r'^\s*url:\s*(\S+)\s*$', meta, re.M)
-              normalized_template = re.sub(r'(?m)^(\s*number:\s*)\d+\s*$', r'\1<BUILD_NUMBER>', template)
-              state[label] = {
-                  'payload_paths': set(payload_paths),
-                  'header_hashes': header_hashes,
-                  'selected_hashes': selected_hashes,
-                  'source_sha_match': source_sha_match,
-                  'source_url': source_url_m.group(1) if source_url_m else '',
-                  'build_sh_sha': sha_bytes(info_text.get('info/recipe/build.sh', b'')),
-                  'template_sha': sha_bytes(template.encode()),
-                  'normalized_template_sha': sha_bytes(normalized_template.encode()),
-              }
-
-          a, b = state['build0'], state['pinned']
-          common_headers = set(a['header_hashes']) & set(b['header_hashes'])
-          identical_headers = sorted(k for k in common_headers if a['header_hashes'][k] == b['header_hashes'][k])
-          changed_headers = sorted(k for k in common_headers if a['header_hashes'][k] != b['header_hashes'][k])
-          only_a_headers = sorted(set(a['header_hashes']) - set(b['header_hashes']))
-          only_b_headers = sorted(set(b['header_hashes']) - set(a['header_hashes']))
-          only_a_paths = sorted(a['payload_paths'] - b['payload_paths'])
-          only_b_paths = sorted(b['payload_paths'] - a['payload_paths'])
-          (root / 'header-comparison.json').write_text(json.dumps({
-              'common': len(common_headers), 'identical': len(identical_headers),
-              'changed': changed_headers, 'only_build0': only_a_headers, 'only_pinned': only_b_headers,
-          }, indent=2, sort_keys=True) + '\n')
-          (root / 'payload-only-build0.txt').write_text('\n'.join(only_a_paths) + ('\n' if only_a_paths else ''))
-          (root / 'payload-only-pinned.txt').write_text('\n'.join(only_b_paths) + ('\n' if only_b_paths else ''))
-
-          def run_tool(args, out_path):
-              cp = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=120)
-              pathlib.Path(out_path).write_text(cp.stdout)
-              return cp.returncode
-
-          symbol_sets = {}
-          ar_members = {}
-          needed_sets = {}
-          section_hashes = {}
-          section_names = ('.text', '.rodata', '.init', '.fini', '.eh_frame')
-          for label in labels:
-              d = extracted_root / label
-              symbol_sets[label] = {}
-              ar_members[label] = {}
-              for lib in ('libRadtran_c.a', 'libRadtran_f.a'):
-                  p = d / lib
-                  nm_out = root / f'{label}-{lib}.nm.txt'
-                  rc = run_tool(['nm', '-g', '--defined-only', str(p)], nm_out)
-                  symbols = set()
-                  if rc == 0:
-                      for line in nm_out.read_text(errors='replace').splitlines():
-                          parts = line.split()
-                          if parts and not line.endswith(':'):
-                              symbols.add(parts[-1])
-                  symbol_sets[label][lib] = symbols
-                  ar_out = root / f'{label}-{lib}.ar-t.txt'
-                  arc = run_tool(['ar', 't', str(p)], ar_out)
-                  ar_members[label][lib] = ar_out.read_text(errors='replace').splitlines() if arc == 0 else []
-
-              uvspec = d / 'uvspec'
-              dyn = root / f'{label}-uvspec-readelf-dynamic.txt'
-              run_tool(['readelf', '-d', str(uvspec)], dyn)
-              needed = set()
-              for line in dyn.read_text(errors='replace').splitlines():
-                  if '(NEEDED)' in line:
-                      needed.add(line.strip())
-              needed_sets[label] = needed
-              sec = {}
-              for section in section_names:
-                  out_bin = d / f'uvspec{section}.bin'
-                  cp = subprocess.run(['objcopy', '--dump-section', f'{section}={out_bin}', str(uvspec)],
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=120)
-                  if cp.returncode == 0 and out_bin.exists():
-                      sec[section] = sha_bytes(out_bin.read_bytes())
-              section_hashes[label] = sec
-              (root / f'{label}-uvspec-section-hashes.json').write_text(json.dumps(sec, indent=2, sort_keys=True) + '\n')
-
-          symbol_comparison = {}
-          ar_comparison = {}
-          for lib in ('libRadtran_c.a', 'libRadtran_f.a'):
-              sa, sb = symbol_sets['build0'][lib], symbol_sets['pinned'][lib]
-              symbol_comparison[lib] = {
-                  'build0_count': len(sa), 'pinned_count': len(sb), 'common_count': len(sa & sb),
-                  'only_build0_count': len(sa - sb), 'only_pinned_count': len(sb - sa),
-                  'only_build0': sorted(sa - sb)[:200], 'only_pinned': sorted(sb - sa)[:200],
-              }
-              aa, ab = ar_members['build0'][lib], ar_members['pinned'][lib]
-              ar_comparison[lib] = {
-                  'build0_count': len(aa), 'pinned_count': len(ab),
-                  'member_lists_identical': aa == ab,
-                  'only_build0': sorted(set(aa) - set(ab))[:200],
-                  'only_pinned': sorted(set(ab) - set(aa))[:200],
-              }
-          (root / 'static-library-symbol-comparison.json').write_text(json.dumps(symbol_comparison, indent=2, sort_keys=True) + '\n')
-          (root / 'static-library-member-comparison.json').write_text(json.dumps(ar_comparison, indent=2, sort_keys=True) + '\n')
-
-          needed_only_build0 = sorted(needed_sets['build0'] - needed_sets['pinned'])
-          needed_only_pinned = sorted(needed_sets['pinned'] - needed_sets['build0'])
-          (root / 'uvspec-needed-comparison.json').write_text(json.dumps({
-              'identical': needed_sets['build0'] == needed_sets['pinned'],
-              'only_build0': needed_only_build0,
-              'only_pinned': needed_only_pinned,
-          }, indent=2, sort_keys=True) + '\n')
-
+          (root / 'solver-object-equivalence-v8.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
           with pathlib.Path(report_name).open('a') as fh:
-              for label in ('build0', 'pinned'):
-                  s = state[label]
-                  fh.write(f'{label}_source_sha_match={"YES" if s["source_sha_match"] else "NO"}\n')
-                  fh.write(f'{label}_source_url={s["source_url"]}\n')
-                  fh.write(f'{label}_build_sh_sha256={s["build_sh_sha"]}\n')
-                  fh.write(f'{label}_template_sha256={s["template_sha"]}\n')
-                  fh.write(f'{label}_normalized_template_sha256={s["normalized_template_sha"]}\n')
-                  fh.write(f'{label}_payload_path_count={len(s["payload_paths"])}\n')
-                  fh.write(f'{label}_header_count={len(s["header_hashes"])}\n')
-                  for name, digest in sorted(s['selected_hashes'].items()):
-                      fh.write(f'{label}_selected_sha256={name}|{digest}\n')
-                  for section, digest in sorted(section_hashes[label].items()):
-                      fh.write(f'{label}_uvspec_section_sha256={section}|{digest}\n')
-              fh.write(f'normalized_recipe_template_identical={"YES" if a["normalized_template_sha"] == b["normalized_template_sha"] else "NO"}\n')
-              fh.write(f'build_sh_identical={"YES" if a["build_sh_sha"] == b["build_sh_sha"] else "NO"}\n')
-              fh.write(f'common_header_count={len(common_headers)}\n')
-              fh.write(f'identical_header_count={len(identical_headers)}\n')
-              fh.write(f'changed_header_count={len(changed_headers)}\n')
-              fh.write(f'payload_path_only_build0_count={len(only_a_paths)}\n')
-              fh.write(f'payload_path_only_pinned_count={len(only_b_paths)}\n')
-              fh.write(f'uvspec_needed_lines_identical={"YES" if needed_sets["build0"] == needed_sets["pinned"] else "NO"}\n')
-              fh.write(f'uvspec_needed_only_build0={json.dumps(needed_only_build0, sort_keys=True)}\n')
-              fh.write(f'uvspec_needed_only_pinned={json.dumps(needed_only_pinned, sort_keys=True)}\n')
-              common_sections = sorted(set(section_hashes['build0']) & set(section_hashes['pinned']))
-              for section in common_sections:
-                  fh.write(f'uvspec_section_identical={section}|{"YES" if section_hashes["build0"][section] == section_hashes["pinned"][section] else "NO"}\n')
-              for lib, comp in symbol_comparison.items():
-                  fh.write(f'{lib}_symbol_build0_count={comp["build0_count"]}\n')
-                  fh.write(f'{lib}_symbol_pinned_count={comp["pinned_count"]}\n')
-                  fh.write(f'{lib}_symbol_common_count={comp["common_count"]}\n')
-                  fh.write(f'{lib}_symbol_only_build0_count={comp["only_build0_count"]}\n')
-                  fh.write(f'{lib}_symbol_only_pinned_count={comp["only_pinned_count"]}\n')
-                  fh.write(f'{lib}_member_lists_identical={"YES" if ar_comparison[lib]["member_lists_identical"] else "NO"}\n')
+              for name, data in result['libraries'].items():
+                  fh.write(f'{name}_member_order_identical={"YES" if data["member_order_identical"] else "NO"}\n')
+                  fh.write(f'{name}_common_member_count={data["common_count"]}\n')
+                  fh.write(f'{name}_byte_identical_member_count={data["byte_identical_member_count"]}\n')
+                  fh.write(f'{name}_normalized_disassembly_identical_member_count={data["normalized_disassembly_identical_member_count"]}\n')
+              for key, data in result['selected_solver_members'].items():
+                  if data.get('missing'):
+                      fh.write(f'selected={key}|MISSING\n')
+                  else:
+                      fh.write(f'selected={key}|object_bytes_identical={"YES" if data["object_bytes_identical"] else "NO"}|normalized_disassembly_identical={"YES" if data["normalized_disassembly_identical"] else "NO"}\n')
           PY
 
-          rm -rf out/raw out/extracted
+          rm -rf out/raw out/libs out/tmp
           cat "$REPORT"
-          echo '--- static library symbol comparison ---'
-          cat out/static-library-symbol-comparison.json
-          echo '--- static library member comparison ---'
-          cat out/static-library-member-comparison.json
-          echo '--- uvspec needed comparison ---'
-          cat out/uvspec-needed-comparison.json
+          echo '--- selected solver members ---'
+          python - <<'PY'
+          import json
+          d=json.load(open('out/solver-object-equivalence-v8.json'))
+          print(json.dumps(d['selected_solver_members'], indent=2, sort_keys=True))
+          PY
 
-      - name: Upload immutable ABI reconstruction evidence
+      - name: Upload immutable solver-object equivalence evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-exact-package-abi-reconstruction-v7
+          name: lowalt-solver-object-equivalence-v8
           path: |
-            out/exact-package-abi-reconstruction-v7.txt
-            out/*-repodata-record.json
-            out/*-info__recipe__meta.yaml
-            out/*-info__recipe__meta.yaml.template
-            out/*-info__recipe__build.sh
-            out/*-info__hash_input.json
-            out/*-header-manifest.json
-            out/*-selected-binary-hashes.json
-            out/header-comparison.json
-            out/payload-only-build0.txt
-            out/payload-only-pinned.txt
-            out/static-library-symbol-comparison.json
-            out/static-library-member-comparison.json
-            out/*-libRadtran_c.a.nm.txt
-            out/*-libRadtran_f.a.nm.txt
-            out/*-libRadtran_c.a.ar-t.txt
-            out/*-libRadtran_f.a.ar-t.txt
-            out/*-uvspec-readelf-dynamic.txt
-            out/*-uvspec-section-hashes.json
-            out/uvspec-needed-comparison.json
+            out/solver-object-equivalence-v8.txt
+            out/solver-object-equivalence-v8.json
           if-no-files-found: warn
           retention-days: 90

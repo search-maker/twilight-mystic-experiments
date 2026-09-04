@@ -53,8 +53,8 @@ def _validate_layers(layers: Sequence[RadialLayer], observer_altitude_km: float)
             raise DirectPathRefusal("layer heights must be strictly increasing")
         if tau < 0.0:
             raise DirectPathRefusal("vertical optical depth must be nonnegative")
-        if previous_hi is not None and not math.isclose(lo, previous_hi, rel_tol=0.0, abs_tol=1e-12):
-            raise DirectPathRefusal("retained layers must be contiguous")
+        if previous_hi is not None and lo != previous_hi:
+            raise DirectPathRefusal("retained layers must be exactly contiguous")
         previous_hi = hi
     if first_lo != observer_altitude_km:
         raise DirectPathRefusal("first retained layer must start exactly at observer altitude")
@@ -104,7 +104,10 @@ def shell_path_length_km(
 
     r0 = radius + observer
     h_rad = math.radians(h_deg)
-    sin_term = r0 * math.sin(h_rad)
+    sin_h = math.sin(h_rad)
+    if not math.isfinite(sin_h) or sin_h <= 0.0:
+        raise DirectPathRefusal("positive geometric altitude is unresolved after angle conversion")
+    sin_term = r0 * sin_h
     sin_term_sq = sin_term * sin_term
 
     def radial_root(z_km: float) -> float:
@@ -388,6 +391,25 @@ def _self_test() -> None:
         else:
             raise AssertionError("first retained layer below observer must refuse exactly")
 
+    # Internal retained-shell boundaries are serializer identities, not
+    # approximate coordinates: a tiny gap or overlap must fail closed rather
+    # than silently omit or double-count extinction.
+    for boundary_offset in (5e-13, -5e-13):
+        try:
+            slant_optical_depth(
+                earth_radius_km=R,
+                observer_altitude_km=0.0,
+                geometric_altitude_deg=1.0,
+                layers=(
+                    RadialLayer(0.0, 1.0, 0.10),
+                    RadialLayer(1.0 + boundary_offset, 2.0, 0.10),
+                ),
+            )
+        except DirectPathRefusal:
+            pass
+        else:
+            raise AssertionError("internal retained-layer gap/overlap must refuse exactly")
+
     # Horizon and below remain fail closed under this identity.
     for h in (0.0, -0.01):
         try:
@@ -402,6 +424,24 @@ def _self_test() -> None:
             pass
         else:
             raise AssertionError("h<=0 must refuse")
+
+    # A positive binary64 degree value can be so small that degree->radian
+    # conversion underflows to exact zero. Treat that as unresolved horizon,
+    # not as a valid positive-altitude geometry.
+    subnormal_h = math.nextafter(0.0, 1.0)
+    assert subnormal_h > 0.0 and math.radians(subnormal_h) == 0.0
+    try:
+        shell_path_length_km(
+            earth_radius_km=R,
+            observer_altitude_km=0.0,
+            geometric_altitude_deg=subnormal_h,
+            z_lo_km=0.0,
+            z_hi_km=1.0,
+        )
+    except DirectPathRefusal:
+        pass
+    else:
+        raise AssertionError("positive altitude lost in radian conversion must refuse")
 
     # Numerical underflow is a refusal, never epsilon substitution.
     try:

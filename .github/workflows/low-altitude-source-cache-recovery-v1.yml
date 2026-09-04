@@ -1,4 +1,4 @@
-name: LOWALT source-cache recovery v3
+name: LOWALT source-cache recovery v4
 
 on:
   push:
@@ -11,188 +11,146 @@ permissions:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Probe historical conda-forge Azure build logs
+      - name: Recover retained GitHub Check annotations from failed historical build
         shell: bash
         run: |
           set -euo pipefail
           EXPECTED='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
           PRIOR='64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
-          AZ_ORG='https://dev.azure.com/conda-forge'
-          AZ_PROJECT='84710dde-1620-425b-80d0-4cf5baca359d'
-          API="$AZ_ORG/$AZ_PROJECT/_apis/build"
-          mkdir -p out/raw out/matches
-          REPORT=out/azure-source-log-recovery.txt
+          FAILED_COMMIT='34661f6d1776374c409908256c38055b6641f4e1'
+          API='https://api.github.com/repos/conda-forge/rubin-libradtran-feedstock'
+          mkdir -p out/annotations
+          REPORT='out/github-check-annotation-recovery.txt'
           : > "$REPORT"
           {
-            echo 'LOWALT_SOURCE_RECOVERY_V3_AZURE_LOGS'
+            echo 'LOWALT_SOURCE_RECOVERY_V4_GITHUB_CHECK_ANNOTATIONS'
             echo "expected_sha256=$EXPECTED"
             echo "prior_sha256=$PRIOR"
-            echo "github_sha=${GITHUB_SHA:-unknown}"
+            echo "failed_commit=$FAILED_COMMIT"
+            echo "probe_head=${GITHUB_SHA:-unknown}"
             date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
           } >> "$REPORT"
 
-          fetch_json() {
-            local label="$1"
-            local url="$2"
-            local dst="out/raw/${label}.json"
-            echo >> "$REPORT"
-            echo "request=$label" >> "$REPORT"
-            echo "url=$url" >> "$REPORT"
+          curl_json() {
+            local url="$1"
+            local dst="$2"
+            local hdr="$3"
+            local code
             set +e
-            curl --fail --location --silent --show-error \
-              --connect-timeout 20 --max-time 180 --retry 0 \
-              -H 'Accept: application/json' \
-              --dump-header "out/raw/${label}.headers.txt" \
-              --output "$dst" "$url"
+            code=$(curl --location --silent --show-error \
+              --connect-timeout 20 --max-time 120 --retry 0 \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -H 'User-Agent: lowalt-source-provenance-probe' \
+              --dump-header "$hdr" \
+              --output "$dst" \
+              --write-out '%{http_code}' \
+              "$url")
             rc=$?
             set -e
-            echo "curl_rc=$rc" >> "$REPORT"
-            if [[ $rc -eq 0 ]]; then
-              echo "bytes=$(wc -c < "$dst" | tr -d ' ')" >> "$REPORT"
-              echo "sha256=$(sha256sum "$dst" | awk '{print $1}')" >> "$REPORT"
-            else
-              rm -f "$dst"
+            echo "curl_rc=$rc http_code=$code url=$url" >> "$REPORT"
+            if [[ $rc -ne 0 || "$code" != '200' ]]; then
+              return 1
             fi
             return 0
           }
 
-          fetch_text() {
-            local build="$1"
-            local log_id="$2"
-            local url="$3"
-            local dst="out/raw/build-${build}-log-${log_id}.txt"
-            set +e
-            curl --fail --location --silent --show-error \
-              --connect-timeout 20 --max-time 180 --retry 0 \
-              -H 'Accept: text/plain' \
-              --output "$dst" "$url"
-            rc=$?
-            set -e
-            echo "build=$build log_id=$log_id curl_rc=$rc" >> "$REPORT"
-            if [[ $rc -ne 0 ]]; then
-              rm -f "$dst"
-              return 0
-            fi
-            echo "build=$build log_id=$log_id bytes=$(wc -c < "$dst" | tr -d ' ') sha256=$(sha256sum "$dst" | awk '{print $1}')" >> "$REPORT"
-            python - "$build" "$log_id" "$dst" "out/matches/build-${build}-log-${log_id}.matches.txt" <<'PY'
+          CHECKS='out/check-runs.json'
+          if ! curl_json "$API/commits/$FAILED_COMMIT/check-runs?per_page=100" "$CHECKS" 'out/check-runs.headers.txt'; then
+            echo 'check_run_inventory=UNAVAILABLE' >> "$REPORT"
+          else
+            python - "$CHECKS" > out/check-run-inventory.tsv <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          d = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print('id\tname\tconclusion\tannotations_count\tannotations_url')
+          for r in d.get('check_runs') or []:
+              o = r.get('output') or {}
+              print('\t'.join(str(x) for x in (
+                  r.get('id'),
+                  (r.get('name') or '').replace('\t', ' '),
+                  r.get('conclusion'),
+                  o.get('annotations_count', 0),
+                  o.get('annotations_url') or '',
+              )))
+          PY
+            total=$(tail -n +2 out/check-run-inventory.tsv | wc -l | tr -d ' ')
+            annotated=$(tail -n +2 out/check-run-inventory.tsv | awk -F '\t' '$4+0 > 0 {n++} END {print n+0}')
+            echo "check_run_count=$total" >> "$REPORT"
+            echo "annotated_check_run_count=$annotated" >> "$REPORT"
+
+            while IFS=$'\t' read -r id name conclusion count url; do
+              [[ "$id" == 'id' ]] && continue
+              [[ "${count:-0}" -gt 0 ]] || continue
+              [[ -n "${url:-}" ]] || continue
+              dst="out/annotations/check-${id}.json"
+              hdr="out/annotations/check-${id}.headers.txt"
+              if ! curl_json "${url}?per_page=100" "$dst" "$hdr"; then
+                echo "annotation_fetch_failed check=$id name=$name" >> "$REPORT"
+              fi
+            done < out/check-run-inventory.tsv
+          fi
+
+          python - "$EXPECTED" "$PRIOR" "$REPORT" <<'PY'
+          import json
           import pathlib
           import re
           import sys
 
-          build, log_id, src_name, dst_name = sys.argv[1:]
-          src = pathlib.Path(src_name)
-          dst = pathlib.Path(dst_name)
-          ansi = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+          expected, prior, report_name = sys.argv[1:]
+          rows = []
+          for p in sorted(pathlib.Path('out/annotations').glob('check-*.json')):
+              try:
+                  data = json.loads(p.read_text())
+              except Exception as exc:
+                  rows.append((p.name, 'PARSE_ERROR', str(exc)))
+                  continue
+              if not isinstance(data, list):
+                  rows.append((p.name, 'NON_LIST', repr(data)[:1000]))
+                  continue
+              for i, a in enumerate(data):
+                  fields = [
+                      str(a.get('annotation_level') or ''),
+                      str(a.get('title') or ''),
+                      str(a.get('message') or ''),
+                      str(a.get('raw_details') or ''),
+                      str(a.get('path') or ''),
+                  ]
+                  text = ' | '.join(x.replace('\n', '\\n') for x in fields)
+                  rows.append((p.name, str(i), text))
+          out = pathlib.Path('out/all-check-annotations.txt')
+          out.write_text('\n'.join('\t'.join(r) for r in rows) + ('\n' if rows else ''))
+          text = out.read_text(errors='replace')
           needle = re.compile(
-              r'(libRadtran|999e47f4|64930cc4|checksum|sha[-_ ]?256|hash mismatch|'
-              r'downloading|downloaded|source[_ -]?cache|src[_ -]?cache|source url|work/src)',
+              r'(libradtran|checksum|sha(?:256)?|hash|source|download|expected|actual|mismatch)',
               re.I,
           )
-          matches = []
-          for n, raw in enumerate(src.read_text(errors='replace').splitlines(), 1):
-              line = ansi.sub('', raw)
-              if needle.search(line):
-                  matches.append(f'{build}:{log_id}:{n}:{line[:1200]}')
-                  if len(matches) >= 1000:
-                      matches.append(f'{build}:{log_id}:TRUNCATED_AFTER_1000_MATCHES')
-                      break
-          dst.write_text('\n'.join(matches) + ('\n' if matches else ''))
-          PY
-            rm -f "$dst"
-          }
-
-          for build in 1327727 1327806; do
-            fetch_json "build-${build}" "$API/builds/${build}?api-version=7.1"
-            fetch_json "build-${build}-logs" "$API/builds/${build}/logs?api-version=7.1"
-            fetch_json "build-${build}-timeline" "$API/builds/${build}/timeline?api-version=7.1"
-            fetch_json "build-${build}-artifacts" "$API/builds/${build}/artifacts?api-version=7.1"
-
-            python - "$build" "$REPORT" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          build, report_name = sys.argv[1:]
-          report = pathlib.Path(report_name)
-          def load(name):
-              p = pathlib.Path('out/raw') / name
-              if not p.exists():
-                  return None
-              try:
-                  return json.loads(p.read_text())
-              except Exception:
-                  return None
-
-          meta = load(f'build-{build}.json')
-          logs = load(f'build-{build}-logs.json')
-          artifacts = load(f'build-{build}-artifacts.json')
-          with report.open('a') as fh:
-              fh.write(f'\nBUILD_SUMMARY build={build}\n')
-              if isinstance(meta, dict):
-                  for key in ('buildNumber','status','result','sourceVersion','queueTime','startTime','finishTime'):
-                      fh.write(f'{key}={meta.get(key)}\n')
-              else:
-                  fh.write('build_metadata_json=UNAVAILABLE_OR_INVALID\n')
-              if isinstance(logs, dict):
-                  vals = logs.get('value') or []
-                  fh.write(f'log_count={len(vals)}\n')
-              else:
-                  fh.write('logs_json=UNAVAILABLE_OR_INVALID\n')
-              if isinstance(artifacts, dict):
-                  vals = artifacts.get('value') or []
-                  fh.write(f'artifact_count={len(vals)}\n')
-                  for a in vals[:100]:
-                      r = a.get('resource') or {}
-                      fh.write('artifact=' + '|'.join(str(x) for x in (
-                          a.get('id'), a.get('name'), r.get('type'), r.get('data'), r.get('url')
-                      )) + '\n')
-              else:
-                  fh.write('artifacts_json=UNAVAILABLE_OR_INVALID\n')
+          relevant = [line for line in text.splitlines() if needle.search(line)]
+          pathlib.Path('out/relevant-check-annotations.txt').write_text(
+              '\n'.join(relevant) + ('\n' if relevant else '')
+          )
+          with pathlib.Path(report_name).open('a') as fh:
+              fh.write(f'annotation_row_count={len(rows)}\n')
+              fh.write(f'relevant_annotation_row_count={len(relevant)}\n')
+              fh.write(f'expected_hash_mentions={text.lower().count(expected.lower())}\n')
+              fh.write(f'prior_hash_mentions={text.lower().count(prior.lower())}\n')
+              fh.write(f'expected_prefix_mentions={text.lower().count(expected[:8].lower())}\n')
+              fh.write(f'prior_prefix_mentions={text.lower().count(prior[:8].lower())}\n')
           PY
 
-            logs_file="out/raw/build-${build}-logs.json"
-            if [[ -f "$logs_file" ]]; then
-              while IFS=$'\t' read -r log_id log_url; do
-                [[ -n "$log_id" && -n "$log_url" ]] || continue
-                fetch_text "$build" "$log_id" "$log_url"
-              done < <(python - "$logs_file" <<'PY'
-          import json
-          import pathlib
-          import sys
-          try:
-              d = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          except Exception:
-              raise SystemExit(0)
-          for item in d.get('value') or []:
-              i = item.get('id')
-              u = item.get('url')
-              if i is not None and u:
-                  print(f'{i}\t{u}')
-          PY
-              )
-            fi
-          done
-
-          cat out/matches/*.matches.txt 2>/dev/null | sort -u > out/all-relevant-log-lines.txt || true
-          {
-            echo
-            echo 'MATCH_SUMMARY'
-            echo "relevant_line_count=$(wc -l < out/all-relevant-log-lines.txt | tr -d ' ')"
-            echo "expected_hash_mentions=$(grep -ci '999e47f4' out/all-relevant-log-lines.txt || true)"
-            echo "prior_hash_mentions=$(grep -ci '64930cc4' out/all-relevant-log-lines.txt || true)"
-            echo "libradtran_mentions=$(grep -ci 'libradtran' out/all-relevant-log-lines.txt || true)"
-          } >> "$REPORT"
           cat "$REPORT"
-          echo '--- relevant historical log lines ---'
-          cat out/all-relevant-log-lines.txt
+          echo '--- retained relevant GitHub Check annotations ---'
+          cat out/relevant-check-annotations.txt
 
       - name: Upload immutable recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-source-cache-recovery-v3-azure-logs
+          name: lowalt-source-cache-recovery-v4-check-annotations
           path: out/
           if-no-files-found: error
           retention-days: 90

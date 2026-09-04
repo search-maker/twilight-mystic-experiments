@@ -54,6 +54,9 @@ class DeepSolarTwilightReferenceModulesTest(unittest.TestCase):
     def test_finite_hit_heterogeneous_reference(self) -> None:
         self._run_self_test("finite_hit_heterogeneous_reference.py")
 
+    def test_campaign_stopping_rule_reference(self) -> None:
+        self._run_self_test("campaign_stopping_rule_reference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

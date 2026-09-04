@@ -192,7 +192,14 @@ def zero_only_target_met(
     photon_histories: int | None = None,
     independent_blocks: int | None = None,
 ) -> bool:
-    """Fail-closed campaign check for an all-zero observation path."""
+    """Fail-closed campaign check for an all-zero observation path.
+
+    For the independent-unit tiers, decide against the exact rational target by
+    comparing observed unit count with the certified minimum-unit oracle.  Do
+    not compare a conservative Decimal endpoint with a context-rounded Decimal
+    conversion of q_target: near the boundary that can round the target upward
+    and falsely accept an insufficient campaign.
+    """
     a = _fraction(alpha)
     q = _fraction(q_target)
     _require_probability("alpha", a)
@@ -201,11 +208,11 @@ def zero_only_target_met(
     if tier == "photon_iid":
         if not isinstance(photon_histories, int) or isinstance(photon_histories, bool) or photon_histories <= 0:
             raise ValueError("photon_iid tier requires positive photon_histories")
-        return zero_upper_common_q(a, photon_histories) <= _to_decimal(q)
+        return photon_histories >= required_independent_units(a, q)
     if tier == "block_independent":
         if not isinstance(independent_blocks, int) or isinstance(independent_blocks, bool) or independent_blocks <= 0:
             raise ValueError("block_independent tier requires positive independent_blocks")
-        return zero_upper_common_q(a, independent_blocks) <= _to_decimal(q)
+        return independent_blocks >= required_independent_units(a, q)
     if tier == "arbitrary_dependence":
         return (1 - a) <= q
     raise ValueError("unknown assumption_tier")
@@ -261,9 +268,70 @@ class ReferenceTests(unittest.TestCase):
         alpha = Fraction(1, 20)
         target = Fraction(1, 10_000_000)
         m = required_independent_units(alpha, target)
-        self.assertTrue(zero_upper_common_q(alpha, m) <= _to_decimal(target))
+        self.assertTrue(
+            zero_only_target_met(
+                alpha=alpha,
+                q_target=target,
+                assumption_tier="photon_iid",
+                photon_histories=m,
+            )
+        )
         if m > 1:
-            self.assertTrue(zero_upper_common_q(alpha, m - 1) > _to_decimal(target))
+            self.assertFalse(
+                zero_only_target_met(
+                    alpha=alpha,
+                    q_target=target,
+                    assumption_tier="photon_iid",
+                    photon_histories=m - 1,
+                )
+            )
+
+    def test_exact_rational_target_boundary_is_context_independent(self) -> None:
+        alpha = Fraction(1, 20)
+        # Exact target is 1e-30 below the true four-unit boundary
+        # 1-alpha**(1/4).  At ordinary Decimal precision it rounds upward to
+        # 0.5271291954984120933491519401, which is above that boundary.  The
+        # decision must nevertheless remain fail-closed and require five
+        # independent units because q_target itself is an exact Fraction.
+        target = Fraction(
+            "0.5271291954984120933491519400553924897149015986941298692940463288686548722339674556454690389674503999"
+        )
+        self.assertEqual(required_independent_units(alpha, target), 5)
+        for ambient_precision in (9, 28, 50):
+            with localcontext() as ctx:
+                ctx.prec = ambient_precision
+                self.assertFalse(
+                    zero_only_target_met(
+                        alpha=alpha,
+                        q_target=target,
+                        assumption_tier="photon_iid",
+                        photon_histories=4,
+                    )
+                )
+                self.assertTrue(
+                    zero_only_target_met(
+                        alpha=alpha,
+                        q_target=target,
+                        assumption_tier="photon_iid",
+                        photon_histories=5,
+                    )
+                )
+                self.assertFalse(
+                    zero_only_target_met(
+                        alpha=alpha,
+                        q_target=target,
+                        assumption_tier="block_independent",
+                        independent_blocks=4,
+                    )
+                )
+                self.assertTrue(
+                    zero_only_target_met(
+                        alpha=alpha,
+                        q_target=target,
+                        assumption_tier="block_independent",
+                        independent_blocks=5,
+                    )
+                )
 
     def test_same_unit_count_different_semantics(self) -> None:
         plan = plan_zero_only_tiers(

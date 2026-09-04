@@ -1,0 +1,375 @@
+name: LOWALT pinned midpoint black-box v1
+run-name: LOWALT pinned midpoint black-box ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - review/lowalt-pinned-midpoint-blackbox-v1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-pinned-midpoint-blackbox-v1
+  cancel-in-progress: false
+
+env:
+  BASE_MAIN: 285b1af12df710328b7ff9c2be511ea9ae34268a
+  EXACT_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+
+jobs:
+  blackbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact one-shot QA head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify frozen one-shot boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = review/lowalt-pinned-midpoint-blackbox-v1
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = .github/workflows/lowalt-pinned-midpoint-blackbox-v1.yml
+          ! grep -Eqi 'Taylor|Jerusalem|protected residual|holdout result' .github/workflows/lowalt-pinned-midpoint-blackbox-v1.yml
+          echo 'Fresh nonprotected geometry QA only; no model fit, routing, seam change, or protected opening.'
+
+      - name: Set up exact pinned libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-pinned-midpoint-blackbox-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify exact runtime and locate data
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          PACKAGE_SPEC="$(python - <<'PY'
+          import subprocess
+          text=subprocess.check_output(['micromamba','list','rubin-libradtran'],text=True)
+          rows=[]
+          for raw in text.splitlines():
+              p=raw.split()
+              if len(p)>=3 and p[0]=='rubin-libradtran': rows.append(p[:3])
+          if len(rows)!=1: raise SystemExit(f'package identity ambiguity: {rows!r}')
+          print('='.join(rows[0]))
+          PY
+          )"
+          test "$PACKAGE_SPEC" = "$EXACT_PACKAGE"
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data',u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+          test -f "$DATA_DIR/solar_flux/atlas_plus_modtran"
+          test -f experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+
+      - name: Execute four preregistered fresh 400-nm SDISORT geometry cases once
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test ! -e lowalt-midpoint-blackbox-output
+          mkdir -p lowalt-midpoint-blackbox-output/raw
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, importlib.util, json, math, os, re, subprocess
+          from pathlib import Path
+
+          ROOT=Path('.').resolve()
+          OUT=ROOT/'lowalt-midpoint-blackbox-output'
+          RAW=OUT/'raw'
+          UVSPEC=Path(os.environ['UVSPEC'])
+          DATA=Path(os.environ['LIBRADTRAN_DATA'])
+          ATM=DATA/'atmmod'/'afglus.dat'
+          SOLAR=DATA/'solar_flux'/'atlas_plus_modtran'
+          GRID=ROOT/'experiments/aerosol-family-challenge-v2-r8/wavelength-grid-1nm.dat'
+          EARTH_RADIUS_KM=6370.0
+          WAVELENGTH_NM=400
+          CASES=(
+              {'caseId':'qa-001','targetAltitudeDeg':0.41,'observerElevationM':640.0},
+              {'caseId':'qa-002','targetAltitudeDeg':1.37,'observerElevationM':1730.0},
+              {'caseId':'qa-003','targetAltitudeDeg':2.89,'observerElevationM':910.0},
+              {'caseId':'qa-004','targetAltitudeDeg':4.61,'observerElevationM':2180.0},
+          )
+          # Frozen before result opening. These gates classify only this bounded
+          # exact-runtime black-box check; they do not establish source provenance.
+          MAX_MIDPOINT_ABS_TAU_DELTA=2.0e-3
+          RESOLVABLE_RULE_SEPARATION=2.0e-3
+          MAX_MIDPOINT_TO_COMPLETE_RESIDUAL_RATIO=0.25
+
+          def load(path: Path, name: str):
+              spec=importlib.util.spec_from_file_location(name,path)
+              if spec is None or spec.loader is None: raise RuntimeError(path)
+              m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+          phase=load(ROOT/'review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py','lowalt_phase_a_blackbox')
+          tier1=load(ROOT/'experiments/mystic-batch-v1/twilight_surrogate_tier1_atm_z_grid_equivalence_proof.py','tier1_blackbox')
+
+          # Fail if these QA coordinates accidentally overlap the known LOWALT
+          # Phase-A/Phase-B training coordinate surfaces frozen in the public repo.
+          for c in CASES:
+              h=float(c['targetAltitudeDeg']); e=float(c['observerElevationM'])
+              if h in phase.PHASE_A_ALTITUDE_DEG or h in phase.PHASE_B_TRAINING_ALTITUDE_DEG:
+                  raise SystemExit(f'fresh altitude collided with prior LOWALT axis: {h}')
+              if e in phase.PHASE_A_ELEVATION_M:
+                  raise SystemExit(f'fresh elevation collided with prior Phase-A endpoint: {e}')
+              if not (0.0 < h < 5.0): raise SystemExit('QA altitude left <5deg domain')
+
+          final_wavelength_re=re.compile(
+              r'^\*\*\* wavelength: iv = (\d+), ([0-9]+(?:\.[0-9]+)?) nm, albedo = ([0-9]+(?:\.[0-9]+)?)\s*$',
+              re.MULTILINE,
+          )
+
+          def sha256_text(x: str) -> str:
+              return hashlib.sha256(x.encode()).hexdigest()
+
+          def render(case, zgrid):
+              h=float(case['targetAltitudeDeg'])
+              return '\n'.join([
+                  f'data_files_path {DATA}',
+                  f'atmosphere_file {ATM}',
+                  f'source solar {SOLAR}',
+                  'mol_abs_param crs',
+                  f'wavelength_grid_file {GRID}',
+                  f'wavelength {WAVELENGTH_NM} {WAVELENGTH_NM}',
+                  f'sza {90.0-h:.8f}',
+                  'atm_z_grid ' + ' '.join(f'{z:.6f}' for z in zgrid),
+                  'zout 0.000000',
+                  'albedo 0.15000000',
+                  'rte_solver sdisort',
+                  'sdisort nscat 1',
+                  'output_quantity transmittance',
+                  'output_user lambda edir',
+                  'verbose',
+                  '',
+              ])
+
+          def parse_stdout(stdout: str, h: float):
+              rows=[]
+              for raw in stdout.splitlines():
+                  line=raw.strip()
+                  if not line or line.startswith('#'): continue
+                  p=line.split()
+                  if len(p)<2: raise RuntimeError(f'unexpected stdout row {raw!r}')
+                  try: rows.append((float(p[0]),float(p[1])))
+                  except ValueError as exc: raise RuntimeError(f'non-numeric stdout row {raw!r}') from exc
+              if len(rows)!=1 or abs(rows[0][0]-WAVELENGTH_NM)>1e-9:
+                  raise RuntimeError(f'monochromatic output mismatch: {rows!r}')
+              mu0=math.sin(math.radians(h))
+              ray_t=rows[0][1]/mu0
+              if not (math.isfinite(ray_t) and 0.0 < ray_t <= 1.000001):
+                  raise RuntimeError(f'unresolved direct transmission: {ray_t!r}')
+              ray_t=min(1.0,ray_t)
+              return mu0,ray_t,-math.log(ray_t)
+
+          def parse_layers(stderr: str, expected_layers: int):
+              matches=list(final_wavelength_re.finditer(stderr))
+              if len(matches)!=1: raise RuntimeError(f'expected one final wavelength block, got {len(matches)}')
+              m=matches[0]
+              if int(m.group(1))!=0 or abs(float(m.group(2))-WAVELENGTH_NM)>1e-9:
+                  raise RuntimeError('final wavelength identity drift')
+              if abs(float(m.group(3))-0.15)>1e-9: raise RuntimeError('albedo drift')
+              block=stderr[m.start():]
+              table=tier1.parse_resolved_optical_table(block)
+              tau=[float(x) for x in table['totalLayerOpticalDepth']]
+              if len(tau)!=expected_layers: raise RuntimeError(f'layer count drift {len(tau)} != {expected_layers}')
+              if any((not math.isfinite(x) or x<0.0) for x in tau): raise RuntimeError('invalid layer tau')
+              for key in (
+                  'waterCloudScatteringLayerOpticalDepth','waterCloudAbsorptionLayerOpticalDepth',
+                  'iceCloudScatteringLayerOpticalDepth','iceCloudAbsorptionLayerOpticalDepth',
+              ):
+                  if any(abs(float(x))>0.0 for x in table[key]): raise RuntimeError('unexpected cloud optical depth')
+              return tau,table
+
+          def chapman_to_midpoint(zd_desc, dtau_topdown, h):
+              # Port of the public cdisort c_chapman positive-altitude branch.
+              # This is a candidate rule only; historical source-byte provenance remains NOT PASS.
+              n=len(dtau_topdown); lc=n; taup=0.5
+              zen=math.radians(90.0-h)
+              xp=EARTH_RADIUS_KM+zd_desc[lc]+(zd_desc[lc-1]-zd_desc[lc])*taup
+              xpsinz=xp*math.sin(zen)
+              total=0.0
+              for j in range(1,lc+1):
+                  rj=EARTH_RADIUS_KM+zd_desc[j-1]
+                  rjp1=EARTH_RADIUS_KM+zd_desc[j]
+                  if j==lc: rjp1=xp
+                  a=rj*rj-xpsinz*xpsinz; b=rjp1*rjp1-xpsinz*xpsinz
+                  if a<0.0 or b<0.0: raise RuntimeError('negative Chapman radicand')
+                  ds=math.sqrt(a)-math.sqrt(b)
+                  dh=zd_desc[j-1]-zd_desc[j]
+                  total += dtau_topdown[j-1]*ds/dh
+              return total
+
+          def midpoint_surface_tau(zgrid_asc, dtau_topdown, h):
+              zd=list(reversed(zgrid_asc))
+              tau_mid=sum(dtau_topdown[:-1])+0.5*dtau_topdown[-1]
+              if tau_mid<=0.0: raise RuntimeError('nonpositive midpoint vertical tau')
+              slant_mid=chapman_to_midpoint(zd,dtau_topdown,h)
+              return sum(dtau_topdown)*slant_mid/tau_mid
+
+          def complete_shell_tau(zgrid_asc, dtau_topdown, h):
+              observer=zgrid_asc[0]
+              impact=(EARTH_RADIUS_KM+observer)*math.cos(math.radians(h))
+              total=0.0
+              n=len(dtau_topdown)
+              for j,tau in enumerate(dtau_topdown):
+                  upper=zgrid_asc[n-j]
+                  lower=zgrid_asc[n-j-1]
+                  hi=(EARTH_RADIUS_KM+upper)**2-impact**2
+                  lo=(EARTH_RADIUS_KM+lower)**2-impact**2
+                  if hi<0.0 or lo<0.0: raise RuntimeError('negative shell radicand')
+                  ds=math.sqrt(hi)-math.sqrt(lo)
+                  total += tau*ds/(upper-lower)
+              return total
+
+          results=[]
+          for idx,case in enumerate(CASES,1):
+              h=float(case['targetAltitudeDeg']); e=float(case['observerElevationM'])
+              zgrid=phase.elevated_site_grid_ascending(ATM,e)
+              text=render(case,zgrid)
+              case_dir=RAW/case['caseId']; case_dir.mkdir()
+              (case_dir/'case.inp').write_text(text)
+              cp=subprocess.run([str(UVSPEC)],input=text,text=True,capture_output=True,check=False,timeout=300,cwd=case_dir)
+              (case_dir/'case.stdout.txt').write_text(cp.stdout)
+              (case_dir/'case.stderr.txt').write_text(cp.stderr)
+              if cp.returncode!=0: raise RuntimeError(f"{case['caseId']} uvspec rc={cp.returncode}: {cp.stderr[-2000:]}")
+              mu0,ray_t,observed_tau=parse_stdout(cp.stdout,h)
+              dtau,table=parse_layers(cp.stderr,len(zgrid)-1)
+              midpoint=midpoint_surface_tau(zgrid,dtau,h)
+              complete=complete_shell_tau(zgrid,dtau,h)
+              mid_err=abs(observed_tau-midpoint)
+              complete_err=abs(observed_tau-complete)
+              separation=abs(midpoint-complete)
+              discriminating=separation>=RESOLVABLE_RULE_SEPARATION
+              ratio=(mid_err/complete_err) if complete_err>0.0 else math.inf
+              row={
+                  **case,
+                  'sourceZenithAngleDeg':90.0-h,
+                  'wavelengthNm':WAVELENGTH_NM,
+                  'earthRadiusKmCandidate':EARTH_RADIUS_KM,
+                  'mu0':mu0,
+                  'lineOfSightTransmission':ray_t,
+                  'solverDirectOpticalDepth':observed_tau,
+                  'verboseVerticalOpticalDepth':sum(dtau),
+                  'layerCount':len(dtau),
+                  'midpointSurfaceOpticalDepth':midpoint,
+                  'completeShellOpticalDepth':complete,
+                  'midpointAbsDeltaTau':mid_err,
+                  'completeShellAbsDeltaTau':complete_err,
+                  'candidateRuleSeparationTau':separation,
+                  'ruleDiscriminating':discriminating,
+                  'midpointToCompleteResidualRatio':ratio,
+                  'midpointAbsoluteGatePassed':mid_err<=MAX_MIDPOINT_ABS_TAU_DELTA,
+                  'midpointDominanceGatePassed':(not discriminating) or (mid_err<=MAX_MIDPOINT_TO_COMPLETE_RESIDUAL_RATIO*complete_err),
+                  'inputSha256':sha256_text(text),
+                  'stdoutSha256':sha256_text(cp.stdout),
+                  'stderrSha256':sha256_text(cp.stderr),
+                  'forcedGridKm':zgrid,
+                  'verboseLowerBoundaryKm':table['lowerBoundaryKm'],
+                  'verboseLayerOpticalDepth':dtau,
+              }
+              (case_dir/'case.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+              results.append(row)
+
+          discriminating=[r for r in results if r['ruleDiscriminating']]
+          supported=(
+              bool(discriminating)
+              and all(r['midpointAbsoluteGatePassed'] for r in results)
+              and all(r['midpointDominanceGatePassed'] for r in results)
+          )
+          summary={
+              'schemaVersion':1,
+              'stageId':'lowalt-pinned-midpoint-blackbox-v1',
+              'status':'PINNED_RUNTIME_MIDPOINT_RULE_BLACKBOX_SUPPORTED' if supported else 'PINNED_RUNTIME_MIDPOINT_RULE_BLACKBOX_NOT_SUPPORTED',
+              'executionHead':os.environ.get('GITHUB_SHA'),
+              'baseMain':os.environ['BASE_MAIN'],
+              'exactPackageSpec':os.environ['EXACT_PACKAGE'],
+              'uvspecSha256':os.environ['UVSPEC_SHA256'],
+              'historicalSourceByteProvenance':'NOT_PASS',
+              'historicalExpectedSourceSha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'currentPublicSourceMirrorIsNotAuthority':True,
+              'solverInvocationCount':len(results),
+              'sameIdentityRetryAllowed':False,
+              'githubRerunAllowed':False,
+              'protectedResultsOpened':False,
+              'modelFitPerformed':False,
+              'routingOrSeamMutationPerformed':False,
+              'claimBoundary':'Black-box support for the frozen midpoint-surface Chapman candidate at 400 nm on four fresh nonprotected cases only; not source-byte provenance and not solver-equivalence promotion.',
+              'preregisteredGates':{
+                  'maxMidpointAbsTauDelta':MAX_MIDPOINT_ABS_TAU_DELTA,
+                  'resolvableRuleSeparationTau':RESOLVABLE_RULE_SEPARATION,
+                  'maxMidpointToCompleteResidualRatio':MAX_MIDPOINT_TO_COMPLETE_RESIDUAL_RATIO,
+              },
+              'discriminatingCaseCount':len(discriminating),
+              'maxMidpointAbsDeltaTau':max(r['midpointAbsDeltaTau'] for r in results),
+              'maxCompleteShellAbsDeltaTau':max(r['completeShellAbsDeltaTau'] for r in results),
+              'cases':results,
+          }
+          (OUT/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'status':summary['status'],
+              'discriminatingCaseCount':summary['discriminatingCaseCount'],
+              'maxMidpointAbsDeltaTau':summary['maxMidpointAbsDeltaTau'],
+              'maxCompleteShellAbsDeltaTau':summary['maxCompleteShellAbsDeltaTau'],
+              'cases':[{
+                  'caseId':r['caseId'],'h':r['targetAltitudeDeg'],'e':r['observerElevationM'],
+                  'solverTau':r['solverDirectOpticalDepth'],'midpointTau':r['midpointSurfaceOpticalDepth'],
+                  'completeTau':r['completeShellOpticalDepth'],'midErr':r['midpointAbsDeltaTau'],
+                  'completeErr':r['completeShellAbsDeltaTau'],'separation':r['candidateRuleSeparationTau'],
+                  'ratio':r['midpointToCompleteResidualRatio'],
+              } for r in results],
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Upload immutable one-shot QA evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-pinned-midpoint-blackbox-v1-${{ github.run_id }}
+          path: lowalt-midpoint-blackbox-output/
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+
+      - name: Preserve scientific classification without retry semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          d=json.load(open('lowalt-midpoint-blackbox-output/summary.json'))
+          if d.get('solverInvocationCount')!=4: raise SystemExit('solver invocation count drift')
+          if d.get('sameIdentityRetryAllowed') is not False or d.get('githubRerunAllowed') is not False:
+              raise SystemExit('retry boundary drift')
+          if d.get('historicalSourceByteProvenance')!='NOT_PASS': raise SystemExit('provenance gate drift')
+          if d.get('protectedResultsOpened') is not False or d.get('modelFitPerformed') is not False:
+              raise SystemExit('claim boundary drift')
+          print(json.dumps({
+              'status':d['status'],
+              'discriminatingCaseCount':d['discriminatingCaseCount'],
+              'maxMidpointAbsDeltaTau':d['maxMidpointAbsDeltaTau'],
+              'maxCompleteShellAbsDeltaTau':d['maxCompleteShellAbsDeltaTau'],
+          },sort_keys=True))
+          PY

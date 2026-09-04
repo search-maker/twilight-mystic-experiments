@@ -60,6 +60,9 @@ class DeepSolarTwilightReferenceModulesTest(unittest.TestCase):
     def test_photon_scaling_diagnostic_reference(self) -> None:
         self._run_self_test("photon_scaling_diagnostic_reference.py")
 
+    def test_assumption_tier_budget_reference(self) -> None:
+        self._run_self_test("assumption_tier_budget_reference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

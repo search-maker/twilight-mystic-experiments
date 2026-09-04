@@ -1,4 +1,4 @@
-name: LOWALT source-cache recovery v2
+name: LOWALT source-cache recovery v3
 
 on:
   push:
@@ -13,200 +13,186 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Probe historical libRadtran 2.0.6 source candidates
+      - name: Probe historical conda-forge Azure build logs
         shell: bash
         run: |
-          set -u -o pipefail
+          set -euo pipefail
           EXPECTED='999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
-          mkdir -p out/work out/cdx
-          REPORT=out/source-recovery-report.txt
+          PRIOR='64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
+          AZ_ORG='https://dev.azure.com/conda-forge'
+          AZ_PROJECT='84710dde-1620-425b-80d0-4cf5baca359d'
+          API="$AZ_ORG/$AZ_PROJECT/_apis/build"
+          mkdir -p out/raw out/matches
+          REPORT=out/azure-source-log-recovery.txt
           : > "$REPORT"
           {
-            echo "LOWALT_SOURCE_RECOVERY_V2"
+            echo 'LOWALT_SOURCE_RECOVERY_V3_AZURE_LOGS'
             echo "expected_sha256=$EXPECTED"
-            echo "runner_os=${RUNNER_OS:-unknown}"
+            echo "prior_sha256=$PRIOR"
             echo "github_sha=${GITHUB_SHA:-unknown}"
             date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
           } >> "$REPORT"
 
-          hash_candidate() {
-            local label="$1"
-            local body="$2"
-            local bytes sha
-            bytes=$(wc -c < "$body" | tr -d ' ')
-            sha=$(sha256sum "$body" | awk '{print $1}')
-            echo "bytes=$bytes" >> "$REPORT"
-            echo "sha256=$sha" >> "$REPORT"
-            file "$body" | sed 's/^/file=/' >> "$REPORT" || true
-            if [[ "$sha" == "$EXPECTED" ]]; then
-              echo "expected_match=true" >> "$REPORT"
-              cp "$body" "out/libRadtran-2.0.6-EXPECTED-${label}.tar.gz"
-            else
-              echo "expected_match=false" >> "$REPORT"
-            fi
-          }
-
-          probe_url() {
+          fetch_json() {
             local label="$1"
             local url="$2"
-            local body="out/work/${label}.bin"
-            local headers="out/${label}.headers.txt"
+            local dst="out/raw/${label}.json"
             echo >> "$REPORT"
-            echo "candidate=$label" >> "$REPORT"
+            echo "request=$label" >> "$REPORT"
             echo "url=$url" >> "$REPORT"
-            rm -f "$body" "$headers"
             set +e
             curl --fail --location --silent --show-error \
-              --connect-timeout 20 --max-time 300 --retry 0 \
-              --dump-header "$headers" --output "$body" "$url"
+              --connect-timeout 20 --max-time 180 --retry 0 \
+              -H 'Accept: application/json' \
+              --dump-header "out/raw/${label}.headers.txt" \
+              --output "$dst" "$url"
             rc=$?
             set -e
             echo "curl_rc=$rc" >> "$REPORT"
-            if [[ $rc -ne 0 ]]; then
-              rm -f "$body"
-              return 0
+            if [[ $rc -eq 0 ]]; then
+              echo "bytes=$(wc -c < "$dst" | tr -d ' ')" >> "$REPORT"
+              echo "sha256=$(sha256sum "$dst" | awk '{print $1}')" >> "$REPORT"
+            else
+              rm -f "$dst"
             fi
-            hash_candidate "$label" "$body"
-            rm -f "$body"
+            return 0
           }
 
-          probe_resolved_url() {
-            local label="$1"
-            local ip="$2"
-            local url='https://sources.conda.io/libRadtran-2.0.6.tar.gz'
-            local body="out/work/${label}.bin"
-            local headers="out/${label}.headers.txt"
-            echo >> "$REPORT"
-            echo "candidate=$label" >> "$REPORT"
-            echo "url=$url" >> "$REPORT"
-            echo "forced_ip=$ip" >> "$REPORT"
-            rm -f "$body" "$headers"
+          fetch_text() {
+            local build="$1"
+            local log_id="$2"
+            local url="$3"
+            local dst="out/raw/build-${build}-log-${log_id}.txt"
             set +e
             curl --fail --location --silent --show-error \
-              --connect-timeout 20 --max-time 300 --retry 0 \
-              --resolve "sources.conda.io:443:$ip" \
-              --dump-header "$headers" --output "$body" "$url"
+              --connect-timeout 20 --max-time 180 --retry 0 \
+              -H 'Accept: text/plain' \
+              --output "$dst" "$url"
             rc=$?
             set -e
-            echo "curl_rc=$rc" >> "$REPORT"
+            echo "build=$build log_id=$log_id curl_rc=$rc" >> "$REPORT"
             if [[ $rc -ne 0 ]]; then
-              rm -f "$body"
+              rm -f "$dst"
               return 0
             fi
-            hash_candidate "$label" "$body"
-            rm -f "$body"
+            echo "build=$build log_id=$log_id bytes=$(wc -c < "$dst" | tr -d ' ') sha256=$(sha256sum "$dst" | awk '{print $1}')" >> "$REPORT"
+            python - "$build" "$log_id" "$dst" "out/matches/build-${build}-log-${log_id}.matches.txt" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          build, log_id, src_name, dst_name = sys.argv[1:]
+          src = pathlib.Path(src_name)
+          dst = pathlib.Path(dst_name)
+          ansi = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+          needle = re.compile(
+              r'(libRadtran|999e47f4|64930cc4|checksum|sha[-_ ]?256|hash mismatch|'
+              r'downloading|downloaded|source[_ -]?cache|src[_ -]?cache|source url|work/src)',
+              re.I,
+          )
+          matches = []
+          for n, raw in enumerate(src.read_text(errors='replace').splitlines(), 1):
+              line = ansi.sub('', raw)
+              if needle.search(line):
+                  matches.append(f'{build}:{log_id}:{n}:{line[:1200]}')
+                  if len(matches) >= 1000:
+                      matches.append(f'{build}:{log_id}:TRUNCATED_AFTER_1000_MATCHES')
+                      break
+          dst.write_text('\n'.join(matches) + ('\n' if matches else ''))
+          PY
+            rm -f "$dst"
           }
 
-          probe_cdx() {
-            local label="$1"
-            local encoded_url="$2"
-            local out_json="out/cdx/${label}.json"
-            local cdx="https://web.archive.org/cdx/search/cdx?url=${encoded_url}&output=json&filter=statuscode%3A200&fl=timestamp%2Coriginal%2Cdigest%2Clength%2Cstatuscode%2Cmimetype&collapse=digest"
-            echo >> "$REPORT"
-            echo "wayback_label=$label" >> "$REPORT"
-            echo "wayback_cdx_url=$cdx" >> "$REPORT"
-            set +e
-            curl --fail --location --silent --show-error \
-              --connect-timeout 20 --max-time 120 --retry 0 \
-              --dump-header "out/cdx/${label}.headers.txt" \
-              --output "$out_json" "$cdx"
-            rc=$?
-            set -e
-            echo "wayback_cdx_curl_rc=$rc" >> "$REPORT"
-            if [[ $rc -ne 0 ]]; then
-              rm -f "$out_json"
-              return 0
-            fi
-            echo "wayback_cdx_bytes=$(wc -c < "$out_json" | tr -d ' ')" >> "$REPORT"
-            sha256sum "$out_json" | sed 's/^/wayback_cdx_sha256=/' >> "$REPORT"
-            python - "$out_json" "$label" "$REPORT" <<'PY'
+          for build in 1327727 1327806; do
+            fetch_json "build-${build}" "$API/builds/${build}?api-version=7.1"
+            fetch_json "build-${build}-logs" "$API/builds/${build}/logs?api-version=7.1"
+            fetch_json "build-${build}-timeline" "$API/builds/${build}/timeline?api-version=7.1"
+            fetch_json "build-${build}-artifacts" "$API/builds/${build}/artifacts?api-version=7.1"
+
+            python - "$build" "$REPORT" <<'PY'
           import json
           import pathlib
           import sys
 
-          path = pathlib.Path(sys.argv[1])
-          label = sys.argv[2]
-          report = pathlib.Path(sys.argv[3])
-          try:
-              payload = json.loads(path.read_text())
-          except Exception as exc:
-              with report.open('a') as fh:
-                  fh.write(f"wayback_{label}_json_valid=false\n")
-                  fh.write(f"wayback_{label}_json_error={type(exc).__name__}\n")
-              raise SystemExit(0)
-          rows = payload[1:] if isinstance(payload, list) and payload else []
+          build, report_name = sys.argv[1:]
+          report = pathlib.Path(report_name)
+          def load(name):
+              p = pathlib.Path('out/raw') / name
+              if not p.exists():
+                  return None
+              try:
+                  return json.loads(p.read_text())
+              except Exception:
+                  return None
+
+          meta = load(f'build-{build}.json')
+          logs = load(f'build-{build}-logs.json')
+          artifacts = load(f'build-{build}-artifacts.json')
           with report.open('a') as fh:
-              fh.write(f"wayback_{label}_json_valid=true\n")
-              fh.write(f"wayback_{label}_capture_count={len(rows)}\n")
-              for idx, row in enumerate(rows[:10], 1):
-                  fh.write(f"wayback_{label}_capture_{idx}=" + "|".join(map(str, row)) + "\n")
+              fh.write(f'\nBUILD_SUMMARY build={build}\n')
+              if isinstance(meta, dict):
+                  for key in ('buildNumber','status','result','sourceVersion','queueTime','startTime','finishTime'):
+                      fh.write(f'{key}={meta.get(key)}\n')
+              else:
+                  fh.write('build_metadata_json=UNAVAILABLE_OR_INVALID\n')
+              if isinstance(logs, dict):
+                  vals = logs.get('value') or []
+                  fh.write(f'log_count={len(vals)}\n')
+              else:
+                  fh.write('logs_json=UNAVAILABLE_OR_INVALID\n')
+              if isinstance(artifacts, dict):
+                  vals = artifacts.get('value') or []
+                  fh.write(f'artifact_count={len(vals)}\n')
+                  for a in vals[:100]:
+                      r = a.get('resource') or {}
+                      fh.write('artifact=' + '|'.join(str(x) for x in (
+                          a.get('id'), a.get('name'), r.get('type'), r.get('data'), r.get('url')
+                      )) + '\n')
+              else:
+                  fh.write('artifacts_json=UNAVAILABLE_OR_INVALID\n')
           PY
-          }
 
-          set -e
-          probe_url sources_conda_https 'https://sources.conda.io/libRadtran-2.0.6.tar.gz'
-          probe_url anaconda_main_src_cache 'https://repo.anaconda.com/pkgs/main/src_cache/libRadtran-2.0.6.tar.gz'
-          probe_url libradtran_https 'https://www.libradtran.org/download/libRadtran-2.0.6.tar.gz'
-          probe_url libradtran_http 'http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz'
-
-          echo >> "$REPORT"
-          echo 'doh_candidate=sources.conda.io' >> "$REPORT"
-          set +e
-          curl --fail --location --silent --show-error \
-            --connect-timeout 20 --max-time 60 --retry 0 \
-            --output out/sources-conda-doh.json \
-            'https://dns.google/resolve?name=sources.conda.io&type=A'
-          doh_rc=$?
-          set -e
-          echo "doh_curl_rc=$doh_rc" >> "$REPORT"
-          if [[ $doh_rc -eq 0 ]]; then
-            python - <<'PY' >> "$REPORT"
+            logs_file="out/raw/build-${build}-logs.json"
+            if [[ -f "$logs_file" ]]; then
+              while IFS=$'\t' read -r log_id log_url; do
+                [[ -n "$log_id" && -n "$log_url" ]] || continue
+                fetch_text "$build" "$log_id" "$log_url"
+              done < <(python - "$logs_file" <<'PY'
           import json
-          from pathlib import Path
-          p = Path('out/sources-conda-doh.json')
+          import pathlib
+          import sys
           try:
-              d = json.loads(p.read_text())
-          except Exception as exc:
-              print('doh_json_valid=false')
-              print(f'doh_json_error={type(exc).__name__}')
-          else:
-              print('doh_json_valid=true')
-              print(f"doh_status={d.get('Status')}")
-              ips = [a.get('data') for a in d.get('Answer', []) if a.get('type') == 1 and a.get('data')]
-              print('doh_a_records=' + ','.join(ips))
-          PY
-            mapfile -t IPS < <(python - <<'PY'
-          import json
-          from pathlib import Path
-          try:
-              d = json.loads(Path('out/sources-conda-doh.json').read_text())
+              d = json.loads(pathlib.Path(sys.argv[1]).read_text())
           except Exception:
               raise SystemExit(0)
-          for ans in d.get('Answer', []):
-              if ans.get('type') == 1 and ans.get('data'):
-                  print(ans['data'])
+          for item in d.get('value') or []:
+              i = item.get('id')
+              u = item.get('url')
+              if i is not None and u:
+                  print(f'{i}\t{u}')
           PY
-            )
-            for ip in "${IPS[@]}"; do
-              safe_ip=${ip//./_}
-              probe_resolved_url "sources_conda_doh_${safe_ip}" "$ip"
-            done
-          fi
+              )
+            fi
+          done
 
-          probe_cdx wayback_www_http 'http%3A%2F%2Fwww.libradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz'
-          probe_cdx wayback_www_https 'https%3A%2F%2Fwww.libradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz'
-          probe_cdx wayback_bare_http 'http%3A%2F%2Flibradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz'
-          probe_cdx wayback_bare_https 'https%3A%2F%2Flibradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz'
-          probe_cdx wayback_host_wildcard '%2A.libradtran.org%2Fdownload%2FlibRadtran-2.0.6.tar.gz'
-
-          rm -rf out/work
+          cat out/matches/*.matches.txt 2>/dev/null | sort -u > out/all-relevant-log-lines.txt || true
+          {
+            echo
+            echo 'MATCH_SUMMARY'
+            echo "relevant_line_count=$(wc -l < out/all-relevant-log-lines.txt | tr -d ' ')"
+            echo "expected_hash_mentions=$(grep -ci '999e47f4' out/all-relevant-log-lines.txt || true)"
+            echo "prior_hash_mentions=$(grep -ci '64930cc4' out/all-relevant-log-lines.txt || true)"
+            echo "libradtran_mentions=$(grep -ci 'libradtran' out/all-relevant-log-lines.txt || true)"
+          } >> "$REPORT"
           cat "$REPORT"
+          echo '--- relevant historical log lines ---'
+          cat out/all-relevant-log-lines.txt
 
       - name: Upload immutable recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lowalt-source-cache-recovery-v2
+          name: lowalt-source-cache-recovery-v3-azure-logs
           path: out/
           if-no-files-found: error
           retention-days: 90

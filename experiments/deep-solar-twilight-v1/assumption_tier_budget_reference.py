@@ -299,16 +299,24 @@ class ReferenceTests(unittest.TestCase):
                 photon_histories=200_000_000,
             )
         )
-        with localcontext() as ctx:
-            ctx.prec = _DECIMAL_PRECISION
-            expected = Decimal("0.95").next_plus()
-        # The returned conservative endpoint is defined at the module's frozen
-        # precision, not at the caller's ambient Decimal context. Guard this
-        # explicitly so a low/default context cannot make the test itself lie.
+        single_unit_upper = zero_upper_common_q(alpha, 1)
+        single_unit_upper_fraction = Fraction(single_unit_upper)
+        # m=1 has the exact mathematical boundary q_U=1-alpha=0.95. The
+        # implementation intentionally expands outward through several rounded
+        # transcendental/arithmetic operations, so test the proof property and
+        # tightness rather than hard-coding an exact one-ulp representation.
+        self.assertGreaterEqual(single_unit_upper_fraction, Fraction(19, 20))
+        self.assertLessEqual(1 - single_unit_upper_fraction, alpha)
+        self.assertLess(
+            single_unit_upper_fraction - Fraction(19, 20),
+            Fraction(1, 10**110),
+        )
+        # The conservative endpoint is defined by the module's frozen internal
+        # context and must not depend on the caller's ambient Decimal context.
         for ambient_precision in (9, 28, 50):
             with localcontext() as ctx:
                 ctx.prec = ambient_precision
-                self.assertEqual(zero_upper_common_q(alpha, 1), expected)
+                self.assertEqual(zero_upper_common_q(alpha, 1), single_unit_upper)
 
     def test_photon_iid_can_meet_target_that_one_block_cannot(self) -> None:
         target = Fraction(1, 1_000_000)

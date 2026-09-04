@@ -3,8 +3,8 @@
 
 This module intentionally does NOT claim libRadtran/sdisort source equivalence.
 It evaluates a straight outward ray through concentric piecewise-constant
-extinction shells.  It contains no uvspec/subprocess execution and no fitted
-parameters.  h<=0 is refused because exact horizon support is not established.
+extinction shells. It contains no uvspec/subprocess execution and no fitted
+parameters. h<=0 is refused because exact horizon support is not established.
 """
 
 from __future__ import annotations
@@ -67,8 +67,21 @@ def shell_path_length_km(
 ) -> float:
     """Exact Euclidean path length through one concentric shell for h>0.
 
-    For r0=R+z_obs and impact parameter b=r0*cos(h), the outward-ray distance
-    between radii r_lo and r_hi is sqrt(r_hi^2-b^2)-sqrt(r_lo^2-b^2).
+    For r0=R+z_obs and impact parameter b=r0*cos(h), the exact outward-ray
+    distance is sqrt(r_hi^2-b^2)-sqrt(r_lo^2-b^2). Direct evaluation of that
+    identity loses precision twice near the horizon/thin-shell limit: first in
+    r^2-b^2 and then in the difference of nearby square roots.
+
+    Use the algebraically identical observer-relative radicand
+
+      A(z) = (z-z_obs)*(2R+z+z_obs) + (R+z_obs)^2*sin(h)^2
+
+    and rationalize the root difference:
+
+      ds = (z_hi-z_lo)*(2R+z_hi+z_lo) / (sqrt(A_hi)+sqrt(A_lo)).
+
+    This changes only floating-point conditioning; it does not choose an Earth
+    radius, extinction rule, refraction model, or sdisort-equivalence mapping.
     """
 
     radius = _finite("earth_radius_km", earth_radius_km)
@@ -87,19 +100,29 @@ def shell_path_length_km(
         raise DirectPathRefusal("shell must be above observer and have positive thickness")
 
     r0 = radius + observer
-    r_lo = radius + lo
-    r_hi = radius + hi
     h_rad = math.radians(h_deg)
-    impact = r0 * math.cos(h_rad)
+    sin_term = r0 * math.sin(h_rad)
+    sin_term_sq = sin_term * sin_term
 
-    lo_arg = r_lo * r_lo - impact * impact
-    hi_arg = r_hi * r_hi - impact * impact
-    scale = max(r_hi * r_hi, 1.0)
-    if lo_arg < -1e-13 * scale or hi_arg < -1e-13 * scale:
-        raise DirectPathRefusal("ray/shell geometry produced a negative radicand")
-    lo_root = math.sqrt(max(0.0, lo_arg))
-    hi_root = math.sqrt(max(0.0, hi_arg))
-    ds = hi_root - lo_root
+    def radial_root(z_km: float) -> float:
+        dz = z_km - observer
+        shell_term = dz * (2.0 * radius + z_km + observer)
+        arg = shell_term + sin_term_sq
+        r = radius + z_km
+        scale = max(r * r, 1.0)
+        if not math.isfinite(arg):
+            raise DirectPathRefusal("ray/shell geometry produced a nonfinite radicand")
+        if arg < -1e-13 * scale:
+            raise DirectPathRefusal("ray/shell geometry produced a negative radicand")
+        return math.sqrt(max(0.0, arg))
+
+    lo_root = radial_root(lo)
+    hi_root = radial_root(hi)
+    denominator = hi_root + lo_root
+    numerator = (hi - lo) * (2.0 * radius + hi + lo)
+    if not math.isfinite(numerator) or not math.isfinite(denominator) or denominator <= 0.0:
+        raise DirectPathRefusal("nonfinite shell path rationalization")
+    ds = numerator / denominator
     if not math.isfinite(ds) or ds <= 0.0:
         raise DirectPathRefusal("nonfinite or nonpositive shell path length")
     return ds
@@ -166,6 +189,40 @@ def direct_transmission(
     )
 
 
+def _high_precision_shell_reference_km(
+    *,
+    earth_radius_km: float,
+    observer_altitude_km: float,
+    geometric_altitude_deg: float,
+    z_lo_km: float,
+    z_hi_km: float,
+) -> float:
+    """100-digit arithmetic oracle for the shell-arithmetic self-test only.
+
+    The sine is intentionally computed once in binary64 and converted exactly
+    to Decimal. This isolates the cancellation/conditioning question from any
+    separate high-precision trigonometric convention. It is not science input
+    and is not a libRadtran source-equivalence claim.
+    """
+
+    from decimal import Decimal, localcontext
+
+    with localcontext() as context:
+        context.prec = 100
+        radius = Decimal.from_float(float(earth_radius_km))
+        observer = Decimal.from_float(float(observer_altitude_km))
+        lo = Decimal.from_float(float(z_lo_km))
+        hi = Decimal.from_float(float(z_hi_km))
+        sin_h = Decimal.from_float(math.sin(math.radians(float(geometric_altitude_deg))))
+        r0 = radius + observer
+        sin_term_sq = (r0 * sin_h) * (r0 * sin_h)
+
+        def arg(z_km: Decimal) -> Decimal:
+            return (z_km - observer) * (2 * radius + z_km + observer) + sin_term_sq
+
+        return float(arg(hi).sqrt() - arg(lo).sqrt())
+
+
 def _self_test() -> None:
     R = 6371.0  # synthetic test constant only; NOT a frozen sdisort source-equivalence claim
     layers = (
@@ -201,6 +258,35 @@ def _self_test() -> None:
         )
         assert math.isclose(a, b, rel_tol=5e-12, abs_tol=5e-12), (h, a, b)
         assert a > 0.0 and math.isfinite(a)
+
+    # Cancellation regression: compare the binary64 implementation to a
+    # 100-digit oracle over thin-shell / near-horizon stress cases. These
+    # coordinates are synthetic arithmetic tests, not an equivalence matrix.
+    cancellation_cases = (
+        (5.0, 0.0, 0.0, 0.1),
+        (1.0, 0.0, 0.0, 0.01),
+        (0.0001, 0.0, 0.0, 0.0001),
+        (1e-7, 0.0, 0.0, 1e-6),
+        (0.3, 2.5, 2.5, 2.500001),
+        (90.0, 0.0, 0.0, 1e-6),
+    )
+    for h, observer, lo, hi in cancellation_cases:
+        got = shell_path_length_km(
+            earth_radius_km=R,
+            observer_altitude_km=observer,
+            geometric_altitude_deg=h,
+            z_lo_km=lo,
+            z_hi_km=hi,
+        )
+        reference = _high_precision_shell_reference_km(
+            earth_radius_km=R,
+            observer_altitude_km=observer,
+            geometric_altitude_deg=h,
+            z_lo_km=lo,
+            z_hi_km=hi,
+        )
+        relative_error = abs(got - reference) / reference
+        assert relative_error <= 8e-15, (h, observer, lo, hi, got, reference, relative_error)
 
     # Observer-elevation truncation is explicit in the retained layers.
     elevated = (

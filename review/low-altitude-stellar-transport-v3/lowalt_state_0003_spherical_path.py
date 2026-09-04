@@ -42,10 +42,13 @@ def _validate_layers(layers: Sequence[RadialLayer], observer_altitude_km: float)
     if not layers:
         raise DirectPathRefusal("at least one retained layer is required")
     previous_hi = None
+    first_lo = None
     for index, layer in enumerate(layers):
         lo = _finite(f"layers[{index}].z_lo_km", layer.z_lo_km)
         hi = _finite(f"layers[{index}].z_hi_km", layer.z_hi_km)
         tau = _finite(f"layers[{index}].vertical_tau", layer.vertical_tau)
+        if first_lo is None:
+            first_lo = lo
         if hi <= lo:
             raise DirectPathRefusal("layer heights must be strictly increasing")
         if tau < 0.0:
@@ -53,7 +56,7 @@ def _validate_layers(layers: Sequence[RadialLayer], observer_altitude_km: float)
         if previous_hi is not None and not math.isclose(lo, previous_hi, rel_tol=0.0, abs_tol=1e-12):
             raise DirectPathRefusal("retained layers must be contiguous")
         previous_hi = hi
-    if not math.isclose(layers[0].z_lo_km, observer_altitude_km, rel_tol=0.0, abs_tol=1e-12):
+    if first_lo != observer_altitude_km:
         raise DirectPathRefusal("first retained layer must start exactly at observer altitude")
 
 
@@ -96,7 +99,7 @@ def shell_path_length_km(
         raise DirectPathRefusal("negative observer altitude is outside this prototype")
     if not (0.0 < h_deg <= 90.0):
         raise DirectPathRefusal("geometric altitude must satisfy 0 < h <= 90 deg")
-    if lo < observer - 1e-12 or hi <= lo:
+    if lo < observer or hi <= lo:
         raise DirectPathRefusal("shell must be above observer and have positive thickness")
 
     r0 = radius + observer
@@ -108,13 +111,11 @@ def shell_path_length_km(
         dz = z_km - observer
         shell_term = dz * (2.0 * radius + z_km + observer)
         arg = shell_term + sin_term_sq
-        r = radius + z_km
-        scale = max(r * r, 1.0)
         if not math.isfinite(arg):
             raise DirectPathRefusal("ray/shell geometry produced a nonfinite radicand")
-        if arg < -1e-13 * scale:
+        if arg < 0.0:
             raise DirectPathRefusal("ray/shell geometry produced a negative radicand")
-        return math.sqrt(max(0.0, arg))
+        return math.sqrt(arg)
 
     lo_root = radial_root(lo)
     hi_root = radial_root(hi)
@@ -357,6 +358,35 @@ def _self_test() -> None:
         layers=elevated,
     )
     assert tau_elev > sum(x.vertical_tau for x in elevated)
+
+    # A shell even slightly below the observer is outside the retained-domain
+    # contract. Do not accept it through an absolute tolerance and then clamp a
+    # negative observer-relative radicand to zero.
+    for below_observer in (-5e-13, -1e-15):
+        try:
+            shell_path_length_km(
+                earth_radius_km=R,
+                observer_altitude_km=0.0,
+                geometric_altitude_deg=1e-7,
+                z_lo_km=below_observer,
+                z_hi_km=1e-6,
+            )
+        except DirectPathRefusal:
+            pass
+        else:
+            raise AssertionError("shell below observer must refuse exactly")
+
+        try:
+            slant_optical_depth(
+                earth_radius_km=R,
+                observer_altitude_km=0.0,
+                geometric_altitude_deg=1e-7,
+                layers=(RadialLayer(below_observer, 1e-6, 1e-9),),
+            )
+        except DirectPathRefusal:
+            pass
+        else:
+            raise AssertionError("first retained layer below observer must refuse exactly")
 
     # Horizon and below remain fail closed under this identity.
     for h in (0.0, -0.01):

@@ -1,0 +1,268 @@
+name: Deep twilight bare-aerosol HG2 selector closure v25
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-bare-aerosol-hg2-selector-v25
+    paths:
+      - .github/workflows/deep-twilight-bare-aerosol-hg2-selector-v25.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  exact-bare-aerosol-phase-selector-v25:
+    if: github.run_attempt == 1 && github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      EXPECTED_CONTROL_COMMENT: '5558151949'
+      EXACT_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      V2_RUN: '34012593281'
+      V2_HEAD: a95df9984d27cfb9c1c1915b72e97ce794ad93f5
+      V2_ARTIFACT: '9982923548'
+      V2_DIGEST: sha256:bbad4ef455636f55510176b9d0df2f509fabdd78675a9504d45354375e01ceaf
+      V24B_RUN: '34022960361'
+      V24B_HEAD: 303268d8ab1b72b116a60dd79f7488c65fdfead0
+      V24B_ARTIFACT: '9986109317'
+      V24B_DIGEST: sha256:91e04c13a2edd0522e9f10f9c02c88ce2ef6c958faf90a2b4687322121a8e16b
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Freeze scope and dynamically fresh-read control fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-hg2-selector-v25-output
+          mkdir -p "$OUT"
+          gh api "repos/$GITHUB_REPOSITORY/issues/60" > "$OUT/issue60-preflight.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$OUT/main-preflight.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V2_RUN" > "$OUT/v2-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT" > "$OUT/v2-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V24B_RUN" > "$OUT/v24b-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V24B_ARTIFACT" > "$OUT/v24b-artifact.json"
+          python - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          p=Path('deep-twilight-bare-aerosol-hg2-selector-v25-output')
+          issue=json.loads((p/'issue60-preflight.json').read_text())
+          main=json.loads((p/'main-preflight.json').read_text())
+          v2=json.loads((p/'v2-run.json').read_text()); v2a=json.loads((p/'v2-artifact.json').read_text())
+          v24=json.loads((p/'v24b-run.json').read_text()); v24a=json.loads((p/'v24b-artifact.json').read_text())
+          if main['commit']['sha'] != os.environ['EXPECTED_MAIN']: raise SystemExit('main moved')
+          if v2.get('head_sha') != os.environ['V2_HEAD'] or v2.get('conclusion')!='success' or v2.get('run_attempt')!=1: raise SystemExit('V2 identity mismatch')
+          if str(v2a.get('id')) != os.environ['V2_ARTIFACT'] or v2a.get('digest') != os.environ['V2_DIGEST'] or v2a.get('expired'): raise SystemExit('V2 artifact mismatch')
+          if v24.get('head_sha') != os.environ['V24B_HEAD'] or v24.get('conclusion')!='success' or v24.get('run_attempt')!=1: raise SystemExit('V24B identity mismatch')
+          if str(v24a.get('id')) != os.environ['V24B_ARTIFACT'] or v24a.get('digest') != os.environ['V24B_DIGEST'] or v24a.get('expired'): raise SystemExit('V24B artifact mismatch')
+          repo=os.environ['GITHUB_REPOSITORY']; me=int(os.environ['GITHUB_RUN_ID'])
+          blockers=[]; needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          for status in ('in_progress','queued'):
+              q=json.loads(subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],capture_output=True,text=True,check=True).stdout)
+              for r in q.get('workflow_runs',[]):
+                  if int(r['id']) == me: continue
+                  t=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in t for n in needles): blockers.append({'status':status,'id':r['id'],'name':r.get('name'),'branch':r.get('head_branch')})
+          (p/'v1-contention.json').write_text(json.dumps(blockers,indent=2,sort_keys=True)+'\n')
+          if blockers: raise SystemExit('real V1 contention')
+          count=int(issue.get('comments',0)); pages=(count+99)//100
+          marker_re=re.compile(r'^\s*WRITE_QUIET_(BEGIN|END)\b'); markers=[]; latest=None
+          for page in range(1,pages+1):
+              cs=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60/comments?per_page=100&page={page}'],capture_output=True,text=True,check=True).stdout)
+              for c in cs:
+                  latest=int(c['id']); fenced=False
+                  for raw in str(c.get('body','')).splitlines():
+                      line=raw.rstrip('\r')
+                      if line.lstrip().startswith('```'): fenced=not fenced; continue
+                      if fenced or line.lstrip().startswith('>'): continue
+                      m=marker_re.match(line)
+                      if m: markers.append((int(c['id']),m.group(1),line.strip()))
+          markers.sort(); state=markers[-1][1] if markers else 'NONE'
+          (p/'control-scan.json').write_text(json.dumps({'issueCommentCount':count,'pages':pages,'latestCommentId':latest,'writeQuietTerminalState':state,'markers':markers},indent=2)+'\n')
+          if str(latest) != os.environ['EXPECTED_CONTROL_COMMENT']: raise SystemExit(f'Issue #60 advanced: {latest}')
+          if state == 'BEGIN': raise SystemExit('unmatched WRITE_QUIET_BEGIN')
+          PY
+
+      - name: Byte-bind V2 and adopted V24B evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-hg2-selector-v25-output
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT/zip" > "$OUT/v2.zip"
+          test "sha256:$(sha256sum "$OUT/v2.zip" | cut -d' ' -f1)" = "$V2_DIGEST"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V24B_ARTIFACT/zip" > "$OUT/v24b.zip"
+          test "sha256:$(sha256sum "$OUT/v24b.zip" | cut -d' ' -f1)" = "$V24B_DIGEST"
+          mkdir "$OUT/v2" "$OUT/v24b"
+          unzip -q "$OUT/v2.zip" -d "$OUT/v2"
+          unzip -q "$OUT/v24b.zip" -d "$OUT/v24b"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('deep-twilight-bare-aerosol-hg2-selector-v25-output')
+          v2=json.loads((p/'v2/capture-summary-v2.json').read_text())
+          v24=json.loads((p/'v24b/entry-to-scatter-summary.json').read_text())
+          if v2.get('nCaoth') != 2 or v2.get('mysticBodyExecuted') is not False or v2.get('uvspecSha256') != '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3': raise SystemExit('V2 frozen state mismatch')
+          if v24.get('deltaSemanticStatus') != 'PASS_EXACT_BINARY' or v24.get('phaseStorageStatus') != 'PASS_EXACT_BINARY_STORAGE': raise SystemExit('V24B adopted mechanical predecessor mismatch')
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-bare-aerosol-hg2-selector-v25
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Dump exact selector, phase-count, jump-table and scatter dataflow
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-hg2-selector-v25-output
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | cut -d' ' -f1)" = "$UVSPEC_SHA256"
+          sha256sum "$UVSPEC" > "$OUT/uvspec-sha256.txt"
+          objdump -drwC -Mintel "$UVSPEC" > "$OUT/uvspec-objdump-full.txt"
+          objdump -s --start-address=0x2ebe34 --stop-address=0x2ebe48 "$UVSPEC" > "$OUT/mu-scatter-jump-table-bytes.txt"
+          micromamba list --explicit > "$OUT/runtime-package-explicit.txt"
+
+      - name: Prove frozen aerosol selector zero, phase-count zero, and HG2 fallback
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, re, struct
+          p=Path('deep-twilight-bare-aerosol-hg2-selector-v25-output')
+          full=(p/'uvspec-objdump-full.txt').read_text(errors='replace')
+          jt=(p/'mu-scatter-jump-table-bytes.txt').read_text(errors='replace')
+          def win(addr,b=0,a=30):
+              lines=full.splitlines(); key=f'{addr:x}:'
+              i=next(i for i,x in enumerate(lines) if x.strip().startswith(key))
+              return '\n'.join(lines[max(0,i-b):i+a+1])+'\n'
+          def need(text,*parts):
+              for x in parts:
+                  if x not in text: raise SystemExit('missing exact evidence: '+x)
+          # Prove calloc_int_1D/2D select alloc_nd_internal zeroing and that the allocator calls libc calloc.
+          c1=win(0xf2100,0,55); c2=win(0xf2220,0,55); alloc=win(0xf120f,0,65)
+          need(c1,'mov    ecx,0x1','<alloc_nd_internal>')
+          need(c2,'mov    ecx,0x1','<alloc_nd_internal>')
+          need(alloc,'test   r12d,r12d','<calloc@GLIBC_2.2.5>')
+          # Selector array atmos+0xb0 is zero-allocated; for n_caoth=2 all custom writes (starting at index 3) are bypassed.
+          sel=win(0x15c92d,0,95)
+          need(sel,'15c944:','<calloc_int_1D>','15c94a:','[rbx+0xb0]','15c9cb:','[rdx+0x4],0x0','15c9d8:','cmp    eax,0x2','15c9db:','jle    15d482','15c9ec:','mov    r15d,0x3','15ca29:','[r14+r13*4],eax')
+          # Phase-count array atmos+0x70 is zero-allocated; row0 is populated, custom rows start at 3, so aerosol row2 remains zero for n_caoth=2.
+          pc=win(0x15cda1,0,80)
+          need(pc,'15cdce:','<calloc_int_2D>','15cdd8:','[rbx+0x70]','15ce04:','mov    DWORD PTR [r8],eax','15ce0d:','cmp    esi,0x2','15ce10:','jle    15ce4e','15ce19:','mov    eax,0x3','15ce33:','mov    DWORD PTR [r11+rcx*1],esi')
+          # Decode the exact five-entry switch table used by mu_scatter selector b0[isp].
+          raw=bytearray()
+          for line in jt.splitlines():
+              m=re.match(r'^\s*([0-9a-fA-F]+)\s+((?:[0-9a-fA-F]{8}\s*)+)',line)
+              if not m: continue
+              for g in re.findall(r'[0-9a-fA-F]{8}',m.group(2)): raw.extend(bytes.fromhex(g))
+          if len(raw)<20: raise SystemExit('jump-table bytes incomplete')
+          offs=struct.unpack('<5i',bytes(raw[:20])); base=0x2ebe34; targets=[base+x for x in offs]
+          if targets[0] != 0x16d358: raise SystemExit(f'selector case0 does not target HG2 branch: {targets!r}')
+          # case0 sees phase count row2==0 and takes fallback profile g2/f plus get_g1; get_g1 itself sees zero count and returns profile g1.
+          mu=win(0x16d324,0,185); g1=win(0x16cde0,0,30)
+          need(mu,'[rdi+0xb0]','[rdx+rcx*4]','16d358:','[rbx+0x70]','16d379:','test   edx,edx','16d37b:','jle    16d610','16d610:','[rbx+0xe0]','[rbx+0xd8]','<get_g1>','<sc_HG2_mu>')
+          need(g1,'[rdi+0x70]','test   eax,eax','jle    16ce20','16ce20:','[rdi+0xd0]')
+          v2=json.loads((p/'v2/capture-summary-v2.json').read_text()); v24=json.loads((p/'v24b/entry-to-scatter-summary.json').read_text())
+          summary={
+            'frozenEntryNCaoth':v2['nCaoth'],
+            'aerosolSpeciesIndex':2,
+            'selectorArray':'atmos+0xb0',
+            'selectorAerosolValue':0,
+            'selectorZeroProof':'calloc-zero plus n_caoth=2 bypasses custom index>=3 writes',
+            'selectorJumpTargetsHex':[hex(x) for x in targets],
+            'selectorCase0TargetHex':hex(targets[0]),
+            'phaseCountArray':'atmos+0x70',
+            'phaseCountAerosolAllLayers':0,
+            'phaseCountZeroProof':'calloc-zero; only total row0 plus custom index>=3 rows are populated when n_caoth=2',
+            'frozenBareAerosolPhasePath':'case0 -> phaseCount<=0 -> profile f_s/g2_s + get_g1(profile g1_s) -> sc_HG2_mu(g1,g2,f)',
+            'phaseTranslationParityStatus':'PASS_EXACT_BINARY_FROZEN_BARE_AEROSOL_HG2',
+            'deltaTranslationStatus':v24['deltaSemanticStatus'],
+            'exactZeroPolicy':'preserve raw IEEE-754 zeros/signed zeros; no epsilon substitution',
+            'rendererParityAuthorized':False,
+            'korkinGateAuthorized':False,
+            'deepScienceAuthorized':False,
+            'levelBChanged':False
+          }
+          evidence='\n---CALLOC1D---\n'+c1+'\n---CALLOC2D---\n'+c2+'\n---ALLOC ZERO PATH---\n'+alloc+'\n---SELECTOR INIT---\n'+sel+'\n---PHASE COUNT INIT---\n'+pc+'\n---JUMP TABLE---\n'+jt+'\n---MU SCATTER---\n'+mu+'\n---GET G1---\n'+g1
+          (p/'phase-selector-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          (p/'selected-evidence.txt').write_text(evidence)
+          (p/'selected-evidence-sha256.txt').write_text(hashlib.sha256(evidence.encode()).hexdigest()+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-bare-aerosol-hg2-selector-v25
+          path: deep-twilight-bare-aerosol-hg2-selector-v25-output
+          if-no-files-found: error
+
+      - name: Dynamically fresh-read terminal fence and post material checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-hg2-selector-v25-output
+          python - <<'PY'
+          import json, os, re, subprocess
+          repo=os.environ['GITHUB_REPOSITORY']; me=int(os.environ['GITHUB_RUN_ID'])
+          main=json.loads(subprocess.run(['gh','api',f'repos/{repo}/branches/main'],capture_output=True,text=True,check=True).stdout)
+          if main['commit']['sha'] != os.environ['EXPECTED_MAIN']: raise SystemExit('main moved')
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt'); blockers=[]
+          for status in ('in_progress','queued'):
+              q=json.loads(subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],capture_output=True,text=True,check=True).stdout)
+              for r in q.get('workflow_runs',[]):
+                  if int(r['id'])==me: continue
+                  t=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in t for n in needles): blockers.append(r['id'])
+          if blockers: raise SystemExit('V1 contention appeared')
+          issue=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60'],capture_output=True,text=True,check=True).stdout)
+          count=int(issue['comments']); pages=(count+99)//100; latest=None; markers=[]; rx=re.compile(r'^\s*WRITE_QUIET_(BEGIN|END)\b')
+          for page in range(1,pages+1):
+              cs=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60/comments?per_page=100&page={page}'],capture_output=True,text=True,check=True).stdout)
+              for c in cs:
+                  latest=int(c['id']); fenced=False
+                  for raw in str(c.get('body','')).splitlines():
+                      line=raw.rstrip('\r')
+                      if line.lstrip().startswith('```'): fenced=not fenced; continue
+                      if fenced or line.lstrip().startswith('>'): continue
+                      m=rx.match(line)
+                      if m: markers.append((int(c['id']),m.group(1)))
+          markers.sort()
+          if str(latest) != os.environ['EXPECTED_CONTROL_COMMENT']: raise SystemExit(f'Issue #60 advanced: {latest}')
+          if markers and markers[-1][1]=='BEGIN': raise SystemExit('unmatched WRITE_QUIET_BEGIN')
+          PY
+          SUMMARY="$(cat "$OUT/phase-selector-summary.json")"
+          EVSHA="$(cat "$OUT/selected-evidence-sha256.txt")"
+          BODY=$(cat <<EOF
+          DEEP_TWILIGHT::BARE_AEROSOL_HG2_SELECTOR_V25_READOUT
+
+          fence_main=$EXPECTED_MAIN
+          branch=$GITHUB_REF_NAME
+          head=$GITHUB_SHA
+          run=$GITHUB_RUN_ID attempt1
+          predecessor_v2_run=$V2_RUN head=$V2_HEAD artifact=$V2_ARTIFACT digest=$V2_DIGEST
+          predecessor_v24b_run=$V24B_RUN head=$V24B_HEAD artifact=$V24B_ARTIFACT digest=$V24B_DIGEST
+          STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedAllocated=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false
+          protectedResultOpened=false; levelBChanged=false; Taylor/Jerusalem=false; epsilonSubstitution=false
+          selected_evidence_sha256=$EVSHA
+
+          Exact frozen-state phase selector closure:
+          \`\`\`json
+          $SUMMARY
+          \`\`\`
+
+          Material conclusion: for the exact frozen bare aerosol_default entry state, n_caoth=2. Exact pinned binary code proves both the phase-type selector array and per-layer phase-count matrix are zero-allocated; the only non-total population loops begin at custom species index 3, so aerosol species index 2 remains selector=0 and phaseCount=0. The exact mu_scatter switch table maps selector case 0 to the HG2 path; phaseCount=0 forces the fallback profile, where g1_s/g2_s/f_s feed sc_HG2_mu(g1,g2,f) directly through the already adopted V24B storage mapping. Thus frozen bare-aerosol HG2 phase translation is mechanically closed without rounded verbose output or epsilon substitution.
+
+          This is still translation evidence, not an independent renderer acceptance: rendererParityAuthorized=false and korkinGateAuthorized=false until the independent spherical renderer consumes the exact tau/SSA/g1/g2/f/profile/zero semantics and passes its own deterministic/reference checks.
+          EOF
+          )
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments" -f body="$BODY"

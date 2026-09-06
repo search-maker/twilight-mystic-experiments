@@ -1,0 +1,359 @@
+name: Deep twilight AOD runtime semantic probe v12
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-aod-runtime-semantic-probe-v12
+    paths:
+      - ".github/workflows/deep-twilight-aod-runtime-semantic-probe-v12.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  exact-aod-semantic-probe-v12:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FRESH_SETUP_SEED: '1867342911'
+      BASELINE_RUN: '34012593281'
+      BASELINE_ARTIFACT_ID: '9982923548'
+      BASELINE_ARTIFACT_DIGEST: 'sha256:bbad4ef455636f55510176b9d0df2f509fabdd78675a9504d45354375e01ceaf'
+      BASELINE_CAPTURE_SHA256: 'f005ed18491a0c9b7827857c0bb2fc775c5e77eb2a69f02121f56814a628bec6'
+      SOURCE_CAPTURE_COMMIT: 'a95df9984d27cfb9c1c1915b72e97ce794ad93f5'
+      UVSPEC_SHA256: '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Freeze semantic probe and one-use boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-aod-runtime-semantic-probe-v12"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "${{ github.event.before }}" = "fe6e063c568394ae7b4e90222de270d3f2460455"
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          mkdir -p "$OUT"
+          cat > "$OUT/PROTOCOL.txt" <<'EOF'
+          DEEP TWILIGHT EXACT-RUNTIME AOD SEMANTIC PROBE V12
+          POST_V1 / SETUP-ONLY / NO MYSTIC BODY / NO PHOTON TRACE
+
+          Purpose: prove, without historical-source guessing, which of the two exact MYSTIC-entry
+          caoth rows is the bare aerosol_default component. Baseline is immutable run 34012593281,
+          artifact 9982923548: AFGL-US + aerosol_default + aerosol_set_tau_at_wvl 550 0.150000,
+          550 nm CRS, exact pinned rubin-libradtran runtime. Probe changes ONLY AOD550 from 0.150000
+          to 0.300000 and setup-only RNG identity from consumed seed 1173101368 to fresh seed 1867342911.
+          GDB must stop at the first instruction of mystic(); MYSTIC body must not execute and no photon
+          may be traced. The new seed is consumed/non-reusable once uvspec initializes its RNG.
+
+          Result-blind expected semantic signature, frozen before probe execution:
+          - nlyr=49, n_caoth=2, threed and zprof raw payloads must equal baseline exactly.
+          - dt_s row 0 must be byte-identical to baseline.
+          - dt_s row 1 must contain at least one nonzero finite float32 and every raw float32 must equal
+            the IEEE-754 float32 result of multiplying the corresponding baseline row-1 value by exactly 2.
+            Signed +/- zero is compared through the same float32 operation; no zero is replaced by epsilon.
+          - PASS requires that exact expected row assignment. We do NOT choose whichever row scales after results.
+          - om_s/g1_s/g2_s/f_s/ds_s equality is recorded row-by-row as diagnostic evidence only and is not
+            silently promoted into a semantic claim unless exact equality is actually observed.
+
+          Claim boundary: PASS identifies the aerosol optical-depth row for this exact frozen bare state and
+          supplies an exact-runtime AOD scaling equivalence datum. It does not by itself finish renderer phase/
+          delta-scaling translation, authorize deep science, alter Level-B 2.0-10.5 deg, open protected results,
+          or establish historical source-byte equivalence.
+
+          Forbidden: Taylor/Jerusalem tuning, epsilon-for-zero, protected-result opening, GitHub rerun/retry/resume,
+          seed reuse, MYSTIC-body execution, photon tracing, Level-B mutation, or post-result row selection.
+          EOF
+
+          # Scan all current remote branch histories. The only permitted introduction of this candidate seed
+          # is this exact fresh workflow commit; any older occurrence fails closed before target-runtime setup.
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          mapfile -t seed_commits < <(git log --all -S"$FRESH_SETUP_SEED" --format='%H' | sort -u)
+          for c in "${seed_commits[@]:-}"; do
+            [ -z "$c" ] && continue
+            test "$c" = "$GITHUB_SHA" || { echo "seed already appears in repository history at $c"; exit 41; }
+          done
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --jq '.[].body' | grep -Fq "$FRESH_SETUP_SEED"; then
+            echo "seed already appears in authoritative Issue #60 history"
+            exit 42
+          fi
+
+          # Yield only to actual live V1 contention. Generic/deep CI is not treated as hypothetical V1 contention.
+          python - <<'PY'
+          import json, os, subprocess, sys
+          repo=os.environ['GITHUB_REPOSITORY']; current=int(os.environ['GITHUB_RUN_ID'])
+          blockers=[]
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          for status in ('in_progress','queued'):
+              p=subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],text=True,capture_output=True,check=True)
+              for r in json.loads(p.stdout).get('workflow_runs',[]):
+                  if int(r['id'])==current: continue
+                  name=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in name for n in needles): blockers.append((status,r['id'],r.get('name'),r.get('head_branch')))
+          if blockers:
+              print('actual V1 contention detected:', blockers)
+              sys.exit(43)
+          print('no actual queued/in-progress V1 contention')
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-aod-runtime-semantic-probe-v12
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact runtime and immutable baseline
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          micromamba list --explicit > "$OUT/runtime-package-explicit-before.txt"
+          micromamba list --json > "$OUT/runtime-package-list-before.json"
+          UVSPEC="$(command -v uvspec)"
+          sha256sum "$UVSPEC" | tee "$OUT/uvspec-sha256.txt"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "$UVSPEC_SHA256"
+          file "$UVSPEC" | tee "$OUT/uvspec-file.txt"
+          file "$UVSPEC" | grep -Eq 'x86-64|x86_64'
+
+          meta="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN/artifacts" --jq ".artifacts[] | select(.id==$BASELINE_ARTIFACT_ID) | [.name,.digest] | @tsv")"
+          test "$meta" = $'deep-twilight-mystic-entry-optprop-capture-v2\t'"$BASELINE_ARTIFACT_DIGEST"
+          mkdir -p baseline
+          gh run download "$BASELINE_RUN" --repo "$GITHUB_REPOSITORY" --name deep-twilight-mystic-entry-optprop-capture-v2 --dir baseline
+          BASE_RAW="$(find baseline -type f -name 'mystic-entry-raw-v2.json' -print -quit)"
+          test -n "$BASE_RAW"
+          test "$(sha256sum "$BASE_RAW" | awk '{print $1}')" = "$BASELINE_CAPTURE_SHA256"
+          printf '%s\n' "$BASE_RAW" > "$OUT/baseline-raw-path.txt"
+
+      - name: Materialize immutable capture code with exactly frozen two-factor setup patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          git fetch --no-tags origin "$SOURCE_CAPTURE_COMMIT"
+          git show "$SOURCE_CAPTURE_COMMIT:review/deep-twilight-mystic-entry-optprop-capture-v2/capture_mystic_entry_v2.py" > "$OUT/baseline-capture-code.py"
+          cp "$OUT/baseline-capture-code.py" "$OUT/probe-capture-v12.py"
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('deep-twilight-aod-runtime-semantic-probe-v12-output/probe-capture-v12.py')
+          s=p.read_text()
+          reps=[
+            ('STAGE_ID = "deep-twilight-mystic-entry-optprop-capture-v2"','STAGE_ID = "deep-twilight-aod-runtime-semantic-probe-v12"'),
+            ('EXPECTED_SEED = 1173101368','EXPECTED_SEED = 1867342911'),
+            ('EXPECTED_AOD550 = 0.150000','EXPECTED_AOD550 = 0.300000'),
+            ('"aerosol_set_tau_at_wvl 550 0.150000": 1,','"aerosol_set_tau_at_wvl 550 0.300000": 1,'),
+          ]
+          for old,new in reps:
+              if s.count(old)!=1: raise SystemExit(f'expected exactly one source occurrence: {old!r}; got {s.count(old)}')
+              s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          python -m py_compile "$OUT/probe-capture-v12.py"
+          python - <<'PY'
+          import difflib, json, hashlib
+          from pathlib import Path
+          root=Path('deep-twilight-aod-runtime-semantic-probe-v12-output')
+          a=(root/'baseline-capture-code.py').read_text().splitlines()
+          b=(root/'probe-capture-v12.py').read_text().splitlines()
+          changes=[]
+          for line in difflib.ndiff(a,b):
+              if line.startswith('- ') or line.startswith('+ '): changes.append(line)
+          # Exactly four replaced lines => eight ndiff +/- records.
+          if len(changes)!=8: raise SystemExit(f'unexpected patch surface: {len(changes)} change records')
+          (root/'capture-code-patch.diff').write_text('\n'.join(changes)+'\n')
+          d={'sourceCommit':'a95df9984d27cfb9c1c1915b72e97ce794ad93f5','changedLineRecords':changes,
+             'baselineCodeSha256':hashlib.sha256((root/'baseline-capture-code.py').read_bytes()).hexdigest(),
+             'probeCodeSha256':hashlib.sha256((root/'probe-capture-v12.py').read_bytes()).hexdigest()}
+          (root/'code-patch-manifest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Create isolated debugger environment
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          GDB_PREFIX="$RUNNER_TEMP/deep-twilight-gdb-tools-aod-v12"
+          micromamba create -y -p "$GDB_PREFIX" -c conda-forge python=3.12.4 gdb=17.2
+          micromamba list -p "$GDB_PREFIX" --explicit > "$OUT/gdb-package-explicit.txt"
+          "$GDB_PREFIX/bin/gdb" --version > "$OUT/gdb-version.txt"
+          printf '%s\n' "$GDB_PREFIX" > "$OUT/gdb-prefix.txt"
+
+      - name: Fresh control and real-contention guard immediately before target runtime execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          gh api "repos/$GITHUB_REPOSITORY/issues/60" > "$OUT/issue60-preprobe.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$OUT/main-preprobe.json"
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          root=Path('deep-twilight-aod-runtime-semantic-probe-v12-output')
+          issue=json.loads((root/'issue60-preprobe.json').read_text())
+          main=json.loads((root/'main-preprobe.json').read_text())
+          if main['commit']['sha']!='fe6e063c568394ae7b4e90222de270d3f2460455':
+              raise SystemExit('main changed before semantic probe; fail closed')
+          current=int(os.environ['GITHUB_RUN_ID']); repo=os.environ['GITHUB_REPOSITORY']
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          blockers=[]
+          for status in ('in_progress','queued'):
+              p=subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],text=True,capture_output=True,check=True)
+              for r in json.loads(p.stdout).get('workflow_runs',[]):
+                  if int(r['id'])==current: continue
+                  name=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in name for n in needles): blockers.append((status,r['id'],r.get('name'),r.get('head_branch')))
+          if blockers:
+              print('actual V1 contention detected immediately pre-probe:',blockers)
+              sys.exit(44)
+          print('issue60 comments',issue['comments'],'main',main['commit']['sha'],'no actual V1 contention')
+          PY
+
+      - name: Execute setup-only exact-runtime AOD probe and kill at MYSTIC entry
+        id: probe
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          PROBE="$OUT/probe"
+          mkdir -p "$PROBE"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          GDB_PREFIX="$(cat "$OUT/gdb-prefix.txt")"
+          set +e
+          python "$OUT/probe-capture-v12.py" \
+            --uvspec "$(command -v uvspec)" \
+            --gdb "$GDB_PREFIX/bin/gdb" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --output-dir "$PROBE" \
+            --package-explicit "$OUT/runtime-package-explicit-before.txt" \
+            --package-json "$OUT/runtime-package-list-before.json" \
+            > "$OUT/probe-command-stdout.txt" 2> "$OUT/probe-command-stderr.txt"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$OUT/probe-command-exit-code.txt"
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ -f "$PROBE/randomseed" ]; then cp "$PROBE/randomseed" "$OUT/randomseed-consumed-evidence.txt"; fi
+
+      - name: Prove exact runtime unchanged after setup-only probe
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          micromamba list --explicit > "$OUT/runtime-package-explicit-after.txt"
+          micromamba list --json > "$OUT/runtime-package-list-after.json"
+          cmp "$OUT/runtime-package-explicit-before.txt" "$OUT/runtime-package-explicit-after.txt"
+          cmp "$OUT/runtime-package-list-before.json" "$OUT/runtime-package-list-after.json"
+          test "$(sha256sum "$(command -v uvspec)" | awk '{print $1}')" = "$UVSPEC_SHA256"
+
+      - name: Evaluate preregistered raw-bit AOD semantic signature
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          BASE_RAW="$(cat "$OUT/baseline-raw-path.txt")"
+          PROBE_RAW="$(find "$OUT/probe" -type f -name 'mystic-entry-raw-v2.json' -print -quit)"
+          test -n "$PROBE_RAW"
+          python - "$BASE_RAW" "$PROBE_RAW" <<'PY'
+          import hashlib, json, math, struct, sys
+          from pathlib import Path
+          base_path=Path(sys.argv[1]); probe_path=Path(sys.argv[2])
+          b=json.loads(base_path.read_text()); p=json.loads(probe_path.read_text())
+          def words(row): return [int(x,16) for x in row['uint32Words']]
+          def f32(w): return struct.unpack('<f',struct.pack('<I',w))[0]
+          def f32word(x): return struct.unpack('<I',struct.pack('<f',x))[0]
+          def scaled2_exact(br,pr):
+              bw=words(br); pw=words(pr)
+              if len(bw)!=len(pw): return False,0,[]
+              nonzero=0; bad=[]
+              for i,(x,y) in enumerate(zip(bw,pw)):
+                  xv=f32(x); yv=f32(y)
+                  if not (math.isfinite(xv) and math.isfinite(yv)):
+                      bad.append((i,hex(x),hex(y),'nonfinite')); continue
+                  if (x & 0x7fffffff)!=0: nonzero+=1
+                  expect=f32word(2.0*xv)
+                  if y!=expect: bad.append((i,hex(x),hex(y),hex(expect)))
+              return not bad and nonzero>0,nonzero,bad[:12]
+          errors=[]
+          if b.get('status')!='EXACT_MYSTIC_ENTRY_RAW_OPTICAL_STATE_CAPTURED': errors.append('baseline status')
+          if p.get('status')!='EXACT_MYSTIC_ENTRY_RAW_OPTICAL_STATE_CAPTURED': errors.append('probe status')
+          if not p.get('stoppedAtExactMysticEntry') or p.get('mysticBodyExecuted') or p.get('photonTraced'): errors.append('probe execution boundary')
+          if b.get('nlyr')!=49 or p.get('nlyr')!=49 or b.get('nCaoth')!=2 or p.get('nCaoth')!=2: errors.append('shape')
+          if b['threed']['rawBytesHex']!=p['threed']['rawBytesHex']: errors.append('threed changed')
+          if b['zprof']['rawBytesHex']!=p['zprof']['rawBytesHex']: errors.append('zprof changed')
+          bdt=b['tables']['dt_s']['rows']; pdt=p['tables']['dt_s']['rows']
+          row0_equal=bdt[0]['rawBytesHex']==pdt[0]['rawBytesHex']
+          row1_scaled,row1_nonzero,row1_bad=scaled2_exact(bdt[1],pdt[1])
+          row1_equal=bdt[1]['rawBytesHex']==pdt[1]['rawBytesHex']
+          row0_scaled,row0_nonzero,row0_bad=scaled2_exact(bdt[0],pdt[0])
+          if not row0_equal: errors.append('preregistered molecular row0 dt is not invariant')
+          if not row1_scaled: errors.append('preregistered aerosol row1 dt is not exact float32 x2')
+          if row1_equal: errors.append('aerosol row1 unexpectedly identical despite doubled AOD')
+          if row0_scaled and not row0_equal: errors.append('row0 also scales; row identity ambiguous')
+          diagnostics={}
+          for name in ('om_s','g1_s','g2_s','f_s','ds_s'):
+              diagnostics[name]=[b['tables'][name]['rows'][i]['rawBytesHex']==p['tables'][name]['rows'][i]['rawBytesHex'] for i in range(2)]
+          def row_sum(row): return sum(f32(w) for w in words(row) if math.isfinite(f32(w)))
+          decision={
+            'schemaVersion':12,
+            'status':'PASS_EXACT_RUNTIME_AEROSOL_ROW1_AOD_SCALING_IDENTIFIED' if not errors else 'FAIL_EXACT_RUNTIME_AOD_SEMANTIC_SIGNATURE',
+            'baselineRun':34012593281,'baselineArtifactId':9982923548,
+            'baselineCaptureSha256':hashlib.sha256(base_path.read_bytes()).hexdigest(),
+            'probeCaptureSha256':hashlib.sha256(probe_path.read_bytes()).hexdigest(),
+            'freshSetupSeed':1867342911,'freshSetupSeedReusable':False,
+            'aodBaseline':0.15,'aodProbe':0.30,'aodRatio':2,
+            'row0DtRawIdentical':row0_equal,'row0AlsoPassesScale2Test':row0_scaled,'row0NonzeroCount':row0_nonzero,
+            'row1DtRawIdentical':row1_equal,'row1ExactFloat32Scale2':row1_scaled,'row1NonzeroCount':row1_nonzero,
+            'row0ScaleMismatchExamples':row0_bad,'row1ScaleMismatchExamples':row1_bad,
+            'baselineRow1DtFloat64AuditSum':row_sum(bdt[1]),'probeRow1DtFloat64AuditSum':row_sum(pdt[1]),
+            'otherOpticalTablesRawEqualityByRowDiagnosticOnly':diagnostics,
+            'nlyr':p.get('nlyr'),'nCaoth':p.get('nCaoth'),
+            'threedRawIdentical':b['threed']['rawBytesHex']==p['threed']['rawBytesHex'],
+            'zprofRawIdentical':b['zprof']['rawBytesHex']==p['zprof']['rawBytesHex'],
+            'mysticBodyExecuted':False,'photonTraced':False,'scientificExecutionPerformed':False,
+            'protectedResultOpened':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False,
+            'errors':errors,
+            'claimBoundary':'exact-runtime row identity/AOD-scaling equivalence for frozen bare state only; renderer phase/delta semantics and deep science remain separate gates'
+          }
+          Path('deep-twilight-aod-runtime-semantic-probe-v12-output/decision-v12.json').write_text(json.dumps(decision,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(decision,sort_keys=True))
+          PY
+
+      - name: Upload immutable semantic-probe evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deep-twilight-aod-runtime-semantic-probe-v12
+          path: deep-twilight-aod-runtime-semantic-probe-v12-output
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce exact-runtime semantic decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-aod-runtime-semantic-probe-v12-output
+          test "${{ steps.probe.outputs.exit_code }}" = "0"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('deep-twilight-aod-runtime-semantic-probe-v12-output/decision-v12.json').read_text())
+          assert d['status']=='PASS_EXACT_RUNTIME_AEROSOL_ROW1_AOD_SCALING_IDENTIFIED', d
+          assert d['row0DtRawIdentical'] is True
+          assert d['row1ExactFloat32Scale2'] is True
+          assert d['mysticBodyExecuted'] is False and d['photonTraced'] is False
+          assert d['epsilonSubstitutionUsed'] is False
+          PY

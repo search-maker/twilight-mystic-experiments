@@ -1,0 +1,240 @@
+name: Deep twilight phase/delta pre-RNG watch v28
+
+on:
+  push:
+    branches: [review/deep-twilight-phase-delta-prerng-watch-v28]
+    paths: [".github/workflows/deep-twilight-phase-delta-prerng-watch-v28.yml"]
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  watch:
+    if: github.run_attempt == 1 && github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      FRESH_SETUP_SEED: '1946057311'
+      UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      F_ROW_SHA256: 3d005be8a47ccd804feedf9feeadc6d6375f10a65bc986ebce0fb38612fa635f
+      DS_ROW_SHA256: d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+
+      - name: Freeze contract and live fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-phase-delta-prerng-watch-v28-output
+          mkdir -p "$OUT"
+          cat > "$OUT/PROTOCOL.txt" <<'EOF'
+          V28 exact pinned-runtime phase/delta read-watch probe. Result-blind and non-authorizing.
+          V22/V24/V25/V26/V27 are consumed and are never rerun/retried/resumed. V27 failed before
+          runtime because GH_TOKEN was omitted from its guard. V28 changes only that infrastructure
+          defect. Exact V2 provenance: run 34012593281, artifact 9982923548, artifact digest
+          sha256:bbad4ef455636f55510176b9d0df2f509fabdd78675a9504d45354375e01ceaf,
+          capture SHA256 f005ed18491a0c9b7827857c0bb2fc775c5e77eb2a69f02121f56814a628bec6.
+          At exact MYSTIC entry, full 49-word aerosol-component f_s/ds_s row1 raw bytes must match
+          the frozen V2 row digests before watchpoints are armed. Record first reads before the first
+          post-entry uvspec_random instruction. Seed 1946057311 is fresh and non-reusable once used.
+          No radiance result, protected result opening, Taylor/Jerusalem tuning, epsilon substitution,
+          uniform-AOD authorization, renderer-parity authorization, or Level-B change is allowed.
+          EOF
+          cat > "$OUT/guard.py" <<'PY'
+          import json,os,re,subprocess
+          repo=os.environ['GITHUB_REPOSITORY']; selfid=int(os.environ['GITHUB_RUN_ID'])
+          expected=os.environ['EXPECTED_MAIN']
+          def api(path): return json.loads(subprocess.check_output(['gh','api',path],text=True))
+          if api(f'repos/{repo}/branches/main')['commit']['sha'] != expected: raise SystemExit('main changed')
+          pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/{repo}/issues/60/comments?per_page=100'],text=True))
+          comments=[c for page in pages for c in page]
+          opens={}
+          for c in comments:
+              b=str(c.get('body') or '').strip(); cid=int(c['id'])
+              if b.startswith('WRITE_QUIET_BEGIN'): opens[cid]=b
+              elif b.startswith('WRITE_QUIET_END'):
+                  first=b.splitlines()[0]; ids=[]
+                  for k in ('begin','beginComment','begin_comment'):
+                      ids += [int(x) for x in re.findall(rf'\b{k}=(\d+)\b',first)]
+                  if len(set(ids))>1: raise SystemExit('ambiguous WRITE_QUIET_END')
+                  if ids: opens.pop(ids[0],None)
+          if opens: raise SystemExit(f'unmatched WRITE_QUIET {sorted(opens)}')
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          blockers=[]
+          for st in ('in_progress','queued'):
+              for r in api(f'repos/{repo}/actions/runs?status={st}&per_page=100').get('workflow_runs',[]):
+                  if int(r['id'])==selfid: continue
+                  s=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in s for n in needles): blockers.append((st,r['id'],r.get('name'),r.get('head_branch')))
+          if blockers: raise SystemExit(f'actual V1 contention {blockers}')
+          print(json.dumps({'main':expected,'issue60Comments':len(comments),'latestCommentId':comments[-1]['id'] if comments else None,'openWriteQuiet':[],'v1Blockers':[]}))
+          PY
+          python "$OUT/guard.py" | tee "$OUT/preflight-guard.json"
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          mapfile -t hits < <(git log --all -S"$FRESH_SETUP_SEED" --format='%H' | sort -u)
+          for c in "${hits[@]:-}"; do [ -z "$c" ] || test "$c" = "$GITHUB_SHA" || { echo "seed reused in $c"; exit 41; }; done
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --jq '.[].body' | grep -Fq "$FRESH_SETUP_SEED"; then echo 'seed already in issue'; exit 42; fi
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-v28
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify pinned runtime and build debugger
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-phase-delta-prerng-watch-v28-output
+          UVSPEC="$(command -v uvspec)"
+          sha256sum "$UVSPEC" | tee "$OUT/uvspec-sha256.txt"
+          test "$(sha256sum "$UVSPEC" | cut -d' ' -f1)" = "$UVSPEC_SHA256"
+          micromamba list --explicit > "$OUT/runtime-package-explicit.txt"
+          GDB_PREFIX="$RUNNER_TEMP/gdb-v28"
+          micromamba create -y -p "$GDB_PREFIX" -c conda-forge python=3.12.4 gdb=17.2
+          "$GDB_PREFIX/bin/gdb" --version > "$OUT/gdb-version.txt"
+          echo "$GDB_PREFIX" > "$OUT/gdb-prefix.txt"
+          cat > "$OUT/watch.py" <<'PY'
+          import gdb,hashlib,json,struct
+          from pathlib import Path
+          S={'events':{},'randomReached':False,'entry':{},'status':'ARMED'}; OUT=None
+          def reg(n): return int(gdb.parse_and_eval('$'+n))
+          def read(a,n): return bytes(gdb.selected_inferior().read_memory(a,n))
+          def u64(a): return struct.unpack('<Q',read(a,8))[0]
+          def u32(a): return struct.unpack('<I',read(a,4))[0]
+          def dump():
+              if OUT: Path(OUT).write_text(json.dumps(S,indent=2,sort_keys=True)+'\n')
+          class RW(gdb.Breakpoint):
+              def __init__(self,label,addr):
+                  self.label=label
+                  super().__init__(f'*(unsigned int*)0x{addr:x}',type=gdb.BP_WATCHPOINT,wp_class=gdb.WP_READ,internal=False)
+              def stop(self):
+                  if self.label not in S['events']:
+                      S['events'][self.label]={'pcHex':f"0x{reg('pc'):x}",'function':gdb.selected_frame().name(),'instruction':gdb.execute('x/i $pc',to_string=True).strip(),'backtrace':gdb.execute('bt 12',to_string=True)}
+                      self.enabled=False; dump()
+                  return False
+          class Rng(gdb.Breakpoint):
+              def __init__(self): super().__init__('uvspec_random',type=gdb.BP_BREAKPOINT,internal=False)
+              def stop(self):
+                  S['randomReached']=True; S['randomPcHex']=f"0x{reg('pc'):x}"; S['randomFunction']=gdb.selected_frame().name(); S['status']='STOPPED_AT_FIRST_POST_ENTRY_UVSPEC_RANDOM'; dump(); return True
+          def install(path):
+              global OUT; OUT=path
+              pc=reg('pc'); sym=int(gdb.parse_and_eval('(unsigned long)&mystic')); rsp=reg('rsp')
+              if pc!=sym: raise gdb.GdbError('not exact mystic entry')
+              nlyr=struct.unpack('<i',read(reg('rdi'),4))[0]; ncaoth=reg('rdx') & 0xffffffff
+              if (nlyr,ncaoth)!=(49,2): raise gdb.GdbError(f'dimensions {(nlyr,ncaoth)}')
+              ftab=u64(rsp+0x10); dstab=u64(rsp+0x18); fa=u64(ftab+8); da=u64(dstab+8)
+              fsha=hashlib.sha256(read(fa,196)).hexdigest(); dsha=hashlib.sha256(read(da,196)).hexdigest()
+              if fsha!='3d005be8a47ccd804feedf9feeadc6d6375f10a65bc986ebce0fb38612fa635f': raise gdb.GdbError('f row digest mismatch')
+              if dsha!='d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca': raise gdb.GdbError('ds row digest mismatch')
+              if u32(fa)!=0x3f800000 or u32(da)!=0: raise gdb.GdbError('representative words mismatch')
+              S['entry']={'nlyr':nlyr,'nCaoth':ncaoth,'fAddressHex':hex(fa),'dsAddressHex':hex(da),'fRowSha256':fsha,'dsRowSha256':dsha,'fullRowBaselineEquivalent':True}
+              RW('f_s_row1_word0',fa); RW('ds_s_row1_word0',da); Rng(); S['status']='WATCHPOINTS_INSTALLED'; dump()
+          def finish():
+              S['bothObservedBeforeRandom']=S['randomReached'] and all(k in S['events'] for k in ('f_s_row1_word0','ds_s_row1_word0'))
+              S['status']='PASS_DATAFLOW_OBSERVED' if S['bothObservedBeforeRandom'] else 'FAIL_CLOSED_NOT_BOTH_OBSERVED_PRE_RNG'; dump()
+          PY
+          python -m py_compile "$OUT/watch.py"
+
+      - name: Fresh fence before target runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python deep-twilight-phase-delta-prerng-watch-v28-output/guard.py | tee deep-twilight-phase-delta-prerng-watch-v28-output/preprobe-guard.json
+
+      - name: Run guarded deterministic prefix
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          OUT=deep-twilight-phase-delta-prerng-watch-v28-output
+          DATA="$CONDA_PREFIX/share/libRadtran/data"; GDB_PREFIX="$(cat "$OUT/gdb-prefix.txt")"
+          cat > "$OUT/probe.inp" <<EOF
+          data_files_path $DATA
+          atmosphere_file $DATA/atmmod/afglus.dat
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550.0 550.0
+          sza 80.000000
+          phi0 0.000000
+          albedo 0.150000
+          aerosol_default
+          aerosol_set_tau_at_wvl 550 0.150000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1
+          mc_vroom off
+          mc_std
+          mc_randomseed $FRESH_SETUP_SEED
+          mc_basename mc
+          mc_spectral_is 550.0
+          zout 0.000000
+          umu -0.50000000
+          phi 36.000000
+          quiet
+          EOF
+          cat > "$OUT/probe.gdb" <<EOF
+          set pagination off
+          set confirm off
+          set debuginfod enabled off
+          set breakpoint pending off
+          break mystic
+          run < $GITHUB_WORKSPACE/$OUT/probe.inp
+          python
+          import sys
+          sys.path.insert(0,'$GITHUB_WORKSPACE/$OUT')
+          import watch as w
+          w.install('$GITHUB_WORKSPACE/$OUT/watch-result.json')
+          end
+          continue
+          python w.finish()
+          quit
+          EOF
+          set +e
+          "$GDB_PREFIX/bin/gdb" -q -batch -x "$OUT/probe.gdb" --args "$(command -v uvspec)" > "$OUT/gdb-stdout.txt" 2> "$OUT/gdb-stderr.txt"
+          echo $? > "$OUT/gdb-exit-code.txt"
+          set -e
+          if [ -f randomseed ]; then cp randomseed "$OUT/randomseed-consumed-evidence.txt"; fi
+
+      - name: Classify
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          r=Path('deep-twilight-phase-delta-prerng-watch-v28-output'); p=r/'watch-result.json'
+          w=json.loads(p.read_text()) if p.exists() else {}; ev=w.get('events',{})
+          seed=(r/'randomseed-consumed-evidence.txt').read_text().splitlines()[0].strip() if (r/'randomseed-consumed-evidence.txt').exists() else None
+          consumed=seed==os.environ['FRESH_SETUP_SEED']; roweq=w.get('entry',{}).get('fullRowBaselineEquivalent') is True
+          stopped=w.get('randomReached') is True; both=w.get('bothObservedBeforeRandom') is True
+          passed=consumed and roweq and stopped and both and w.get('status')=='PASS_DATAFLOW_OBSERVED'
+          d={'schemaVersion':28,'status':'PASS_EXACT_ENTRY_TO_PRERNG_DATAFLOW_OBSERVED' if passed else 'FAIL_CLOSED_PRERNG_DATAFLOW_INCOMPLETE','freshSetupSeed':int(os.environ['FRESH_SETUP_SEED']),'freshSetupSeedConsumed':consumed,'freshSetupSeedReusable':False,'exactFullRowBaselineEquivalent':roweq,'firstPostEntryUvspecRandomStoppedBeforeExecution':stopped,'bothEntryWordsObservedBeforeRandom':both,'events':ev,'mysticBodyDeterministicPrefixExecuted':bool(w),'radianceResultProduced':False,'protectedResultOpened':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False,'uniformAodScalingAuthorized':False,'rendererParityAuthorized':False,'watchResultSha256':hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None}
+          (r/'decision-v28.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n'); print(json.dumps(d,sort_keys=True))
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-phase-delta-prerng-watch-v28
+          path: deep-twilight-phase-delta-prerng-watch-v28-output/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('deep-twilight-phase-delta-prerng-watch-v28-output/decision-v28.json'))
+          if d['status']!='PASS_EXACT_ENTRY_TO_PRERNG_DATAFLOW_OBSERVED': raise SystemExit('pre-RNG dataflow gate did not pass')
+          PY

@@ -1,0 +1,237 @@
+name: Deep twilight Korkin supplement transport recovery v35
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-supplement-transport-v35
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-korkin-supplement-transport-v35-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe-and-recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe distinct public MD-SOAR transport routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/routes
+          item='d7c71743-8496-4839-b0b6-eea434289145'
+          bit='0f2e580a-e241-47bf-855f-c8012bd3911b'
+          item_page="https://mdsoar.org/items/${item}"
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KorkinNormalizationRecovery/35'
+
+          probe() {
+            name="$1"; follow="$2"; accept="$3"; url="$4"
+            hdr="evidence/routes/${name}.headers.txt"
+            body="evidence/routes/${name}.body"
+            meta="evidence/routes/${name}.meta.txt"
+            err="evidence/routes/${name}.stderr.txt"
+            args=(--silent --show-error --connect-timeout 20 --max-time 90 --user-agent "$ua" --header "Accept: ${accept}" --header "Referer: ${item_page}" --dump-header "$hdr" --output "$body")
+            if [ "$follow" = yes ]; then
+              args+=(--location --max-redirs 8)
+            fi
+            set +e
+            curl "${args[@]}" --write-out $'http_code=%{http_code}\neffective_url=%{url_effective}\ncontent_type=%{content_type}\nsize_download=%{size_download}\nnum_redirects=%{num_redirects}\n' "$url" >"$meta" 2>"$err"
+            rc=$?
+            set -e
+            printf 'curl_rc=%s\nrequested_url=%s\n' "$rc" "$url" >>"$meta"
+            if [ -f "$body" ]; then
+              printf 'body_bytes=%s\n' "$(stat -c '%s' "$body")" >>"$meta"
+              printf 'body_mime=%s\n' "$(file -b --mime-type "$body" || true)" >>"$meta"
+              head -c 4096 "$body" | base64 -w0 >"evidence/routes/${name}.first4096.b64"
+            fi
+          }
+
+          probe frontend_no_redirect no 'text/html,application/xhtml+xml,*/*;q=0.8' "https://mdsoar.org/bitstreams/${bit}/download"
+          probe frontend_follow yes 'application/zip,application/octet-stream,*/*;q=0.8' "https://mdsoar.org/bitstreams/${bit}/download"
+          probe api_bitstream_metadata yes 'application/hal+json,application/json' "https://api.mdsoar.org/server/api/core/bitstreams/${bit}"
+          probe api_bitstream_content yes 'application/octet-stream,application/zip,*/*;q=0.8' "https://api.mdsoar.org/server/api/core/bitstreams/${bit}/content"
+          probe api_bitstream_content_download yes 'application/octet-stream,application/zip,*/*;q=0.8' "https://api.mdsoar.org/server/api/core/bitstreams/${bit}/content?download=1"
+          probe frontend_api_content yes 'application/octet-stream,application/zip,*/*;q=0.8' "https://mdsoar.org/server/api/core/bitstreams/${bit}/content"
+          probe api_item_metadata yes 'application/hal+json,application/json' "https://api.mdsoar.org/server/api/core/items/${item}"
+          probe api_item_bundles yes 'application/hal+json,application/json' "https://api.mdsoar.org/server/api/core/items/${item}/bundles?size=100"
+
+      - name: Discover bounded DSpace links and probe them
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+          allowed = ('https://api.mdsoar.org/', 'https://mdsoar.org/')
+          urls = []
+          for p in sorted(Path('evidence/routes').glob('*.body')):
+              try:
+                  text = p.read_text(encoding='utf-8', errors='ignore')
+              except Exception:
+                  continue
+              for u in re.findall(r'https?://[^"\s<>\\]+', text):
+                  u = u.rstrip('.,);]}')
+                  if u.startswith(allowed) and any(k in u.lower() for k in ('bitstream','bundle','content')):
+                      if u not in urls:
+                          urls.append(u)
+                  if len(urls) >= 20:
+                      break
+              if len(urls) >= 20:
+                  break
+          Path('evidence/discovered_urls.json').write_text(json.dumps(urls, indent=2), encoding='utf-8')
+          PY
+
+          item='d7c71743-8496-4839-b0b6-eea434289145'
+          item_page="https://mdsoar.org/items/${item}"
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KorkinNormalizationRecovery/35'
+          python - <<'PY' > /tmp/discovered.txt
+          import json
+          for u in json.load(open('evidence/discovered_urls.json')):
+              print(u)
+          PY
+          i=0
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            i=$((i+1))
+            [ "$i" -le 20 ] || break
+            name="discovered_${i}"
+            hdr="evidence/routes/${name}.headers.txt"
+            body="evidence/routes/${name}.body"
+            meta="evidence/routes/${name}.meta.txt"
+            err="evidence/routes/${name}.stderr.txt"
+            set +e
+            curl --silent --show-error --location --max-redirs 8 --connect-timeout 20 --max-time 90 \
+              --user-agent "$ua" --header 'Accept: application/hal+json,application/json,application/octet-stream,application/zip,*/*;q=0.5' \
+              --header "Referer: ${item_page}" --dump-header "$hdr" --output "$body" \
+              --write-out $'http_code=%{http_code}\neffective_url=%{url_effective}\ncontent_type=%{content_type}\nsize_download=%{size_download}\nnum_redirects=%{num_redirects}\n' \
+              "$url" >"$meta" 2>"$err"
+            rc=$?
+            set -e
+            printf 'curl_rc=%s\nrequested_url=%s\n' "$rc" "$url" >>"$meta"
+            if [ -f "$body" ]; then
+              printf 'body_bytes=%s\n' "$(stat -c '%s' "$body")" >>"$meta"
+              printf 'body_mime=%s\n' "$(file -b --mime-type "$body" || true)" >>"$meta"
+              head -c 4096 "$body" | base64 -w0 >"evidence/routes/${name}.first4096.b64"
+            fi
+          done < /tmp/discovered.txt
+
+      - name: Classify transport and extract bounded normalization evidence if ZIP recovered
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, html, io, json, re, shutil, zipfile
+
+          root = Path('evidence')
+          routes = root / 'routes'
+          candidates = sorted(routes.glob('*.body'))
+          recovered = None
+          recovered_route = None
+          for p in candidates:
+              try:
+                  data = p.read_bytes()
+              except Exception:
+                  continue
+              if len(data) >= 4 and data[:2] == b'PK':
+                  try:
+                      if zipfile.is_zipfile(io.BytesIO(data)):
+                          recovered = data
+                          recovered_route = p.stem.replace('.body','')
+                          break
+                  except Exception:
+                      pass
+
+          summary = {
+              'schema': 'deep-twilight-korkin-supplement-transport-recovery-v35-result',
+              'transportStatus': 'TRANSPORT_UNRESOLVED_FAIL_CLOSED',
+              'recoveredRoute': recovered_route,
+              'archiveSha256': None,
+              'archiveBytes': None,
+              'normalizationStatus': 'UNRESOLVED_FAIL_CLOSED',
+              'solverExecuted': False,
+              'scientificExecution': False,
+              'protectedResultOpened': False,
+              'rawArchiveRepublished': False,
+          }
+
+          records = []
+          hits = []
+          if recovered is not None:
+              summary['transportStatus'] = 'PUBLIC_ARCHIVE_RECOVERED'
+              summary['archiveSha256'] = hashlib.sha256(recovered).hexdigest()
+              summary['archiveBytes'] = len(recovered)
+              keywords = re.compile(r'(?i)(solar|irradiance|incident|flux|normaliz|stokes|mystic|mcssa|vlidort|table\s*9|\bf0\b|\bpi\b|π)')
+              tag_re = re.compile(r'<[^>]+>')
+              space_re = re.compile(r'\s+')
+              max_hits = 800
+              max_per = 40
+
+              def h(data): return hashlib.sha256(data).hexdigest()
+              def inspect(label, data, depth=0):
+                  records.append({'path': label, 'depth': depth, 'bytes': len(data), 'sha256': h(data)})
+                  if len(hits) < max_hits and keywords.search(label):
+                      hits.append({'path': label, 'kind': 'filename', 'context': label[:500]})
+                  if depth < 3:
+                      bio = io.BytesIO(data)
+                      try: isz = zipfile.is_zipfile(bio)
+                      except Exception: isz = False
+                      if isz:
+                          bio.seek(0)
+                          try:
+                              with zipfile.ZipFile(bio) as zf:
+                                  for info in zf.infolist():
+                                      if info.is_dir(): continue
+                                      try: child = zf.read(info)
+                                      except Exception as exc:
+                                          hits.append({'path': f'{label}!/{info.filename}', 'kind': 'read_error', 'context': repr(exc)[:300]})
+                                          continue
+                                      inspect(f'{label}!/{info.filename}', child, depth+1)
+                          except Exception as exc:
+                              hits.append({'path': label, 'kind': 'zip_error', 'context': repr(exc)[:300]})
+                          return
+                  text = data.decode('utf-8', errors='ignore')
+                  if not text.strip(): return
+                  if '<' in text and '>' in text:
+                      text = tag_re.sub(' ', text)
+                  text = space_re.sub(' ', html.unescape(text)).strip()
+                  if not text: return
+                  local = 0
+                  for m in keywords.finditer(text):
+                      if len(hits) >= max_hits or local >= max_per: break
+                      lo = max(0, m.start()-240); hi = min(len(text), m.end()+340)
+                      hits.append({'path': label, 'kind': 'text', 'keyword': m.group(0), 'context': text[lo:hi]})
+                      local += 1
+
+              with zipfile.ZipFile(io.BytesIO(recovered)) as zf:
+                  outer = []
+                  for info in zf.infolist():
+                      if info.is_dir(): continue
+                      outer.append({'path': info.filename, 'bytes': info.file_size, 'compressedBytes': info.compress_size})
+                      inspect(info.filename, zf.read(info), 0)
+              (root/'archive_manifest.json').write_text(json.dumps(outer, indent=2, ensure_ascii=False), encoding='utf-8')
+              (root/'member_hashes.json').write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding='utf-8')
+              (root/'normalization_hits.json').write_text(json.dumps(hits, indent=2, ensure_ascii=False), encoding='utf-8')
+              summary['recursiveMemberRecordCount'] = len(records)
+              summary['boundedKeywordHitCount'] = len(hits)
+              summary['normalizationStatus'] = 'REQUIRES_EVIDENCE_REVIEW_FAIL_CLOSED'
+
+          (root/'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          # Preserve bounded route evidence only; never include full response bodies or the recovered ZIP in artifact.
+          for p in routes.glob('*.body'):
+              try: p.unlink()
+              except FileNotFoundError: pass
+          PY
+
+      - name: Upload bounded transport/provenance evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-korkin-supplement-transport-recovery-v35
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90

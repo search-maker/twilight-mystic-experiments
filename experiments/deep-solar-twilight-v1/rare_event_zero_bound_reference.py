@@ -96,6 +96,60 @@ def _required_all_zero_count_exact(alpha: Fraction, q_target: Fraction) -> int:
         raise
 
 
+def _integer_power_equals(base: int, exponent: int, target: int) -> bool:
+    """Exact bounded equality test for base**exponent == target.
+
+    Exponents can be as large as the bounded stopping oracle permits.  Avoid
+    constructing an integer with O(exponent) digits: exponentiation by squaring
+    caps an intermediate as soon as it exceeds the fixed target.  Runtime and
+    intermediate size are therefore bounded by O(log(exponent)) and the size of
+    ``target`` rather than by the mathematical power itself.
+    """
+    if exponent < 0 or base < 0 or target < 0:
+        raise ValueError("power-equality inputs must be nonnegative")
+    if exponent == 0:
+        return target == 1
+    if base == 0:
+        return target == 0
+    if base == 1:
+        return target == 1
+    if target <= 0:
+        return False
+
+    result = 1
+    factor = base
+    remaining = exponent
+    while remaining:
+        if remaining & 1:
+            if factor > target // result:
+                return False
+            result *= factor
+        remaining >>= 1
+        if remaining:
+            if factor > target // factor:
+                factor = target + 1
+            else:
+                factor *= factor
+    return result == target
+
+
+def _fraction_power_equals(base: Fraction, exponent: int, target: Fraction) -> bool:
+    """Exact equality test for reduced positive rational powers."""
+    if not (Fraction(0) < base <= Fraction(1)):
+        raise ValueError("base must lie in (0, 1]")
+    if not (Fraction(0) < target <= Fraction(1)):
+        raise ValueError("target must lie in (0, 1]")
+    if not isinstance(exponent, int) or isinstance(exponent, bool) or exponent <= 0:
+        raise ValueError("exponent must be a positive integer")
+
+    # Fractions are stored reduced.  Since gcd(num, den)=1, base**m is also
+    # reduced, so rational equality is equivalent to equality of the two
+    # numerator powers and denominator powers separately.
+    return _integer_power_equals(
+        base.numerator, exponent, target.numerator
+    ) and _integer_power_equals(base.denominator, exponent, target.denominator)
+
+
 def zero_event_probability_upper(alpha: float, n: int) -> float:
     """Stable binary64 report value for 1-alpha**(1/n).
 
@@ -202,28 +256,30 @@ def stopping_count_for_materiality(
 
 
 def all_zero_crossing_probability(q: float, alpha: float) -> tuple[int, float]:
-    """Return first false-q exclusion time and its all-zero crossing probability."""
+    """Return first strict false-q exclusion time and report probability.
+
+    The anytime-valid proof needs the *strict* event ``(1-q)**n < alpha``.
+    First obtain the outward-certified non-strict crossing ``m`` satisfying
+    ``(1-q)**m <= alpha``.  If equality holds exactly at ``m``, advance to
+    ``m+1``; otherwise ``m`` is already the first strict crossing.  Exact
+    rational equality is checked without forming enormous rational powers.
+
+    The returned probability is binary64 reporting only and is never used to
+    choose the certified integer crossing count.
+    """
     _require_probability("q", q)
     _require_probability("alpha", alpha)
-    log_alpha = math.log(alpha)
+
+    q_exact = _decimal_fraction(q)
+    alpha_exact = _decimal_fraction(alpha)
+    survival_exact = Fraction(1) - q_exact
+    non_strict = _required_all_zero_count_exact(alpha_exact, q_exact)
+    crossing = non_strict + int(
+        _fraction_power_equals(survival_exact, non_strict, alpha_exact)
+    )
+
     log_survival = math.log1p(-q)
-    raw = log_alpha / log_survival
-    _require_certifiable_integer_boundary("all-zero crossing count", raw)
-    n = max(1, math.floor(raw) + 1)
-
-    def log_crossing_probability(count: int) -> float:
-        return count * log_survival
-
-    # Compare in log space: forming (1-q) first can round to exactly 1 for tiny q.
-    while log_crossing_probability(n) >= log_alpha:
-        if n >= _MAX_CERTIFIABLE_INTEGER_COUNT:
-            raise ValueError(
-                "all-zero crossing count crossed the binary64 exact-integer audit range"
-            )
-        n += 1
-    while n > 1 and log_crossing_probability(n - 1) < log_alpha:
-        n -= 1
-    return n, math.exp(log_crossing_probability(n))
+    return crossing, math.exp(crossing * log_survival)
 
 
 class ReferenceTests(unittest.TestCase):
@@ -329,6 +385,28 @@ class ReferenceTests(unittest.TestCase):
             if n > 1:
                 previous_log_probability = (n - 1) * math.log1p(-q)
                 self.assertGreaterEqual(previous_log_probability, math.log(0.05))
+
+    def test_strict_crossing_rejects_binary64_three_sample_false_pass(self) -> None:
+        # Exact decimal q gives survival^3 slightly above 0.05.  The old
+        # binary64 log quotient was 2.9999999999999996 and could return 3.
+        q = 0.6315968501359613
+        n, _report_probability = all_zero_crossing_probability(q, 0.05)
+        survival = Fraction(1) - Fraction("0.6315968501359613")
+        alpha = Fraction("0.05")
+        self.assertGreater(survival**3, alpha)
+        self.assertLess(survival**4, alpha)
+        self.assertEqual(n, 4)
+
+    def test_strict_crossing_advances_exact_equality_boundary(self) -> None:
+        # Non-strict crossing is m=2 because (1-0.5)^2 == 0.25 exactly, but
+        # anytime exclusion requires strict probability < alpha, so n*=3.
+        n, crossing_probability = all_zero_crossing_probability(0.5, 0.25)
+        self.assertEqual(n, 3)
+        self.assertEqual(
+            _fraction_power_equals(Fraction(1, 2), 2, Fraction(1, 4)),
+            True,
+        )
+        self.assertLess(crossing_probability, 0.25)
 
     def test_unverifiable_huge_count_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "higher-precision reference"):

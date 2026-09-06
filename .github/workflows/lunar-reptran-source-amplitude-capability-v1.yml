@@ -1,0 +1,163 @@
+name: Lunar custom-source REPTRAN capability v1
+
+on:
+  push:
+    branches:
+      - review/lunar-reptran-source-amplitude-capability-v1
+    paths:
+      - '.github/workflows/lunar-reptran-source-amplitude-capability-v1.yml'
+      - 'review/lunar-reptran-source-amplitude-capability-v1/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunar-reptran-source-amplitude-capability-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  exact-runtime-source-amplitude-capability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_MAIN: 16292e6246d0c15f72bc5e09bee9f0a0ba330e3e
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      CONTRACT: review/lunar-reptran-source-amplitude-capability-v1/capability-contract.json
+      PROBE: review/lunar-reptran-source-amplitude-capability-v1/reptran_source_amplitude_probe.py
+      AUDIT_DIR: lunar-reptran-source-amplitude-capability-audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce fresh attempt-1 isolated capability identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$(git merge-base HEAD "$BASE_MAIN")" = "$BASE_MAIN"
+          git diff --name-only "$BASE_MAIN"...HEAD > /tmp/changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          changed = [x for x in Path('/tmp/changed.txt').read_text().splitlines() if x]
+          workflow = '.github/workflows/lunar-reptran-source-amplitude-capability-v1.yml'
+          prefix = 'review/lunar-reptran-source-amplitude-capability-v1/'
+          assert changed, 'empty capability diff'
+          bad = [p for p in changed if p != workflow and not p.startswith(prefix)]
+          assert not bad, f'shared/core/Atmosphere/protected-lunar path drift: {bad}'
+          PY
+
+      - name: Validate frozen non-protected capability contract before runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$CONTRACT" >/dev/null
+          python - <<'PY'
+          import json, os
+          c=json.load(open(os.environ['CONTRACT']))
+          assert c['status'] == 'PREREGISTERED_BEFORE_FRESH_EXACT_RUNTIME_PROBE'
+          assert c['baseMain'] == os.environ['BASE_MAIN']
+          assert c['bindingIssue60Decision'] == 5560785094
+          assert c['historicalFrozenInvariant']['soleIntendedDependencyChange'] == 'mol_abs_param crs -> mol_abs_param reptran'
+          assert c['probe']['classification'] == 'NON_SCIENTIFIC_NON_PROTECTED_SOURCE_AMPLITUDE_CAPABILITY_PROBE'
+          assert c['probe']['requiredMolecularAbsorption'] == 'reptran'
+          assert c['probe']['historicalCrsFallbackAllowed'] is False
+          assert c['probe']['mysticExecuted'] is False
+          assert c['probe']['protectedLunarGeometryUsed'] is False
+          assert c['probe']['protectedLunarResultOpened'] is False
+          assert c['probe']['arms']['A']['sourceFluxValues'] == [1.0,1.0,1.0]
+          assert c['probe']['arms']['B']['sourceFluxValues'] == [7.0,7.0,7.0]
+          assert c['frozenDecisionRule']['expectedArmBToArmARatio'] == 7.0
+          assert c['frozenDecisionRule']['maximumAbsoluteRatioDeviation'] == 0.01
+          assert c['freshIdentityRules']['attemptMustEqual'] == 1
+          assert c['freshIdentityRules']['rerunRetryResumeForbidden'] is True
+          assert c['freshIdentityRules']['scientificSeedAllocated'] is False
+          assert c['freshIdentityRules']['exec004Allocated'] is False
+          assert c['scientificBoundaries']['noProtectedLunarRadianceOpening'] is True
+          assert c['scientificBoundaries']['exec004AuthorizationCreatedByThisProbe'] is False
+          assert c['scientificBoundaries']['protectedScienceAuthorizedByThisProbe'] is False
+          PY
+          grep -q 'mol_abs_param reptran' "$PROBE"
+          ! grep -q 'mol_abs_param crs' "$PROBE"
+          ! grep -q 'rte_solver mystic' "$PROBE"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lunar-custom-source-reptran-capability-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact pinned libRadtran runtime without scientific solver execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p "$AUDIT_DIR"
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output "$AUDIT_DIR/runtime-report.json"
+          python - <<'PY'
+          import json, os
+          x=json.load(open(os.path.join(os.environ['AUDIT_DIR'],'runtime-report.json')))
+          assert x['scientificSolverExecuted'] is False
+          assert x['syntaxCheckExecuted'] is False
+          assert x['uvspecSha256'] == os.environ['EXPECTED_UVSPEC_SHA256']
+          assert x['libRadtranDataTreeSha256'] == os.environ['EXPECTED_DATA_SHA256']
+          PY
+
+      - name: Execute fresh synthetic REPTRAN source-amplitude capability probe
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python "$PROBE" \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-report "$AUDIT_DIR/runtime-report.json" \
+            --contract "$CONTRACT" \
+            --output-dir "$AUDIT_DIR"
+
+      - name: Enforce PASS status and non-authorizing receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          p=os.path.join(os.environ['AUDIT_DIR'],'reptran-source-amplitude-capability-report.json')
+          x=json.load(open(p))
+          assert x['status'] == 'PASS_CUSTOM_SOURCE_WITH_REPTRAN_CONSUMED_EXACT_RUNTIME'
+          assert x['observed']['maximumAbsoluteRatioDeviationObserved'] <= 0.01
+          assert all(abs(r-7.0) <= 0.01 for r in x['observed']['armBToArmARatio'])
+          b=x['boundaries']
+          assert b['mysticExecuted'] is False
+          assert b['protectedLunarGeometryUsed'] is False
+          assert b['protectedLunarResultOpened'] is False
+          assert b['taylorOrJerusalemResidualUsed'] is False
+          assert b['scientificSeedAllocated'] is False
+          assert b['exec004Authorized'] is False
+          assert b['writeQuietEntered'] is False
+          assert b['dispatchCreated'] is False
+          assert b['productionAuthorized'] is False
+          PY
+
+      - name: Upload immutable capability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-reptran-source-amplitude-capability-v1
+          path: lunar-reptran-source-amplitude-capability-audit
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Claim boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Fresh exact-runtime synthetic source-amplitude capability proof only.'
+          echo 'No MYSTIC, no protected lunar geometry/results, no scientific seeds/exec004/WRITE_QUIET/dispatch, no Taylor/Jerusalem, no production authorization.'

@@ -1,0 +1,317 @@
+name: REPTRAN visible V1 wired runtime smoke v1
+
+on:
+  push:
+    branches:
+      - review/reptran-visible-v1-wired-runtime-smoke-v1
+
+permissions:
+  contents: read
+  issues: read
+  actions: read
+
+concurrency:
+  group: reptran-visible-v1-wired-runtime-smoke-v1
+  cancel-in-progress: false
+
+env:
+  BASE_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+  PR952_HEAD: 9f316d4d3b74a8dd8fbac9c1ea28bc82524a278a
+  PHYSICS_MATERIALITY_COMMENT: "5557601362"
+  PHYSICS_REVIEW_COMMENT: "5558215509"
+  LATEST_KNOWN_FENCE_COMMENT: "5558625175"
+  MIN_ISSUE60_COMMENTS: "1061"
+  SMOKE_BRANCH: review/reptran-visible-v1-wired-runtime-smoke-v1
+  SMOKE_SEED_SALT: reptran-visible-v1-wired-runtime-smoke-v1-20260906
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+
+jobs:
+  smoke:
+    name: One-shot wired train-0054 REPTRAN runtime smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact fresh smoke identity
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Fail-closed governance, provenance, and global seed preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "${GITHUB_REF_NAME}" = "$SMOKE_BRANCH"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')" = "1"
+          test "$(git rev-parse HEAD^)" = "$PR952_HEAD"
+
+          REPO_API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json")
+
+          main_sha="$(curl -fsS "${auth[@]}" "$REPO_API/git/ref/heads/main" | jq -r '.object.sha')"
+          test "$main_sha" = "$BASE_MAIN"
+          own_sha="$(curl -fsS "${auth[@]}" "$REPO_API/git/ref/heads/${GITHUB_REF_NAME}" | jq -r '.object.sha')"
+          test "$own_sha" = "$GITHUB_SHA"
+
+          pr="$(curl -fsS "${auth[@]}" "$REPO_API/pulls/952")"
+          test "$(jq -r '.state' <<<"$pr")" = "open"
+          test "$(jq -r '.draft' <<<"$pr")" = "false"
+          test "$(jq -r '.base.sha' <<<"$pr")" = "$BASE_MAIN"
+          test "$(jq -r '.head.sha' <<<"$pr")" = "$PR952_HEAD"
+
+          issue_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60")"
+          comment_count="$(jq -r '.comments' <<<"$issue_json")"
+          test "$comment_count" -ge "$MIN_ISSUE60_COMMENTS"
+
+          materiality="$(curl -fsS "${auth[@]}" "$REPO_API/issues/comments/$PHYSICS_MATERIALITY_COMMENT" | jq -r '.body')"
+          grep -Fq 'CRS<->REPTRAN = QUANTIFIED_V1_BLOCKER' <<<"$materiality"
+          review="$(curl -fsS "${auth[@]}" "$REPO_API/issues/comments/$PHYSICS_REVIEW_COMMENT" | jq -r '.body')"
+          grep -Fq 'V1_REPTRAN_BLOCKER_REMAINS_IMPLEMENTATION_NOT_WIRED_OR_VALIDATION_INSUFFICIENT' <<<"$review"
+          grep -Fq 'exactly one non-protected end-to-end syntax/solver smoke' <<<"$review"
+          grep -Fq 'train-0054' <<<"$review"
+          grep -Fq 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1' <<<"$review"
+
+          : > /tmp/issue60-bodies.txt
+          : > /tmp/issue60-newer.jsonl
+          pages=$(( (comment_count + 99) / 100 ))
+          for page in $(seq 1 "$pages"); do
+            page_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60/comments?per_page=100&page=${page}")"
+            jq -r '.[].body // ""' <<<"$page_json" >> /tmp/issue60-bodies.txt
+            jq -c --argjson cutoff "$LATEST_KNOWN_FENCE_COMMENT" '.[] | select(.id > $cutoff) | {id,body:(.body // "")}' <<<"$page_json" >> /tmp/issue60-newer.jsonl
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/tmp/issue60-newer.jsonl')
+          if p.exists():
+              for line in p.read_text().splitlines():
+                  c=json.loads(line); u=c['body'].upper()
+                  if 'REPTRAN' in u and any(x in u for x in ('SUPERSEDE','WITHDRAW','CONTRACT DEFECT','NEW BLOCKER','FAIL CLOSED','FAIL-CLOSED','FREEZE REPTRAN')):
+                      raise SystemExit(f'newer REPTRAN blocker/fence {c["id"]}')
+                  if 'WRITE_QUIET' in u and any(x in u for x in ('ENTER','ENTERED','ACTIVE','BEGIN')):
+                      raise SystemExit(f'newer WRITE_QUIET transition {c["id"]}')
+          PY
+
+          runs_json="$(curl -fsS "${auth[@]}" "$REPO_API/actions/runs?event=workflow_dispatch&per_page=100")"
+          test "$(jq -r '.total_count' <<<"$runs_json")" = "57"
+          test "$(jq -r '[.workflow_runs[] | select(.path==".github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml" or .path==".github/workflows/avps-v2-postconsumption-recovery4-science.yml")] | length' <<<"$runs_json")" = "0"
+
+          set +e
+          ref_status="$(curl -sS -o /tmp/ordinal45-ref.json -w '%{http_code}' "${auth[@]}" "$REPO_API/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45")"
+          set -e
+          test "$ref_status" = "404"
+
+          smoke_refs="$(curl -fsS "${auth[@]}" "$REPO_API/git/matching-refs/heads/review/reptran-visible-v1-wired-runtime-smoke")"
+          test "$(jq 'length' <<<"$smoke_refs")" = "1"
+          test "$(jq -r '.[0].ref' <<<"$smoke_refs")" = "refs/heads/$SMOKE_BRANCH"
+          test "$(jq -r '.[0].object.sha' <<<"$smoke_refs")" = "$GITHUB_SHA"
+
+          mkdir -p smoke/control
+          python - <<'PY'
+          import hashlib, json, os
+          salt=os.environ['SMOKE_SEED_SALT']
+          head=os.environ['GITHUB_SHA']
+          h=hashlib.sha256(f'{salt}|{head}|train-0054|alis|one-shot'.encode()).digest()
+          seed=300_000_001 + (int.from_bytes(h[:8],'big') % 399_999_999)
+          forbidden={926090451,926090452,926090453,911705831,911705832,911705833,1779360704}
+          gids=['train-0054','train-0062','train-0064','train-0066']
+          old_specs=[
+              ('reptran-c2-v4-postblackout-sequential-jackknife-20260905',1,2147483646,'v4'),
+              ('reptran-c2-v5-postblackout-sequential-jackknife-20260905T2341EDT',2_000_000_001,147_483_646,'v5'),
+              ('reptran-c2-v6-postblackout-sequential-jackknife-20260905T2355EDT',1_500_000_001,499_999_999,'v6'),
+              ('reptran-c2-v7-postblackout-sequential-jackknife-20260906T0240EDT',1_000_000_001,499_999_999,'v7'),
+          ]
+          for gid in gids:
+              for block in range(1,21):
+                  for oldsalt,base,mod,kind in old_specs:
+                      d=hashlib.sha256(f'{oldsalt}|{gid}|{block}'.encode()).digest()
+                      if kind=='v4': old=int.from_bytes(d[:4],'big') % 2147483646 + 1
+                      else: old=base + (int.from_bytes(d[:8],'big') % mod)
+                      forbidden.add(old)
+          if seed in forbidden:
+              raise SystemExit(f'fresh smoke seed collides with consumed/attempted C2 seed: {seed}')
+          (open('smoke/control/seed.txt','w')).write(f'{seed}\n')
+          with open('smoke/control/seed-manifest.json','w') as f:
+              json.dump({'schemaVersion':1,'identity':'reptran-visible-v1-wired-runtime-smoke-v1','salt':salt,'head':head,'seed':seed,'algorithm':'sha256-prefix64-mod-399999999-plus300000001','oneShot':True,'rerunRetryResumeAllowed':False},f,indent=2,sort_keys=True)
+              f.write('\n')
+          PY
+          seed="$(cat smoke/control/seed.txt)"
+          if grep -Fq "$seed" /tmp/issue60-bodies.txt; then
+            echo "fresh smoke seed collision in Issue #60 ledger: $seed" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*' --depth=1
+          while read -r tip; do
+            if git grep -n -F "$seed" "$tip" -- . >/tmp/seed-hit.txt 2>/dev/null; then
+              echo "fresh smoke seed collision in live repository branch tip $tip" >&2
+              cat /tmp/seed-hit.txt >&2
+              exit 1
+            fi
+          done < <(git for-each-ref refs/remotes/origin --format='%(objectname)' | sort -u)
+
+      - name: Set up exact pinned libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-visible-v1-runtime-smoke
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Freeze exact public train-0054 input and render through wired V1 consumer
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          actual="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$actual" = "$UVSPEC_SHA256"
+          printf '%s\n' "$actual" > smoke/control/uvspec-sha256.txt
+          micromamba list -n reptran-visible-v1-runtime-smoke rubin-libradtran > smoke/control/package-identity.txt
+
+          python - <<'PY'
+          import hashlib, importlib.util, json, math, os
+          from pathlib import Path
+          root=Path.cwd()
+          core_path=root/'review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json'
+          pilot_path=root/'experiments/mystic-batch-v1/manifest.cross-geometry-pilot.proposal.json'
+          core=json.loads(core_path.read_text()); pilot=json.loads(pilot_path.read_text())
+          matches=[g for g in core['geometryManifest'] if g.get('geometryId')=='train-0054']
+          if len(matches)!=1: raise SystemExit('train-0054 must occur exactly once in public core contract')
+          g=matches[0]
+          expected={
+              'role':'surrogate-training','executionStage':'TRAINING_ACQUISITION','sourceIndex':54,
+              'sunDepressionDeg':8.75,'targetAltitudeDeg':6.851852,'relativeAzimuthDeg':146.88,
+              'observerElevationM':1793.002915,'aod550':0.379752,
+              'alisSpectralImportanceSamplingNm':550.0,'photonHistoriesPerBlock':50000000,
+          }
+          for k,v in expected.items():
+              got=g.get(k)
+              if isinstance(v,float):
+                  if not math.isclose(float(got),v,rel_tol=0,abs_tol=1e-12): raise SystemExit(f'train-0054 drift {k}: {got} != {v}')
+              elif got!=v: raise SystemExit(f'train-0054 drift {k}: {got} != {v}')
+          frozen=pilot['frozenInputs']
+          if frozen.get('wavelengthDomainNm') != [380,780] or frozen.get('mcSpherical')!='1D' or float(frozen.get('albedo'))!=0.15:
+              raise SystemExit('reviewed V1 base physical-control drift')
+          seed=int((root/'smoke/control/seed.txt').read_text().strip())
+          proposal={
+              'schemaVersion':1,'stageId':'cross-geometry-pilot-v1','batchId':'reptran-visible-v1-wired-runtime-smoke-v1',
+              'mode':'scientific-proposal','proposalOnly':True,'scientificExecution':False,'successDoesNotAuthorizeProduction':True,
+              'adapterId':'mystic-cross-geometry-v1','runtime':pilot['runtime'],
+              'limits':{'maximumCases':1,'maximumParallel':1,'maximumConfiguredMcPhotonsSum':50000000,'perCaseTimeoutSeconds':1800},
+              'frozenInputs':{
+                  'wavelengthDomainNm':[380,780],
+                  'diagnosticNodesNm':frozen['diagnosticNodesNm'],
+                  'molecularAbsorption':'reptran','mcSpherical':'1D',
+                  'alisSpectralImportanceSamplingNm':float(g['alisSpectralImportanceSamplingNm']),
+                  'albedo':float(frozen['albedo']),'dataPaths':frozen['dataPaths'],
+              },
+              'geometries':[{
+                  'geometryId':'train-0054','sunDepressionDeg':float(g['sunDepressionDeg']),
+                  'targetAltitudeDeg':float(g['targetAltitudeDeg']),'relativeAzimuthDeg':float(g['relativeAzimuthDeg']),
+                  'observerElevationM':float(g['observerElevationM']),'aod550':float(g['aod550']),
+              }],
+              'cases':[{'ordinal':1,'caseId':'smoke-train-0054-alis-b1','groupId':'train-0054','method':'alis','block':1,'seed':seed,'photonHistories':int(g['photonHistoriesPerBlock'])}],
+          }
+          ctl=root/'smoke/control'; ctl.mkdir(parents=True,exist_ok=True)
+          (ctl/'proposal.json').write_text(json.dumps(proposal,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          runtime_report={'schemaVersion':1,'stageId':'mystic-batch-v1','scientificSolverExecuted':False,'syntaxCheckExecuted':False}
+          for field in ('uvspecSha256','uvspecHelpSha256','libRadtranDataTreeSha256','atmosphereSha256','runtimeLockRawSha256'):
+              runtime_report[field]=proposal['runtime'][field]
+          (ctl/'runtime-report.json').write_text(json.dumps(runtime_report,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          uvspec=Path(os.popen('command -v uvspec').read().strip()).resolve()
+          data=uvspec.parent.parent/'share/libRadtran/data'
+          atmosphere=data/'atmmod/afglus.dat'
+          if not atmosphere.is_file(): raise SystemExit('AFGLUS runtime atmosphere missing')
+          if hashlib.sha256(atmosphere.read_bytes()).hexdigest()!=proposal['runtime']['atmosphereSha256']:
+              raise SystemExit('AFGLUS runtime atmosphere hash drift')
+          adapter_path=root/'experiments/mystic-batch-v1/cross_geometry_execution_adapter.py'
+          spec=importlib.util.spec_from_file_location('wired_v1_consumer',adapter_path)
+          if spec is None or spec.loader is None: raise SystemExit('wired consumer import unavailable')
+          adapter=importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
+          prepared=adapter.prepare_case(ctl/'proposal.json',ctl/'runtime-report.json','smoke-train-0054-alis-b1',data,root,root/'smoke/prepared')
+          if prepared.get('renderingProof',{}).get('route')!='authoritative-v1-visible-alis-reptran': raise SystemExit('wired consumer route drift')
+          if prepared.get('v1VisibleMolecularAbsorptionContract')!='reptran': raise SystemExit('consumer molecular contract drift')
+          inp=Path(prepared['inputPath']); lines=inp.read_text().splitlines()
+          required_exact=['mol_abs_param reptran','wavelength 380 780','mc_spherical 1D','mc_vroom off','mc_spectral_is 550.0','zout 0.000000','mc_photons 50000000']
+          for line in required_exact:
+              if lines.count(line)!=1: raise SystemExit(f'required rendered directive drift: {line}')
+          if 'mol_abs_param crs' in lines: raise SystemExit('CRS leaked into authoritative V1 ALIS smoke input')
+          if sum(x.startswith('atm_z_grid ') for x in lines)!=1: raise SystemExit('atm_z_grid missing or non-unique')
+          if any(x.startswith('altitude ') or x.startswith('mc_elevation_file ') for x in lines): raise SystemExit('forbidden elevation mechanism emitted')
+          if lines.count(f'mc_randomseed {seed}')!=1: raise SystemExit('fresh seed not wired exactly once')
+          if lines.count('sza 98.750000')!=1 or lines.count('phi 146.880000')!=1 or lines.count('aerosol_set_tau_at_wvl 550 0.379752')!=1:
+              raise SystemExit('train-0054 geometry/aerosol rendering drift')
+          proof={
+              'schemaVersion':1,'identity':'reptran-visible-v1-wired-runtime-smoke-v1','pr952Head':os.environ['PR952_HEAD'],
+              'smokeHead':os.environ['GITHUB_SHA'],'sourceCoreContractPath':str(core_path.relative_to(root)),
+              'sourceCoreContractRawSha256':hashlib.sha256(core_path.read_bytes()).hexdigest(),
+              'sourcePilotManifestPath':str(pilot_path.relative_to(root)),'sourcePilotManifestRawSha256':hashlib.sha256(pilot_path.read_bytes()).hexdigest(),
+              'caseId':'smoke-train-0054-alis-b1','geometryId':'train-0054','seed':seed,'photonHistories':50000000,
+              'budgetProvenance':'public tier2 core campaign contract train-0054 photonHistoriesPerBlock; no post-result selection',
+              'selectionProvenance':'train-0054 selected only because Physics comment 5558215509 preregistered it as lexicographically first C2V7 geometry',
+              'renderedInputSha256':hashlib.sha256(inp.read_bytes()).hexdigest(),'renderedInputPath':str(inp.relative_to(root)),
+              'requiredStructuralInvariantsPassed':True,'radianceAcceptanceFieldsUsed':[],
+              'taylorOrJerusalemUsed':False,'protectedHoldoutOpened':False,'materialityRecomputed':False,
+          }
+          (ctl/'input-proof.json').write_text(json.dumps(proof,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+      - name: Execute exactly one result-blind wired solver smoke
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          CASE_DIR="$GITHUB_WORKSPACE/smoke/prepared/smoke-train-0054-alis-b1"
+          test -f "$CASE_DIR/input-resolved.txt"
+          start="$(date +%s)"
+          (cd "$CASE_DIR" && uvspec < input-resolved.txt > uvspec.stdout 2> uvspec.stderr)
+          end="$(date +%s)"
+          printf '%s\n' "$((end-start))" > smoke/control/solver-elapsed-seconds.txt
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path.cwd(); case=root/'smoke/prepared/smoke-train-0054-alis-b1'; ctl=root/'smoke/control'
+          def parse_shape(path):
+              rows=[]; widths=[]
+              for raw in path.read_text(errors='strict').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#'): continue
+                  parts=s.split()
+                  for token in parts: float(token)
+                  rows.append(parts); widths.append(len(parts))
+              if not rows or len(set(widths))!=1: raise SystemExit(f'output not parseable as stable numeric table: {path.name}')
+              return len(rows), widths[0]
+          files={}
+          for name in ('mc.rad.spc','mc.rad.std.spc'):
+              p=case/name
+              if not p.is_file() or p.stat().st_size<=0: raise SystemExit(f'expected MYSTIC output missing: {name}')
+              rows,cols=parse_shape(p)
+              files[name]={'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size,'rows':rows,'columns':cols}
+          report={
+              'schemaVersion':1,'identity':'reptran-visible-v1-wired-runtime-smoke-v1','status':'PASS_IMPLEMENTATION_SMOKE_ONLY',
+              'uvspecExitSuccess':True,'expectedOutputPresent':True,'expectedOutputParseable':True,'outputFiles':files,
+              'radianceMagnitudeChecked':False,'radianceSignChecked':False,'zeroHitChecked':False,'crsComparisonPerformed':False,
+              'visibilityOrMaterialityClassificationPerformed':False,'acceptanceDependsOnlyOnWiringRuntimeExitAndParseability':True,
+              'protectedResultOpened':False,'taylorOrJerusalemUsed':False,'productionAuthorized':False,
+          }
+          (ctl/'smoke-result.json').write_text(json.dumps(report,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+          sha256sum \
+            smoke/control/proposal.json \
+            smoke/control/runtime-report.json \
+            smoke/control/input-proof.json \
+            smoke/control/seed-manifest.json \
+            smoke/control/smoke-result.json \
+            "$CASE_DIR/input-resolved.txt" \
+            "$CASE_DIR/cross-geometry-prepared.json" \
+            > smoke/control/evidence-sha256.txt
+
+      - name: Upload immutable implementation-smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: reptran-visible-v1-wired-runtime-smoke-v1
+          path: smoke
+          if-no-files-found: error
+          retention-days: 90

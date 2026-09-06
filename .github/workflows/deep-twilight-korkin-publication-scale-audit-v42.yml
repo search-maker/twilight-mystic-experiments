@@ -1,0 +1,308 @@
+name: Deep Twilight Korkin publication scale audit v42
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-publication-scale-audit-v42
+    paths:
+      - .github/workflows/deep-twilight-korkin-publication-scale-audit-v42.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publication-scale-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recover exact public author publication bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/unpacked/2022 out/context
+
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+            'https://ntrs.nasa.gov/api/citations/20220005788/downloads/SKorkin_etal_JQSRT_2022_accepted.pdf' \
+            -o out/raw/korkin2022_accepted.pdf
+
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+            'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content' \
+            -o out/raw/korkin2022_mdsoar_bundle.zip
+
+          got_archive="$(sha256sum out/raw/korkin2022_mdsoar_bundle.zip | awk '{print $1}')"
+          test "$got_archive" = 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+
+          unzip -q out/raw/korkin2022_mdsoar_bundle.zip -d out/unpacked/2022
+          mapfile -t books < <(find out/unpacked/2022 -type f -name '1-s2.0-S0022407322001297-mmc26.xlsx' -print)
+          test "${#books[@]}" -eq 1
+          cp "${books[0]}" out/raw/mmc26.xlsx
+
+          sha256sum \
+            out/raw/korkin2022_accepted.pdf \
+            out/raw/korkin2022_mdsoar_bundle.zip \
+            out/raw/mmc26.xlsx > out/source_sha256.txt
+          stat -c '%n\t%s' \
+            out/raw/korkin2022_accepted.pdf \
+            out/raw/korkin2022_mdsoar_bundle.zip \
+            out/raw/mmc26.xlsx > out/source_sizes.tsv
+
+      - name: Extract accepted-manuscript machine text
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v pdftotext >/dev/null 2>&1; then
+            pdftotext -layout out/raw/korkin2022_accepted.pdf out/context/accepted.txt
+            printf 'extractor=pdftotext\n' > out/context/extractor.txt
+          else
+            python -m pip install --disable-pip-version-check --quiet 'pypdf==6.0.0'
+            python - <<'PY'
+          from pathlib import Path
+          from pypdf import PdfReader
+          src = Path('out/raw/korkin2022_accepted.pdf')
+          dst = Path('out/context/accepted.txt')
+          reader = PdfReader(str(src))
+          dst.write_text('\n\n'.join((p.extract_text() or '') for p in reader.pages), encoding='utf-8')
+          Path('out/context/extractor.txt').write_text('extractor=pypdf-6.0.0\n', encoding='utf-8')
+          PY
+          fi
+          test -s out/context/accepted.txt
+
+      - name: Exhaustively audit manuscript and workbook metadata without inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import re
+          import zipfile
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          OUT = Path('out')
+          manuscript = (OUT/'context/accepted.txt').read_text(encoding='utf-8', errors='replace')
+          workbook = OUT/'raw/mmc26.xlsx'
+
+          terms = [
+              'normaliz', 'irradiance', 'solar flux', 'incident flux', 'incoming flux',
+              'unit flux', 'unit-flux', 'dimensionless', 'radiance', 'stokes', 'mystic',
+              'mcssa', 'vlidort', 'table 9', 'toa', 'top of atmosphere', 'pi', 'π'
+          ]
+
+          def compact(s: str) -> str:
+              return re.sub(r'\s+', ' ', s).strip()
+
+          def contexts(text: str, term: str, radius: int = 260, limit: int = 30):
+              low = text.lower()
+              key = term.lower()
+              pos = 0
+              found = []
+              while len(found) < limit:
+                  i = low.find(key, pos)
+                  if i < 0:
+                      break
+                  found.append(compact(text[max(0, i-radius):min(len(text), i+len(term)+radius)]))
+                  pos = i + max(1, len(key))
+              return found
+
+          manuscript_matches = []
+          for term in terms:
+              hits = contexts(manuscript, term)
+              if hits:
+                  manuscript_matches.append({'term': term, 'countCappedAt30': len(hits), 'contexts': hits})
+
+          # Candidate discovery is deliberately non-authorizing. It only flags text windows
+          # where a radiometric quantity and a scale word co-occur for manual semantic review.
+          lines = manuscript.splitlines()
+          candidate_lines = []
+          quantity = re.compile(r'(?i)\b(radiance|intensity|stokes|mystic|mcssa|table\s*9)\b')
+          scale = re.compile(r'(?i)\b(normal\w*|irradiance|flux|dimensionless|unit\s+flux|top\s+of\s+atmosphere|toa)\b')
+          for idx, line in enumerate(lines, start=1):
+              if quantity.search(line) and scale.search(line):
+                  candidate_lines.append({'line': idx, 'text': compact(line)[:1000]})
+              if len(candidate_lines) >= 200:
+                  break
+
+          member_records = []
+          workbook_hits = []
+          hidden_sheet_states = []
+          defined_names = []
+          external_links = []
+          comments_members = []
+          custom_xml_members = []
+          docprop_members = []
+          all_formula_count = 0
+          all_string_count = 0
+
+          with zipfile.ZipFile(workbook) as zf:
+              names = zf.namelist()
+              for name in names:
+                  info = zf.getinfo(name)
+                  member_records.append({
+                      'name': name,
+                      'size': info.file_size,
+                      'compressedSize': info.compress_size,
+                      'crc32': f'{info.CRC:08x}',
+                  })
+                  lname = name.lower()
+                  if lname.startswith('xl/externallinks/'):
+                      external_links.append(name)
+                  if '/comments' in lname or lname.endswith('comments.xml'):
+                      comments_members.append(name)
+                  if lname.startswith('customxml/'):
+                      custom_xml_members.append(name)
+                  if lname.startswith('docprops/'):
+                      docprop_members.append(name)
+
+                  if info.is_dir() or info.file_size > 10_000_000:
+                      continue
+                  if not (lname.endswith('.xml') or lname.endswith('.rels') or lname.endswith('.txt')):
+                      continue
+                  raw = zf.read(name)
+                  for enc in ('utf-8', 'utf-16le', 'latin-1'):
+                      try:
+                          text = raw.decode(enc, errors='ignore')
+                      except Exception:
+                          continue
+                      if not text:
+                          continue
+                      for term in terms:
+                          hs = contexts(text, term, radius=180, limit=10)
+                          if hs:
+                              workbook_hits.append({'member': name, 'encoding': enc, 'term': term, 'contexts': hs})
+
+              ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+              wb = ET.fromstring(zf.read('xl/workbook.xml'))
+              for sh in wb.findall('.//m:sheets/m:sheet', ns):
+                  hidden_sheet_states.append({'name': sh.attrib.get('name'), 'state': sh.attrib.get('state', 'visible')})
+              dns = wb.find('m:definedNames', ns)
+              if dns is not None:
+                  for dn in list(dns):
+                      defined_names.append({'name': dn.attrib.get('name'), 'text': dn.text, 'attrs': dict(dn.attrib)})
+
+              # Count formulas and string-like cells across every worksheet. This is an
+              # exhaustive bookkeeping check, not a physical interpretation.
+              shared = []
+              if 'xl/sharedStrings.xml' in names:
+                  sroot = ET.fromstring(zf.read('xl/sharedStrings.xml'))
+                  for si in sroot.findall('m:si', ns):
+                      shared.append(''.join((t.text or '') for t in si.iter() if t.tag.endswith('}t')))
+              for name in names:
+                  if not (name.startswith('xl/worksheets/') and name.endswith('.xml')):
+                      continue
+                  root = ET.fromstring(zf.read(name))
+                  for c in root.findall('.//m:c', ns):
+                      f = c.find('m:f', ns)
+                      if f is not None:
+                          all_formula_count += 1
+                      typ = c.attrib.get('t')
+                      if typ in ('s', 'inlineStr', 'str'):
+                          all_string_count += 1
+
+          report = {
+              'classification': 'PUBLICATION_SCALE_SEMANTICS_AUDIT_COMPLETE_FAIL_CLOSED',
+              'binds': {
+                  'v41Commit': '71667f649839af322b987a17e56055e9cfabceb7',
+                  'korkin2022ArchiveExpectedSha256': 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e',
+                  'tableWorkbook': '1-s2.0-S0022407322001297-mmc26.xlsx',
+                  'tableSheet': 'MS',
+                  'acceptedManuscriptNtrsId': '20220005788',
+              },
+              'scope': {
+                  'acceptedManuscriptFullMachineTextScanned': True,
+                  'workbookAllOOXMLMembersEnumerated': True,
+                  'workbookXMLAndRelationshipTextScanned': True,
+                  'workbookSheetVisibilityInspected': True,
+                  'workbookDefinedNamesInspected': True,
+                  'workbookExternalLinksInspected': True,
+                  'workbookCommentsMembersInspected': True,
+                  'workbookCustomXMLInspected': True,
+                  'workbookDocumentPropertiesInspected': True,
+              },
+              'manuscript': {
+                  'characterCount': len(manuscript),
+                  'lineCount': len(lines),
+                  'keywordMatches': manuscript_matches,
+                  'cooccurrenceCandidateLines': candidate_lines,
+              },
+              'workbook': {
+                  'memberCount': len(member_records),
+                  'members': member_records,
+                  'keywordMatches': workbook_hits,
+                  'sheetStates': hidden_sheet_states,
+                  'definedNames': defined_names,
+                  'externalLinkMembers': external_links,
+                  'commentMembers': comments_members,
+                  'customXMLMembers': custom_xml_members,
+                  'documentPropertyMembers': docprop_members,
+                  'formulaCellCount': all_formula_count,
+                  'stringLikeCellCount': all_string_count,
+              },
+              'interpretationRules': [
+                  'Keyword or co-occurrence hits are discovery evidence only and cannot establish the multiplicative scale by themselves.',
+                  'Absence of an explicit bridge in these public bytes is evidence only that these exact routes are exhausted for an explicit statement; it is never evidence that no convention exists.',
+                  'No numerical magnitude matching, pi-factor fitting, or transfer from GSIT, Adams-Kattawar, or Eradiate is permitted as a bridge.',
+              ],
+              'normalizationBridgeResolved': False,
+              'korkinGateAuthorized': False,
+              'deepScienceAuthorized': False,
+              'rendererExecuted': False,
+              'solverExecuted': False,
+              'photonsTraced': 0,
+              'protectedResultOpened': False,
+              'taylorOrJerusalemUsed': False,
+              'epsilonSubstitutionUsed': False,
+          }
+          (OUT/'korkin_publication_scale_audit_v42.json').write_text(
+              json.dumps(report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
+          )
+          print(json.dumps({
+              'classification': report['classification'],
+              'manuscriptCharacters': len(manuscript),
+              'manuscriptCandidateLineCount': len(candidate_lines),
+              'workbookMemberCount': len(member_records),
+              'workbookKeywordRecordCount': len(workbook_hits),
+              'formulaCellCount': all_formula_count,
+              'stringLikeCellCount': all_string_count,
+              'normalizationBridgeResolved': False,
+          }, indent=2))
+          PY
+          sha256sum out/korkin_publication_scale_audit_v42.json > out/report_sha256.txt
+
+      - name: Verify zero-result and fail-closed invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r = json.loads(Path('out/korkin_publication_scale_audit_v42.json').read_text(encoding='utf-8'))
+          assert r['normalizationBridgeResolved'] is False
+          assert r['korkinGateAuthorized'] is False
+          assert r['deepScienceAuthorized'] is False
+          assert r['rendererExecuted'] is False
+          assert r['solverExecuted'] is False
+          assert r['photonsTraced'] == 0
+          assert r['protectedResultOpened'] is False
+          assert r['taylorOrJerusalemUsed'] is False
+          assert r['epsilonSubstitutionUsed'] is False
+          assert r['scope']['acceptedManuscriptFullMachineTextScanned'] is True
+          assert r['scope']['workbookAllOOXMLMembersEnumerated'] is True
+          print('PASS_ZERO_RESULT_PUBLICATION_SCALE_AUDIT')
+          PY
+
+      - name: Upload bounded immutable audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-korkin-publication-scale-audit-v42
+          path: |
+            out/korkin_publication_scale_audit_v42.json
+            out/source_sha256.txt
+            out/source_sizes.tsv
+            out/report_sha256.txt
+            out/context/extractor.txt
+          if-no-files-found: error
+          retention-days: 90

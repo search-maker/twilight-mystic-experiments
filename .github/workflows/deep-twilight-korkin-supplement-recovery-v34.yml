@@ -1,0 +1,179 @@
+name: Deep twilight Korkin supplement recovery v34
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-supplement-recovery-v34
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-korkin-supplement-recovery-v34-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recover-public-supplement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Recover public MD-SOAR supplementary archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          url='https://mdsoar.org/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/download'
+          curl --fail --location --retry 2 --retry-all-errors --connect-timeout 20 --max-time 120 \
+            "$url" -o evidence/supplement.zip
+          test -s evidence/supplement.zip
+          sha256sum evidence/supplement.zip | tee evidence/archive_sha256.txt
+          stat -c '%s' evidence/supplement.zip | tee evidence/archive_size.txt
+          unzip -t evidence/supplement.zip
+          unzip -l evidence/supplement.zip | tee evidence/archive_manifest.txt
+
+      - name: Extract bounded normalization/provenance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import html
+          import io
+          import json
+          import re
+          import zipfile
+
+          archive = Path('evidence/supplement.zip')
+          raw = archive.read_bytes()
+          archive_sha = hashlib.sha256(raw).hexdigest()
+          keywords = re.compile(
+              r'(?i)(solar|irradiance|incident|flux|normaliz|stokes|mystic|mcssa|vlidort|table\s*9|\bf0\b|\bpi\b|π)'
+          )
+          tag_re = re.compile(r'<[^>]+>')
+          space_re = re.compile(r'\s+')
+          records = []
+          hits = []
+          max_hits = 600
+          max_hits_per_text = 30
+
+          def sha(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def record(label: str, data: bytes, depth: int) -> None:
+              records.append({
+                  'path': label,
+                  'depth': depth,
+                  'bytes': len(data),
+                  'sha256': sha(data),
+              })
+
+          def add_name_hit(label: str) -> None:
+              if len(hits) >= max_hits:
+                  return
+              if keywords.search(label):
+                  hits.append({'path': label, 'kind': 'filename', 'context': label[:500]})
+
+          def inspect(label: str, data: bytes, depth: int = 0) -> None:
+              record(label, data, depth)
+              add_name_hit(label)
+              if depth < 3:
+                  bio = io.BytesIO(data)
+                  try:
+                      is_zip = zipfile.is_zipfile(bio)
+                  except Exception:
+                      is_zip = False
+                  if is_zip:
+                      bio.seek(0)
+                      try:
+                          with zipfile.ZipFile(bio) as zf:
+                              for info in zf.infolist():
+                                  if info.is_dir():
+                                      continue
+                                  child = f'{label}!/{info.filename}'
+                                  try:
+                                      payload = zf.read(info)
+                                  except Exception as exc:
+                                      hits.append({'path': child, 'kind': 'read_error', 'context': repr(exc)[:300]})
+                                      continue
+                                  inspect(child, payload, depth + 1)
+                      except Exception as exc:
+                          hits.append({'path': label, 'kind': 'zip_error', 'context': repr(exc)[:300]})
+                      return
+
+              # Extract only bounded textual context; never republish the raw archive.
+              text = data.decode('utf-8', errors='ignore')
+              if not text.strip():
+                  return
+              if '<' in text and '>' in text:
+                  text = tag_re.sub(' ', text)
+              text = html.unescape(text)
+              text = space_re.sub(' ', text).strip()
+              if not text:
+                  return
+              local = 0
+              for match in keywords.finditer(text):
+                  if len(hits) >= max_hits or local >= max_hits_per_text:
+                      break
+                  lo = max(0, match.start() - 220)
+                  hi = min(len(text), match.end() + 300)
+                  context = text[lo:hi]
+                  hits.append({'path': label, 'kind': 'text', 'keyword': match.group(0), 'context': context})
+                  local += 1
+
+          with zipfile.ZipFile(io.BytesIO(raw)) as outer:
+              outer_names = [i.filename for i in outer.infolist() if not i.is_dir()]
+              for info in outer.infolist():
+                  if info.is_dir():
+                      continue
+                  inspect(info.filename, outer.read(info), 0)
+
+          Path('evidence/member_hashes.json').write_text(
+              json.dumps(records, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          Path('evidence/normalization_hits.json').write_text(
+              json.dumps(hits, indent=2, ensure_ascii=False), encoding='utf-8'
+          )
+          summary = {
+              'schema': 'deep-twilight-korkin-supplement-recovery-v34-result',
+              'archiveSha256': archive_sha,
+              'archiveBytes': len(raw),
+              'outerMemberCount': len(outer_names),
+              'recursiveMemberRecordCount': len(records),
+              'boundedKeywordHitCount': len(hits),
+              'sourceUrl': 'https://mdsoar.org/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/download',
+              'normalizationStatusAfterAutomatedRecovery': 'REQUIRES_HUMAN_EVIDENCE_REVIEW_FAIL_CLOSED',
+              'solverExecuted': False,
+              'protectedResultOpened': False,
+              'rawArchiveRepublished': False,
+          }
+          Path('evidence/summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove raw archive is excluded from evidence artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f evidence/supplement.zip
+          test -f evidence/archive_sha256.txt
+          test -f evidence/archive_manifest.txt
+          test -f evidence/member_hashes.json
+          test -f evidence/normalization_hits.json
+          test -f evidence/summary.json
+
+      - name: Upload bounded recovery evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-korkin-supplement-recovery-v34
+          path: |
+            evidence/archive_sha256.txt
+            evidence/archive_size.txt
+            evidence/archive_manifest.txt
+            evidence/member_hashes.json
+            evidence/normalization_hits.json
+            evidence/summary.json
+          if-no-files-found: error
+          retention-days: 90

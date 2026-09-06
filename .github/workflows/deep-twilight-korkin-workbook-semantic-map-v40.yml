@@ -1,0 +1,303 @@
+name: Deep Twilight Korkin author workbook semantic map v40
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-workbook-semantic-map-v40
+    paths:
+      - .github/workflows/deep-twilight-korkin-workbook-semantic-map-v40.yml
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch and bind exact public author archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/unpacked/2022 out/unpacked/2020
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+            'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content' \
+            -o out/raw/korkin2022_mdsoar_bundle.zip
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+            'https://data.mendeley.com/public-api/zip/y92b2h27jv/download/1' \
+            -o out/raw/korkin2020_mendeley_bundle.zip
+
+          got2022="$(sha256sum out/raw/korkin2022_mdsoar_bundle.zip | awk '{print $1}')"
+          got2020="$(sha256sum out/raw/korkin2020_mendeley_bundle.zip | awk '{print $1}')"
+          test "$got2022" = 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          test "$got2020" = '77818d2dd2dd7b3f9c1765e89e7f647c1df928384658be6912c5a29c935f4da1'
+          printf 'korkin2022_mdsoar_bundle.zip\t%s\n' "$got2022" > out/archive_sha256.tsv
+          printf 'korkin2020_mendeley_bundle.zip\t%s\n' "$got2020" >> out/archive_sha256.tsv
+
+          unzip -q out/raw/korkin2022_mdsoar_bundle.zip -d out/unpacked/2022
+          unzip -q out/raw/korkin2020_mendeley_bundle.zip -d out/unpacked/2020
+
+      - name: Build result-blind OOXML semantic map
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import math
+          import re
+          import zipfile
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          OUT = Path('out')
+          NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+          REL_NS = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
+          OFFICE_REL = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
+          TARGETS = [
+              ('raz0_cos1_mystic', 2.6633e-2),
+              ('raz0_cos1_mcssa', 2.6628e-2),
+              ('raz0_cos05_mystic', 7.3804e-2),
+              ('raz0_cos05_mcssa', 7.3801e-2),
+              ('raz0_cos02_mystic', 1.2946e-1),
+              ('raz0_cos02_mcssa', 1.2946e-1),
+              ('raz90_cos1_mystic', 2.6635e-2),
+              ('raz90_cos1_mcssa', 2.6628e-2),
+              ('raz90_cos05_mystic', 5.2478e-2),
+              ('raz90_cos05_mcssa', 5.2485e-2),
+              ('raz90_cos02_mystic', 9.4849e-2),
+              ('raz90_cos02_mcssa', 9.4862e-2),
+              ('raz180_cos1_mystic', 2.6642e-2),
+              ('raz180_cos1_mcssa', 2.6628e-2),
+              ('raz180_cos05_mystic', 9.0990e-2),
+              ('raz180_cos05_mcssa', 9.1000e-2),
+              ('raz180_cos02_mystic', 1.8756e-1),
+              ('raz180_cos02_mcssa', 1.8758e-1),
+          ]
+          TEXT_MARKERS = (
+              'normal', 'irradian', 'radiance', 'flux', 'stokes', 'mystic', 'mcssa',
+              'vlidort', 'adams', 'kattawar', 'unit', 'dimension', 'solar', 'pi', 'table'
+          )
+
+          def strip_ns(tag: str) -> str:
+              return tag.split('}', 1)[-1]
+
+          def safe_xml(zf: zipfile.ZipFile, name: str):
+              try:
+                  return ET.fromstring(zf.read(name))
+              except Exception:
+                  return None
+
+          def shared_strings(zf: zipfile.ZipFile):
+              root = safe_xml(zf, 'xl/sharedStrings.xml')
+              if root is None:
+                  return []
+              vals = []
+              for si in root.findall('m:si', NS):
+                  vals.append(''.join(t.text or '' for t in si.iter() if strip_ns(t.tag) == 't'))
+              return vals
+
+          def sheet_map(zf: zipfile.ZipFile):
+              wb = safe_xml(zf, 'xl/workbook.xml')
+              rels = safe_xml(zf, 'xl/_rels/workbook.xml.rels')
+              relmap = {}
+              if rels is not None:
+                  for rel in list(rels):
+                      relmap[rel.attrib.get('Id')] = rel.attrib.get('Target')
+              out = []
+              if wb is None:
+                  return out
+              for sh in wb.findall('.//m:sheets/m:sheet', NS):
+                  rid = sh.attrib.get(OFFICE_REL)
+                  target = relmap.get(rid, '')
+                  if target.startswith('/'):
+                      path = target.lstrip('/')
+                  elif target.startswith('xl/'):
+                      path = target
+                  else:
+                      path = 'xl/' + target.lstrip('/')
+                  out.append({'name': sh.attrib.get('name'), 'rid': rid, 'path': path})
+              return out
+
+          def cell_text(c, sst):
+              typ = c.attrib.get('t')
+              f = c.find('m:f', NS)
+              v = c.find('m:v', NS)
+              is_node = c.find('m:is', NS)
+              formula = f.text if f is not None else None
+              raw = v.text if v is not None else None
+              value = None
+              value_kind = typ or 'n'
+              if typ == 's' and raw is not None:
+                  try:
+                      value = sst[int(raw)]
+                  except Exception:
+                      value = raw
+              elif typ == 'inlineStr' and is_node is not None:
+                  value = ''.join(t.text or '' for t in is_node.iter() if strip_ns(t.tag) == 't')
+              elif typ in ('str', 'b', 'e'):
+                  value = raw
+              elif raw is not None:
+                  try:
+                      value = float(raw)
+                  except Exception:
+                      value = raw
+              return value_kind, value, raw, formula
+
+          def workbook_record(path: Path, lineage: str):
+              rec = {
+                  'lineage': lineage,
+                  'file': path.name,
+                  'size': path.stat().st_size,
+                  'sheets': [],
+                  'stringCells': [],
+                  'markerStringCells': [],
+                  'formulaCells': [],
+                  'numericCellCount': 0,
+                  'nearestPublishedTable9Values': {},
+                  'definedNames': [],
+              }
+              nearest = {name: [] for name, _ in TARGETS}
+              with zipfile.ZipFile(path) as zf:
+                  sst = shared_strings(zf)
+                  wb = safe_xml(zf, 'xl/workbook.xml')
+                  if wb is not None:
+                      dns = wb.find('m:definedNames', NS)
+                      if dns is not None:
+                          for dn in list(dns):
+                              rec['definedNames'].append({
+                                  'name': dn.attrib.get('name'),
+                                  'localSheetId': dn.attrib.get('localSheetId'),
+                                  'text': dn.text,
+                              })
+                  for sm in sheet_map(zf):
+                      root = safe_xml(zf, sm['path'])
+                      srec = {'name': sm['name'], 'path': sm['path'], 'dimension': None, 'nonemptyCells': 0}
+                      if root is None:
+                          srec['parseError'] = True
+                          rec['sheets'].append(srec)
+                          continue
+                      dim = root.find('m:dimension', NS)
+                      if dim is not None:
+                          srec['dimension'] = dim.attrib.get('ref')
+                      for c in root.findall('.//m:c', NS):
+                          addr = c.attrib.get('r')
+                          kind, value, raw, formula = cell_text(c, sst)
+                          if value is None and formula is None:
+                              continue
+                          srec['nonemptyCells'] += 1
+                          if formula is not None and len(rec['formulaCells']) < 500:
+                              rec['formulaCells'].append({'sheet': sm['name'], 'cell': addr, 'formula': formula, 'cached': raw})
+                          if isinstance(value, str):
+                              item = {'sheet': sm['name'], 'cell': addr, 'value': value, 'kind': kind}
+                              if len(rec['stringCells']) < 1500:
+                                  rec['stringCells'].append(item)
+                              low = value.lower()
+                              if any(marker in low for marker in TEXT_MARKERS) and len(rec['markerStringCells']) < 1000:
+                                  rec['markerStringCells'].append(item)
+                          elif isinstance(value, float) and math.isfinite(value):
+                              rec['numericCellCount'] += 1
+                              for name, target in TARGETS:
+                                  delta = abs(value - target)
+                                  arr = nearest[name]
+                                  arr.append((delta, sm['name'], addr, value, raw))
+                                  arr.sort(key=lambda x: x[0])
+                                  del arr[5:]
+                      rec['sheets'].append(srec)
+              for name, target in TARGETS:
+                  rec['nearestPublishedTable9Values'][name] = [
+                      {'absDelta': d, 'sheet': sh, 'cell': cell, 'value': val, 'raw': raw}
+                      for d, sh, cell, val, raw in nearest[name]
+                  ]
+              return rec
+
+          books = []
+          for lineage, root in [('korkin2022', OUT/'unpacked/2022'), ('korkin2020', OUT/'unpacked/2020')]:
+              for p in sorted(root.rglob('*.xlsx')):
+                  try:
+                      books.append(workbook_record(p, lineage))
+                  except Exception as exc:
+                      books.append({'lineage': lineage, 'file': p.name, 'error': f'{type(exc).__name__}: {exc}'})
+
+          # Result-blind candidate locator: identify workbooks with the most near-exact occurrences of the frozen published Table 9(a) numbers.
+          candidates = []
+          for book in books:
+              if 'nearestPublishedTable9Values' not in book:
+                  continue
+              exactish = []
+              for name, rows in book['nearestPublishedTable9Values'].items():
+                  if rows and rows[0]['absDelta'] <= 5e-8:
+                      exactish.append({'target': name, **rows[0]})
+              if exactish:
+                  candidates.append({
+                      'lineage': book['lineage'],
+                      'file': book['file'],
+                      'nearExactTargetCount': len(exactish),
+                      'matches': exactish,
+                      'markerStringCells': book['markerStringCells'],
+                      'stringCells': book['stringCells'],
+                      'formulaCells': book['formulaCells'],
+                      'sheets': book['sheets'],
+                  })
+          candidates.sort(key=lambda x: (-x['nearExactTargetCount'], x['file']))
+
+          report = {
+              'classification': 'AUTHOR_WORKBOOK_SEMANTIC_MAP_RECOVERED_RESULT_BLIND',
+              'archiveBinding': {
+                  'korkin2022_sha256': 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e',
+                  'korkin2020_sha256': '77818d2dd2dd7b3f9c1765e89e7f647c1df928384658be6912c5a29c935f4da1',
+              },
+              'candidateThresholdMeaning': 'Discovery only: absolute numeric delta <=5e-8 from already-published frozen Table 9(a) values. It cannot establish a normalization convention.',
+              'normalizationBridgeResolved': False,
+              'korkinGateAuthorized': False,
+              'deepScienceAuthorized': False,
+              'rendererExecuted': False,
+              'solverExecuted': False,
+              'photonsTraced': 0,
+              'protectedResultOpened': False,
+              'workbookCount': len(books),
+              'candidates': candidates,
+              'workbooks': books,
+          }
+          (OUT/'korkin_workbook_semantic_map_v40.json').write_text(json.dumps(report, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
+          print(json.dumps({
+              'classification': report['classification'],
+              'workbookCount': report['workbookCount'],
+              'candidateCount': len(candidates),
+              'candidates': [{'lineage': x['lineage'], 'file': x['file'], 'nearExactTargetCount': x['nearExactTargetCount']} for x in candidates[:20]],
+          }, indent=2))
+          PY
+          sha256sum out/korkin_workbook_semantic_map_v40.json > out/report_sha256.txt
+
+      - name: Verify zero-result safety and archive binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r = json.loads(Path('out/korkin_workbook_semantic_map_v40.json').read_text(encoding='utf-8'))
+          assert r['normalizationBridgeResolved'] is False
+          assert r['korkinGateAuthorized'] is False
+          assert r['deepScienceAuthorized'] is False
+          assert r['rendererExecuted'] is False
+          assert r['solverExecuted'] is False
+          assert r['photonsTraced'] == 0
+          assert r['protectedResultOpened'] is False
+          assert r['archiveBinding']['korkin2022_sha256'] == 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          assert r['archiveBinding']['korkin2020_sha256'] == '77818d2dd2dd7b3f9c1765e89e7f647c1df928384658be6912c5a29c935f4da1'
+          print('PASS_ZERO_RESULT_AUTHOR_WORKBOOK_SEMANTIC_MAP')
+          PY
+
+      - name: Upload immutable semantic map
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-korkin-workbook-semantic-map-v40
+          path: |
+            out/archive_sha256.tsv
+            out/korkin_workbook_semantic_map_v40.json
+            out/report_sha256.txt
+          if-no-files-found: error
+          retention-days: 90

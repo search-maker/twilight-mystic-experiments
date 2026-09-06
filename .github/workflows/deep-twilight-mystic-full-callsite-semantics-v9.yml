@@ -1,0 +1,173 @@
+name: Deep twilight exact pinned MYSTIC full callsite semantics v9
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-mystic-full-callsite-semantics-v9
+    paths:
+      - ".github/workflows/deep-twilight-mystic-full-callsite-semantics-v9.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  static-callsite-semantics:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Freeze static-only full-callsite boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-mystic-full-callsite-semantics-v9"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          printf '%s\n' \
+            'DEEP TWILIGHT EXACT PINNED MYSTIC FULL CALLSITE SEMANTICS V9' \
+            'STATIC LOCKED-BINARY + EXACT INSTALLED HEADER INSPECTION ONLY' \
+            'NO UVSPEC EXECUTION / NO RNG / NO SEED / NO MYSTIC BODY / NO PHOTONS / NO SCIENCE' \
+            'target rubin-libradtran=2.0.6=py312pl5321he9373c2_1' \
+            'target uvspec SHA256 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' \
+            'V8 established that exact-name DWARF is absent and solve_rte has no direct named mystic call. V9 scans the complete locked binary for every static reference/call to mystic and records the owning function plus pre-call ABI setup.' \
+            'No field mapping is accepted from an offset unless exact installed-header evidence independently binds that offset/field.' \
+            > PROTOCOL.txt
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-mystic-full-callsite-semantics-v9
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture complete static callsite evidence
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=full-callsite-semantics-v9
+          mkdir -p "$OUT"
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+          nm -an "$UVSPEC" > "$OUT/nm-all.txt"
+          objdump -d -w -C -Mintel "$UVSPEC" > "$OUT/full-disassembly.txt"
+          grep -R -n -I -E '(^|[^A-Za-z0-9_])(dt_s|om_s|g1_s|g2_s|f_s|ds_s|[[:space:]]dt[[:space:]]*;|[[:space:]]om[[:space:]]*;|[[:space:]]ff[[:space:]]*;|[[:space:]]dscale[[:space:]]*;)' "$CONDA_PREFIX/include/libRadtran" > "$OUT/exact-header-field-hits.txt" || true
+          grep -R -n -I -E 'mystic[[:space:]]*\(' "$CONDA_PREFIX/include/libRadtran" > "$OUT/exact-header-mystic-signatures.txt" || true
+
+          python - <<'PY'
+          import hashlib, json, re
+          from pathlib import Path
+          root=Path('full-callsite-semantics-v9')
+          rows=(root/'full-disassembly.txt').read_text(errors='replace').splitlines()
+          labels=[]
+          for i,line in enumerate(rows):
+              m=re.match(r'^\s*([0-9a-fA-F]+) <([^>]+)>:$',line)
+              if m:
+                  labels.append((i,m.group(1),m.group(2)))
+          mystic_labels=[x for x in labels if x[2]=='mystic']
+          target_addr=mystic_labels[0][1] if len(mystic_labels)==1 else None
+          call_indices=[]
+          ref_indices=[]
+          if target_addr:
+              addrpat=re.compile(r'\b'+re.escape(target_addr.lstrip('0') or '0')+r'\b',re.I)
+          else:
+              addrpat=None
+          for i,line in enumerate(rows):
+              if '<mystic>' in line and not re.match(r'^\s*[0-9a-fA-F]+ <mystic>:$',line):
+                  ref_indices.append(i)
+                  if re.search(r'\bcall\w*\b',line):
+                      call_indices.append(i)
+              elif addrpat and re.search(r'\bcall\w*\b',line) and addrpat.search(line):
+                  call_indices.append(i)
+          call_indices=sorted(set(call_indices))
+          ref_indices=sorted(set(ref_indices))
+
+          def owner(idx):
+              prior=[x for x in labels if x[0] < idx]
+              return prior[-1][2] if prior else None
+          call_records=[]
+          call_context=[]
+          for k,idx in enumerate(call_indices):
+              lo=max(0,idx-100); hi=min(len(rows),idx+16)
+              rec={'index':idx+1,'ownerFunction':owner(idx),'instruction':rows[idx],'contextStartLine':lo+1,'contextEndLine':hi}
+              call_records.append(rec)
+              call_context.append(f'=== CALL {k+1} owner={rec["ownerFunction"]} full_line={idx+1} ===')
+              call_context.extend(rows[lo:hi])
+          (root/'mystic-call-contexts.txt').write_text('\n'.join(call_context)+'\n')
+
+          ref_context=[]
+          for k,idx in enumerate(ref_indices[:40]):
+              lo=max(0,idx-8); hi=min(len(rows),idx+9)
+              ref_context.append(f'=== REF {k+1} owner={owner(idx)} full_line={idx+1} ===')
+              ref_context.extend(rows[lo:hi])
+          (root/'mystic-reference-contexts.txt').write_text('\n'.join(ref_context)+'\n')
+
+          headers=(root/'exact-header-field-hits.txt').read_text(errors='replace').splitlines()
+          evidence_files=['nm-all.txt','full-disassembly.txt','exact-header-field-hits.txt','exact-header-mystic-signatures.txt','mystic-call-contexts.txt','mystic-reference-contexts.txt']
+          d={
+            'schemaVersion':9,
+            'status':'STATIC_FULL_CALLSITE_SCAN_COMPLETE',
+            'targetPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'mysticDefinitionCount':len(mystic_labels),
+            'mysticAddress':target_addr,
+            'mysticStaticReferenceCount':len(ref_indices),
+            'mysticDirectCallCount':len(call_indices),
+            'callRecords':call_records,
+            'exactHeaderFieldHitCount':len(headers),
+            'uvspecExecuted':False,'rngInitialized':False,'seedConsumed':False,'mysticBodyExecuted':False,'photonTraced':False,'scientificExecutionPerformed':False,'protectedResultOpened':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False,
+            'evidenceSha256':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in evidence_files},
+            'claimBoundary':'static exact binary/header evidence only; callsite register/stack setup is evidence, but field semantics require explicit exact-header binding rather than offset guessing'
+          }
+          (root/'decision-v9.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(d,sort_keys=True))
+          PY
+
+      - name: Publish bounded callsite evidence to Issue 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('full-callsite-semantics-v9')
+          d=json.loads((root/'decision-v9.json').read_text())
+          for key in ['uvspecExecuted','rngInitialized','seedConsumed','mysticBodyExecuted','photonTraced','scientificExecutionPerformed','protectedResultOpened','levelBChanged','taylorOrJerusalemUsed','epsilonSubstitutionUsed']:
+              assert d[key] is False
+          def bounded(name,n):
+              x=(root/name).read_text(errors='replace').splitlines(); return x[:n],len(x)
+          calls,calls_total=bounded('mystic-call-contexts.txt',360)
+          refs,refs_total=bounded('mystic-reference-contexts.txt',160)
+          hdr,hdr_total=bounded('exact-header-field-hits.txt',180)
+          sig,sig_total=bounded('exact-header-mystic-signatures.txt',80)
+          lines=['DEEP_TWILIGHT::EXACT_PINNED_MYSTIC_FULL_CALLSITE_SEMANTICS_V9','',
+                 'status='+d['status'],'target_package='+d['targetPackage'],'uvspec_sha256='+d['uvspecSha256'],
+                 'mystic_definition_count='+str(d['mysticDefinitionCount']),'mystic_address='+str(d['mysticAddress']),
+                 'mystic_static_reference_count='+str(d['mysticStaticReferenceCount']),'mystic_direct_call_count='+str(d['mysticDirectCallCount']),
+                 'call_records='+json.dumps(d['callRecords'],sort_keys=True),'exact_header_field_hit_count='+str(d['exactHeaderFieldHitCount']),
+                 'evidence_sha256='+json.dumps(d['evidenceSha256'],sort_keys=True),
+                 'STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false; scientificExecutionPerformed=false; protectedResultOpened=false; levelBChanged=false; taylorOrJerusalemUsed=false; epsilonSubstitutionUsed=false','']
+          for title,rows,total in [('MYSTIC direct-call contexts',calls,calls_total),('Other static MYSTIC references',refs,refs_total),('Exact installed-header candidate field hits',hdr,hdr_total),('Exact installed-header MYSTIC signatures',sig,sig_total)]:
+              lines.append(f'{title} (shown {len(rows)}/{total} lines):'); lines.append('```text'); lines.extend(rows); lines.append('```'); lines.append('')
+          lines.append('CLAIM_BOUNDARY: exact locked-binary and exact installed-header evidence only. Register/stack setup at a direct call is admissible ABI evidence; an offset is not assigned a physical/semantic field name without explicit exact-header binding. If the call is indirect or ambiguous, the result remains fail-closed and moves to a separately frozen pre-body exact-runtime equivalence probe. No renderer/science authorization is created.')
+          Path('issue-comment.md').write_text('\n'.join(lines)+'\n')
+          PY
+          gh api "/repos/${GITHUB_REPOSITORY}/issues/60/comments" --method POST -f body="$(cat issue-comment.md)" > posted-comment.json
+          jq -e '.id and .html_url' posted-comment.json
+
+      - name: Preserve immutable full-callsite evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-mystic-full-callsite-semantics-v9
+          path: |
+            PROTOCOL.txt
+            full-callsite-semantics-v9/
+            posted-comment.json
+          if-no-files-found: error
+          retention-days: 90

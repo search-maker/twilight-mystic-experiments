@@ -1,0 +1,204 @@
+name: Deep twilight exact pinned MYSTIC caller DWARF semantics v8
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-mystic-caller-dwarf-semantics-v8
+    paths:
+      - ".github/workflows/deep-twilight-mystic-caller-dwarf-semantics-v8.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  static-caller-semantics:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Freeze static-only caller-semantic boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-mystic-caller-dwarf-semantics-v8"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          printf '%s\n' \
+            'DEEP TWILIGHT EXACT PINNED MYSTIC CALLER/DWARF SEMANTICS V8' \
+            'STATIC BINARY + DWARF + INSTALLED HEADER INSPECTION ONLY' \
+            'NO UVSPEC EXECUTION / NO RNG / NO SEED / NO MYSTIC BODY / NO PHOTONS / NO SCIENCE' \
+            'target rubin-libradtran=2.0.6=py312pl5321he9373c2_1' \
+            'target uvspec SHA256 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' \
+            'Goal: bind MYSTIC entry dt_s/om_s/g1_s/g2_s/f_s/ds_s to exact caller/runtime fields where debug or machine-code evidence makes that mapping explicit.' \
+            'Names alone are not proof; absent/ambiguous mappings remain fail-closed.' \
+            > PROTOCOL.txt
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-mystic-caller-dwarf-semantics-v8
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture exact static caller and DWARF evidence
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=caller-dwarf-semantics-v8
+          mkdir -p "$OUT"
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+          sha256sum "$UVSPEC" > "$OUT/uvspec-sha256.txt"
+          file "$UVSPEC" > "$OUT/uvspec-file.txt"
+          nm -an "$UVSPEC" > "$OUT/nm-all.txt"
+          readelf -S "$UVSPEC" > "$OUT/readelf-sections.txt"
+          readelf --debug-dump=info "$UVSPEC" > "$OUT/dwarf-info.txt" 2>&1 || true
+          readelf --debug-dump=decodedline "$UVSPEC" > "$OUT/dwarf-decodedline.txt" 2>&1 || true
+          objdump -d -r -w -C -Mintel --disassemble=solve_rte "$UVSPEC" > "$OUT/solve-rte-disassembly.txt" 2>&1 || true
+          objdump -d -r -w -C -Mintel --disassemble=mystic "$UVSPEC" > "$OUT/mystic-disassembly.txt" 2>&1 || true
+          gdb -q -batch \
+            -ex "file $UVSPEC" \
+            -ex 'info functions mystic' \
+            -ex 'ptype mystic' \
+            -ex 'info line mystic' \
+            -ex 'disassemble /m mystic' \
+            > "$OUT/gdb-static.txt" 2>&1 || true
+
+          python - <<'PY'
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path('caller-dwarf-semantics-v8')
+          dwarf = (root / 'dwarf-info.txt').read_text(errors='replace').splitlines()
+          solve = (root / 'solve-rte-disassembly.txt').read_text(errors='replace').splitlines()
+          gdb = (root / 'gdb-static.txt').read_text(errors='replace').splitlines()
+          targets = ['dt_s','om_s','g1_s','g2_s','f_s','ds_s','dt','om','g1','g2','ff','dscale']
+
+          def contexts(lines, regex, radius=8, max_blocks=20):
+              pat = re.compile(regex)
+              out=[]
+              seen=set()
+              for i,line in enumerate(lines):
+                  if not pat.search(line):
+                      continue
+                  lo=max(0,i-radius); hi=min(len(lines),i+radius+1)
+                  key=(lo,hi)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  out.append(f'--- lines {lo+1}-{hi} ---')
+                  out.extend(lines[lo:hi])
+                  if len(seen)>=max_blocks:
+                      break
+              return out
+
+          dwarf_target = contexts(dwarf, r'\b(dt_s|om_s|g1_s|g2_s|f_s|ds_s|ff|dscale)\b', radius=12, max_blocks=30)
+          caller_calls = contexts(solve, r'\bcall\w*\b.*<mystic(?:@plt)?>', radius=45, max_blocks=8)
+          caller_names = contexts(solve, r'\b(dt_s|om_s|g1_s|g2_s|f_s|ds_s|ff|dscale)\b', radius=20, max_blocks=20)
+          gdb_target = contexts(gdb, r'\b(mystic|dt_s|om_s|g1_s|g2_s|f_s|ds_s)\b', radius=8, max_blocks=20)
+
+          (root/'dwarf-target-context.txt').write_text('\n'.join(dwarf_target)+'\n')
+          (root/'solve-rte-mystic-call-context.txt').write_text('\n'.join(caller_calls)+'\n')
+          (root/'solve-rte-target-name-context.txt').write_text('\n'.join(caller_names)+'\n')
+          (root/'gdb-target-context.txt').write_text('\n'.join(gdb_target)+'\n')
+
+          dwarf_counts={name:sum(bool(re.search(r'(?<![A-Za-z0-9_])'+re.escape(name)+r'(?![A-Za-z0-9_])',x)) for x in dwarf) for name in targets}
+          solve_mystic_calls=sum(bool(re.search(r'\bcall\w*\b.*<mystic(?:@plt)?>',x)) for x in solve)
+          debug_sections=[]
+          for line in (root/'readelf-sections.txt').read_text(errors='replace').splitlines():
+              if '.debug_' in line:
+                  debug_sections.append(line.strip())
+          files=['uvspec-sha256.txt','uvspec-file.txt','nm-all.txt','readelf-sections.txt','dwarf-info.txt','dwarf-decodedline.txt','solve-rte-disassembly.txt','mystic-disassembly.txt','gdb-static.txt','dwarf-target-context.txt','solve-rte-mystic-call-context.txt','solve-rte-target-name-context.txt','gdb-target-context.txt']
+          evidence={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}
+          status='STATIC_CALLER_EVIDENCE_CAPTURED'
+          decision={
+              'schemaVersion':8,
+              'status':status,
+              'targetPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+              'debugSectionCount':len(debug_sections),
+              'debugSections':debug_sections,
+              'dwarfExactNameCounts':dwarf_counts,
+              'solveRteMysticDirectCallCount':solve_mystic_calls,
+              'dwarfTargetContextLineCount':len(dwarf_target),
+              'solveRteCallContextLineCount':len(caller_calls),
+              'solveRteTargetNameContextLineCount':len(caller_names),
+              'gdbTargetContextLineCount':len(gdb_target),
+              'uvspecExecuted':False,
+              'rngInitialized':False,
+              'seedConsumed':False,
+              'mysticBodyExecuted':False,
+              'photonTraced':False,
+              'scientificExecutionPerformed':False,
+              'protectedResultOpened':False,
+              'levelBChanged':False,
+              'taylorOrJerusalemUsed':False,
+              'epsilonSubstitutionUsed':False,
+              'evidenceSha256':evidence,
+              'claimBoundary':'static exact locked-binary/DWARF evidence only; mappings are authoritative only where the emitted evidence explicitly binds caller fields to MYSTIC arguments',
+          }
+          (root/'decision-v8.json').write_text(json.dumps(decision,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(decision,sort_keys=True))
+          PY
+
+      - name: Publish bounded material readout to Issue 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('caller-dwarf-semantics-v8')
+          d=json.loads((root/'decision-v8.json').read_text())
+          for key in ['uvspecExecuted','rngInitialized','seedConsumed','mysticBodyExecuted','photonTraced','scientificExecutionPerformed','protectedResultOpened','levelBChanged','taylorOrJerusalemUsed','epsilonSubstitutionUsed']:
+              assert d[key] is False
+          def take(name,n):
+              rows=(root/name).read_text(errors='replace').splitlines()
+              return rows[:n],len(rows)
+          blocks=[]
+          for title,name,lim in [
+              ('DWARF target contexts','dwarf-target-context.txt',220),
+              ('solve_rte -> mystic direct-call contexts','solve-rte-mystic-call-context.txt',220),
+              ('solve_rte target-name contexts','solve-rte-target-name-context.txt',160),
+              ('GDB static symbol/type contexts','gdb-target-context.txt',120),
+          ]:
+              rows,total=take(name,lim); blocks.append((title,rows,total))
+          lines=[
+              'DEEP_TWILIGHT::EXACT_PINNED_MYSTIC_CALLER_DWARF_SEMANTICS_V8','',
+              'status='+d['status'],
+              'target_package='+d['targetPackage'],
+              'uvspec_sha256='+d['uvspecSha256'],
+              'debug_section_count='+str(d['debugSectionCount']),
+              'dwarf_exact_name_counts='+json.dumps(d['dwarfExactNameCounts'],sort_keys=True),
+              'solve_rte_mystic_direct_call_count='+str(d['solveRteMysticDirectCallCount']),
+              'evidence_sha256='+json.dumps(d['evidenceSha256'],sort_keys=True),
+              'STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false; scientificExecutionPerformed=false; protectedResultOpened=false; levelBChanged=false; taylorOrJerusalemUsed=false; epsilonSubstitutionUsed=false',''
+          ]
+          for title,rows,total in blocks:
+              lines.append(f'{title} (shown {len(rows)}/{total} lines):')
+              lines.append('```text'); lines.extend(rows); lines.append('```'); lines.append('')
+          lines.append('CLAIM_BOUNDARY: exact locked-binary/DWARF/static evidence only. A mapping is accepted only if the evidence explicitly binds a caller value/field to the corresponding MYSTIC argument. Names or positional resemblance alone are not proof; unresolved mappings remain fail-closed. No renderer or science authorization is created.')
+          Path('issue-comment.md').write_text('\n'.join(lines)+'\n')
+          PY
+          gh api "/repos/${GITHUB_REPOSITORY}/issues/60/comments" --method POST -f body="$(cat issue-comment.md)" > posted-comment.json
+          jq -e '.id and .html_url' posted-comment.json
+
+      - name: Preserve immutable caller-semantic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-mystic-caller-dwarf-semantics-v8
+          path: |
+            PROTOCOL.txt
+            caller-dwarf-semantics-v8/
+            posted-comment.json
+          if-no-files-found: error
+          retention-days: 90

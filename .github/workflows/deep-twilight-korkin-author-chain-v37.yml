@@ -1,0 +1,297 @@
+name: Deep twilight Korkin author-chain and Table9 locator v37
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-author-chain-v37
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-korkin-author-chain-v37-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  author-chain-and-locator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Recover exact public author sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work evidence
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KorkinAuthorChain/37'
+          curl --fail --silent --show-error --location --max-redirs 4 --connect-timeout 20 --max-time 120 \
+            --user-agent "$ua" --header 'Accept: application/zip,application/octet-stream,*/*;q=0.5' \
+            'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content' \
+            -o work/korkin2022_supp.zip
+          test "$(stat -c '%s' work/korkin2022_supp.zip)" = '3092912'
+          test "$(sha256sum work/korkin2022_supp.zip | awk '{print $1}')" = 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+
+          curl --fail --silent --show-error --location --max-redirs 4 --connect-timeout 20 --max-time 120 \
+            --user-agent "$ua" --header 'Accept: application/pdf,*/*;q=0.5' \
+            'https://api.mdsoar.org/server/api/core/bitstreams/b6f42917-091e-4f64-a69d-5e5eee8c49d6/content' \
+            -o work/korkin2020.pdf
+          curl --fail --silent --show-error --location --max-redirs 4 --connect-timeout 20 --max-time 120 \
+            --user-agent "$ua" --header 'Accept: application/pdf,*/*;q=0.5' \
+            'https://ntrs.nasa.gov/api/citations/20220005788/downloads/SKorkin_etal_JQSRT_2022_accepted.pdf' \
+            -o work/korkin2022.pdf
+          test -s work/korkin2020.pdf
+          test -s work/korkin2022.pdf
+          file work/korkin2020.pdf | grep -qi 'PDF'
+          file work/korkin2022.pdf | grep -qi 'PDF'
+          {
+            sha256sum work/korkin2020.pdf
+            sha256sum work/korkin2022.pdf
+            sha256sum work/korkin2022_supp.zip
+          } > evidence/source_sha256.txt
+          {
+            stat -c 'korkin2020.pdf bytes=%s' work/korkin2020.pdf
+            stat -c 'korkin2022.pdf bytes=%s' work/korkin2022.pdf
+            stat -c 'korkin2022_supp.zip bytes=%s' work/korkin2022_supp.zip
+          } > evidence/source_sizes.txt
+
+      - name: Extract bounded author-manuscript text contexts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pdftotext >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq poppler-utils
+          fi
+          pdftotext -layout work/korkin2020.pdf work/korkin2020.txt
+          pdftotext -layout work/korkin2022.pdf work/korkin2022.txt
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          patterns = [
+              ('reflectance', re.compile(r'\breflectance\b', re.I)),
+              ('normalization', re.compile(r'normaliz', re.I)),
+              ('solar_irradiance', re.compile(r'solar.{0,80}irradiance|irradiance.{0,80}solar', re.I|re.S)),
+              ('solar_flux', re.compile(r'solar.{0,80}flux|flux.{0,80}solar', re.I|re.S)),
+              ('incident_flux_irradiance', re.compile(r'incident.{0,80}(flux|irradiance)|(flux|irradiance).{0,80}incident', re.I|re.S)),
+              ('pi_token', re.compile(r'(?i)(?<![A-Za-z])pi(?![A-Za-z])|π')),
+              ('f0_symbol', re.compile(r'(?<![A-Za-z0-9])F[_ ]?0(?![A-Za-z0-9])', re.I)),
+              ('previous_results', re.compile(r'extend.{0,120}previous results|previous work|previous results', re.I|re.S)),
+              ('following_ak', re.compile(r'Following\s+A\s*&\s*K|Adams\s*&\s*Kattawar', re.I)),
+              ('input_parameters', re.compile(r'input parameters|configured other input', re.I)),
+              ('radiance_intensity', re.compile(r'\b(radiance|intensity)\b', re.I)),
+          ]
+
+          def compact(text):
+              return re.sub(r'\s+', ' ', text).strip()
+
+          def extract(path, label):
+              raw = Path(path).read_text(encoding='utf-8', errors='ignore')
+              records = []
+              for pid, pat in patterns:
+                  count = 0
+                  for m in pat.finditer(raw):
+                      lo = max(0, m.start()-420); hi = min(len(raw), m.end()+700)
+                      ctx = compact(raw[lo:hi])
+                      records.append({'source': label, 'pattern': pid, 'context': ctx[:2400]})
+                      count += 1
+                      if count >= 20:
+                          break
+              # deterministic de-dup
+              out=[]; seen=set()
+              for r in records:
+                  k=(r['pattern'], r['context'])
+                  if k in seen: continue
+                  seen.add(k); out.append(r)
+              return out
+
+          evidence = {
+              'schema': 'korkin-author-manuscript-contexts-v37',
+              'automaticNormalizationResolutionForbidden': True,
+              'sources': {
+                  'korkin2020': extract('work/korkin2020.txt','Korkin et al. 2020'),
+                  'korkin2022': extract('work/korkin2022.txt','Korkin et al. 2022 accepted manuscript'),
+              }
+          }
+          Path('evidence/author_manuscript_contexts.json').write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding='utf-8')
+          PY
+
+      - name: Repair Table 9a publication-workbook locator only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from decimal import Decimal, InvalidOperation
+          from pathlib import Path
+          import hashlib, io, json, posixpath, re, zipfile, xml.etree.ElementTree as ET
+
+          OUTER = Path('work/korkin2022_supp.zip').read_bytes()
+          EXPECTED = 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          assert hashlib.sha256(OUTER).hexdigest() == EXPECTED
+          NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+          REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+          PREL='http://schemas.openxmlformats.org/package/2006/relationships'
+
+          expected_headers=['RAz','cos(VZA)','MYSTIC: I','MYSTIC: P','MCSSA: I','MCSSA: P','dI, %','dP, %','VLIDORT: I','VLIDORT: P']
+          anchor={'MYSTIC: I':Decimal('2.6633E-02'),'MCSSA: I':Decimal('2.6628E-02'),'VLIDORT: I':Decimal('2.6740E-02')}
+          # 5 significant digits at ~2.6e-2 => last displayed decimal is 1e-6.
+          tol=Decimal('5E-7')
+
+          def loc(tag): return tag.rsplit('}',1)[-1]
+          def letters(cell):
+              m=re.match(r'([A-Z]+)',cell or '')
+              return m.group(1) if m else None
+          def get_strings(zf):
+              try: root=ET.fromstring(zf.read('xl/sharedStrings.xml'))
+              except KeyError: return []
+              out=[]
+              for si in root.findall(f'{{{NS}}}si'):
+                  out.append(''.join((e.text or '') for e in si.iter() if loc(e.tag)=='t'))
+              return out
+          def get_sheets(zf):
+              try: wb=ET.fromstring(zf.read('xl/workbook.xml')); rr=ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+              except KeyError: return []
+              rmap={x.attrib['Id']:x.attrib['Target'] for x in rr.findall(f'{{{PREL}}}Relationship')}
+              out=[]
+              for sh in wb.findall(f'.//{{{NS}}}sheet'):
+                  rid=sh.attrib.get(f'{{{REL}}}id'); target=rmap.get(rid)
+                  if target:
+                      target=target.replace('\\','/')
+                      if target.startswith('/'): path=target.lstrip('/')
+                      else: path=posixpath.normpath(posixpath.join('xl',target))
+                      out.append((sh.attrib.get('name'),path))
+              return out
+          def cells(zf,path,strings):
+              root=ET.fromstring(zf.read(path)); rows=[]
+              for row in root.findall(f'.//{{{NS}}}sheetData/{{{NS}}}row'):
+                  vals=[]
+                  for c in row.findall(f'{{{NS}}}c'):
+                      coord=c.attrib.get('r'); t=c.attrib.get('t'); v=c.find(f'{{{NS}}}v')
+                      raw=(v.text or '') if v is not None else ''
+                      text=None
+                      if t=='s' and raw:
+                          try: text=strings[int(raw)]
+                          except Exception: pass
+                      elif t=='inlineStr':
+                          isel=c.find(f'{{{NS}}}is')
+                          if isel is not None: text=''.join((e.text or '') for e in isel.iter() if loc(e.tag)=='t')
+                      elif t in ('str','d'): text=raw
+                      vals.append({'cell':coord,'col':letters(coord),'text':text,'raw':raw,'type':t})
+                  if vals: rows.append(vals)
+              return rows
+          def norm(s): return re.sub(r'[^a-z0-9%]+','',str(s).lower())
+
+          results=[]
+          with zipfile.ZipFile(io.BytesIO(OUTER)) as outer:
+              for info in outer.infolist():
+                  if info.is_dir() or not info.filename.lower().endswith('.xlsx'): continue
+                  data=outer.read(info); sha=hashlib.sha256(data).hexdigest()
+                  with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                      ss=get_strings(zf)
+                      for sname,spath in get_sheets(zf):
+                          rs=cells(zf,spath,ss)
+                          header_map=None; header_row=None
+                          for r in rs:
+                              tm={norm(x['text']):x['col'] for x in r if x['text'] is not None}
+                              if all(norm(h) in tm for h in expected_headers):
+                                  header_map={h:tm[norm(h)] for h in expected_headers}; header_row=r; break
+                          if not header_map: continue
+                          for r in rs:
+                              bycol={x['col']:x for x in r}
+                              raz=bycol.get(header_map['RAz']); cv=bycol.get(header_map['cos(VZA)'])
+                              try: razd=Decimal(raz['raw']) if raz and raz['raw'] else Decimal(str(raz['text']))
+                              except Exception: continue
+                              try: cvd=Decimal(cv['raw']) if cv and cv['raw'] else Decimal(str(cv['text']))
+                              except Exception: continue
+                              if razd!=0 or cvd!=1: continue
+                              observed={}; matched=True
+                              for h,target in anchor.items():
+                                  x=bycol.get(header_map[h])
+                                  try: d=Decimal(x['raw']) if x and x['raw'] else Decimal(str(x['text']))
+                                  except Exception: matched=False; break
+                                  observed[h]={'cell':x['cell'],'lexical':x['raw'] if x['raw'] else x['text'],'decimal':str(d),'target':str(target),'absoluteDifference':str(abs(d-target))}
+                                  if abs(d-target)>tol: matched=False
+                              results.append({'workbook':info.filename,'workbookSha256':sha,'sheet':sname,'rowAnchor':{'RAz':'0','cos(VZA)':'1.0'},'observed':observed,'withinFiveDigitRoundingEnvelope':matched})
+
+          matches=[r for r in results if r['withinFiveDigitRoundingEnvelope']]
+          status='TABLE9A_UNIQUELY_IDENTIFIED_LOCATOR_ONLY' if len(matches)==1 else ('TABLE9A_MULTIPLE_MATCHES_FAIL_CLOSED' if len(matches)>1 else 'TABLE9A_NO_MATCH_FAIL_CLOSED')
+          output={
+              'schema':'korkin-table9a-publication-locator-v37',
+              'status':status,
+              'matchCount':len(matches),
+              'identified': matches[0] if len(matches)==1 else None,
+              'publishedAnchor':{'RAz':'0','cos(VZA)':'1.0',**{k:str(v) for k,v in anchor.items()}},
+              'toleranceExplanation':'Locator only: each I anchor is compared within half of the last displayed 5-significant-digit step (5e-7 absolute at these values).',
+              'locatorValuesAreNormalizationEvidence':False,
+              'allCandidateRows':results,
+          }
+          Path('evidence/table9a_locator_v37.json').write_text(json.dumps(output,indent=2,ensure_ascii=False),encoding='utf-8')
+          print(json.dumps({k:output[k] for k in ('status','matchCount','identified')},indent=2))
+          PY
+
+      - name: Build fail-closed author-chain disposition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+          contexts=json.load(open('evidence/author_manuscript_contexts.json'))
+          locator=json.load(open('evidence/table9a_locator_v37.json'))
+          flat=[]
+          for source, items in contexts['sources'].items():
+              for it in items:
+                  flat.append((source,it['pattern'],it['context']))
+
+          explicit_formula=[]
+          formula_patterns=[
+              re.compile(r'(?i)(reflectance|radiance|intensity).{0,160}(=|defined as).{0,220}(pi|π|flux|irradiance|F[_ ]?0|mu[_ ]?0|μ0)'),
+              re.compile(r'(?i)(pi|π).{0,120}(radiance|intensity|reflectance).{0,120}(flux|irradiance)'),
+              re.compile(r'(?i)(solar flux|solar irradiance).{0,180}(normalized|reflectance|radiance|intensity)'),
+          ]
+          for source,pid,ctx in flat:
+              if any(p.search(ctx) for p in formula_patterns):
+                  explicit_formula.append({'source':source,'pattern':pid,'context':ctx})
+
+          # No automatic bridge: even an apparent formula is a review candidate until carry-forward to 2022 Table 9 is explicit.
+          disposition={
+              'schema':'korkin-author-chain-disposition-v37',
+              'table9aLocatorStatus':locator['status'],
+              'table9aIdentity':locator.get('identified'),
+              'authorContextCount':len(flat),
+              'explicitFormulaLikeCandidateCount':len(explicit_formula),
+              'explicitFormulaLikeCandidates':explicit_formula[:50],
+              'normalizationResolved':False,
+              'normalizationStatus':'AUTHOR_CHAIN_REVIEW_REQUIRED_FAIL_CLOSED' if explicit_formula else 'NO_EXPLICIT_MULTIPLICATIVE_BRIDGE_FOUND_FAIL_CLOSED',
+              'automaticResolutionForbidden':True,
+              'nextActionIfNoBridge':'Close publication-text route as negative evidence and move to exact runtime/input normalization bridge; do not continue searching same publication artifacts without a new source class.',
+              'solverExecuted':False,
+              'scientificExecution':False,
+              'protectedResultOpened':False,
+              'rawPublicationFilesRepublished':False,
+          }
+          Path('evidence/disposition_v37.json').write_text(json.dumps(disposition,indent=2,ensure_ascii=False),encoding='utf-8')
+          print(json.dumps({k:disposition[k] for k in ('table9aLocatorStatus','authorContextCount','explicitFormulaLikeCandidateCount','normalizationStatus')},indent=2))
+          PY
+
+      - name: Prove raw publications are excluded
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf work
+          test -f evidence/source_sha256.txt
+          test -f evidence/source_sizes.txt
+          test -f evidence/author_manuscript_contexts.json
+          test -f evidence/table9a_locator_v37.json
+          test -f evidence/disposition_v37.json
+          if find evidence -type f \( -iname '*.pdf' -o -iname '*.xlsx' -o -iname '*.zip' -o -iname '*.txt' -name 'korkin*.txt' \) | grep -q .; then
+            echo 'Raw publication file leaked into bounded evidence' >&2
+            exit 1
+          fi
+
+      - name: Upload bounded author-chain evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-korkin-author-chain-locator-v37
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90

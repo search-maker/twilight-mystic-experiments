@@ -1,0 +1,110 @@
+name: Deep twilight Eradiate runtime parity v38
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-eradiate-runtime-parity-v38
+    paths:
+      - .github/workflows/deep-twilight-eradiate-runtime-parity-v38.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  runtime-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fail closed on competing queued or running Actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          own = int(os.environ['GITHUB_RUN_ID'])
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          blockers = []
+          for status in ('queued', 'in_progress'):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/actions/runs?status={status}&per_page=100',
+                  headers=headers,
+              )
+              with urllib.request.urlopen(req) as r:
+                  payload = json.load(r)
+              for run in payload['workflow_runs']:
+                  if int(run['id']) != own:
+                      blockers.append((status, run['id'], run['name'], run.get('head_branch')))
+          if blockers:
+              raise SystemExit(f'FAIL_CLOSED_COMPETING_ACTIONS: {blockers}')
+          print('No competing queued/in-progress Actions run found.')
+          PY
+
+      - name: Install publication-compatible Eradiate runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            'pinttrs==25.1.0' \
+            'eradiate[kernel]==1.0.1'
+          python - <<'PY'
+          import importlib.metadata
+          import inspect
+          import eradiate
+          from pinttrs.util import ensure_units
+          assert eradiate.__version__ == '1.0.1', eradiate.__version__
+          assert importlib.metadata.version('pinttrs') == '25.1.0'
+          sig = inspect.signature(ensure_units)
+          sig.bind(None, None)
+          print('eradiate', eradiate.__version__)
+          print('pinttrs', importlib.metadata.version('pinttrs'))
+          print('ensure_units', sig)
+          PY
+
+      - name: Download and bind immutable V31 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v38-work
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -o v38-work/v31.zip \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9987307764/zip"
+          echo '4b02b09a3b83a55ca5f9deef07397f0d4b2cbcb8b1c971874652a10b91dbb2b8  v38-work/v31.zip' | sha256sum -c -
+
+      - name: Run preserved zero-result runtime parity harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/deep-twilight-eradiate-runtime-parity-v36/check_eradiate_runtime_parity_v36.py \
+            --artifact v38-work/v31.zip \
+            --report v38-work/eradiate-runtime-parity-v38-report.json
+
+      - name: Upload immutable runtime-parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-eradiate-runtime-parity-v38
+          path: v38-work/eradiate-runtime-parity-v38-report.json
+          if-no-files-found: ignore
+          retention-days: 90

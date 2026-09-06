@@ -1,0 +1,188 @@
+name: Deep twilight exact call_solver base type v11
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-callsolver-base-type-v11
+    paths:
+      - ".github/workflows/deep-twilight-callsolver-base-type-v11.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  static-base-type:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Freeze static-only base-type boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-callsolver-base-type-v11"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          printf '%s\n' \
+            'DEEP TWILIGHT EXACT CALL_SOLVER BASE TYPE V11' \
+            'STATIC LOCKED-BINARY + EXACT INSTALLED HEADER INSPECTION ONLY' \
+            'NO UVSPEC EXECUTION / NO RNG / NO SEED / NO MYSTIC BODY / NO PHOTONS / NO SCIENCE' \
+            'target rubin-libradtran=2.0.6=py312pl5321he9373c2_1' \
+            'target uvspec SHA256 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' \
+            'V10 proved call_solver stores its first incoming rdi and later reloads that same pointer into rbx before the MYSTIC callsites; V11 traces direct callers and exact installed declarations to identify that pointer type, and captures the exact containing record declaration around dt/om/ff/dscale.' \
+            'No field/offset mapping is accepted unless binary dataflow and installed declaration/layout evidence jointly establish it.' \
+            > PROTOCOL.txt
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-callsolver-base-type-v11
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture exact callers and containing record declarations
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=callsolver-base-type-v11
+          mkdir -p "$OUT"
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+          H="$CONDA_PREFIX/include/libRadtran/mystic.h"
+          test -f "$H"
+
+          objdump -d -w -C -Mintel "$UVSPEC" > "$OUT/full-disassembly.txt"
+          grep -R -n -I -E '(^|[^A-Za-z0-9_])(solve_rte|call_solver)[[:space:]]*\(' "$CONDA_PREFIX/include/libRadtran" > "$OUT/solver-declarations.txt" || true
+          grep -R -n -I -E 'typedef[[:space:]]+struct|struct[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{|double\*\*\*[[:space:]]+(dt|om)|float\*\*\*[[:space:]]+(ff|dscale)' "$H" > "$OUT/mystic-record-markers.txt" || true
+          nl -ba "$H" | sed -n '1360,1495p' > "$OUT/mystic-optical-record-context.txt"
+
+          python - <<'PY'
+          import hashlib, json, re, os
+          from pathlib import Path
+          root=Path('callsolver-base-type-v11')
+          rows=(root/'full-disassembly.txt').read_text(errors='replace').splitlines()
+          labels=[]
+          for i,line in enumerate(rows):
+              m=re.match(r'^\s*([0-9a-fA-F]+) <([^>]+)>:$',line)
+              if m: labels.append((i,m.group(1),m.group(2)))
+          def owner(idx):
+              prior=[x for x in labels if x[0] < idx]
+              return prior[-1][2] if prior else None
+
+          call_solver_labels=[x for x in labels if x[2]=='call_solver']
+          call_solver_addr=call_solver_labels[0][1] if len(call_solver_labels)==1 else None
+          call_idxs=[]
+          for i,line in enumerate(rows):
+              if '<call_solver>' in line and re.search(r'\bcall\w*\b',line):
+                  call_idxs.append(i)
+          caller_records=[]
+          blocks=[]
+          for n,idx in enumerate(call_idxs,1):
+              lo=max(0,idx-140); hi=min(len(rows),idx+20)
+              rec={'callNumber':n,'line':idx+1,'ownerFunction':owner(idx),'instruction':rows[idx],'start':lo+1,'end':hi}
+              # Mechanical last-writes to SysV first six integer args.
+              regpats={
+                'rdi':re.compile(r'\b(?:rdi|edi)\b'),'rsi':re.compile(r'\b(?:rsi|esi)\b'),
+                'rdx':re.compile(r'\b(?:rdx|edx)\b'),'rcx':re.compile(r'\b(?:rcx|ecx)\b'),
+                'r8':re.compile(r'\b(?:r8|r8d)\b'),'r9':re.compile(r'\b(?:r9|r9d)\b'),
+              }
+              rec['lastRegisterWrites']={}
+              for reg,pat in regpats.items():
+                  found=None
+                  for j in range(idx-1,max(-1,idx-220),-1):
+                      m=re.search(r'\b(?:mov|lea|xor|pop)\w*\s+([^,]+)',rows[j])
+                      if m and pat.search(m.group(1)):
+                          found={'line':j+1,'text':rows[j]}; break
+                  rec['lastRegisterWrites'][reg]=found
+              caller_records.append(rec)
+              blocks.append(f'=== CALL_SOLVER CALL {n} owner={rec["ownerFunction"]} line={idx+1} ===')
+              blocks.extend(rows[lo:hi])
+          (root/'callsolver-caller-contexts.txt').write_text('\n'.join(blocks)+'\n')
+          (root/'callsolver-caller-summary.json').write_text(json.dumps(caller_records,indent=2,sort_keys=True)+'\n')
+
+          # Exact header contexts around solve_rte/call_solver declaration hits.
+          prefix=Path(os.environ['CONDA_PREFIX'])/'include'/'libRadtran'
+          contexts=[]
+          pat=re.compile(r'\b(solve_rte|call_solver)\s*\(')
+          for p in sorted(prefix.rglob('*.h')):
+              try: text=p.read_text(errors='replace').splitlines()
+              except Exception: continue
+              for i,line in enumerate(text):
+                  if not pat.search(line): continue
+                  lo=max(0,i-35); hi=min(len(text),i+55)
+                  contexts.append(f'=== {p}:{i+1} lines {lo+1}-{hi} ===')
+                  contexts.extend(f'{j+1:6d}\t{text[j]}' for j in range(lo,hi))
+          (root/'solver-header-contexts.txt').write_text('\n'.join(contexts)+'\n')
+
+          files=['full-disassembly.txt','solver-declarations.txt','mystic-record-markers.txt','mystic-optical-record-context.txt','callsolver-caller-contexts.txt','callsolver-caller-summary.json','solver-header-contexts.txt']
+          d={
+            'schemaVersion':11,
+            'status':'STATIC_EXACT_CALLSOLVER_BASE_TYPE_EVIDENCE_CAPTURED',
+            'targetPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'callSolverDefinitionCount':len(call_solver_labels),
+            'callSolverAddress':call_solver_addr,
+            'directCallSolverCallCount':len(call_idxs),
+            'callerRecords':caller_records,
+            'uvspecExecuted':False,'rngInitialized':False,'seedConsumed':False,'mysticBodyExecuted':False,'photonTraced':False,'scientificExecutionPerformed':False,'protectedResultOpened':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False,
+            'evidenceSha256':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files},
+            'claimBoundary':'static exact binary/header evidence only; type/field binding requires explicit declaration plus dataflow/layout proof'
+          }
+          (root/'decision-v11.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(d,sort_keys=True))
+          PY
+
+      - name: Publish bounded base-type evidence to Issue 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('callsolver-base-type-v11')
+          d=json.loads((root/'decision-v11.json').read_text())
+          for key in ['uvspecExecuted','rngInitialized','seedConsumed','mysticBodyExecuted','photonTraced','scientificExecutionPerformed','protectedResultOpened','levelBChanged','taylorOrJerusalemUsed','epsilonSubstitutionUsed']:
+              assert d[key] is False
+          def take(name,n):
+              x=(root/name).read_text(errors='replace').splitlines(); return x[:n],len(x)
+          blocks=[]
+          for title,name,lim in [
+            ('Exact installed solve_rte/call_solver declarations','solver-declarations.txt',120),
+            ('Exact solver declaration contexts','solver-header-contexts.txt',260),
+            ('Exact mystic optical containing-record context','mystic-optical-record-context.txt',170),
+            ('call_solver direct-caller ABI summary','callsolver-caller-summary.json',260),
+            ('call_solver direct-caller machine-code contexts','callsolver-caller-contexts.txt',320),
+          ]:
+              rows,total=take(name,lim); blocks.append((title,rows,total))
+          lines=['DEEP_TWILIGHT::EXACT_CALLSOLVER_BASE_TYPE_V11','',
+                 'status='+d['status'],'target_package='+d['targetPackage'],'uvspec_sha256='+d['uvspecSha256'],
+                 'call_solver_definition_count='+str(d['callSolverDefinitionCount']),'call_solver_address='+str(d['callSolverAddress']),
+                 'direct_call_solver_call_count='+str(d['directCallSolverCallCount']),
+                 'caller_records='+json.dumps(d['callerRecords'],sort_keys=True),
+                 'evidence_sha256='+json.dumps(d['evidenceSha256'],sort_keys=True),
+                 'STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false; scientificExecutionPerformed=false; protectedResultOpened=false; levelBChanged=false; taylorOrJerusalemUsed=false; epsilonSubstitutionUsed=false','']
+          for title,rows,total in blocks:
+              lines.append(f'{title} (shown {len(rows)}/{total} lines):'); lines.append('```text'); lines.extend(rows); lines.append('```'); lines.append('')
+          lines.append('CLAIM_BOUNDARY: exact locked-binary and exact installed-header evidence only. The caller base type and field offsets are accepted only where exact declaration/layout plus ABI dataflow prove them; otherwise they remain unresolved and fail-closed. No renderer/science authorization is created.')
+          Path('issue-comment.md').write_text('\n'.join(lines)+'\n')
+          PY
+          gh api "/repos/${GITHUB_REPOSITORY}/issues/60/comments" --method POST -f body="$(cat issue-comment.md)" > posted-comment.json
+          jq -e '.id and .html_url' posted-comment.json
+
+      - name: Preserve immutable base-type evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-callsolver-base-type-v11
+          path: |
+            PROTOCOL.txt
+            callsolver-base-type-v11/
+            posted-comment.json
+          if-no-files-found: error
+          retention-days: 90

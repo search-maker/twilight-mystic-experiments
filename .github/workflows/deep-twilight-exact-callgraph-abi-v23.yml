@@ -1,0 +1,262 @@
+name: Deep twilight exact callgraph and ABI closure v23
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-exact-callgraph-abi-v23
+    paths:
+      - ".github/workflows/deep-twilight-exact-callgraph-abi-v23.yml"
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  exact-callgraph-abi-v23:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      V22_RUN: '34019785601'
+      V22_HEAD: 608527a39fb4e22a8ad24e76a39d27bc71ea61fd
+      V22_ARTIFACT: '9985097312'
+      V22_ARTIFACT_DIGEST: sha256:62326219cc5cc231784cd8ce6602924f51f00b8b353fd474b2aff9d381ee6de2
+      V22_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fail closed on live contention or unmatched WRITE_QUIET and bind V22
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "${{ github.event.before }}" = "$EXPECTED_MAIN"
+          OUT=deep-twilight-exact-callgraph-abi-v23-output
+          mkdir -p "$OUT"
+          gh api "repos/$GITHUB_REPOSITORY/issues/60" > "$OUT/issue60.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$OUT/main.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V22_RUN" > "$OUT/v22-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V22_ARTIFACT" > "$OUT/v22-artifact.json"
+          python - <<'PY'
+          import json, os, re, subprocess, sys
+          from pathlib import Path
+          root=Path('deep-twilight-exact-callgraph-abi-v23-output')
+          main=json.loads((root/'main.json').read_text())
+          run=json.loads((root/'v22-run.json').read_text())
+          art=json.loads((root/'v22-artifact.json').read_text())
+          if main['commit']['sha'] != os.environ['EXPECTED_MAIN']:
+              raise SystemExit('main moved; fail closed')
+          if run.get('head_sha') != os.environ['V22_HEAD'] or run.get('conclusion') != 'success' or run.get('run_attempt') != 1:
+              raise SystemExit('V22 run identity mismatch')
+          if str(art.get('id')) != os.environ['V22_ARTIFACT'] or art.get('digest') != os.environ['V22_ARTIFACT_DIGEST'] or art.get('expired'):
+              raise SystemExit('V22 artifact identity/digest mismatch')
+          repo=os.environ['GITHUB_REPOSITORY']; current=int(os.environ['GITHUB_RUN_ID'])
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          blockers=[]
+          for status in ('in_progress','queued'):
+              q=json.loads(subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],text=True,capture_output=True,check=True).stdout)
+              for r in q.get('workflow_runs',[]):
+                  if int(r['id']) == current: continue
+                  text=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in text for n in needles):
+                      blockers.append({'status':status,'id':r['id'],'name':r.get('name'),'branch':r.get('head_branch')})
+          (root/'v1-contention.json').write_text(json.dumps(blockers,indent=2,sort_keys=True)+'\n')
+          if blockers: sys.exit(43)
+
+          issue=json.loads((root/'issue60.json').read_text()); pages=(int(issue.get('comments',0))+99)//100
+          marker_re=re.compile(r'^\s*WRITE_QUIET_(BEGIN|END)\b'); markers=[]
+          for page in range(1,pages+1):
+              cs=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60/comments?per_page=100&page={page}'],text=True,capture_output=True,check=True).stdout)
+              for c in cs:
+                  fenced=False
+                  for raw in str(c.get('body','')).splitlines():
+                      line=raw.rstrip('\r')
+                      if line.lstrip().startswith('```'):
+                          fenced=not fenced; continue
+                      if fenced or line.lstrip().startswith('>'): continue
+                      m=marker_re.match(line)
+                      if m: markers.append((int(c['id']),m.group(1),line.strip()))
+          markers.sort()
+          (root/'write-quiet-markers.json').write_text(json.dumps({'markers':markers,'terminalState':markers[-1][1] if markers else 'NONE'},indent=2)+'\n')
+          if markers and markers[-1][1]=='BEGIN': raise SystemExit('unmatched WRITE_QUIET_BEGIN')
+          PY
+
+      - name: Download and byte-bind immutable V22 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-exact-callgraph-abi-v23-output
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V22_ARTIFACT/zip" > "$OUT/v22.zip"
+          GOT="sha256:$(sha256sum "$OUT/v22.zip" | awk '{print $1}')"
+          test "$GOT" = "$V22_ARTIFACT_DIGEST"
+          mkdir -p "$OUT/v22"
+          unzip -q "$OUT/v22.zip" -d "$OUT/v22"
+          test "$(cut -d' ' -f1 "$OUT/v22/uvspec-sha256.txt")" = "$V22_UVSPEC_SHA256"
+
+      - name: Derive exact direct-call graph, shortest paths, and nearest ABI-name evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-exact-callgraph-abi-v23-output
+          python - <<'PY'
+          from pathlib import Path
+          from collections import defaultdict, deque
+          import hashlib, json, re
+          root=Path('deep-twilight-exact-callgraph-abi-v23-output')
+          v22=root/'v22'
+          lines=(v22/'uvspec-objdump-full.txt').read_text(errors='replace').splitlines()
+          label_re=re.compile(r'^\s*([0-9a-f]+) <([^>]+)>:$')
+          call_re=re.compile(r'\bcall\w*\s+([^<]*)(?:<([^>]+)>)?')
+          caller=None; graph=defaultdict(set); callsites=[]; indirect=[]
+          for i,line in enumerate(lines):
+              lm=label_re.match(line)
+              if lm:
+                  caller=lm.group(2).split('@')[0]
+                  continue
+              if caller is None or '\tcall' not in line and ' call' not in line:
+                  continue
+              cm=call_re.search(line)
+              if not cm: continue
+              target=cm.group(2)
+              if target:
+                  callee=target.split('@')[0]
+                  graph[caller].add(callee)
+                  callsites.append({'caller':caller,'callee':callee,'lineIndex':i+1,'instruction':line.strip()})
+              else:
+                  indirect.append({'caller':caller,'lineIndex':i+1,'instruction':line.strip()})
+
+          def shortest(src, pred, max_depth=8):
+              q=deque([(src,[src])]); seen={src}
+              while q:
+                  node,path=q.popleft()
+                  if len(path)-1 >= max_depth: continue
+                  for nxt in sorted(graph.get(node,())):
+                      np=path+[nxt]
+                      if pred(nxt): return np
+                      if nxt not in seen:
+                          seen.add(nxt); q.append((nxt,np))
+              return None
+
+          incoming=defaultdict(list)
+          for c in callsites: incoming[c['callee']].append(c)
+          mystic_named=[c for c in callsites if 'mystic' in c['caller'].lower() or 'mystic' in c['callee'].lower()]
+          path_exact=shortest('solve_rte',lambda x:x=='mystic')
+          path_named=shortest('solve_rte',lambda x:'mystic' in x.lower() and x!='convert_caoth_mystic')
+          path_convert=shortest('solve_rte',lambda x:x=='convert_caoth_mystic')
+
+          hits=json.loads((v22/'installed-header-hit-index.json').read_text())
+          ds=hits.get('ds_s',[]); fs=hits.get('f_s',[]); mh=hits.get('mystic',[])
+          unique_ds=ds[0] if len(ds)==1 else None
+          nearest=[]
+          if unique_ds:
+              for tag,arr in [('f_s',fs),('mystic',mh)]:
+                  same=[h for h in arr if h['file']==unique_ds['file']]
+                  same.sort(key=lambda h:abs(int(h['line'])-int(unique_ds['line'])))
+                  nearest.extend([{'term':tag,'distance':abs(int(h['line'])-int(unique_ds['line'])),**h} for h in same[:8]])
+
+          summary={
+              'allDirectCallCount':len(callsites),
+              'allIndirectCallInstructionCount':len(indirect),
+              'directCallersOfExactMystic':sorted({x['caller'] for x in incoming.get('mystic',[])}),
+              'directCallersOfConvertCaothMystic':sorted({x['caller'] for x in incoming.get('convert_caoth_mystic',[])}),
+              'shortestSolveRteToExactMystic':path_exact,
+              'shortestSolveRteToAnyMysticNamedNonConvert':path_named,
+              'shortestSolveRteToConvertCaothMystic':path_convert,
+              'solveRteIndirectCalls':[x for x in indirect if x['caller']=='solve_rte'],
+              'mysticNamedDirectEdges':mystic_named,
+              'uniqueDsHeaderHit':unique_ds,
+              'nearestFsAndMysticHeaderHitsToDs':nearest,
+              'fEntrySemanticStatus':'FAIL_CLOSED_PENDING_EXACT_INSTRUCTION_DATAFLOW',
+              'dsEntrySemanticStatus':'FAIL_CLOSED_PENDING_EXACT_INSTRUCTION_DATAFLOW',
+              'rendererParityAuthorized':False,
+          }
+          (root/'callgraph-abi-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          (root/'direct-callgraph.json').write_text(json.dumps({k:sorted(v) for k,v in sorted(graph.items())},indent=2,sort_keys=True)+'\n')
+
+          # Preserve exact bounded contexts for each edge on the shortest paths and every incoming exact-mystic edge.
+          edges=set()
+          for path in (path_exact,path_named,path_convert):
+              if path:
+                  edges.update(zip(path,path[1:]))
+          edges.update((x['caller'],x['callee']) for x in incoming.get('mystic',[]))
+          out=[]
+          for cs in callsites:
+              if (cs['caller'],cs['callee']) not in edges: continue
+              i=cs['lineIndex']-1; a=max(0,i-180); b=min(len(lines),i+51)
+              out.append(f"===== {cs['caller']} -> {cs['callee']} @ objdump line {i+1} =====\n"+'\n'.join(lines[a:b]))
+          (root/'shortest-path-callsite-context.txt').write_text('\n\n'.join(out)+'\n')
+
+          # Extract the unique ds_s context block that V22 preserved, plus nearest f_s/mystic blocks in the same file.
+          ctxt=(v22/'installed-header-target-context.txt').read_text(errors='replace')
+          chunks=ctxt.split('\n\n===== ')
+          selected=[]
+          if unique_ds:
+              key=f"ds_s :: {unique_ds['file']}:{unique_ds['line']}"
+              for ch in chunks:
+                  if key in ch: selected.append(ch if ch.startswith('===== ') else '===== '+ch)
+              wanted={(x['term'],x['file'],x['line']) for x in nearest[:6]}
+              for ch in chunks:
+                  for term,file,line in wanted:
+                      if f"{term} :: {file}:{line}" in ch:
+                          selected.append(ch if ch.startswith('===== ') else '===== '+ch)
+                          break
+          (root/'selected-installed-header-context.txt').write_text('\n\n'.join(selected)+'\n')
+          (root/'selected-context-sha256.txt').write_text(hashlib.sha256((root/'selected-installed-header-context.txt').read_bytes()).hexdigest()+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-exact-callgraph-abi-v23
+          path: deep-twilight-exact-callgraph-abi-v23-output
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: Post bounded Issue 60 V23 readout
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-exact-callgraph-abi-v23-output
+          python - <<'PY' > "$OUT/issue-summary.json"
+          import json
+          from pathlib import Path
+          p=Path('deep-twilight-exact-callgraph-abi-v23-output/callgraph-abi-summary.json')
+          x=json.loads(p.read_text())
+          keep={k:x[k] for k in [
+            'directCallersOfExactMystic','directCallersOfConvertCaothMystic',
+            'shortestSolveRteToExactMystic','shortestSolveRteToAnyMysticNamedNonConvert',
+            'shortestSolveRteToConvertCaothMystic','solveRteIndirectCalls',
+            'uniqueDsHeaderHit','nearestFsAndMysticHeaderHitsToDs',
+            'fEntrySemanticStatus','dsEntrySemanticStatus','rendererParityAuthorized']}
+          print(json.dumps(keep,indent=2,sort_keys=True))
+          PY
+          SUMMARY="$(cat "$OUT/issue-summary.json")"
+          CTX_SHA="$(cat "$OUT/selected-context-sha256.txt")"
+          BODY=$(cat <<EOF
+          DEEP_TWILIGHT::EXACT_CALLGRAPH_ABI_V23_READOUT
+
+          fence_main=$EXPECTED_MAIN
+          branch=$GITHUB_REF_NAME
+          head=$GITHUB_SHA
+          run=$GITHUB_RUN_ID attempt1
+          predecessor_v22_run=$V22_RUN head=$V22_HEAD artifact=$V22_ARTIFACT digest=$V22_ARTIFACT_DIGEST
+          STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false
+          protectedResultOpened=false; levelBChanged=false; Taylor/Jerusalem=false; epsilonSubstitution=false
+          selected_header_context_sha256=$CTX_SHA
+
+          Exact mechanical readout:
+          \`\`\`json
+          $SUMMARY
+          \`\`\`
+
+          This successor resolves whether V22's missing solve_rte->mystic direct edge is a real callgraph fact or a target-filter artifact, and preserves the unique installed-header ds_s occurrence with the nearest f_s/mystic hits plus exact shortest-path callsite windows. It still does not infer semantics from names alone. Any unresolved entry-to-internal mapping remains fail-closed; no renderer parity, Korkin gate, deep science, or Level-B authority is created here.
+          EOF
+          )
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments" -f body="$BODY"

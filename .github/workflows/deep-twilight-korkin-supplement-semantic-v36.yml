@@ -1,0 +1,511 @@
+name: Deep twilight Korkin supplement semantic extraction v36
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-supplement-semantic-v36
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-korkin-supplement-semantic-v36-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  semantic-extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recover exact frozen public supplement
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          url='https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content'
+          expected='f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 KorkinSemanticRecovery/36'
+          curl --fail --silent --show-error --location --max-redirs 4 --connect-timeout 20 --max-time 120 \
+            --user-agent "$ua" --header 'Accept: application/zip,application/octet-stream,*/*;q=0.5' \
+            --header 'Referer: https://mdsoar.org/items/d7c71743-8496-4839-b0b6-eea434289145' \
+            "$url" -o evidence/source.zip
+          test "$(stat -c '%s' evidence/source.zip)" = '3092912'
+          got="$(sha256sum evidence/source.zip | awk '{print $1}')"
+          test "$got" = "$expected"
+          printf '%s  ScienceDirect_files_22Mar2023_21-43-01.794.zip\n' "$got" > evidence/source_archive_sha256.txt
+
+      - name: Parse publication-authored XLSX semantics result-blind
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          from decimal import Decimal, InvalidOperation
+          import hashlib
+          import io
+          import json
+          import posixpath
+          import re
+          import zipfile
+          import xml.etree.ElementTree as ET
+
+          SRC = Path('evidence/source.zip')
+          EXPECTED_SHA = 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          EXPECTED_BYTES = 3092912
+          raw = SRC.read_bytes()
+          assert len(raw) == EXPECTED_BYTES
+          assert hashlib.sha256(raw).hexdigest() == EXPECTED_SHA
+
+          NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+          NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+          NS_PKG_REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
+
+          REQUIRED_HEADERS = {
+              'RAz': 'raz',
+              'cos(VZA)': 'cosvza',
+              'MYSTIC: I': 'mystici',
+              'MYSTIC: P': 'mysticp',
+              'MCSSA: I': 'mcssai',
+              'MCSSA: P': 'mcssap',
+              'dI, %': 'di%',
+              'dP, %': 'dp%',
+              'VLIDORT: I': 'vlidorti',
+              'VLIDORT: P': 'vlidortp',
+          }
+          LOCATOR_DECIMALS = [Decimal('2.6642E-02'), Decimal('2.6628E-02'), Decimal('2.6740E-02')]
+
+          NORMALIZATION_PATTERNS = [
+              ('normaliz', re.compile(r'normaliz', re.I)),
+              ('solar_irradiance_or_flux', re.compile(r'solar.{0,80}(irradiance|flux)|(irradiance|flux).{0,80}solar', re.I)),
+              ('incident_irradiance_or_flux', re.compile(r'incident.{0,80}(irradiance|flux)|(irradiance|flux).{0,80}incident', re.I)),
+              ('pi_with_flux_or_irradiance', re.compile(r'(irradiance|flux).{0,80}(\bpi\b|π|3\.1415)|(\bpi\b|π|3\.1415).{0,80}(irradiance|flux)', re.I)),
+              ('f0_symbol', re.compile(r'(?<![A-Za-z0-9])F[_ ]?0(?![A-Za-z0-9])', re.I)),
+          ]
+          FORMULA_PI = re.compile(r'(?i)(\bPI\s*\(|/\s*PI\s*\(|\*\s*PI\s*\()')
+
+          def local(tag):
+              return tag.rsplit('}', 1)[-1]
+
+          def canon(text):
+              return re.sub(r'[^a-z0-9%]+', '', str(text).lower())
+
+          def all_t_text(elem):
+              return ''.join((e.text or '') for e in elem.iter() if local(e.tag) == 't')
+
+          def xml_root(zf, path):
+              try:
+                  return ET.fromstring(zf.read(path))
+              except KeyError:
+                  return None
+
+          def normalize_target(target):
+              target = target.replace('\\', '/')
+              if target.startswith('/'):
+                  return target.lstrip('/')
+              return posixpath.normpath(posixpath.join('xl', target))
+
+          def shared_strings(zf):
+              root = xml_root(zf, 'xl/sharedStrings.xml')
+              if root is None:
+                  return []
+              out = []
+              for si in root.findall(f'{{{NS_MAIN}}}si'):
+                  out.append(all_t_text(si))
+              return out
+
+          def workbook_relationships(zf):
+              root = xml_root(zf, 'xl/_rels/workbook.xml.rels')
+              out = {}
+              if root is None:
+                  return out
+              for rel in root.findall(f'{{{NS_PKG_REL}}}Relationship'):
+                  rid = rel.attrib.get('Id')
+                  target = rel.attrib.get('Target')
+                  if rid and target:
+                      out[rid] = normalize_target(target)
+              return out
+
+          def workbook_sheets_and_names(zf):
+              root = xml_root(zf, 'xl/workbook.xml')
+              if root is None:
+                  return [], []
+              rels = workbook_relationships(zf)
+              sheets = []
+              for sh in root.findall(f'.//{{{NS_MAIN}}}sheet'):
+                  rid = sh.attrib.get(f'{{{NS_REL}}}id')
+                  sheets.append({
+                      'name': sh.attrib.get('name'),
+                      'state': sh.attrib.get('state', 'visible'),
+                      'relationshipId': rid,
+                      'path': rels.get(rid),
+                  })
+              names = []
+              for dn in root.findall(f'.//{{{NS_MAIN}}}definedName'):
+                  names.append({
+                      'name': dn.attrib.get('name'),
+                      'localSheetId': dn.attrib.get('localSheetId'),
+                      'hidden': dn.attrib.get('hidden'),
+                      'formulaOrValue': (dn.text or '')[:2000],
+                  })
+              return sheets, names
+
+          def parse_sheet(zf, sheet, strings):
+              path = sheet.get('path')
+              result = {
+                  'name': sheet.get('name'),
+                  'state': sheet.get('state'),
+                  'path': path,
+                  'dimension': None,
+                  'textCellCount': 0,
+                  'formulaCellCount': 0,
+                  'numericCellCount': 0,
+                  'nonemptyRowCount': 0,
+                  'hiddenRows': [],
+                  'hiddenColumns': [],
+                  'textCells': [],
+                  'formulas': [],
+                  '_numeric': [],
+              }
+              if not path:
+                  return result
+              root = xml_root(zf, path)
+              if root is None:
+                  return result
+              dim = root.find(f'{{{NS_MAIN}}}dimension')
+              if dim is not None:
+                  result['dimension'] = dim.attrib.get('ref')
+              for col in root.findall(f'.//{{{NS_MAIN}}}cols/{{{NS_MAIN}}}col'):
+                  if col.attrib.get('hidden') in ('1', 'true', 'True'):
+                      result['hiddenColumns'].append({'min': col.attrib.get('min'), 'max': col.attrib.get('max')})
+              for row in root.findall(f'.//{{{NS_MAIN}}}sheetData/{{{NS_MAIN}}}row'):
+                  cells = row.findall(f'{{{NS_MAIN}}}c')
+                  if cells:
+                      result['nonemptyRowCount'] += 1
+                  if row.attrib.get('hidden') in ('1', 'true', 'True'):
+                      result['hiddenRows'].append(row.attrib.get('r'))
+                  for c in cells:
+                      coord = c.attrib.get('r')
+                      ctype = c.attrib.get('t')
+                      f = c.find(f'{{{NS_MAIN}}}f')
+                      v = c.find(f'{{{NS_MAIN}}}v')
+                      formula = (f.text or '') if f is not None else None
+                      rawv = (v.text or '') if v is not None else None
+                      if formula is not None:
+                          result['formulaCellCount'] += 1
+                          if len(result['formulas']) < 800:
+                              result['formulas'].append({'cell': coord, 'formula': formula[:3000]})
+                      text = None
+                      if ctype == 's' and rawv is not None:
+                          try:
+                              idx = int(rawv)
+                              if 0 <= idx < len(strings):
+                                  text = strings[idx]
+                          except Exception:
+                              pass
+                      elif ctype == 'inlineStr':
+                          isel = c.find(f'{{{NS_MAIN}}}is')
+                          if isel is not None:
+                              text = all_t_text(isel)
+                      elif ctype in ('str', 'd') and rawv is not None:
+                          text = rawv
+                      if text is not None:
+                          result['textCellCount'] += 1
+                          if text.strip() and len(result['textCells']) < 1200:
+                              result['textCells'].append({'cell': coord, 'text': text[:3000]})
+                      elif rawv not in (None, '') and ctype not in ('b', 'e'):
+                          result['numericCellCount'] += 1
+                          result['_numeric'].append({'cell': coord, 'lexical': rawv})
+              return result
+
+          def parse_comments(zf):
+              out = []
+              for name in sorted(zf.namelist()):
+                  if re.fullmatch(r'xl/comments\d*\.xml', name):
+                      root = xml_root(zf, name)
+                      if root is None:
+                          continue
+                      for c in root.findall(f'.//{{{NS_MAIN}}}comment'):
+                          txt = all_t_text(c)
+                          if txt.strip():
+                              out.append({'path': name, 'cell': c.attrib.get('ref'), 'text': txt[:3000]})
+              return out
+
+          def parse_charts(zf):
+              out = []
+              for name in sorted(zf.namelist()):
+                  if name.startswith('xl/charts/') and name.endswith('.xml'):
+                      root = xml_root(zf, name)
+                      if root is None:
+                          continue
+                      texts = []
+                      formulas = []
+                      for e in root.iter():
+                          ln = local(e.tag)
+                          if ln == 't' and (e.text or '').strip():
+                              texts.append((e.text or '')[:1000])
+                          elif ln == 'f' and (e.text or '').strip():
+                              formulas.append((e.text or '')[:2000])
+                      out.append({'path': name, 'texts': texts[:300], 'formulas': formulas[:300]})
+              return out
+
+          def parse_props(zf):
+              out = []
+              for name in ('docProps/core.xml', 'docProps/app.xml', 'docProps/custom.xml'):
+                  root = xml_root(zf, name)
+                  if root is None:
+                      continue
+                  vals = []
+                  for e in root.iter():
+                      if e is root:
+                          continue
+                      txt = (e.text or '').strip()
+                      if txt:
+                          vals.append({'field': local(e.tag), 'text': txt[:2000]})
+                  out.append({'path': name, 'values': vals[:300]})
+              return out
+
+          def generic_xml_keyword_contexts(zf):
+              out = []
+              for name in sorted(zf.namelist()):
+                  if not name.endswith('.xml') or name.startswith('xl/media/'):
+                      continue
+                  try:
+                      root = ET.fromstring(zf.read(name))
+                  except Exception:
+                      continue
+                  pieces = []
+                  for e in root.iter():
+                      txt = (e.text or '').strip()
+                      if txt and local(e.tag) in ('t', 'f', 'definedName', 'text'):
+                          pieces.append(txt)
+                  blob = ' | '.join(pieces)
+                  if not blob:
+                      continue
+                  for pid, pat in NORMALIZATION_PATTERNS:
+                      m = pat.search(blob)
+                      if m:
+                          lo = max(0, m.start()-250); hi = min(len(blob), m.end()+400)
+                          out.append({'path': name, 'pattern': pid, 'context': blob[lo:hi][:1500]})
+                          break
+                  if len(out) >= 300:
+                      break
+              return out
+
+          def evidence_from_source(book, location, kind, text):
+              if not text:
+                  return []
+              found = []
+              for pid, pat in NORMALIZATION_PATTERNS:
+                  if pat.search(text):
+                      found.append({'workbook': book, 'location': location, 'kind': kind, 'pattern': pid, 'text': text[:2000]})
+              if kind == 'formula' and FORMULA_PI.search(text):
+                  found.append({'workbook': book, 'location': location, 'kind': kind, 'pattern': 'formula_pi', 'text': text[:2000]})
+              return found
+
+          def iter_xlsx(container_bytes, prefix='outer', depth=0):
+              if depth > 2:
+                  return
+              try:
+                  zf = zipfile.ZipFile(io.BytesIO(container_bytes))
+              except Exception:
+                  return
+              with zf:
+                  for info in zf.infolist():
+                      if info.is_dir():
+                          continue
+                      name = info.filename
+                      label = f'{prefix}!/{name}' if prefix else name
+                      lower = name.lower()
+                      data = zf.read(info)
+                      if lower.endswith('.xlsx'):
+                          yield label, data
+                      elif lower.endswith('.zip') and depth < 2:
+                          yield from iter_xlsx(data, label, depth+1)
+
+          catalogs = []
+          candidates = []
+          norm_evidence = []
+          workbook_count = 0
+
+          for label, data in iter_xlsx(raw, 'supplement', 0):
+              workbook_count += 1
+              wb_sha = hashlib.sha256(data).hexdigest()
+              try:
+                  zf = zipfile.ZipFile(io.BytesIO(data))
+              except Exception as exc:
+                  catalogs.append({'workbook': label, 'sha256': wb_sha, 'parseError': repr(exc)})
+                  continue
+              with zf:
+                  strings = shared_strings(zf)
+                  sheets_meta, defined_names = workbook_sheets_and_names(zf)
+                  sheets = [parse_sheet(zf, sh, strings) for sh in sheets_meta]
+                  comments = parse_comments(zf)
+                  charts = parse_charts(zf)
+                  props = parse_props(zf)
+                  xml_contexts = generic_xml_keyword_contexts(zf)
+
+                  book_catalog = {
+                      'workbook': label,
+                      'sha256': wb_sha,
+                      'bytes': len(data),
+                      'sheetCount': len(sheets),
+                      'sharedStringCount': len(strings),
+                      'sheets': [],
+                      'definedNames': defined_names,
+                      'comments': comments,
+                      'charts': charts,
+                      'properties': props,
+                      'xmlNormalizationContexts': xml_contexts,
+                  }
+
+                  for dn in defined_names:
+                      norm_evidence.extend(evidence_from_source(label, f"definedName:{dn.get('name')}", 'defined_name', dn.get('formulaOrValue') or ''))
+                  for c in comments:
+                      norm_evidence.extend(evidence_from_source(label, f"{c.get('path')}:{c.get('cell')}", 'comment', c.get('text') or ''))
+                  for ch in charts:
+                      for i, text in enumerate(ch.get('texts', [])):
+                          norm_evidence.extend(evidence_from_source(label, f"{ch['path']}:text[{i}]", 'chart_text', text))
+                      for i, form in enumerate(ch.get('formulas', [])):
+                          norm_evidence.extend(evidence_from_source(label, f"{ch['path']}:formula[{i}]", 'formula', form))
+                  for prop in props:
+                      for v in prop.get('values', []):
+                          norm_evidence.extend(evidence_from_source(label, f"{prop['path']}:{v.get('field')}", 'property', v.get('text') or ''))
+                  for xc in xml_contexts:
+                      norm_evidence.append({'workbook': label, 'location': xc['path'], 'kind': 'xml_context', 'pattern': xc['pattern'], 'text': xc['context']})
+
+                  for sh in sheets:
+                      canonical_texts = {canon(x['text']) for x in sh['textCells'] if x.get('text')}
+                      matched = [human for human, token in REQUIRED_HEADERS.items() if token in canonical_texts]
+                      locator_matches = []
+                      for nv in sh['_numeric']:
+                          try:
+                              d = Decimal(nv['lexical'])
+                          except (InvalidOperation, ValueError):
+                              continue
+                          for target in LOCATOR_DECIMALS:
+                              if d == target:
+                                  locator_matches.append({'cell': nv['cell'], 'lexical': nv['lexical'], 'publishedLocator': str(target)})
+                      # de-duplicate same cell/target
+                      uniq = []
+                      seen = set()
+                      for m in locator_matches:
+                          key = (m['cell'], m['publishedLocator'])
+                          if key not in seen:
+                              seen.add(key); uniq.append(m)
+                      locator_matches = uniq
+                      candidate = {
+                          'workbook': label,
+                          'workbookSha256': wb_sha,
+                          'sheet': sh['name'],
+                          'sheetState': sh['state'],
+                          'headerMatches': matched,
+                          'headerMatchCount': len(matched),
+                          'locatorMatches': locator_matches,
+                          'locatorMatchCount': len({m['publishedLocator'] for m in locator_matches}),
+                          'locatorValuesAreNormalizationEvidence': False,
+                          'score': len(matched)*100 + len({m['publishedLocator'] for m in locator_matches}),
+                      }
+                      if len(matched) >= 6 or locator_matches:
+                          candidates.append(candidate)
+
+                      for tc in sh['textCells']:
+                          norm_evidence.extend(evidence_from_source(label, f"{sh['name']}!{tc['cell']}", 'cell_text', tc['text']))
+                      for fc in sh['formulas']:
+                          norm_evidence.extend(evidence_from_source(label, f"{sh['name']}!{fc['cell']}", 'formula', fc['formula']))
+
+                      public_sh = dict(sh)
+                      public_sh.pop('_numeric', None)
+                      book_catalog['sheets'].append(public_sh)
+                  catalogs.append(book_catalog)
+
+          candidates.sort(key=lambda x: (-x['score'], x['workbook'], x['sheet'] or ''))
+          strong = [c for c in candidates if c['headerMatchCount'] == len(REQUIRED_HEADERS) and c['locatorMatchCount'] == len(LOCATOR_DECIMALS)]
+          if len(strong) == 1:
+              table9_status = 'TABLE9A_WORKBOOK_IDENTIFIED_LOCATOR_ONLY'
+              table9_identity = {'workbook': strong[0]['workbook'], 'sheet': strong[0]['sheet'], 'workbookSha256': strong[0]['workbookSha256']}
+          elif len(strong) > 1:
+              table9_status = 'TABLE9A_MULTIPLE_STRONG_CANDIDATES_FAIL_CLOSED'
+              table9_identity = None
+          else:
+              table9_status = 'TABLE9A_NOT_UNIQUELY_IDENTIFIED_FAIL_CLOSED'
+              table9_identity = None
+
+          # de-duplicate normalization evidence deterministically
+          dedup = []
+          seen = set()
+          for e in norm_evidence:
+              key = (e.get('workbook'), e.get('location'), e.get('kind'), e.get('pattern'), e.get('text'))
+              if key in seen:
+                  continue
+              seen.add(key)
+              dedup.append(e)
+              if len(dedup) >= 1500:
+                  break
+          norm_evidence = dedup
+
+          normalization_status = 'EXPLICIT_AUTHOR_SIDE_CANDIDATES_REQUIRE_REVIEW_FAIL_CLOSED' if norm_evidence else 'NO_EXPLICIT_NORMALIZATION_EVIDENCE_FOUND_FAIL_CLOSED'
+
+          Path('evidence/semantic_catalog.json').write_text(json.dumps(catalogs, indent=2, ensure_ascii=False), encoding='utf-8')
+          Path('evidence/table9a_candidates.json').write_text(json.dumps({
+              'status': table9_status,
+              'identified': table9_identity,
+              'headerSignature': list(REQUIRED_HEADERS.keys()),
+              'locatorOnlyPublishedValues': [str(x) for x in LOCATOR_DECIMALS],
+              'locatorValuesAreNormalizationEvidence': False,
+              'candidates': candidates[:120],
+          }, indent=2, ensure_ascii=False), encoding='utf-8')
+          Path('evidence/normalization_evidence.json').write_text(json.dumps({
+              'status': normalization_status,
+              'automaticResolutionForbidden': True,
+              'table9aIdentity': table9_identity,
+              'evidenceCandidates': norm_evidence,
+          }, indent=2, ensure_ascii=False), encoding='utf-8')
+          summary = {
+              'schema': 'deep-twilight-korkin-supplement-semantic-v36-result',
+              'sourceArchiveSha256': EXPECTED_SHA,
+              'sourceArchiveBytes': EXPECTED_BYTES,
+              'xlsxWorkbookCount': workbook_count,
+              'table9aStatus': table9_status,
+              'table9aIdentity': table9_identity,
+              'normalizationStatus': normalization_status,
+              'normalizationCandidateCount': len(norm_evidence),
+              'normalizationResolved': False,
+              'solverExecuted': False,
+              'scientificExecution': False,
+              'protectedResultOpened': False,
+              'rawSupplementRepublished': False,
+              'locatorValuesUsedOnlyForIdentification': True,
+              'nextAction': 'Review explicit author-side text/formula/metadata candidates. Resolve normalization only if one unambiguously fixes Table 9(a) multiplicative convention; otherwise remain fail-closed.'
+          }
+          Path('evidence/summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          rm -f evidence/source.zip
+
+      - name: Prove raw publication files are excluded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e evidence/source.zip
+          test -f evidence/source_archive_sha256.txt
+          test -f evidence/semantic_catalog.json
+          test -f evidence/table9a_candidates.json
+          test -f evidence/normalization_evidence.json
+          test -f evidence/summary.json
+          if find evidence -type f \( -iname '*.xlsx' -o -iname '*.zip' \) | grep -q .; then
+            echo 'Raw publication archive/workbook unexpectedly present in evidence output' >&2
+            exit 1
+          fi
+
+      - name: Upload bounded semantic evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-korkin-supplement-semantic-v36
+          path: |
+            evidence/source_archive_sha256.txt
+            evidence/semantic_catalog.json
+            evidence/table9a_candidates.json
+            evidence/normalization_evidence.json
+            evidence/summary.json
+          if-no-files-found: error
+          retention-days: 90

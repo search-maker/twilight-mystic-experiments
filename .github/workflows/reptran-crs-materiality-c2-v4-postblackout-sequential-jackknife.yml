@@ -1,0 +1,630 @@
+name: REPTRAN CRS materiality C2 v4 post-blackout sequential jackknife
+
+on:
+  push:
+    branches:
+      - review/reptran-crs-materiality-c2-v4-postblackout-sequential-jackknife
+
+permissions:
+  contents: read
+  issues: read
+  actions: read
+
+concurrency:
+  group: reptran-crs-materiality-c2-v4-postblackout-sequential-jackknife
+  cancel-in-progress: false
+
+env:
+  C2V4_BASE_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+  C2V4_HANDOFF_COMMENT: "5555889152"
+  C2V4_EXPECTED_ISSUE60_COMMENTS: "1030"
+  C2V4_SEED_SALT: reptran-c2-v4-postblackout-sequential-jackknife-20260905
+  C2V4_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+
+jobs:
+  freeze:
+    name: Freeze exact post-blackout contract and prove one-use boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact fresh successor head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Fail-closed governance and globally fresh seed preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')" = "1"
+          test "$(git rev-parse HEAD^)" = "$C2V4_BASE_MAIN"
+          REPO_API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json")
+
+          main_sha="$(curl -fsS "${auth[@]}" "$REPO_API/git/ref/heads/main" | jq -r '.object.sha')"
+          test "$main_sha" = "$C2V4_BASE_MAIN"
+
+          issue_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60")"
+          test "$(jq -r '.comments' <<<"$issue_json")" = "$C2V4_EXPECTED_ISSUE60_COMMENTS"
+          last_json="$(curl -fsS "${auth[@]}" "$REPO_API/issues/60/comments?per_page=1&page=${C2V4_EXPECTED_ISSUE60_COMMENTS}")"
+          test "$(jq -r '.[0].id' <<<"$last_json")" = "$C2V4_HANDOFF_COMMENT"
+          last_body="$(jq -r '.[0].body' <<<"$last_json")"
+          grep -Fq 'FRESH_POST_BLACKOUT_PRE_EXECUTION_CONTRACT / HANDOFF_TO_ATMOSPHERE_ONLY' <<<"$last_body"
+          grep -Fq 'CRS<->REPTRAN=V1_BLOCKER_PENDING_QUANTIFICATION' <<<"$last_body"
+          grep -Fq 'Do not repurpose the empty NON_AUTHORIZING/UNUSED' <<<"$last_body"
+
+          runs_json="$(curl -fsS "${auth[@]}" "$REPO_API/actions/runs?event=workflow_dispatch&per_page=100")"
+          test "$(jq -r '.total_count' <<<"$runs_json")" = "57"
+          test "$(jq -r '[.workflow_runs[] | select(.path==".github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml" or .path==".github/workflows/avps-v2-postconsumption-recovery4-science.yml")] | length' <<<"$runs_json")" = "0"
+
+          set +e
+          ref_status="$(curl -sS -o /tmp/ordinal45-ref.json -w '%{http_code}' "${auth[@]}" "$REPO_API/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45")"
+          set -e
+          test "$ref_status" = "404"
+
+          mkdir -p c2v4/control
+          python - <<'PY'
+          import hashlib, json, os
+          gids=['train-0054','train-0062','train-0064','train-0066']
+          salt=os.environ['C2V4_SEED_SALT']
+          m={}
+          flat=[]
+          for gid in gids:
+              m[gid]={}
+              for block in range(1,21):
+                  h=hashlib.sha256(f'{salt}|{gid}|{block}'.encode()).digest()
+                  seed=int.from_bytes(h[:4],'big') % 2147483646 + 1
+                  m[gid][str(block)]=seed
+                  flat.append(seed)
+          if len(flat)!=80 or len(set(flat))!=80:
+              raise SystemExit('candidate seed generator is not one-to-one over frozen block universe')
+          forbidden={926090451,926090452,926090453,911705831,911705832,911705833}
+          if forbidden.intersection(flat):
+              raise SystemExit('candidate seed collides with explicit C2v1/C2v2 seed set')
+          with open('c2v4/control/seed_manifest.json','w') as f:
+              json.dump({'salt':salt,'algorithm':'sha256-prefix32-mod-2147483646-plus1','seeds':m},f,indent=2,sort_keys=True)
+              f.write('\n')
+          with open('/tmp/c2v4-seeds.txt','w') as f:
+              f.write('\n'.join(map(str,flat))+'\n')
+          PY
+
+          : > /tmp/issue60-bodies.txt
+          pages=$(( (C2V4_EXPECTED_ISSUE60_COMMENTS + 99) / 100 ))
+          for page in $(seq 1 "$pages"); do
+            curl -fsS "${auth[@]}" "$REPO_API/issues/60/comments?per_page=100&page=${page}" | jq -r '.[].body // ""' >> /tmp/issue60-bodies.txt
+          done
+          while read -r seed; do
+            if grep -Fq "$seed" /tmp/issue60-bodies.txt; then
+              echo "seed collision in Issue #60 ledger: $seed" >&2
+              exit 1
+            fi
+          done < /tmp/c2v4-seeds.txt
+
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*' --depth=1
+          seed_re="$(paste -sd'|' /tmp/c2v4-seeds.txt)"
+          while read -r tip; do
+            if git grep -n -E "$seed_re" "$tip" -- . >/tmp/seed-hit.txt 2>/dev/null; then
+              echo "seed collision in live repository branch tip $tip" >&2
+              cat /tmp/seed-hit.txt >&2
+              exit 1
+            fi
+          done < <(git for-each-ref refs/remotes/origin --format='%(objectname)' | sort -u)
+
+      - name: Set up exact locked libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v4
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+      - name: Freeze protocol, runtime identity, runner, and analyzer before results
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          actual="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$actual" = "$C2V4_UVSPEC_SHA256"
+          printf '%s\n' "$actual" > c2v4/control/uvspec_sha256.txt
+          micromamba list -n reptran-crs-c2-v4 rubin-libradtran > c2v4/control/package_identity.txt
+
+          python - <<'PY'
+          import hashlib, json, math, os
+          from pathlib import Path
+          root=Path.cwd()
+          contract_path=root/'review/tier2-core-campaign-contract-v1/tier2-core-campaign-contract-v1.json'
+          contract=json.loads(contract_path.read_text())
+          by_id={g['geometryId']:g for g in contract['geometryManifest']}
+          chosen=['train-0054','train-0062','train-0064','train-0066']
+          expected={
+            'train-0054': {'sunDepressionDeg':8.75,'targetAltitudeDeg':6.851852,'relativeAzimuthDeg':146.88,'observerElevationM':1793.002915,'aod550':0.379752},
+            'train-0062': {'sunDepressionDeg':9.75,'targetAltitudeDeg':73.518519,'relativeAzimuthDeg':89.28,'observerElevationM':2201.166181,'aod550':0.28719},
+            'train-0064': {'sunDepressionDeg':2.125,'targetAltitudeDeg':34.62963,'relativeAzimuthDeg':161.28,'observerElevationM':466.472303,'aod550':0.350826},
+            'train-0066': {'sunDepressionDeg':6.125,'targetAltitudeDeg':17.962963,'relativeAzimuthDeg':60.48,'observerElevationM':1180.758017,'aod550':0.067355},
+          }
+          for gid in chosen:
+              g=by_id.get(gid)
+              if g is None or g.get('role')!='surrogate-training' or g.get('executionStage')!='TRAINING_ACQUISITION':
+                  raise SystemExit(f'non-training or missing geometry: {gid}')
+              for k,v in expected[gid].items():
+                  if not math.isclose(float(g[k]),float(v),rel_tol=0,abs_tol=1e-12):
+                      raise SystemExit(f'geometry drift {gid} {k}: {g[k]} != {v}')
+          seed_manifest=json.loads((root/'c2v4/control/seed_manifest.json').read_text())
+          protocol={
+            'schemaVersion':4,
+            'protocolId':'reptran-crs-materiality-c2-v4-postblackout-sequential-jackknife',
+            'frozenBeforeAnySuccessorSolverResult':True,
+            'physicsCompletenessHandoffComment':5555889152,
+            'blackoutRecoveryComment':5555854275,
+            'baseMain':os.environ['C2V4_BASE_MAIN'],
+            'sourceGeometryContract':{'path':str(contract_path.relative_to(root)),'sha256':hashlib.sha256(contract_path.read_bytes()).hexdigest()},
+            'selectedGeometryIds':chosen,
+            'geometries':expected,
+            'primaryChannels':['photopicLuminanceCdM2','scotopicLuminanceScotCdM2','johnsonVEffectiveRadiance_mW_m2_nm_sr'],
+            'molecularArms':['crs','reptran'],
+            'onlyIntendedPhysicalArmDifference':'mol_abs_param crs versus default mol_abs_param reptran',
+            'numericalMethod':'MYSTIC spherical 1D backward ALIS, mc_vroom off, mc_spectral_is 550.0',
+            'runtimePackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':os.environ['C2V4_UVSPEC_SHA256'],
+            'wavelengthDomainNm':[380.0,780.0],
+            'photonHistoriesPerArmCaseBlock':1000000,
+            'checkpointsBlocks':[3,6,12,20],
+            'hardCeilingBlocks':20,
+            'hardCeilingHistoriesPerArmCase':20000000,
+            'pairedCommonRandomNumberWithinBlock':True,
+            'independenceAcrossBlocks':True,
+            'seedManifest':seed_manifest,
+            'priorEvidenceNotPooled':{
+              'c2v1':{'head':'b17a85d208c4a58c0e8bb62a7971cfaf12bbbda3','seeds':[926090451,926090452,926090453]},
+              'c2v2':{'head':'3402efc025400e29ddd456cbf6059905aaf8c11b','run':33925480753,'artifact':9956643539,'artifactDigest':'sha256:615e164fb9e5268c27a0db4495c9a20d045fbcede89b640e238eb761c79e5745','seeds':[911705831,911705832,911705833]},
+              'emptyForbiddenSuccessorRef':'review/reptran-crs-materiality-c2-v3-sequential-jackknife'
+            },
+            'elevatedSiteSemantics':'validated apply_ground_site_atm_z_grid with detector at local zout 0.000000',
+            'elevationHelperPath':'experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py',
+            'forbiddenElevationMechanisms':['altitude','mc_elevation_file'],
+            'atmosphere':'AFGLUS exact installed runtime file',
+            'solarFlux':'atlas_plus_modtran exact installed runtime file',
+            'albedo':0.15,
+            'aerosol':'aerosol_default plus aerosol_set_tau_at_wvl 550 to frozen geometry AOD550',
+            'checkpointEstimand':{
+              'Rbar':'arithmetic mean of REPTRAN integrated-channel block radiances',
+              'Cbar':'arithmetic mean of CRS integrated-channel block radiances',
+              'signedRelativeEffect':'Rbar/Cbar - 1',
+              'magnitudeContrast':'-2.5*log10(Rbar/Cbar)'
+            },
+            'mcUncertainty':'paired delete-one-block jackknife SE of magnitudeContrast',
+            'exactZeroSemantics':'preserve exact zeros; no epsilon/censor/drop/substitution; unresolved only for nonpositive/nonfinite pooled or required leave-one-out arm means',
+            'materialityThresholdMag':0.0100,
+            'decisivelyBelowRule':'abs(D)+SE_JK < 0.0100',
+            'decisivelyAboveRule':'abs(D)-SE_JK > 0.0100',
+            'earlyStopRules':['ANY required cell DECISIVELY_ABOVE','ALL required cells DECISIVELY_BELOW'],
+            'numericalUnresolvedNeverAloneStopsEarly':True,
+            'postResultBudgetOrStoppingAlterationAuthorized':False,
+            'physicsCompletenessOwnsFinalV1Classification':True,
+            'frozenV3ModelModified':False,
+            'protectedHoldoutOpened':False,
+            'taylorOrJerusalemUsed':False,
+            'publisherInvocationAuthorized':False,
+            'publisherInvoked':False,
+            'writeQuietEntered':False,
+            'dispatchCreated':False,
+            'consumedMarkerCreated':False,
+            'workflowDispatchPerformed':False,
+            'scientificProtectedExecutionPerformed':False,
+            'resultOpeningAuthorizedForProtectedData':False,
+            'levelBAdmissionAuthorized':False,
+            'productionAuthorized':False,
+            'newMappingAuthorized':False
+          }
+          (root/'c2v4/control/protocol.json').write_text(json.dumps(protocol,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+          cat > c2v4/control/runner.py <<'PY'
+          import argparse, hashlib, importlib.util, json, math, os, shutil, subprocess, time
+          from pathlib import Path
+
+          ap=argparse.ArgumentParser(); ap.add_argument('--geometry',required=True); ap.add_argument('--block',required=True,type=int)
+          a=ap.parse_args(); root=Path.cwd(); ctl=root/'c2v4/control'; p=json.loads((ctl/'protocol.json').read_text())
+          gid=a.geometry; block=a.block
+          if gid not in p['selectedGeometryIds'] or not (1 <= block <= 20): raise SystemExit('out-of-contract geometry/block')
+          g=p['geometries'][gid]; seed=int(p['seedManifest']['seeds'][gid][str(block)])
+          uvspec=shutil.which('uvspec');
+          if not uvspec: raise SystemExit('uvspec not found')
+          if hashlib.sha256(Path(uvspec).read_bytes()).hexdigest()!=p['uvspecSha256']: raise SystemExit('uvspec identity drift')
+          prefix=Path(uvspec).resolve().parent.parent; data=prefix/'share/libRadtran/data'
+          if not (data/'atmmod/afglus.dat').is_file(): raise SystemExit('AFGLUS missing')
+          helper=root/p['elevationHelperPath']; spec=importlib.util.spec_from_file_location('c2v4_elev',helper)
+          if spec is None or spec.loader is None: raise SystemExit('elevation helper unavailable')
+          elev=importlib.util.module_from_spec(spec); spec.loader.exec_module(elev)
+          dspec=importlib.util.spec_from_file_location('derived',root/'experiments/aerosol-family-challenge-v2/derived_channels.py')
+          if dspec is None or dspec.loader is None: raise SystemExit('derived channels unavailable')
+          derived=importlib.util.module_from_spec(dspec); dspec.loader.exec_module(derived)
+          out=root/'c2v4/block'; inputs=out/'inputs'; raw=out/'raw'; work=out/'work'; inputs.mkdir(parents=True,exist_ok=True); raw.mkdir(parents=True,exist_ok=True); work.mkdir(parents=True,exist_ok=True)
+          rendered={}; records={}
+          for arm in p['molecularArms']:
+              wdir=(work/arm).resolve(); wdir.mkdir(parents=True,exist_ok=True)
+              sza=90.0+float(g['sunDepressionDeg']); umu=-math.sin(math.radians(float(g['targetAltitudeDeg'])))
+              lines=[
+                f'data_files_path {data}',f'atmosphere_file {data}/atmmod/afglus.dat',f'source solar {data}/solar_flux/atlas_plus_modtran',
+                f'mol_abs_param {arm}','wavelength 380 780',f'sza {sza:.6f}','phi0 0.000000','rte_solver mystic','mc_spherical 1D',
+                f'mc_photons {p["photonHistoriesPerArmCaseBlock"]}','mc_vroom off','mc_std',f'mc_randomseed {seed}',f'mc_basename {wdir}/mc',
+                'mc_spectral_is 550.0',f'albedo {p["albedo"]:.6f}','aerosol_default',f'aerosol_set_tau_at_wvl 550 {float(g["aod550"]):.6f}',
+                f'zout {float(g["observerElevationM"])/1000.0:.6f}',f'umu {umu:.8f}',f'phi {float(g["relativeAzimuthDeg"]):.6f}','quiet']
+              base='\n'.join(lines)+'\n'; corrected,site_km,grid=elev.apply_ground_site_atm_z_grid(base,float(g['observerElevationM']))
+              rows=corrected.splitlines()
+              if rows.count('zout 0.000000')!=1 or len([x for x in rows if x.startswith('atm_z_grid ')])!=1: raise SystemExit('local-ground rendering failure')
+              if any(x.startswith('altitude ') or x.startswith('mc_elevation_file ') for x in rows): raise SystemExit('forbidden elevation mechanism')
+              expected_site=float(g['observerElevationM'])/1000.0
+              if not math.isclose(site_km,expected_site,rel_tol=0,abs_tol=1e-12) or not grid or not math.isclose(grid[0],expected_site,rel_tol=0,abs_tol=1e-12): raise SystemExit('atmosphere grid bottom mismatch')
+              rendered[arm]=corrected; inp=inputs/f'{arm}.inp'; inp.write_text(corrected)
+          crs=rendered['crs'].splitlines(); rep=rendered['reptran'].splitlines(); diffs=[(x,y) for x,y in zip(crs,rep) if x!=y]
+          if len(crs)!=len(rep) or diffs != [('mol_abs_param crs','mol_abs_param reptran')]: raise SystemExit(f'arm structural difference drift: {diffs}')
+
+          def parse(path):
+              wl=[]; val=[]
+              for line in path.read_text(errors='strict').splitlines():
+                  q=line.split()
+                  if len(q)<2: continue
+                  try: w=float(q[0]); v=float(q[-1])
+                  except ValueError: continue
+                  if not (math.isfinite(w) and math.isfinite(v) and v>=0): raise ValueError(f'invalid spectrum member {path}')
+                  wl.append(w); val.append(v)
+              derived.validate_raw_grid(wl,val); return wl,val
+
+          for arm in p['molecularArms']:
+              inp=inputs/f'{arm}.inp'; rdir=raw/arm; rdir.mkdir(parents=True,exist_ok=True); wdir=work/arm
+              t0=time.monotonic_ns()
+              with (rdir/'solver.stdout').open('wb') as so, (rdir/'solver.stderr').open('wb') as se:
+                  cp=subprocess.run([uvspec],stdin=inp.open('rb'),stdout=so,stderr=se,timeout=1800)
+              elapsed=(time.monotonic_ns()-t0)//1_000_000; (rdir/'exit_code.txt').write_text(f'{cp.returncode}\n'); (rdir/'elapsed_ms.txt').write_text(f'{elapsed}\n')
+              if cp.returncode!=0: raise SystemExit(f'uvspec failed {gid} block={block} arm={arm} rc={cp.returncode}')
+              sp=wdir/'mc.rad.spc'; std=wdir/'mc.rad.std.spc'
+              if not sp.is_file() or not std.is_file(): raise SystemExit('missing MYSTIC spectra')
+              shutil.copy2(sp,rdir/'mc.rad.spc'); shutil.copy2(std,rdir/'mc.rad.std.spc')
+              wl,rad=parse(rdir/'mc.rad.spc'); swl,srad=parse(rdir/'mc.rad.std.spc')
+              if wl!=swl: raise SystemExit('radiance/std wavelength grid mismatch')
+              vals=derived.derive_channels(wl,rad); chrec={}
+              for ch in p['primaryChannels']:
+                  v=float(vals[ch]); chrec[ch]={'radiance':v if math.isfinite(v) else None,'exactZero':v==0.0,'nonfinite':not math.isfinite(v)}
+              records[arm]={
+                'channels':chrec,'elapsedMs':int(elapsed),'inputSha256':hashlib.sha256(inp.read_bytes()).hexdigest(),
+                'rawSpectrumSha256':hashlib.sha256((rdir/'mc.rad.spc').read_bytes()).hexdigest(),
+                'rawStdSpectrumSha256':hashlib.sha256((rdir/'mc.rad.std.spc').read_bytes()).hexdigest()
+              }
+          rec={'schemaVersion':4,'geometryId':gid,'geometry':g,'block':block,'seed':seed,'historiesPerArm':p['photonHistoriesPerArmCaseBlock'],
+               'pairInputsDifferOnlyByMolAbsParam':True,'localZoutKm':0.0,'atmosphereGridBottomKm':float(g['observerElevationM'])/1000.0,'arms':records}
+          (out/'block.json').write_text(json.dumps(rec,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          PY
+
+          cat > c2v4/control/analyze.py <<'PY'
+          import argparse, json, math
+          from pathlib import Path
+          ap=argparse.ArgumentParser(); ap.add_argument('--checkpoint',required=True,type=int); ap.add_argument('--blocks-root',default='c2v4/downloads'); ap.add_argument('--out-dir',default='c2v4/checkpoint')
+          a=ap.parse_args(); root=Path.cwd(); p=json.loads((root/'c2v4/control/protocol.json').read_text()); n=a.checkpoint
+          if n not in p['checkpointsBlocks']: raise SystemExit('non-frozen checkpoint')
+          files=list((root/a.blocks_root).glob('**/block.json')); recs=[json.loads(x.read_text()) for x in files]
+          expected={(g,b) for g in p['selectedGeometryIds'] for b in range(1,n+1)}; got={(r['geometryId'],int(r['block'])) for r in recs if int(r['block'])<=n}
+          if got!=expected: raise SystemExit(f'checkpoint block universe mismatch missing={sorted(expected-got)} extra={sorted(got-expected)}')
+          selected={(r['geometryId'],int(r['block'])):r for r in recs if int(r['block'])<=n}; T=float(p['materialityThresholdMag']); cells={}
+          for gid in p['selectedGeometryIds']:
+            cells[gid]={}
+            for ch in p['primaryChannels']:
+              Rs=[]; Cs=[]; block_diag=[]
+              for b in range(1,n+1):
+                r=selected[(gid,b)]; rv=r['arms']['reptran']['channels'][ch]['radiance']; cv=r['arms']['crs']['channels'][ch]['radiance']
+                Rs.append(rv); Cs.append(cv); block_diag.append({'block':b,'seed':r['seed'],'reptran':rv,'crs':cv,'exactZeroReptran':r['arms']['reptran']['channels'][ch]['exactZero'],'exactZeroCrs':r['arms']['crs']['channels'][ch]['exactZero'],'nonfiniteReptran':r['arms']['reptran']['channels'][ch]['nonfinite'],'nonfiniteCrs':r['arms']['crs']['channels'][ch]['nonfinite']})
+              finite=all(x is not None and math.isfinite(float(x)) for x in Rs+Cs)
+              Rbar=sum(float(x) for x in Rs)/n if finite else None; Cbar=sum(float(x) for x in Cs)/n if finite else None
+              unresolved=not finite or Rbar is None or Cbar is None or Rbar<=0 or Cbar<=0
+              loo=[]
+              if not unresolved:
+                for i in range(n):
+                  rr=(sum(float(x) for x in Rs)-float(Rs[i]))/(n-1); cc=(sum(float(x) for x in Cs)-float(Cs[i]))/(n-1)
+                  if not (math.isfinite(rr) and math.isfinite(cc) and rr>0 and cc>0): unresolved=True; loo=[]; break
+                  loo.append(-2.5*math.log10(rr/cc))
+              if unresolved:
+                cell={'classification':'NUMERICALLY_UNRESOLVED','Rbar':Rbar,'Cbar':Cbar,'ratioReptranOverCrs':None,'signedRelativeEffect':None,'magnitudeContrastMag':None,'jackknifeSeMag':None,'blockDiagnostics':block_diag}
+              else:
+                ratio=Rbar/Cbar; D=-2.5*math.log10(ratio); meanloo=sum(loo)/n; se=math.sqrt((n-1)/n*sum((x-meanloo)**2 for x in loo))
+                if abs(D)+se < T: cls='DECISIVELY_BELOW'
+                elif abs(D)-se > T: cls='DECISIVELY_ABOVE'
+                else: cls='UNRESOLVED_MC_PRECISION'
+                cell={'classification':cls,'Rbar':Rbar,'Cbar':Cbar,'ratioReptranOverCrs':ratio,'signedRelativeEffect':ratio-1.0,'magnitudeContrastMag':D,'jackknifeSeMag':se,'deleteOneMagnitudeContrastsMag':loo,'blockDiagnostics':block_diag}
+              if n==20 and cell['classification'] in ('NUMERICALLY_UNRESOLVED','UNRESOLVED_MC_PRECISION'): cell['maxBudgetDisposition']='UNRESOLVED_AT_MAX_BUDGET'
+              cells[gid][ch]=cell
+          classes=[cells[g][ch]['classification'] for g in p['selectedGeometryIds'] for ch in p['primaryChannels']]
+          if any(x=='DECISIVELY_ABOVE' for x in classes): cont=False; reason='STOP_ANY_REQUIRED_CELL_DECISIVELY_ABOVE'
+          elif all(x=='DECISIVELY_BELOW' for x in classes): cont=False; reason='STOP_ALL_REQUIRED_CELLS_DECISIVELY_BELOW'
+          elif n==20: cont=False; reason='STOP_MAX_BUDGET_UNRESOLVED_OR_NONDECISIVE'
+          else: cont=True; reason='CONTINUE_TO_NEXT_FROZEN_CHECKPOINT'
+          out={'schemaVersion':4,'checkpointBlocks':n,'historiesPerArmCase':n*p['photonHistoriesPerArmCaseBlock'],'cells':cells,'continue':cont,'mechanicalStopReason':reason,'finalPhysicsCompletenessClassificationPerformed':False}
+          od=root/a.out_dir; od.mkdir(parents=True,exist_ok=True); (od/f'checkpoint-{n:02d}.json').write_text(json.dumps(out,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          (od/'outputs.txt').write_text(f'continue={str(cont).lower()}\nstop_reason={reason}\ncheckpoint={n}\n')
+          PY
+
+          sha256sum c2v4/control/protocol.json c2v4/control/seed_manifest.json c2v4/control/runner.py c2v4/control/analyze.py > c2v4/control/control_sha256.txt
+
+      - name: Upload immutable frozen control package
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-control
+          path: c2v4/control
+          if-no-files-found: error
+          retention-days: 90
+
+  blocks_1_3:
+    name: Fresh paired block ${{ matrix.geometry }} b${{ matrix.block }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [train-0054, train-0062, train-0064, train-0066]
+        block: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: c2v4-control
+          path: c2v4/control
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v4
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      - shell: bash -el {0}
+        run: python c2v4/control/runner.py --geometry '${{ matrix.geometry }}' --block '${{ matrix.block }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-block-${{ matrix.geometry }}-b${{ matrix.block }}
+          path: c2v4/block
+          if-no-files-found: error
+          retention-days: 90
+
+  checkpoint_3:
+    needs: blocks_1_3
+    runs-on: ubuntu-24.04
+    outputs:
+      continue: ${{ steps.analyze.outputs.continue }}
+      stop_reason: ${{ steps.analyze.outputs.stop_reason }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: c2v4-control
+          path: c2v4/control
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c2v4-block-*
+          path: c2v4/downloads
+      - id: analyze
+        shell: bash
+        run: |
+          python c2v4/control/analyze.py --checkpoint 3
+          cat c2v4/checkpoint/outputs.txt >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-checkpoint-03
+          path: c2v4/checkpoint/checkpoint-03.json
+          retention-days: 90
+
+  blocks_4_6:
+    name: Fresh paired block ${{ matrix.geometry }} b${{ matrix.block }}
+    needs: checkpoint_3
+    if: needs.checkpoint_3.outputs.continue == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [train-0054, train-0062, train-0064, train-0066]
+        block: [4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v4
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      - shell: bash -el {0}
+        run: python c2v4/control/runner.py --geometry '${{ matrix.geometry }}' --block '${{ matrix.block }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-block-${{ matrix.geometry }}-b${{ matrix.block }}
+          path: c2v4/block
+          if-no-files-found: error
+          retention-days: 90
+
+  checkpoint_6:
+    needs: [checkpoint_3, blocks_4_6]
+    if: needs.checkpoint_3.outputs.continue == 'true' && needs.blocks_4_6.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      continue: ${{ steps.analyze.outputs.continue }}
+      stop_reason: ${{ steps.analyze.outputs.stop_reason }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'c2v4-block-*', path: c2v4/downloads}
+      - id: analyze
+        shell: bash
+        run: |
+          python c2v4/control/analyze.py --checkpoint 6
+          cat c2v4/checkpoint/outputs.txt >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with: {name: c2v4-checkpoint-06, path: c2v4/checkpoint/checkpoint-06.json, retention-days: 90}
+
+  blocks_7_12:
+    name: Fresh paired block ${{ matrix.geometry }} b${{ matrix.block }}
+    needs: checkpoint_6
+    if: needs.checkpoint_6.outputs.continue == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [train-0054, train-0062, train-0064, train-0066]
+        block: [7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v4
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      - shell: bash -el {0}
+        run: python c2v4/control/runner.py --geometry '${{ matrix.geometry }}' --block '${{ matrix.block }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-block-${{ matrix.geometry }}-b${{ matrix.block }}
+          path: c2v4/block
+          if-no-files-found: error
+          retention-days: 90
+
+  checkpoint_12:
+    needs: [checkpoint_6, blocks_7_12]
+    if: needs.checkpoint_6.outputs.continue == 'true' && needs.blocks_7_12.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      continue: ${{ steps.analyze.outputs.continue }}
+      stop_reason: ${{ steps.analyze.outputs.stop_reason }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'c2v4-block-*', path: c2v4/downloads}
+      - id: analyze
+        shell: bash
+        run: |
+          python c2v4/control/analyze.py --checkpoint 12
+          cat c2v4/checkpoint/outputs.txt >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with: {name: c2v4-checkpoint-12, path: c2v4/checkpoint/checkpoint-12.json, retention-days: 90}
+
+  blocks_13_20:
+    name: Fresh paired block ${{ matrix.geometry }} b${{ matrix.block }}
+    needs: checkpoint_12
+    if: needs.checkpoint_12.outputs.continue == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [train-0054, train-0062, train-0064, train-0066]
+        block: [13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: reptran-crs-c2-v4
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      - shell: bash -el {0}
+        run: python c2v4/control/runner.py --geometry '${{ matrix.geometry }}' --block '${{ matrix.block }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2v4-block-${{ matrix.geometry }}-b${{ matrix.block }}
+          path: c2v4/block
+          if-no-files-found: error
+          retention-days: 90
+
+  checkpoint_20:
+    needs: [checkpoint_12, blocks_13_20]
+    if: needs.checkpoint_12.outputs.continue == 'true' && needs.blocks_13_20.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      continue: ${{ steps.analyze.outputs.continue }}
+      stop_reason: ${{ steps.analyze.outputs.stop_reason }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'c2v4-block-*', path: c2v4/downloads}
+      - id: analyze
+        shell: bash
+        run: |
+          python c2v4/control/analyze.py --checkpoint 20
+          cat c2v4/checkpoint/outputs.txt >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with: {name: c2v4-checkpoint-20, path: c2v4/checkpoint/checkpoint-20.json, retention-days: 90}
+
+  final_evidence:
+    needs: [checkpoint_3, checkpoint_6, checkpoint_12, checkpoint_20]
+    if: always() && needs.checkpoint_3.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: c2v4-control, path: c2v4/control}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'c2v4-block-*', path: c2v4/downloads}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'c2v4-checkpoint-*', path: c2v4/checkpoints}
+      - name: Bind terminal mechanical evidence without Physics Completeness classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path.cwd(); p=json.loads((root/'c2v4/control/protocol.json').read_text())
+          cps=[]
+          for f in (root/'c2v4/checkpoints').glob('**/checkpoint-*.json'):
+              cps.append(json.loads(f.read_text()))
+          if not cps: raise SystemExit('no checkpoint evidence')
+          cps.sort(key=lambda x:x['checkpointBlocks']); latest=cps[-1]; n=int(latest['checkpointBlocks'])
+          blocks=[]
+          for f in (root/'c2v4/downloads').glob('**/block.json'):
+              r=json.loads(f.read_text())
+              if int(r['block'])<=n: blocks.append(r)
+          keys={(r['geometryId'],int(r['block'])) for r in blocks}
+          expected={(g,b) for g in p['selectedGeometryIds'] for b in range(1,n+1)}
+          if keys!=expected or len(blocks)!=len(expected): raise SystemExit('terminal block evidence cardinality mismatch')
+          total_ms=sum(int(r['arms'][arm]['elapsedMs']) for r in blocks for arm in p['molecularArms'])
+          result={
+            'schemaVersion':4,'resultId':p['protocolId'],'status':'TERMINAL_MECHANICAL_SUCCESSOR_EVIDENCE',
+            'protocol':p,'executedBlocksPerGeometry':n,'historiesPerArmCase':n*p['photonHistoriesPerArmCaseBlock'],
+            'totalConfiguredHistoriesAcrossAllExecutedArmsCases':n*len(p['selectedGeometryIds'])*len(p['molecularArms'])*p['photonHistoriesPerArmCaseBlock'],
+            'summedSolverElapsedMs':total_ms,'checkpoints':cps,'terminalCheckpoint':latest,
+            'mechanicalStopReason':latest['mechanicalStopReason'],'perBlockEvidence':sorted(blocks,key=lambda r:(r['geometryId'],int(r['block']))),
+            'physicsCompletenessFinalV1ClassificationPerformed':False,'postResultBudgetOrStoppingAlterationPerformed':False,
+            'protectedHoldoutOpened':False,'taylorOrJerusalemUsed':False,'publisherInvocationAuthorized':False,'publisherInvoked':False,
+            'writeQuietEntered':False,'dispatchCreated':False,'consumedMarkerCreated':False,'workflowDispatchPerformed':False,
+            'scientificProtectedExecutionPerformed':False,'resultOpeningAuthorizedForProtectedData':False,'levelBAdmissionAuthorized':False,
+            'productionAuthorized':False,'newMappingAuthorized':False
+          }
+          out=root/'c2v4/final'; out.mkdir(parents=True,exist_ok=True); (out/'result.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          hashes=[]
+          for f in sorted((root/'c2v4').glob('**/*.json')):
+              if f==out/'manifest.json': continue
+              hashes.append({'path':str(f.relative_to(root)),'sha256':hashlib.sha256(f.read_bytes()).hexdigest()})
+          (out/'manifest.json').write_text(json.dumps({'files':hashes},indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reptran-crs-materiality-c2-v4-postblackout-sequential-jackknife
+          path: |
+            c2v4/control
+            c2v4/downloads
+            c2v4/checkpoints
+            c2v4/final
+          if-no-files-found: error
+          retention-days: 90

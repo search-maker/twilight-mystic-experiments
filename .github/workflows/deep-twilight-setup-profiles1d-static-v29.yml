@@ -1,0 +1,135 @@
+name: Deep twilight setup_profiles1D static audit v29
+
+on:
+  push:
+    branches: [review/deep-twilight-setup-profiles1d-static-v29]
+    paths: [".github/workflows/deep-twilight-setup-profiles1d-static-v29.yml"]
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  static-audit:
+    if: github.run_attempt == 1 && github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+
+      - name: Freeze result-blind static contract and live fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-setup-profiles1d-static-v29-output
+          mkdir -p "$OUT"
+          cat > "$OUT/PROTOCOL.txt" <<'EOF'
+          V29 exact-pinned-runtime static audit; no MYSTIC execution and no random seed.
+          Motivation: V28 independently re-established exact full-row f_s/ds_s baseline equivalence
+          at exact MYSTIC entry and observed the first f_s row1 word read in
+          setup_profiles1D.constprop.0 at file-relative PC 0x158dcd, then the guarded probe later
+          stopped on a SIGSEGV in generate_photon before ds_s row1 word0 or the uvspec_random
+          breakpoint was observed. V29 does not interpret that failure as physics. It statically
+          records exact machine-code context for setup_profiles1D, its callsite(s), the V28 read PC,
+          sc_HG2_mu, mu_scatter, and relevant symbols/source/debug remnants from the same immutable
+          uvspec binary. This is translation-semantics evidence only. It cannot authorize renderer
+          parity/deep science, change Level-B 2.0-10.5 deg, open protected results, tune
+          Taylor/Jerusalem, revive uniform AOD scaling, or substitute epsilon for exact zero.
+          EOF
+          cat > "$OUT/guard.py" <<'PY'
+          import json,os,re,subprocess
+          repo=os.environ['GITHUB_REPOSITORY']; selfid=int(os.environ['GITHUB_RUN_ID']); expected=os.environ['EXPECTED_MAIN']
+          def api(path): return json.loads(subprocess.check_output(['gh','api',path],text=True))
+          if api(f'repos/{repo}/branches/main')['commit']['sha'] != expected: raise SystemExit('main changed')
+          pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/{repo}/issues/60/comments?per_page=100'],text=True))
+          comments=[c for p in pages for c in p]; opens={}
+          for c in comments:
+              b=str(c.get('body') or '').strip(); cid=int(c['id'])
+              if b.startswith('WRITE_QUIET_BEGIN'): opens[cid]=b
+              elif b.startswith('WRITE_QUIET_END'):
+                  first=b.splitlines()[0]; ids=[]
+                  for k in ('begin','beginComment','begin_comment'):
+                      ids += [int(x) for x in re.findall(rf'\b{k}=(\d+)\b',first)]
+                  if len(set(ids))>1: raise SystemExit('ambiguous WRITE_QUIET_END')
+                  if ids: opens.pop(ids[0],None)
+          if opens: raise SystemExit(f'unmatched WRITE_QUIET {sorted(opens)}')
+          needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          blockers=[]
+          for st in ('in_progress','queued'):
+              for r in api(f'repos/{repo}/actions/runs?status={st}&per_page=100').get('workflow_runs',[]):
+                  if int(r['id'])==selfid: continue
+                  s=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in s for n in needles): blockers.append((st,r['id'],r.get('name'),r.get('head_branch')))
+          if blockers: raise SystemExit(f'actual V1 contention {blockers}')
+          print(json.dumps({'main':expected,'issue60Comments':len(comments),'latestCommentId':comments[-1]['id'] if comments else None,'openWriteQuiet':[],'v1Blockers':[]}))
+          PY
+          python "$OUT/guard.py" | tee "$OUT/preflight-guard.json"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-v29
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1 binutils
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Fresh fence immediately before binary inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python deep-twilight-setup-profiles1d-static-v29-output/guard.py | tee deep-twilight-setup-profiles1d-static-v29-output/preinspect-guard.json
+
+      - name: Inspect exact pinned binary without execution
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-setup-profiles1d-static-v29-output
+          UVSPEC="$(command -v uvspec)"
+          sha256sum "$UVSPEC" | tee "$OUT/uvspec-sha256.txt"
+          test "$(sha256sum "$UVSPEC" | cut -d' ' -f1)" = "$UVSPEC_SHA256"
+          micromamba list --explicit > "$OUT/runtime-package-explicit.txt"
+          file "$UVSPEC" > "$OUT/file.txt"
+          readelf -h "$UVSPEC" > "$OUT/readelf-header.txt"
+          readelf -S "$UVSPEC" > "$OUT/readelf-sections.txt"
+          readelf -sW "$UVSPEC" > "$OUT/readelf-symbols.txt"
+          nm -an "$UVSPEC" > "$OUT/nm-an.txt"
+          grep -E 'setup_profiles1D|mystic$|uvspec_random|sc_HG2_mu|mu_scatter|generate_photon' "$OUT/nm-an.txt" > "$OUT/relevant-symbols.txt" || true
+          objdump -d -Mintel --start-address=0x157cf0 --stop-address=0x15b000 "$UVSPEC" > "$OUT/setup_profiles1D-disasm.txt"
+          objdump -d -Mintel --start-address=0x158c40 --stop-address=0x158f80 "$UVSPEC" > "$OUT/v28-f-read-context-disasm.txt"
+          objdump -d -Mintel --start-address=0x18aeb0 --stop-address=0x190000 "$UVSPEC" > "$OUT/mystic-prefix-disasm.txt"
+          objdump -d -Mintel --start-address=0x169a10 --stop-address=0x16a200 "$UVSPEC" > "$OUT/sc_HG2_mu-disasm.txt"
+          objdump -d -Mintel --start-address=0x16d310 --stop-address=0x16e600 "$UVSPEC" > "$OUT/mu_scatter-disasm.txt"
+          objdump -d -Mintel --start-address=0x175490 --stop-address=0x177800 "$UVSPEC" > "$OUT/generate_photon-disasm.txt"
+          objdump -d -Mintel "$UVSPEC" | grep -E -B8 -A12 'call.*157cf0|call.*169a10|call.*16d310' > "$OUT/relevant-callsites.txt" || true
+          strings -a "$UVSPEC" | grep -E -i 'mystic\.c|setup_profiles1D|delta|HG2|phase function|phase_function' | head -n 2000 > "$OUT/relevant-strings.txt" || true
+          find "$CONDA_PREFIX" -type f \( -iname 'mystic.c' -o -iname 'mystic.h' -o -iname '*mystic*.c' -o -iname '*mystic*.h' \) -print > "$OUT/runtime-source-candidates.txt" || true
+          set +e
+          readelf --debug-dump=info "$UVSPEC" > "$OUT/dwarf-info.txt" 2> "$OUT/dwarf-info.stderr.txt"
+          echo $? > "$OUT/dwarf-exit-code.txt"
+          set -e
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          r=Path('deep-twilight-setup-profiles1d-static-v29-output')
+          txt=(r/'v28-f-read-context-disasm.txt').read_text(errors='replace')
+          line=next((x for x in txt.splitlines() if re.match(r'\s*158dcd:',x)),None)
+          syms=(r/'relevant-symbols.txt').read_text(errors='replace')
+          calls=(r/'relevant-callsites.txt').read_text(errors='replace')
+          d={'schemaVersion':29,'status':'PASS_STATIC_CONTEXT_CAPTURED' if line else 'FAIL_CLOSED_EVENT_PC_NOT_FOUND','uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3','v28ObservedFilePc':'0x158dcd','v28ObservedInstruction':line,'setupProfilesSymbolPresent':'setup_profiles1D.constprop.0' in syms,'scHG2SymbolPresent':'sc_HG2_mu' in syms,'muScatterSymbolPresent':'mu_scatter' in syms,'setupProfilesCallsiteCaptured':'157cf0' in calls,'mysticExecuted':False,'randomSeedUsed':False,'radianceResultProduced':False,'protectedResultOpened':False,'rendererParityAuthorized':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False}
+          (r/'decision-v29.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n'); print(json.dumps(d,sort_keys=True))
+          if d['status']!='PASS_STATIC_CONTEXT_CAPTURED': raise SystemExit(1)
+          PY
+
+      - name: Upload immutable static evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-setup-profiles1d-static-v29
+          path: deep-twilight-setup-profiles1d-static-v29-output/
+          if-no-files-found: error
+          retention-days: 90

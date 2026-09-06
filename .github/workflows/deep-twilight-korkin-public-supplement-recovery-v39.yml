@@ -1,0 +1,302 @@
+name: Deep Twilight Korkin public supplement recovery v39
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-public-supplement-recovery-v39
+    paths:
+      - .github/workflows/deep-twilight-korkin-public-supplement-recovery-v39.yml
+
+permissions:
+  contents: read
+
+jobs:
+  public-provenance-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch public author-side archives without executing their contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/meta
+
+          fetch_optional() {
+            name="$1"
+            url="$2"
+            tmp="out/raw/${name}.part"
+            dst="out/raw/${name}"
+            hdr="out/meta/${name}.headers.txt"
+            met="out/meta/${name}.curl.txt"
+            set +e
+            curl --fail --location --silent --show-error \
+              --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+              --dump-header "$hdr" \
+              --write-out 'effective_url=%{url_effective}\nhttp_code=%{http_code}\nsize_download=%{size_download}\n' \
+              --output "$tmp" "$url" > "$met"
+            rc=$?
+            set -e
+            printf 'curl_exit=%s\nsource_url=%s\n' "$rc" "$url" >> "$met"
+            if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
+              mv "$tmp" "$dst"
+            else
+              rm -f "$tmp"
+            fi
+            return 0
+          }
+
+          # Korkin et al. 2022 public-domain MD-SOAR archived ScienceDirect bundle.
+          fetch_optional \
+            korkin2022_mdsoar_bundle.zip \
+            'https://mdsoar.org/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/download'
+
+          # Direct DSpace REST content route is a result-blind fallback for the same immutable bitstream UUID.
+          if [ ! -s out/raw/korkin2022_mdsoar_bundle.zip ]; then
+            fetch_optional \
+              korkin2022_mdsoar_bundle.zip \
+              'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content'
+          fi
+
+          # Korkin et al. 2020 author dataset: "Tables from the paper in Excel", CC BY 4.0.
+          fetch_optional \
+            korkin2020_mendeley_bundle.zip \
+            'https://data.mendeley.com/public-api/zip/y92b2h27jv/download/1'
+
+          # Preserve public Mendeley file metadata as an independent provenance route.
+          fetch_optional \
+            korkin2020_mendeley_files.json \
+            'https://data.mendeley.com/public-api/datasets/y92b2h27jv/files?folder_id=root&version=1'
+
+          # If the convenience ZIP route failed, use only the public download URL returned by Mendeley's own metadata.
+          if [ ! -s out/raw/korkin2020_mendeley_bundle.zip ] && [ -s out/raw/korkin2020_mendeley_files.json ]; then
+            python - <<'PY' > out/meta/korkin2020_mendeley_metadata_download_url.txt
+          import json
+          from pathlib import Path
+          p = Path('out/raw/korkin2020_mendeley_files.json')
+          try:
+              data = json.loads(p.read_text(encoding='utf-8'))
+          except Exception:
+              data = []
+          urls = []
+          for item in data if isinstance(data, list) else []:
+              details = item.get('content_details') or {}
+              url = details.get('download_url')
+              if isinstance(url, str) and url.startswith('https://'):
+                  urls.append(url)
+          print(urls[0] if len(urls) == 1 else '')
+          PY
+            murl="$(cat out/meta/korkin2020_mendeley_metadata_download_url.txt)"
+            if [ -n "$murl" ]; then
+              fetch_optional korkin2020_mendeley_bundle.zip "$murl"
+            fi
+          fi
+
+          find out/raw -maxdepth 1 -type f -print0 | sort -z | xargs -0 -r sha256sum > out/raw_sha256.txt
+          find out/raw -maxdepth 1 -type f -printf '%f\t%s\n' | sort > out/raw_sizes.tsv
+
+      - name: Inspect archive structure and convention metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import io
+          import json
+          import re
+          import zipfile
+          from pathlib import Path
+
+          ROOT = Path('out')
+          RAW = ROOT / 'raw'
+          MAX_MEMBER = 8_000_000
+          MAX_ARCHIVE_TOTAL = 60_000_000
+          MAX_MEMBERS = 5000
+          KEYWORDS = [
+              'normaliz', 'irradiance', 'solar flux', 'incident flux', 'incoming flux',
+              'radiance', 'stokes', 'mystic', 'mcssa', 'vlidort', 'adams', 'kattawar',
+              'units', 'unitless', 'dimensionless', 'pi', 'π', 'table 9'
+          ]
+          TEXT_EXT = {
+              '.txt', '.csv', '.tsv', '.xml', '.html', '.htm', '.json', '.md', '.js',
+              '.rels', '.vml'
+          }
+          NESTED_EXT = {'.zip', '.xlsx', '.xlsm'}
+
+          def sha256(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def text_variants(data):
+              out = []
+              for enc in ('utf-8', 'latin-1', 'utf-16le'):
+                  try:
+                      text = data.decode(enc, errors='ignore')
+                  except Exception:
+                      continue
+                  if text:
+                      out.append((enc, text))
+              return out
+
+          def snippets(text, keyword, limit=4, radius=180):
+              low = text.lower()
+              key = keyword.lower()
+              ans = []
+              start = 0
+              while len(ans) < limit:
+                  i = low.find(key, start)
+                  if i < 0:
+                      break
+                  a = max(0, i - radius)
+                  b = min(len(text), i + len(keyword) + radius)
+                  s = re.sub(r'\s+', ' ', text[a:b]).strip()
+                  ans.append(s)
+                  start = i + max(1, len(keyword))
+              return ans
+
+          def inspect_bytes(label, data, depth=0):
+              rec = {
+                  'label': label,
+                  'size': len(data),
+                  'sha256': sha256(data),
+                  'depth': depth,
+                  'zip': False,
+                  'members': [],
+                  'keyword_matches': [],
+                  'limits': None,
+              }
+              if zipfile.is_zipfile(io.BytesIO(data)):
+                  rec['zip'] = True
+                  try:
+                      with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                          infos = zf.infolist()
+                          total = sum(i.file_size for i in infos)
+                          rec['member_count'] = len(infos)
+                          rec['total_uncompressed_size'] = total
+                          rec['members'] = [
+                              {
+                                  'name': i.filename,
+                                  'size': i.file_size,
+                                  'compressed_size': i.compress_size,
+                                  'crc32': f'{i.CRC:08x}',
+                              }
+                              for i in infos[:MAX_MEMBERS]
+                          ]
+                          if len(infos) > MAX_MEMBERS or total > MAX_ARCHIVE_TOTAL:
+                              rec['limits'] = 'archive inspection capped before member reads'
+                              return rec
+                          for info in infos:
+                              if info.is_dir() or info.file_size > MAX_MEMBER:
+                                  continue
+                              ext = Path(info.filename).suffix.lower()
+                              if ext not in TEXT_EXT and ext not in NESTED_EXT and ext not in {'.xls'}:
+                                  continue
+                              try:
+                                  payload = zf.read(info)
+                              except Exception as exc:
+                                  rec['keyword_matches'].append({
+                                      'member': info.filename,
+                                      'read_error': type(exc).__name__,
+                                  })
+                                  continue
+                              if ext in NESTED_EXT and depth < 2 and zipfile.is_zipfile(io.BytesIO(payload)):
+                                  rec.setdefault('nested', []).append(
+                                      inspect_bytes(f'{label}!{info.filename}', payload, depth + 1)
+                                  )
+                              for enc, text in text_variants(payload):
+                                  for kw in KEYWORDS:
+                                      ss = snippets(text, kw)
+                                      if ss:
+                                          rec['keyword_matches'].append({
+                                              'member': info.filename,
+                                              'encoding': enc,
+                                              'keyword': kw,
+                                              'snippets': ss,
+                                          })
+                  except Exception as exc:
+                      rec['zip_error'] = f'{type(exc).__name__}: {exc}'
+              else:
+                  for enc, text in text_variants(data):
+                      for kw in KEYWORDS:
+                          ss = snippets(text, kw)
+                          if ss:
+                              rec['keyword_matches'].append({
+                                  'member': label,
+                                  'encoding': enc,
+                                  'keyword': kw,
+                                  'snippets': ss,
+                              })
+              return rec
+
+          sources = []
+          for path in sorted(RAW.glob('*')):
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              sources.append(inspect_bytes(path.name, data))
+
+          # Mechanical classification only. Absence of a keyword never proves absence of a convention.
+          got_2022 = any(x['label'] == 'korkin2022_mdsoar_bundle.zip' and x['size'] > 0 and x['zip'] for x in sources)
+          got_2020 = any(x['label'] == 'korkin2020_mendeley_bundle.zip' and x['size'] > 0 and x['zip'] for x in sources)
+          report = {
+              'classification': (
+                  'PUBLIC_AUTHOR_ARCHIVES_RECOVERED_FOR_RESULT_BLIND_CONVENTION_INSPECTION'
+                  if got_2022 and got_2020 else
+                  'PUBLIC_AUTHOR_ARCHIVE_RECOVERY_PARTIAL_FAIL_CLOSED'
+              ),
+              'korkin2022MdsoarArchiveRecovered': got_2022,
+              'korkin2020MendeleyArchiveRecovered': got_2020,
+              'normalizationBridgeResolved': False,
+              'korkinGateAuthorized': False,
+              'deepScienceAuthorized': False,
+              'rendererExecuted': False,
+              'solverExecuted': False,
+              'photonsTraced': 0,
+              'protectedResultOpened': False,
+              'note': 'Keyword evidence is discovery-only. A scale bridge requires explicit author-side semantics; missing matches are never treated as evidence of absence.',
+              'sources': sources,
+          }
+          (ROOT / 'korkin_public_supplement_recovery_v39.json').write_text(
+              json.dumps(report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
+          )
+          print(json.dumps({
+              'classification': report['classification'],
+              'korkin2022MdsoarArchiveRecovered': got_2022,
+              'korkin2020MendeleyArchiveRecovered': got_2020,
+              'sourceCount': len(sources),
+              'matchCount': sum(len(s.get('keyword_matches', [])) for s in sources),
+          }, indent=2))
+          PY
+
+          sha256sum out/korkin_public_supplement_recovery_v39.json > out/report_sha256.txt
+
+      - name: Verify zero-result safety invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('out/korkin_public_supplement_recovery_v39.json')
+          r = json.loads(p.read_text(encoding='utf-8'))
+          assert r['normalizationBridgeResolved'] is False
+          assert r['korkinGateAuthorized'] is False
+          assert r['deepScienceAuthorized'] is False
+          assert r['rendererExecuted'] is False
+          assert r['solverExecuted'] is False
+          assert r['photonsTraced'] == 0
+          assert r['protectedResultOpened'] is False
+          print('PASS_ZERO_RESULT_PUBLIC_PROVENANCE_PROBE')
+          PY
+
+      - name: Upload immutable public-provenance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-korkin-public-supplement-recovery-v39
+          path: |
+            out/korkin_public_supplement_recovery_v39.json
+            out/raw_sha256.txt
+            out/raw_sizes.tsv
+            out/report_sha256.txt
+            out/meta/*.txt
+          if-no-files-found: warn
+          retention-days: 90

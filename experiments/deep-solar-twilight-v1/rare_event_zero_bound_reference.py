@@ -150,6 +150,42 @@ def _fraction_power_equals(base: Fraction, exponent: int, target: Fraction) -> b
     ) and _integer_power_equals(base.denominator, exponent, target.denominator)
 
 
+def _exact_fraction_power_exponent(
+    base: Fraction,
+    target: Fraction,
+) -> int | None:
+    """Return m>0 exactly when target == base**m, else None.
+
+    This deliberately does not use logarithms.  For reduced ``base=p/r`` with
+    0<p<r and reduced ``target=a/b``, equality implies ``b == r**m`` because
+    ``p**m/r**m`` remains reduced.  Repeated exact division of ``b`` by ``r``
+    therefore discovers the only possible exponent; the numerator is then
+    checked with bounded exact exponentiation.  The loop is bounded by the bit
+    length of the already-materialized target denominator.
+
+    This helper is evaluated *before* the outward-log non-strict crossing
+    oracle.  At an exact equality boundary that oracle is correctly unable to
+    prove strict one-unit minimality, so equality must be handled algebraically
+    rather than by increasing transcendental precision.
+    """
+    if not (Fraction(0) < base < Fraction(1)):
+        raise ValueError("base must lie strictly between 0 and 1")
+    if not (Fraction(0) < target < Fraction(1)):
+        raise ValueError("target must lie strictly between 0 and 1")
+
+    remaining_denominator = target.denominator
+    exponent = 0
+    while remaining_denominator % base.denominator == 0:
+        remaining_denominator //= base.denominator
+        exponent += 1
+
+    if remaining_denominator != 1 or exponent == 0:
+        return None
+    if not _integer_power_equals(base.numerator, exponent, target.numerator):
+        return None
+    return exponent
+
+
 def zero_event_probability_upper(alpha: float, n: int) -> float:
     """Stable binary64 report value for 1-alpha**(1/n).
 
@@ -259,10 +295,14 @@ def all_zero_crossing_probability(q: float, alpha: float) -> tuple[int, float]:
     """Return first strict false-q exclusion time and report probability.
 
     The anytime-valid proof needs the *strict* event ``(1-q)**n < alpha``.
-    First obtain the outward-certified non-strict crossing ``m`` satisfying
-    ``(1-q)**m <= alpha``.  If equality holds exactly at ``m``, advance to
-    ``m+1``; otherwise ``m`` is already the first strict crossing.  Exact
-    rational equality is checked without forming enormous rational powers.
+    Exact equality is detected algebraically *before* the outward-log oracle is
+    asked for a non-strict crossing.  This matters because a sound outward
+    enclosure cannot prove strict separation when ``(1-q)**m == alpha`` exactly.
+
+    If an exact rational equality ``(1-q)**m == alpha`` exists, the first strict
+    crossing is ``m+1``.  Otherwise the outward-certified non-strict crossing is
+    already strict and is used unchanged.  No rounded logarithm or epsilon can
+    change the integer decision.
 
     The returned probability is binary64 reporting only and is never used to
     choose the certified integer crossing count.
@@ -273,10 +313,14 @@ def all_zero_crossing_probability(q: float, alpha: float) -> tuple[int, float]:
     q_exact = _decimal_fraction(q)
     alpha_exact = _decimal_fraction(alpha)
     survival_exact = Fraction(1) - q_exact
-    non_strict = _required_all_zero_count_exact(alpha_exact, q_exact)
-    crossing = non_strict + int(
-        _fraction_power_equals(survival_exact, non_strict, alpha_exact)
+    equality_exponent = _exact_fraction_power_exponent(
+        survival_exact,
+        alpha_exact,
     )
+    if equality_exponent is not None:
+        crossing = equality_exponent + 1
+    else:
+        crossing = _required_all_zero_count_exact(alpha_exact, q_exact)
 
     log_survival = math.log1p(-q)
     return crossing, math.exp(crossing * log_survival)
@@ -396,6 +440,20 @@ class ReferenceTests(unittest.TestCase):
         self.assertGreater(survival**3, alpha)
         self.assertLess(survival**4, alpha)
         self.assertEqual(n, 4)
+
+    def test_exact_power_detector_is_algebraic_and_nonheuristic(self) -> None:
+        self.assertEqual(
+            _exact_fraction_power_exponent(Fraction(1, 2), Fraction(1, 4)),
+            2,
+        )
+        self.assertEqual(
+            _exact_fraction_power_exponent(Fraction(2, 3), Fraction(8, 27)),
+            3,
+        )
+        survival = Fraction(1) - Fraction("0.6315968501359613")
+        self.assertIsNone(
+            _exact_fraction_power_exponent(survival, Fraction("0.05"))
+        )
 
     def test_strict_crossing_advances_exact_equality_boundary(self) -> None:
         # Non-strict crossing is m=2 because (1-0.5)^2 == 0.25 exactly, but

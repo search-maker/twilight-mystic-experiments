@@ -1,0 +1,547 @@
+name: Deep twilight bare-aerosol final selector capture v30
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-bare-aerosol-final-selector-capture-v30
+    paths:
+      - ".github/workflows/deep-twilight-bare-aerosol-final-selector-capture-v30.yml"
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  exact-final-selector-v30:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      EXPECTED_CONTROL_COMMENT: '5558442937'
+      EXACT_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+      UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      FRESH_SEED: '1889502108'
+      V2_RUN: '34012593281'
+      V2_HEAD: a95df9984d27cfb9c1c1915b72e97ce794ad93f5
+      V2_ARTIFACT: '9982923548'
+      V2_DIGEST: sha256:bbad4ef455636f55510176b9d0df2f509fabdd78675a9504d45354375e01ceaf
+      V24B_RUN: '34022960361'
+      V24B_HEAD: 303268d8ab1b72b116a60dd79f7488c65fdfead0
+      V24B_ARTIFACT: '9986109317'
+      V24B_DIGEST: sha256:91e04c13a2edd0522e9f10f9c02c88ce2ef6c958faf90a2b4687322121a8e16b
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dynamic fail-closed control guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          mkdir -p "$OUT"
+          cat > "$OUT/control_guard.py" <<'PY'
+          import json, os, re, subprocess, sys
+          from pathlib import Path
+
+          out = Path(sys.argv[1])
+          stage = sys.argv[2]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          me = int(os.environ["GITHUB_RUN_ID"])
+
+          def gh(path):
+              p = subprocess.run(["gh", "api", path], text=True, capture_output=True, check=True)
+              return json.loads(p.stdout)
+
+          issue = gh(f"repos/{repo}/issues/60")
+          main = gh(f"repos/{repo}/branches/main")
+          if main["commit"]["sha"] != os.environ["EXPECTED_MAIN"]:
+              raise SystemExit("main moved")
+          count = int(issue["comments"])
+          pages = (count + 99) // 100
+          latest = None
+          markers = []
+          rx = re.compile(r"^\s*WRITE_QUIET_(BEGIN|END)\b")
+          for page in range(1, pages + 1):
+              comments = gh(f"repos/{repo}/issues/60/comments?per_page=100&page={page}")
+              for c in comments:
+                  latest = int(c["id"])
+                  fenced = False
+                  for raw in str(c.get("body", "")).splitlines():
+                      line = raw.rstrip("\r")
+                      if line.lstrip().startswith("```"):
+                          fenced = not fenced
+                          continue
+                      if fenced or line.lstrip().startswith(">"):
+                          continue
+                      m = rx.match(line)
+                      if m:
+                          markers.append((int(c["id"]), m.group(1), line.strip()))
+          markers.sort()
+          terminal = markers[-1][1] if markers else "NONE"
+          if str(latest) != os.environ["EXPECTED_CONTROL_COMMENT"]:
+              raise SystemExit(f"Issue #60 advanced: latest={latest}")
+          if terminal == "BEGIN":
+              raise SystemExit("unmatched WRITE_QUIET_BEGIN")
+
+          needles = (
+              "reptran", "recovery4", "ordinal45", "avps",
+              "level-b", "level b", "lowalt",
+          )
+          blockers = []
+          for status in ("in_progress", "queued"):
+              runs = gh(f"repos/{repo}/actions/runs?status={status}&per_page=100")
+              for r in runs.get("workflow_runs", []):
+                  if int(r["id"]) == me:
+                      continue
+                  text = (str(r.get("name", "")) + " " + str(r.get("head_branch", ""))).lower()
+                  if any(n in text for n in needles):
+                      blockers.append({
+                          "status": status,
+                          "id": r["id"],
+                          "name": r.get("name"),
+                          "branch": r.get("head_branch"),
+                          "head": r.get("head_sha"),
+                      })
+          payload = {
+              "stage": stage,
+              "main": main["commit"]["sha"],
+              "issueCommentCount": count,
+              "latestCommentId": latest,
+              "writeQuietTerminalState": terminal,
+              "writeQuietMarkers": markers,
+              "v1Contention": blockers,
+          }
+          (out / f"control-{stage}.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          if blockers:
+              raise SystemExit("real V1 contention appeared")
+          PY
+          python "$OUT/control_guard.py" "$OUT" preflight
+
+      - name: Bind immutable exact-entry and delta predecessors
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V2_RUN" > "$OUT/v2-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT" > "$OUT/v2-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V24B_RUN" > "$OUT/v24b-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V24B_ARTIFACT" > "$OUT/v24b-artifact.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path("deep-twilight-bare-aerosol-final-selector-capture-v30-output")
+          for stem, run_env, head_env, art_env, dig_env in (
+              ("v2","V2_RUN","V2_HEAD","V2_ARTIFACT","V2_DIGEST"),
+              ("v24b","V24B_RUN","V24B_HEAD","V24B_ARTIFACT","V24B_DIGEST"),
+          ):
+              r=json.loads((p/f"{stem}-run.json").read_text())
+              a=json.loads((p/f"{stem}-artifact.json").read_text())
+              if str(r.get("id")) != os.environ[run_env] or r.get("head_sha") != os.environ[head_env] or r.get("conclusion") != "success" or r.get("run_attempt") != 1:
+                  raise SystemExit(f"{stem} run identity mismatch")
+              if str(a.get("id")) != os.environ[art_env] or a.get("digest") != os.environ[dig_env] or a.get("expired"):
+                  raise SystemExit(f"{stem} artifact identity mismatch")
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT/zip" > "$OUT/v2.zip"
+          test "sha256:$(sha256sum "$OUT/v2.zip" | awk '{print $1}')" = "$V2_DIGEST"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V24B_ARTIFACT/zip" > "$OUT/v24b.zip"
+          test "sha256:$(sha256sum "$OUT/v24b.zip" | awk '{print $1}')" = "$V24B_DIGEST"
+          mkdir "$OUT/v2" "$OUT/v24b"
+          unzip -q "$OUT/v2.zip" -d "$OUT/v2"
+          unzip -q "$OUT/v24b.zip" -d "$OUT/v24b"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("deep-twilight-bare-aerosol-final-selector-capture-v30-output")
+          v2=json.loads((p/"v2/capture-summary-v2.json").read_text())
+          v24=json.loads((p/"v24b/entry-to-scatter-summary.json").read_text())
+          if v2.get("status") != "PASS_EXACT_MYSTIC_ENTRY_RAW_OPTICAL_STATE_ACCESSIBLE" or v2.get("nCaoth") != 2 or v2.get("mysticBodyExecuted") is not False or v2.get("photonTraced") is not False:
+              raise SystemExit("V2 predecessor state mismatch")
+          if v24.get("deltaSemanticStatus") != "PASS_EXACT_BINARY" or v24.get("phaseStorageStatus") != "PASS_EXACT_BINARY_STORAGE":
+              raise SystemExit("V24B predecessor state mismatch")
+          PY
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-bare-aerosol-final-selector-capture-v30
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Freeze exact runtime and prove selector dataflow statically
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          UVSPEC="$(command -v uvspec)"
+          micromamba list --explicit > "$OUT/runtime-package-explicit-before.txt"
+          micromamba list --json > "$OUT/runtime-package-list-before.json"
+          sha256sum "$UVSPEC" > "$OUT/uvspec-sha256.txt"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "$UVSPEC_SHA256"
+          file "$UVSPEC" > "$OUT/uvspec-file.txt"
+          nm -an "$UVSPEC" > "$OUT/uvspec-nm.txt"
+          objdump -drwC -Mintel "$UVSPEC" > "$OUT/uvspec-objdump-full.txt"
+          objdump -s --start-address=0x2ebe34 --stop-address=0x2ebe48 "$UVSPEC" > "$OUT/mu-scatter-jump-table-bytes.txt"
+          python - <<'PY'
+          import hashlib, json, re, struct
+          from pathlib import Path
+          p=Path("deep-twilight-bare-aerosol-final-selector-capture-v30-output")
+          text=(p/"uvspec-objdump-full.txt").read_text(errors="replace")
+          required = {
+              "zero_output":"18b559:",
+              "output_ptr":"18b669:",
+              "copy_output":"18b795:",
+              "freeze_selector":"18b7c6:",
+              "sum_loop":"157348:",
+              "selector_test":"15735e:",
+              "selector_setle":"157360:",
+              "selector_inc":"157363:",
+              "selector_outptr":"157365:",
+              "selector_write":"15736d:",
+              "tscatot_load":"18c521:",
+              "selector_ptr":"18c52c:",
+              "aerosol_tscat":"18c533:",
+              "final_type_load":"18c542:",
+              "final_selector_write":"18c549:",
+          }
+          missing=[k for k,v in required.items() if v not in text]
+          if missing: raise SystemExit("missing exact binary anchors: "+",".join(missing))
+          for needle in (
+              "mov    DWORD PTR [rsp+0x380],0x0",
+              "mov    ecx,DWORD PTR [rsp+0x380]",
+              "mov    DWORD PTR [rsp+0x35c],ecx",
+              "test   edi,edi",
+              "setle  al",
+              "inc    eax",
+              "mov    rdx,QWORD PTR [rsp+0xf8]",
+              "mov    DWORD PTR [rdx],eax",
+              "mov    rax,QWORD PTR [r15+0x1f8]",
+              "mov    rdx,QWORD PTR [r15+0xb0]",
+              "movsd  xmm1,QWORD PTR [rax+0x10]",
+              "mov    eax,DWORD PTR [rsp+0x35c]",
+              "mov    DWORD PTR [rdx+0x8],eax",
+          ):
+              if needle not in text: raise SystemExit("missing exact instruction: "+needle)
+          raw=bytearray()
+          jt=(p/"mu-scatter-jump-table-bytes.txt").read_text(errors="replace")
+          for line in jt.splitlines():
+              m=re.match(r"^\s*([0-9a-fA-F]+)\s+((?:[0-9a-fA-F]{8}\s*)+)",line)
+              if not m: continue
+              for g in re.findall(r"[0-9a-fA-F]{8}",m.group(2)):
+                  raw.extend(bytes.fromhex(g))
+          if len(raw)<20: raise SystemExit("jump table incomplete")
+          offs=struct.unpack("<5i",bytes(raw[:20]))
+          base=0x2ebe34
+          targets=[base+x for x in offs]
+          expected=[0x16d548,0x16d570,0x16d5a8,0x16d358,0x16d410]
+          if targets != expected: raise SystemExit(f"selector jump table changed: {targets!r}")
+          summary={
+              "exactBinarySha256":"2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3",
+              "mysticEntryHex":"0x18aeb0",
+              "captureTargetHex":"0x18c542",
+              "captureTargetOffsetFromMysticHex":"0x1692",
+              "finalSelectorWriteHex":"0x18c549",
+              "selectorCandidateSource":"mystic_set output -> [rsp+0x380] -> [rsp+0x35c] -> selector[2]",
+              "mysticSetRuleExactBinary":"sum>0 => 1; sum<=0 => 2",
+              "selectorJumpTargetsHex":[hex(x) for x in targets],
+              "selector1Path":"explicit/tabulated aerosol sc_mu",
+              "selector2Path":"HG1 via get_g1 + sc_HG_mu",
+              "selector3Path":"HG2",
+              "epsilonSubstitutionUsed":False,
+          }
+          (p/"static-selector-proof.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          anchors="\n".join(line for line in text.splitlines() if any(v in line for v in required.values()))+"\n"
+          (p/"static-selector-anchor-lines.txt").write_text(anchors)
+          (p/"static-selector-anchor-lines-sha256.txt").write_text(hashlib.sha256(anchors.encode()).hexdigest()+"\n")
+          PY
+
+      - name: Recheck V1 and WRITE_QUIET immediately before any seed consumption
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          python "$OUT/control_guard.py" "$OUT" pre-seed
+
+      - name: Create isolated debugger environment
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          GDB_PREFIX="$RUNNER_TEMP/deep-twilight-gdb-final-selector-v30"
+          micromamba create -y -p "$GDB_PREFIX" -c conda-forge python=3.12.4 gdb=17.2
+          micromamba list -p "$GDB_PREFIX" --explicit > "$OUT/gdb-package-explicit.txt"
+          "$GDB_PREFIX/bin/gdb" --version > "$OUT/gdb-version.txt"
+          printf '%s\n' "$GDB_PREFIX" > "$OUT/gdb-prefix.txt"
+
+      - name: Capture final bare-aerosol selector before its write and before any random draw
+        id: capture
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          OUT="$PWD/deep-twilight-bare-aerosol-final-selector-capture-v30-output"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          UVSPEC="$(command -v uvspec)"
+          GDB_PREFIX="$(cat "$OUT/gdb-prefix.txt")"
+          cat > "$OUT/input-resolved.txt" <<EOF
+          data_files_path $DATA_DIR
+          atmosphere_file $DATA_DIR/atmmod/afglus.dat
+          source solar $DATA_DIR/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550.0 550.0
+          sza 80.000000
+          phi0 0.000000
+          albedo 0.150000
+          aerosol_default
+          aerosol_set_tau_at_wvl 550 0.150000
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 1
+          mc_vroom off
+          mc_std
+          mc_randomseed $FRESH_SEED
+          mc_basename mc
+          mc_spectral_is 550.0
+          zout 0.000000
+          umu -0.50000000
+          phi 36.000000
+          quiet
+          EOF
+          cat > "$OUT/capture_final_selector.py" <<'PY'
+          import gdb, hashlib, json, math, struct
+          from pathlib import Path
+
+          OUT=Path(gdb.parameter("data-directory")).parent
+
+          def capture(output_path, expected_seed):
+              out=Path(output_path)
+              inf=gdb.selected_inferior()
+              frame=gdb.selected_frame()
+              arch=frame.architecture().name()
+              def reg(name): return int(gdb.parse_and_eval(f"${name}"))
+              def read(addr,n):
+                  if addr<=0: raise gdb.GdbError(f"invalid address 0x{addr:x}")
+                  return bytes(inf.read_memory(addr,n))
+              def u64(addr): return struct.unpack("<Q",read(addr,8))[0]
+              pc=reg("pc")
+              mystic=int(gdb.parse_and_eval("(unsigned long)&mystic"))
+              target=mystic+0x1692
+              payload={
+                  "schemaVersion":30,
+                  "stageId":"deep-twilight-bare-aerosol-final-selector-capture-v30",
+                  "architecture":arch,
+                  "pcHex":hex(pc),
+                  "mysticHex":hex(mystic),
+                  "targetHex":hex(target),
+                  "stoppedFrameAuditOnly":frame.name(),
+                  "freshSeed":int(expected_seed),
+                  "freshSeedConsumed":True,
+                  "freshSeedReusable":False,
+                  "rawBitsAuthoritative":True,
+                  "epsilonSubstitutionUsed":False,
+                  "photonTraced":False,
+                  "scientificDatasetProduced":False,
+                  "protectedResultOpened":False,
+                  "levelBChanged":False,
+              }
+              if pc != target:
+                  payload["status"]="FAIL_GUARD_BREAKPOINT_BEFORE_FINAL_SELECTOR_TARGET"
+                  payload["randomDrawGuardViolated"]=True
+                  out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+                  raise gdb.GdbError(f"stopped before target at pc=0x{pc:x}, frame={frame.name()}")
+              rsp=reg("rsp")
+              r15=reg("r15")
+              ncaoth=struct.unpack("<i",read(r15+0xa4,4))[0]
+              selector_ptr=u64(r15+0xb0)
+              selector_raw=read(selector_ptr,12)
+              selectors=list(struct.unpack("<3i",selector_raw))
+              tscat_ptr=u64(r15+0x1f8)
+              tscat_raw=read(tscat_ptr,24)
+              tscat=list(struct.unpack("<3d",tscat_raw))
+              candidate_raw=read(rsp+0x35c,4)
+              source_raw=read(rsp+0x380,4)
+              candidate=struct.unpack("<i",candidate_raw)[0]
+              source_value=struct.unpack("<i",source_raw)[0]
+              payload.update({
+                  "status":"EXACT_FINAL_SELECTOR_PREWRITE_CAPTURED",
+                  "randomDrawGuardViolated":False,
+                  "mysticSetupExecuted":True,
+                  "stoppedBeforeInstructionHex":"0x18c542",
+                  "finalSelectorWriteNotExecuted":True,
+                  "internalAtmosAddressHex":hex(r15),
+                  "internalNCaoth":ncaoth,
+                  "selectorPointerHex":hex(selector_ptr),
+                  "selectorPreWriteRawHex":selector_raw.hex(),
+                  "selectorPreWriteInt32AuditOnly":selectors,
+                  "aerosolSelectorPreWrite":selectors[2],
+                  "selectorCandidateRawHex":candidate_raw.hex(),
+                  "selectorCandidate":candidate,
+                  "selectorCandidateSourceRawHex":source_raw.hex(),
+                  "selectorCandidateSourceValue":source_value,
+                  "tscatotPointerHex":hex(tscat_ptr),
+                  "tscatotRawHex":tscat_raw.hex(),
+                  "tscatotDecodedAuditOnly":tscat,
+                  "aerosolTscatotRawHex":tscat_raw[16:24].hex(),
+                  "aerosolTscatotAuditOnly":tscat[2],
+                  "selectedPhaseSemantics":("TABULATED_AER" if candidate==1 else "HG1" if candidate==2 else "UNEXPECTED"),
+              })
+              if ncaoth != 2: raise gdb.GdbError(f"unexpected internal n_caoth {ncaoth}")
+              if source_value != candidate: raise gdb.GdbError("selector source/candidate mismatch")
+              if candidate not in (1,2): raise gdb.GdbError(f"unexpected final aerosol selector {candidate}")
+              if not (math.isfinite(tscat[2]) and tscat[2] > 0.0): raise gdb.GdbError(f"unexpected aerosol tscatot {tscat[2]!r}")
+              out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          PY
+          cat > "$OUT/capture.gdb" <<EOF
+          set pagination off
+          set confirm off
+          set print thread-events off
+          set debuginfod enabled off
+          set breakpoint pending off
+          set disable-randomization off
+          handle SIGPIPE nostop noprint pass
+          python
+          import gdb
+          gdb.Breakpoint("*mystic+0x1692")
+          gdb.Breakpoint("uvspec_random")
+          gdb.Breakpoint("generate_photon.isra.0")
+          gdb.Breakpoint("scattering")
+          end
+          run < $OUT/input-resolved.txt
+          python
+          import sys
+          sys.path.insert(0, "$OUT")
+          import capture_final_selector as cap
+          cap.capture("$OUT/final-selector-raw-v30.json", "$FRESH_SEED")
+          end
+          kill
+          quit
+          EOF
+          set +e
+          (
+            cd "$OUT"
+            "$GDB_PREFIX/bin/gdb" -q -nx --batch -x "$OUT/capture.gdb" "$UVSPEC"
+          ) > "$OUT/gdb-stdout.txt" 2> "$OUT/gdb-stderr.txt"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$OUT/gdb-exit-code.txt"
+          echo "gdb_exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ -f "$OUT/randomseed" ]; then
+            cp "$OUT/randomseed" "$OUT/randomseed-consumed-evidence.txt"
+          fi
+
+      - name: Build fail-closed selector decision
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path("deep-twilight-bare-aerosol-final-selector-capture-v30-output")
+          def load(name):
+              q=p/name
+              return json.loads(q.read_text()) if q.exists() else {}
+          cap=load("final-selector-raw-v30.json")
+          static=load("static-selector-proof.json")
+          seed_lines=(p/"randomseed-consumed-evidence.txt").read_text(errors="replace").splitlines() if (p/"randomseed-consumed-evidence.txt").exists() else []
+          seed_line=seed_lines[0].strip() if seed_lines else None
+          candidate=cap.get("selectorCandidate")
+          complete=(
+              cap.get("status")=="EXACT_FINAL_SELECTOR_PREWRITE_CAPTURED"
+              and cap.get("randomDrawGuardViolated") is False
+              and cap.get("internalNCaoth")==2
+              and candidate in (1,2)
+              and cap.get("selectorCandidateSourceValue")==candidate
+              and cap.get("finalSelectorWriteNotExecuted") is True
+              and seed_line==os.environ["FRESH_SEED"]
+              and static.get("mysticSetRuleExactBinary")=="sum>0 => 1; sum<=0 => 2"
+          )
+          decision={
+              "schemaVersion":30,
+              "stageId":"deep-twilight-bare-aerosol-final-selector-capture-v30",
+              "status":"PASS_EXACT_RUNTIME_FINAL_AEROSOL_SELECTOR_CAPTURED" if complete else "FAIL_FINAL_SELECTOR_CAPTURE_INCOMPLETE",
+              "finalSelector":candidate,
+              "selectedPhaseSemantics":cap.get("selectedPhaseSemantics"),
+              "freshSeed":int(os.environ["FRESH_SEED"]),
+              "freshSeedConsumed":True,
+              "freshSeedReusable":False,
+              "uvspecRandomCalledBeforeCapture":cap.get("randomDrawGuardViolated"),
+              "photonTraced":False,
+              "scientificDatasetProduced":False,
+              "protectedResultOpened":False,
+              "epsilonSubstitutionUsed":False,
+              "taylorOrJerusalemUsed":False,
+              "levelBChanged":False,
+              "githubRerunPermitted":False,
+              "phaseTranslationConsequence":(
+                  "HG1: exact V2 g1_s is the selected phase parameter; g2_s/f_s are not on the selected sampler branch"
+                  if candidate==2 else
+                  "TABULATED_AER: HG parameters are not sufficient; exact tabulated phase payload must be captured next"
+                  if candidate==1 else
+                  "UNRESOLVED"
+              ),
+              "deltaTranslationPredecessor":"V24B PASS_EXACT_BINARY",
+              "rendererParityAuthorized":False,
+              "korkinGateAuthorized":False,
+              "deepScienceAuthorized":False,
+              "claimBoundary":"exact pinned-runtime final bare-aerosol phase-selector discrimination only; no independent-renderer acceptance or deep radiance result",
+          }
+          (p/"decision-v30.json").write_text(json.dumps(decision,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(decision,sort_keys=True))
+          PY
+
+      - name: Prove target environment unchanged
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          micromamba list --explicit > "$OUT/runtime-package-explicit-after.txt"
+          micromamba list --json > "$OUT/runtime-package-list-after.json"
+          cmp "$OUT/runtime-package-explicit-before.txt" "$OUT/runtime-package-explicit-after.txt"
+          cmp "$OUT/runtime-package-list-before.json" "$OUT/runtime-package-list-after.json"
+          test "$(sha256sum "$(command -v uvspec)" | awk '{print $1}')" = "$UVSPEC_SHA256"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deep-twilight-bare-aerosol-final-selector-capture-v30
+          path: deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce exact final-selector decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-bare-aerosol-final-selector-capture-v30-output
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("deep-twilight-bare-aerosol-final-selector-capture-v30-output")
+          d=json.loads((p/"decision-v30.json").read_text())
+          c=json.loads((p/"final-selector-raw-v30.json").read_text())
+          assert d["status"]=="PASS_EXACT_RUNTIME_FINAL_AEROSOL_SELECTOR_CAPTURED"
+          assert d["finalSelector"] in (1,2)
+          assert d["freshSeedConsumed"] is True and d["freshSeedReusable"] is False
+          assert d["uvspecRandomCalledBeforeCapture"] is False
+          assert d["photonTraced"] is False
+          assert d["scientificDatasetProduced"] is False
+          assert d["protectedResultOpened"] is False
+          assert d["epsilonSubstitutionUsed"] is False
+          assert d["taylorOrJerusalemUsed"] is False
+          assert d["levelBChanged"] is False
+          assert d["githubRerunPermitted"] is False
+          assert d["rendererParityAuthorized"] is False
+          assert d["korkinGateAuthorized"] is False
+          assert d["deepScienceAuthorized"] is False
+          assert c["finalSelectorWriteNotExecuted"] is True
+          PY

@@ -1,0 +1,154 @@
+name: Deep twilight MYSTIC-entry optical-state capture v1
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-mystic-entry-optprop-capture-v1
+    paths:
+      - ".github/workflows/deep-twilight-mystic-entry-optprop-capture-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  exact-entry-capture:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.before == '271a9d0d9b2517433a23782320aaa0e5f6fb88b9'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen branch and protocol boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-mystic-entry-optprop-capture-v1"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "${{ github.event.before }}" = "271a9d0d9b2517433a23782320aaa0e5f6fb88b9"
+          python -m py_compile review/deep-twilight-mystic-entry-optprop-capture-v1/capture_mystic_entry.py
+          grep -F 'ZERO-SCIENCE CAPABILITY STAGE' review/deep-twilight-mystic-entry-optprop-capture-v1/PROTOCOL.md
+          grep -F 'aerosol_set_tau_at_wvl 550 0.150000' review/deep-twilight-mystic-entry-optprop-capture-v1/capture_mystic_entry.py
+          if grep -F 'mc_randomseed ' review/deep-twilight-mystic-entry-optprop-capture-v1/capture_mystic_entry.py | grep -v 'startswith'; then
+            echo 'unexpected random-seed directive in setup-only capture' >&2
+            exit 1
+          fi
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-mystic-entry-optprop-capture-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Freeze exact target runtime identity
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p deep-twilight-mystic-entry-capture-output
+          micromamba list --explicit > deep-twilight-mystic-entry-capture-output/runtime-package-explicit-before.txt
+          micromamba list --json > deep-twilight-mystic-entry-capture-output/runtime-package-list-before.json
+          UVSPEC="$(command -v uvspec)"
+          sha256sum "$UVSPEC" | tee deep-twilight-mystic-entry-capture-output/uvspec-sha256.txt
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+          file "$UVSPEC" | tee deep-twilight-mystic-entry-capture-output/uvspec-file-preflight.txt
+          file "$UVSPEC" | grep -Eq 'x86-64|x86_64'
+          nm -an "$UVSPEC" > deep-twilight-mystic-entry-capture-output/uvspec-nm-preflight.txt
+          test "$(awk '$3=="mystic" {print $1}' deep-twilight-mystic-entry-capture-output/uvspec-nm-preflight.txt | sort -u | wc -l)" -eq 1
+
+      - name: Create isolated debugger environment
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          GDB_PREFIX="$RUNNER_TEMP/deep-twilight-gdb-tools-v1"
+          micromamba create -y -p "$GDB_PREFIX" -c conda-forge python=3.12.4 gdb=17.2
+          micromamba list -p "$GDB_PREFIX" --explicit > deep-twilight-mystic-entry-capture-output/gdb-package-explicit.txt
+          micromamba list -p "$GDB_PREFIX" --json > deep-twilight-mystic-entry-capture-output/gdb-package-list.json
+          "$GDB_PREFIX/bin/gdb" --version > deep-twilight-mystic-entry-capture-output/gdb-version-preflight.txt
+          printf '%s\n' "$GDB_PREFIX" > deep-twilight-mystic-entry-capture-output/gdb-prefix.txt
+
+      - name: Capture exact pre-MYSTIC optical arrays and kill at entry
+        id: capture
+        shell: bash -el {0}
+        run: |
+          set -uo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          GDB_PREFIX="$(cat deep-twilight-mystic-entry-capture-output/gdb-prefix.txt)"
+          set +e
+          python review/deep-twilight-mystic-entry-optprop-capture-v1/capture_mystic_entry.py \
+            --uvspec "$(command -v uvspec)" \
+            --gdb "$GDB_PREFIX/bin/gdb" \
+            --data-dir "$DATA_DIR" \
+            --atmosphere "$DATA_DIR/atmmod/afglus.dat" \
+            --solar-flux "$DATA_DIR/solar_flux/atlas_plus_modtran" \
+            --output-dir deep-twilight-mystic-entry-capture-output \
+            --package-explicit deep-twilight-mystic-entry-capture-output/runtime-package-explicit-before.txt \
+            --package-json deep-twilight-mystic-entry-capture-output/runtime-package-list-before.json \
+            > deep-twilight-mystic-entry-capture-output/capture-command-stdout.txt \
+            2> deep-twilight-mystic-entry-capture-output/capture-command-stderr.txt
+          status=$?
+          set -e
+          printf '%s\n' "$status" > deep-twilight-mystic-entry-capture-output/capture-command-exit-code.txt
+          echo "capture_exit_code=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Prove exact target environment remained unchanged
+        if: always()
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          micromamba list --explicit > deep-twilight-mystic-entry-capture-output/runtime-package-explicit-after.txt
+          micromamba list --json > deep-twilight-mystic-entry-capture-output/runtime-package-list-after.json
+          cmp deep-twilight-mystic-entry-capture-output/runtime-package-explicit-before.txt deep-twilight-mystic-entry-capture-output/runtime-package-explicit-after.txt
+          cmp deep-twilight-mystic-entry-capture-output/runtime-package-list-before.json deep-twilight-mystic-entry-capture-output/runtime-package-list-after.json
+          test "$(sha256sum "$(command -v uvspec)" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+
+      - name: Upload complete lossless capture evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deep-twilight-mystic-entry-optprop-capture-v1
+          path: deep-twilight-mystic-entry-capture-output
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce zero-science capability decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.capture.outputs.capture_exit_code }}" = "0"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('deep-twilight-mystic-entry-capture-output')
+          summary = json.loads((root / 'capture-summary.json').read_text())
+          capture = json.loads((root / 'mystic-entry-raw.json').read_text())
+          assert summary['status'] == 'PASS_EXACT_MYSTIC_ENTRY_RAW_OPTICAL_STATE_ACCESSIBLE'
+          assert summary['uvspecSha256'] == '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert summary['scientificExecution'] is False
+          assert summary['scientificDatasetProduced'] is False
+          assert summary['randomSeedAllocated'] is False
+          assert summary['protectedResultOpened'] is False
+          assert summary['levelBChanged'] is False
+          assert summary['taylorOrJerusalemUsed'] is False
+          assert summary['epsilonSubstitutionUsed'] is False
+          assert summary['githubRerunPermitted'] is False
+          assert capture['status'] == 'EXACT_MYSTIC_ENTRY_RAW_OPTICAL_STATE_CAPTURED'
+          assert capture['stoppedAtExactMysticEntry'] is True
+          assert capture['mysticBodyExecuted'] is False
+          assert capture['rawBitsAuthoritative'] is True
+          assert capture['decimalDecodedValuesAuditOnly'] is True
+          assert 1 <= capture['nlyr'] <= 512
+          assert 1 <= capture['nCaoth'] <= 64
+          assert set(capture['tables']) == {'dt_s', 'om_s', 'g1_s', 'g2_s'}
+          for table in capture['tables'].values():
+              assert len(table['rows']) == capture['nCaoth']
+              for row in table['rows']:
+                  assert len(row['uint32Words']) == capture['nlyr']
+                  assert len(bytes.fromhex(row['rawBytesHex'])) == 4 * capture['nlyr']
+          PY

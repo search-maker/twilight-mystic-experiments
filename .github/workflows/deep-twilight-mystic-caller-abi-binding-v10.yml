@@ -1,0 +1,205 @@
+name: Deep twilight exact pinned MYSTIC caller ABI binding v10
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-mystic-caller-abi-binding-v10
+    paths:
+      - ".github/workflows/deep-twilight-mystic-caller-abi-binding-v10.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  static-abi-binding:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Freeze static-only ABI binding boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/review/deep-twilight-mystic-caller-abi-binding-v10"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          printf '%s\n' \
+            'DEEP TWILIGHT EXACT PINNED MYSTIC CALLER ABI BINDING V10' \
+            'STATIC LOCKED-BINARY + EXACT INSTALLED HEADER INSPECTION ONLY' \
+            'NO UVSPEC EXECUTION / NO RNG / NO SEED / NO MYSTIC BODY / NO PHOTONS / NO SCIENCE' \
+            'target rubin-libradtran=2.0.6=py312pl5321he9373c2_1' \
+            'target uvspec SHA256 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' \
+            'V9 fixed two direct call_solver -> mystic callsites and exact argument order. V10 binds caller base registers/offsets to declared structure fields only where exact installed headers and ABI dataflow jointly prove the mapping.' \
+            'No offset-name inference from resemblance is permitted.' \
+            > PROTOCOL.txt
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-mystic-caller-abi-binding-v10
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Capture exact call_solver ABI and declaration evidence
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=caller-abi-binding-v10
+          mkdir -p "$OUT"
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3"
+
+          objdump -d -w -C -Mintel --disassemble=call_solver "$UVSPEC" > "$OUT/call-solver-disassembly.txt"
+          nm -an "$UVSPEC" | grep -E '(^| )call_solver$|(^| )mystic$' > "$OUT/target-symbols.txt" || true
+          grep -R -n -I -E '(^|[^A-Za-z0-9_])call_solver[[:space:]]*\(' "$CONDA_PREFIX/include/libRadtran" > "$OUT/call-solver-declarations.txt" || true
+          grep -R -n -I -E '(^|[^A-Za-z0-9_])mystic[[:space:]]*\(' "$CONDA_PREFIX/include/libRadtran" > "$OUT/mystic-declarations.txt" || true
+          grep -R -n -I -E 'float\*\*+[[:space:]]+(dt_s|om_s|g1_s|g2_s|f_s|ds_s)|float\*\*\*[[:space:]]+(ff|dscale)|double\*\*\*[[:space:]]+(dt|om)|forward fraction for[[:space:]]+double-HG|delta-scaling factor Tobias' "$CONDA_PREFIX/include/libRadtran" > "$OUT/optical-field-declarations.txt" || true
+
+          # Preserve wide exact contexts around any declaration hits, keyed by file and line.
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          prefix=Path(__import__('os').environ['CONDA_PREFIX'])/'include'/'libRadtran'
+          out=Path('caller-abi-binding-v10')
+          patterns={
+            'call_solver':re.compile(r'\bcall_solver\s*\('),
+            'mystic':re.compile(r'\bmystic\s*\('),
+            'optical':re.compile(r'\b(dt_s|om_s|g1_s|g2_s|f_s|ds_s|ff|dscale)\b'),
+          }
+          for tag,pat in patterns.items():
+            blocks=[]
+            for p in sorted(prefix.rglob('*.h')):
+              try: rows=p.read_text(errors='replace').splitlines()
+              except Exception: continue
+              for i,line in enumerate(rows):
+                if not pat.search(line): continue
+                lo=max(0,i-20); hi=min(len(rows),i+21)
+                blocks.append(f'=== {p}:{i+1} lines {lo+1}-{hi} ===')
+                blocks.extend(f'{j+1:6d}\t{rows[j]}' for j in range(lo,hi))
+                if len(blocks)>2400: break
+              if len(blocks)>2400: break
+            (out/f'{tag}-header-contexts.txt').write_text('\n'.join(blocks)+'\n')
+          PY
+
+          python - <<'PY'
+          import hashlib, json, re
+          from pathlib import Path
+          root=Path('caller-abi-binding-v10')
+          rows=(root/'call-solver-disassembly.txt').read_text(errors='replace').splitlines()
+
+          # Function prologue: enough to identify how incoming SysV registers are parked in callee-saved regs/stack.
+          prologue=rows[:220]
+          (root/'call-solver-prologue.txt').write_text('\n'.join(prologue)+'\n')
+
+          # Find the two direct calls fixed by V9 and preserve a larger pre-call dataflow window.
+          calls=[]
+          for i,line in enumerate(rows):
+            if re.search(r'\bcall\w*\b.*<mystic>',line):
+              lo=max(0,i-180); hi=min(len(rows),i+24)
+              calls.append({'line':i+1,'instruction':line,'start':lo+1,'end':hi})
+          call_blocks=[]
+          for n,c in enumerate(calls,1):
+            call_blocks.append(f'=== CALL {n} disassembly lines {c["start"]}-{c["end"]} ===')
+            call_blocks.extend(rows[c['start']-1:c['end']])
+          (root/'mystic-call-wide-contexts.txt').write_text('\n'.join(call_blocks)+'\n')
+
+          # Extract the last explicit write to each first-six integer argument register before each call.
+          regpats={
+            'rdi':re.compile(r'\b(?:rdi|edi)\b'), 'rsi':re.compile(r'\b(?:rsi|esi)\b'),
+            'rdx':re.compile(r'\b(?:rdx|edx)\b'), 'rcx':re.compile(r'\b(?:rcx|ecx)\b'),
+            'r8':re.compile(r'\b(?:r8|r8d)\b'), 'r9':re.compile(r'\b(?:r9|r9d)\b'),
+          }
+          writes=re.compile(r'\b(mov|lea|xor|pop)\b')
+          call_abi=[]
+          for c in calls:
+            idx=c['line']-1
+            rec={'callLine':c['line'],'instruction':c['instruction'],'lastRegisterWrites':{},'lastStackPushes':[]}
+            for reg,pat in regpats.items():
+              found=None
+              for j in range(idx-1,max(-1,idx-260),-1):
+                line=rows[j]
+                if not writes.search(line): continue
+                # Destination operand is text before first comma after mnemonic; require target reg there.
+                m=re.search(r'\b(?:mov|lea|xor|pop)\w*\s+([^,]+)',line)
+                if m and pat.search(m.group(1)):
+                  found={'line':j+1,'text':line}; break
+              rec['lastRegisterWrites'][reg]=found
+            pushes=[]
+            for j in range(idx-1,max(-1,idx-180),-1):
+              if re.search(r'\bpush\b',rows[j]):
+                pushes.append({'line':j+1,'text':rows[j]})
+                if len(pushes)>=16: break
+            rec['lastStackPushes']=pushes
+            call_abi.append(rec)
+          (root/'call-abi-summary.json').write_text(json.dumps(call_abi,indent=2,sort_keys=True)+'\n')
+
+          files=['call-solver-disassembly.txt','target-symbols.txt','call-solver-declarations.txt','mystic-declarations.txt','optical-field-declarations.txt','call_solver-header-contexts.txt','mystic-header-contexts.txt','optical-header-contexts.txt','call-solver-prologue.txt','mystic-call-wide-contexts.txt','call-abi-summary.json']
+          d={
+            'schemaVersion':10,
+            'status':'STATIC_EXACT_CALLER_ABI_BINDING_EVIDENCE_CAPTURED',
+            'targetPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'directMysticCallCount':len(calls),
+            'callAbi':call_abi,
+            'uvspecExecuted':False,'rngInitialized':False,'seedConsumed':False,'mysticBodyExecuted':False,'photonTraced':False,'scientificExecutionPerformed':False,'protectedResultOpened':False,'levelBChanged':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False,
+            'evidenceSha256':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files},
+            'claimBoundary':'static exact installed-header and locked-binary ABI evidence only; no offset receives a semantic field label absent explicit type/layout proof'
+          }
+          (root/'decision-v10.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(d,sort_keys=True))
+          PY
+
+      - name: Publish bounded ABI evidence to Issue 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('caller-abi-binding-v10')
+          d=json.loads((root/'decision-v10.json').read_text())
+          assert d['directMysticCallCount']==2, d['directMysticCallCount']
+          for key in ['uvspecExecuted','rngInitialized','seedConsumed','mysticBodyExecuted','photonTraced','scientificExecutionPerformed','protectedResultOpened','levelBChanged','taylorOrJerusalemUsed','epsilonSubstitutionUsed']:
+            assert d[key] is False
+          def take(name,n):
+            x=(root/name).read_text(errors='replace').splitlines(); return x[:n],len(x)
+          blocks=[]
+          for title,name,lim in [
+            ('call_solver exact declarations','call-solver-declarations.txt',80),
+            ('mystic exact declarations','mystic-declarations.txt',80),
+            ('exact optical field declarations','optical-field-declarations.txt',120),
+            ('call_solver prologue','call-solver-prologue.txt',220),
+            ('MYSTIC call ABI summary','call-abi-summary.json',260),
+            ('call_solver header contexts','call_solver-header-contexts.txt',220),
+          ]:
+            rows,total=take(name,lim); blocks.append((title,rows,total))
+          lines=['DEEP_TWILIGHT::EXACT_PINNED_MYSTIC_CALLER_ABI_BINDING_V10','',
+                 'status='+d['status'],'target_package='+d['targetPackage'],'uvspec_sha256='+d['uvspecSha256'],
+                 'direct_mystic_call_count='+str(d['directMysticCallCount']),
+                 'evidence_sha256='+json.dumps(d['evidenceSha256'],sort_keys=True),
+                 'STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false; scientificExecutionPerformed=false; protectedResultOpened=false; levelBChanged=false; taylorOrJerusalemUsed=false; epsilonSubstitutionUsed=false','']
+          for title,rows,total in blocks:
+            lines.append(f'{title} (shown {len(rows)}/{total} lines):'); lines.append('```text'); lines.extend(rows); lines.append('```'); lines.append('')
+          lines.append('CLAIM_BOUNDARY: exact installed headers plus exact locked-binary ABI dataflow only. SysV register/stack argument order is used mechanically; semantic field names still require explicit declared type/layout binding. Ambiguity remains fail-closed. No renderer/science authorization is created.')
+          Path('issue-comment.md').write_text('\n'.join(lines)+'\n')
+          PY
+          gh api "/repos/${GITHUB_REPOSITORY}/issues/60/comments" --method POST -f body="$(cat issue-comment.md)" > posted-comment.json
+          jq -e '.id and .html_url' posted-comment.json
+
+      - name: Preserve immutable ABI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-mystic-caller-abi-binding-v10
+          path: |
+            PROTOCOL.txt
+            caller-abi-binding-v10/
+            posted-comment.json
+          if-no-files-found: error
+          retention-days: 90

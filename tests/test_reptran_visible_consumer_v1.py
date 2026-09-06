@@ -21,7 +21,7 @@ def load_module(name: str, path: Path):
 
 consumer = load_module(
     "reptran_visible_consumer_v1",
-    PACKAGE / "cross_geometry_execution_adapter.py",
+    PACKAGE / "reptran_cross_geometry_execution_adapter_v1.py",
 )
 
 
@@ -179,6 +179,26 @@ class ReptranVisibleConsumerV1Tests(unittest.TestCase):
             prepared["renderingProof"]["route"],
             "historical-reference-vroom-crs-diagnostic-only",
         )
+
+    def test_route_is_isolated_from_historical_and_protected_consumers(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "mystic-batch-v1-cross-geometry-execution.yml").read_text()
+        self.assertEqual(
+            workflow.count(
+                "EXECUTION_ADAPTER: experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py"
+            ),
+            1,
+        )
+        historical = (PACKAGE / "cross_geometry_execution_adapter.py").read_text()
+        self.assertNotIn("reptran_visible_renderer_v1.py", historical)
+        self.assertNotIn("V1_VISIBLE_MOLECULAR_ABSORPTION", historical)
+        self.assertNotIn("render_current_v1_case", historical)
+        self.assertIn(
+            "text = adapter.render_input(inputs, data_dir.resolve(), repository_root.resolve(), case_dir.resolve())",
+            historical,
+        )
+        protected = (ROOT / ".github" / "workflows" / "jerusalem-tishrei-direct-mystic-v2-package-validation.yml").read_text()
+        self.assertNotIn("reptran_cross_geometry_execution_adapter_v1.py", protected)
+        self.assertIn("experiments/mystic-batch-v1/cross_geometry_execution_adapter.py", protected)
 
 
 if __name__ == "__main__":

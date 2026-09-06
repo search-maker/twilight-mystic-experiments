@@ -199,18 +199,9 @@ class CrossGeometryExecutionTests(unittest.TestCase):
                 case = next(case for case in proposal['cases'] if case['caseId'] == case_id)
                 return case, proposal['geometries'][0]
             def normalized_inputs(proposal, case, geometry):
-                return {'method': case['method'], 'seed': case['seed'], 'photonHistories': case['photonHistories'], 'molecularAbsorption': 'reptran'}
+                return {'method': case['method'], 'seed': case['seed'], 'photonHistories': case['photonHistories']}
             def render_input(inputs, data_dir, repository_root, case_dir):
-                return f"method {inputs['method']}\\nseed {inputs['seed']}\\nmol_abs_param crs\\n"
-        """))
-        return path
-
-    def _fake_visible_renderer(self) -> Path:
-        path = self.root / "fake_reptran_visible_renderer.py"
-        path.write_text(textwrap.dedent("""
-            def render_ground_site_input(inputs, data_dir, repository_root, case_dir):
-                text = f"method {inputs['method']}\\nseed {inputs['seed']}\\nmol_abs_param reptran\\n"
-                return text, {'status': 'FAKE_REPTRAN_RENDERED_FOR_EXECUTION_ADAPTER_UNIT_TEST'}
+                return f"method {inputs['method']}\\nseed {inputs['seed']}\\n"
         """))
         return path
 
@@ -248,18 +239,12 @@ class CrossGeometryExecutionTests(unittest.TestCase):
     def test_execution_adapter_prepares_both_methods_after_runtime_check(self) -> None:
         proposal, runtime = self._adapter_fixture()
         fake = self._fake_proposal_adapter()
-        fake_reptran = self._fake_visible_renderer()
-        with (
-            mock.patch.object(adapter_module, "PROPOSAL_ADAPTER", fake),
-            mock.patch.object(adapter_module, "V1_VISIBLE_RENDERER", fake_reptran),
-        ):
+        with mock.patch.object(adapter_module, "PROPOSAL_ADAPTER", fake):
             ref = adapter_module.prepare_case(proposal, runtime, "ref-case", self.root, self.root, self.root / "ref-out")
             alis = adapter_module.prepare_case(proposal, runtime, "alis-case", self.root, self.root, self.root / "alis-out")
         self.assertEqual(ref["method"], "reference-vroom")
         self.assertEqual(alis["method"], "alis")
         self.assertNotEqual(ref["inputResolvedSha256"], alis["inputResolvedSha256"])
-        self.assertEqual(ref["renderingProof"]["route"], "historical-reference-vroom-crs-diagnostic-only")
-        self.assertEqual(alis["renderingProof"]["route"], "authoritative-v1-visible-alis-reptran")
 
     def test_execution_adapter_refuses_runtime_mismatch(self) -> None:
         proposal, runtime = self._adapter_fixture()

@@ -1,0 +1,185 @@
+name: Deep Twilight Korkin full supplement scale audit v43
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-full-supplement-scale-audit-v43
+    paths:
+      - .github/workflows/deep-twilight-korkin-full-supplement-scale-audit-v43.yml
+
+permissions:
+  contents: read
+
+jobs:
+  full-supplement-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recover exact publication supplement bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/unpacked out/text out/strings
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+            'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content' \
+            -o out/raw/korkin2022_mdsoar_bundle.zip
+          test "$(sha256sum out/raw/korkin2022_mdsoar_bundle.zip | awk '{print $1}')" = \
+            'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e'
+          unzip -q out/raw/korkin2022_mdsoar_bundle.zip -d out/unpacked
+          find out/unpacked -type f -print0 | sort -z | xargs -0 sha256sum > out/all_member_sha256.txt
+          find out/unpacked -type f -printf '%P\t%s\n' | sort > out/all_member_sizes.tsv
+
+      - name: Extract all safe machine-readable text without executing publication content
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' f; do
+            h="$(sha256sum "$f" | awk '{print $1}')"
+            case "${f,,}" in
+              *.pdf)
+                if command -v pdftotext >/dev/null 2>&1; then
+                  pdftotext -layout "$f" "out/text/${h}.txt" || true
+                fi
+                ;;
+            esac
+            if command -v strings >/dev/null 2>&1; then
+              strings -a -n 4 "$f" > "out/strings/${h}.txt" || true
+            fi
+          done < <(find out/unpacked -type f -print0)
+
+      - name: Exhaustively inventory and scan all supplement members
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, re, zipfile
+          from pathlib import Path
+
+          root = Path('out/unpacked')
+          terms = [
+              'normaliz', 'irradiance', 'solar flux', 'incident flux', 'incoming flux',
+              'unit flux', 'unit-flux', 'top of atmosphere', 'toa', 'dimensionless',
+              'radiance', 'intensity', 'stokes', 'mystic', 'mcssa', 'vlidort',
+              'table 9', 'scale', 'solar beam', 'solar source', 'pi', 'π'
+          ]
+          quantity_re = re.compile(r'(?i)(radiance|intensity|stokes|mystic|mcssa|vlidort|table\s*9)')
+          scale_re = re.compile(r'(?i)(normal\w*|irradiance|solar\s+flux|incident\s+flux|incoming\s+flux|unit[- ]?flux|top\s+of\s+atmosphere|\btoa\b|dimensionless|solar\s+beam|solar\s+source|\bscale\b)')
+
+          def sha(p: Path):
+              return hashlib.sha256(p.read_bytes()).hexdigest()
+
+          def compact(s: str):
+              return re.sub(r'\s+', ' ', s).strip()
+
+          def scan_text(label: str, text: str, max_hits=120):
+              low = text.lower()
+              hits=[]
+              for term in terms:
+                  key=term.lower(); pos=0; n=0
+                  while n < 12:
+                      i=low.find(key,pos)
+                      if i<0: break
+                      c=compact(text[max(0,i-220):min(len(text),i+len(term)+220)])
+                      hits.append({'term':term,'context':c[:1000]})
+                      n += 1; pos=i+max(1,len(key))
+                      if len(hits)>=max_hits: return hits
+              return hits
+
+          files=[]; candidates=[]; archive_members=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file()):
+              rel=str(p.relative_to(root)); digest=sha(p); size=p.stat().st_size
+              rec={'path':rel,'size':size,'sha256':digest,'suffix':p.suffix.lower()}
+              files.append(rec)
+
+              texts=[]
+              # Direct text formats only; publication code/config is read as text, never executed.
+              if p.suffix.lower() in {'.txt','.csv','.tsv','.dat','.md','.json','.xml','.yml','.yaml','.ini','.cfg','.conf','.inp','.in','.py','.f','.f90','.for','.c','.h','.m'} and size <= 20_000_000:
+                  texts.append(('direct', p.read_text(encoding='utf-8', errors='replace')))
+              ext=Path('out/text')/(digest+'.txt')
+              if ext.exists() and ext.stat().st_size:
+                  texts.append(('pdftotext', ext.read_text(encoding='utf-8', errors='replace')))
+              sfile=Path('out/strings')/(digest+'.txt')
+              if sfile.exists() and sfile.stat().st_size:
+                  texts.append(('strings', sfile.read_text(encoding='utf-8', errors='replace')))
+
+              # OOXML/ZIP containers: enumerate every member and scan XML/text bytes.
+              if zipfile.is_zipfile(p) and size <= 50_000_000:
+                  try:
+                      with zipfile.ZipFile(p) as zf:
+                          for zi in zf.infolist():
+                              archive_members.append({'container':rel,'member':zi.filename,'size':zi.file_size,'crc32':f'{zi.CRC:08x}'})
+                              if zi.is_dir() or zi.file_size > 10_000_000: continue
+                              lname=zi.filename.lower()
+                              if not (lname.endswith(('.xml','.rels','.txt','.csv','.json','.md','.ini','.cfg'))): continue
+                              raw=zf.read(zi)
+                              text=raw.decode('utf-8',errors='replace')
+                              texts.append((f'zip:{zi.filename}',text))
+                  except Exception as e:
+                      rec['zipScanError']=repr(e)
+
+              for source,text in texts:
+                  for h in scan_text(f'{rel}:{source}',text):
+                      candidates.append({'file':rel,'source':source,**h})
+                  # Strong candidate: scale/convention and benchmark quantity co-occur in a compact line/window.
+                  for idx,line in enumerate(text.splitlines(),start=1):
+                      if quantity_re.search(line) and scale_re.search(line):
+                          candidates.append({'file':rel,'source':source,'term':'COOCCURRENCE','line':idx,'context':compact(line)[:1200]})
+                          if len(candidates) >= 2000: break
+                  if len(candidates) >= 2000: break
+              if len(candidates) >= 2000: break
+
+          report={
+            'classification':'FULL_PUBLICATION_SUPPLEMENT_SCALE_AUDIT_COMPLETE_FAIL_CLOSED',
+            'binds':{
+              'v42Head':'9f04d96af3b34b390658b30b2f9e024742b4ab1c',
+              'archiveExpectedSha256':'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e',
+              'tableWorkbook':'1-s2.0-S0022407322001297-mmc26.xlsx',
+            },
+            'fileCount':len(files), 'files':files,
+            'archiveSubmemberCount':len(archive_members), 'archiveSubmembers':archive_members,
+            'candidateCount':len(candidates), 'candidates':candidates,
+            'interpretationRules':[
+              'This audit discovers provenance text only; no keyword, magnitude, or numerical fit can establish the Korkin Table 9 scale.',
+              'Only an explicit author/publication generation or configuration bridge tying Table 9 MYSTIC/MCSSA I to a radiometric convention may resolve normalization.',
+              'Absence in this bundle exhausts this exact route only and is not evidence that no convention exists.'
+            ],
+            'normalizationBridgeResolved':False,
+            'korkinGateAuthorized':False,
+            'deepScienceAuthorized':False,
+            'solverExecuted':False,'rendererExecuted':False,'photonsTraced':0,
+            'protectedResultOpened':False,'taylorOrJerusalemUsed':False,'epsilonSubstitutionUsed':False
+          }
+          Path('out/korkin_full_supplement_scale_audit_v43.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+          print(json.dumps({'classification':report['classification'],'fileCount':len(files),'archiveSubmemberCount':len(archive_members),'candidateCount':len(candidates)},indent=2))
+          PY
+          sha256sum out/korkin_full_supplement_scale_audit_v43.json > out/report_sha256.txt
+
+      - name: Fail closed and upload bounded audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/korkin_full_supplement_scale_audit_v43.json').read_text())
+          assert r['normalizationBridgeResolved'] is False
+          assert r['korkinGateAuthorized'] is False
+          assert r['deepScienceAuthorized'] is False
+          assert r['solverExecuted'] is False and r['rendererExecuted'] is False and r['photonsTraced'] == 0
+          assert r['protectedResultOpened'] is False and r['epsilonSubstitutionUsed'] is False
+          print('PASS_ZERO_RESULT_FULL_SUPPLEMENT_AUDIT')
+          PY
+
+      - name: Upload immutable audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-korkin-full-supplement-scale-audit-v43
+          path: |
+            out/korkin_full_supplement_scale_audit_v43.json
+            out/all_member_sha256.txt
+            out/all_member_sizes.tsv
+            out/report_sha256.txt
+          if-no-files-found: error
+          retention-days: 90

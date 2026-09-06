@@ -1,0 +1,281 @@
+name: Deep twilight phase/delta entry-to-scatter closure v24
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-phase-delta-entry-to-scatter-v24
+    paths:
+      - ".github/workflows/deep-twilight-phase-delta-entry-to-scatter-v24.yml"
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  exact-entry-to-scatter-v24:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.before == 'fe6e063c568394ae7b4e90222de270d3f2460455'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: fe6e063c568394ae7b4e90222de270d3f2460455
+      EXPECTED_CONTROL_COMMENT: '5557823594'
+      V23_RUN: '34019998318'
+      V23_HEAD: baf1bf7b6551d178979b980c9ee07ef34466e68d
+      V23_ARTIFACT: '9985161010'
+      V23_ARTIFACT_DIGEST: sha256:aa5a344cf12b80dce234fa3aa07d021e2f737a39bf366c520b70d3a4c66b6ce5
+      V22_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fresh fail-closed control fence and V23 binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "${{ github.event.before }}" = "$EXPECTED_MAIN"
+          OUT=deep-twilight-phase-delta-entry-to-scatter-v24-output
+          mkdir -p "$OUT"
+          gh api "repos/$GITHUB_REPOSITORY/issues/60" > "$OUT/issue60.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$OUT/main.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V23_RUN" > "$OUT/v23-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V23_ARTIFACT" > "$OUT/v23-artifact.json"
+          python - <<'PY'
+          import json, os, re, subprocess, sys
+          from pathlib import Path
+          root=Path('deep-twilight-phase-delta-entry-to-scatter-v24-output')
+          main=json.loads((root/'main.json').read_text())
+          run=json.loads((root/'v23-run.json').read_text())
+          art=json.loads((root/'v23-artifact.json').read_text())
+          issue=json.loads((root/'issue60.json').read_text())
+          if main['commit']['sha'] != os.environ['EXPECTED_MAIN']:
+              raise SystemExit('main moved; fail closed')
+          if run.get('head_sha') != os.environ['V23_HEAD'] or run.get('conclusion') != 'success' or run.get('run_attempt') != 1:
+              raise SystemExit('V23 run identity mismatch')
+          if str(art.get('id')) != os.environ['V23_ARTIFACT'] or art.get('digest') != os.environ['V23_ARTIFACT_DIGEST'] or art.get('expired'):
+              raise SystemExit('V23 artifact identity mismatch')
+          repo=os.environ['GITHUB_REPOSITORY']; current=int(os.environ['GITHUB_RUN_ID'])
+          blockers=[]; needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          for status in ('in_progress','queued'):
+              q=json.loads(subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],text=True,capture_output=True,check=True).stdout)
+              for r in q.get('workflow_runs',[]):
+                  if int(r['id']) == current: continue
+                  text=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in text for n in needles):
+                      blockers.append({'status':status,'id':r['id'],'name':r.get('name'),'branch':r.get('head_branch')})
+          (root/'v1-contention.json').write_text(json.dumps(blockers,indent=2,sort_keys=True)+'\n')
+          if blockers: sys.exit(43)
+          pages=(int(issue.get('comments',0))+99)//100
+          marker_re=re.compile(r'^\s*WRITE_QUIET_(BEGIN|END)\b'); markers=[]; latest_id=None
+          for page in range(1,pages+1):
+              cs=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60/comments?per_page=100&page={page}'],text=True,capture_output=True,check=True).stdout)
+              for c in cs:
+                  latest_id=int(c['id'])
+                  fenced=False
+                  for raw in str(c.get('body','')).splitlines():
+                      line=raw.rstrip('\r')
+                      if line.lstrip().startswith('```'):
+                          fenced=not fenced; continue
+                      if fenced or line.lstrip().startswith('>'): continue
+                      m=marker_re.match(line)
+                      if m: markers.append((int(c['id']),m.group(1),line.strip()))
+          markers.sort()
+          state=markers[-1][1] if markers else 'NONE'
+          (root/'write-quiet-markers.json').write_text(json.dumps({'markers':markers,'terminalState':state,'latestCommentId':latest_id},indent=2)+'\n')
+          if state == 'BEGIN': raise SystemExit('unmatched WRITE_QUIET_BEGIN')
+          if str(latest_id) != os.environ['EXPECTED_CONTROL_COMMENT']:
+              raise SystemExit(f'Issue #60 advanced from frozen V23 boundary: {latest_id}')
+          PY
+
+      - name: Download and byte-bind immutable V23/V22 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-phase-delta-entry-to-scatter-v24-output
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V23_ARTIFACT/zip" > "$OUT/v23.zip"
+          GOT="sha256:$(sha256sum "$OUT/v23.zip" | awk '{print $1}')"
+          test "$GOT" = "$V23_ARTIFACT_DIGEST"
+          mkdir -p "$OUT/v23"
+          unzip -q "$OUT/v23.zip" -d "$OUT/v23"
+          test -f "$OUT/v23/v22/uvspec-objdump-full.txt"
+          test "$(cut -d' ' -f1 "$OUT/v23/v22/uvspec-sha256.txt")" = "$V22_UVSPEC_SHA256"
+
+      - name: Prove exact entry ABI, delta arithmetic, and phase-parameter storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-phase-delta-entry-to-scatter-v24-output
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          root=Path('deep-twilight-phase-delta-entry-to-scatter-v24-output')
+          full=(root/'v23/v22/uvspec-objdump-full.txt').read_text(errors='replace')
+          hdr=(root/'v23/v22/installed-header-target-context.txt').read_text(errors='replace')
+
+          def must(s, label):
+              if s not in full: raise SystemExit(f'missing exact binary evidence: {label}')
+          def must_hdr(s, label):
+              if s not in hdr: raise SystemExit(f'missing exact header evidence: {label}')
+          def window(addr, before=8, after=18):
+              lines=full.splitlines(); idx=None
+              needle=addr.lower()+':'
+              for i,line in enumerate(lines):
+                  if line.strip().lower().startswith(needle): idx=i; break
+              if idx is None: raise SystemExit(f'address not found: {addr}')
+              return '\n'.join(lines[max(0,idx-before):min(len(lines),idx+after+1)])+'\n'
+
+          for text,label in [
+              ('float**                     dt_s,','dt_s prototype'),
+              ('float**                     om_s,','om_s prototype'),
+              ('float**                     g1_s,','g1_s prototype'),
+              ('float**                     g2_s,','g2_s prototype'),
+              ('float**                     f_s,','f_s prototype'),
+              ('float**                     ds_s,','ds_s prototype')]: must_hdr(text,label)
+
+          call1=window('ab82d',0,5); call2=window('ae670',0,5)
+          seq1=['ab82d:', '[rbx+0xc38]', 'ab833:', '[rbx+0xc30]', 'ab839:', '[rbx+0xc28]', 'ab83f:', '<mystic>']
+          seq2=['ae670:', '[rbx+0xc38]', 'ae676:', '[rbx+0xc30]', 'ae67c:', '[rbx+0xc28]', 'ae682:', '<mystic>']
+          for s in seq1:
+              if s not in call1: raise SystemExit('callsite1 ABI sequence mismatch: '+s)
+          for s in seq2:
+              if s not in call2: raise SystemExit('callsite2 ABI sequence mismatch: '+s)
+
+          setup_call=window('18b8e5',0,31)
+          for s in ['18b923:', 'push   QWORD PTR [rsp+0x1f0]', '18b92a:', 'mov    r9,QWORD PTR [rsp+0x1f0]',
+                    '18b932:', 'mov    r8,QWORD PTR [rsp+0x1e8]', '18b93a:', 'mov    rcx,QWORD PTR [rsp+0x1e0]',
+                    '18b942:', 'mov    rdx,QWORD PTR [rsp+0x1d8]', '18b94a:', 'mov    rsi,QWORD PTR [rsp+0x1c8]',
+                    '18b952:', 'mov    edi,DWORD PTR [rsp+0xb8]', '18b959:', '<setup_profiles1D.constprop.0>']:
+              if s not in setup_call: raise SystemExit('mystic->setup_profiles ABI mismatch: '+s)
+
+          pro=window('157cf0',0,34)
+          for s in ['157cf8:', 'mov    r12,rsi', '157d03:', 'mov    rbp,rdx', '157d0e:', '[rsp+0x100]',
+                    '157d2a:', '[rsp+0x60],rcx', '157d2f:', '[rsp+0x88],rax',
+                    '157d5b:', '[rsp+0x78],r8', '157d64:', '[rsp+0x80],r9']:
+              if s not in pro: raise SystemExit('setup_profiles prologue mismatch: '+s)
+
+          ds=window('15819f',0,27)
+          for s in ['15819f:', '[rsp+0x88]', '1581b8:', '[rbp+rax*8+0x0]', '1581bd:', '[r12+rax*8]',
+                    '1581ce:', '[r14+rdx*1]', '1581d4:', '[r13+rdx*1+0x0]', '1581db:', '[r10+rax*8]',
+                    '1581e2:', '[r13+rdx*1+0x0]', '1581e9:', 'subsd  xmm1,xmm2', '1581f1:', 'mulsd  xmm0,xmm1']:
+              if s not in ds: raise SystemExit('delta arithmetic mismatch: '+s)
+
+          cp=window('158ca9',0,70)
+          for s in ['158ca9:', '[r15+0xd0]', '158cd2:', '[rsp+0x60]', '158cd7:', '[r15+0xd8]',
+                    '158cde:', '[r15+0xe0]', '158cfe:', '[rsp+0x78]', '158d0c:', '[rsp+0x80]']:
+              if s not in cp: raise SystemExit('phase copy mapping mismatch: '+s)
+
+          g1=window('16ce20',0,8); phase=window('16d228',0,12)
+          for s in ['16ce20:', '[rdi+0xd0]']:
+              if s not in g1: raise SystemExit('get_g1 fallback mismatch: '+s)
+          for s in ['16d228:', '[rax+0xe0]', '16d23c:', '[rax+0xd8]']:
+              if s not in phase: raise SystemExit('phase fallback mismatch: '+s)
+
+          must('call   169a10 <sc_HG2_mu>', 'HG2 sampler call')
+          must_hdr('double sc_HG2_mu (double g1, double g2, double ff);', 'HG2 prototype')
+
+          summary={
+            'mysticEntryAbi': {
+              'dt_s':'arg4_rcx','om_s':'arg5_r8','g1_s':'arg6_r9',
+              'g2_s':'arg7_stack1','f_s':'arg8_stack2','ds_s':'arg9_stack3'
+            },
+            'setupProfilesExactMapping': {
+              'n_caoth':'rdi','dt_s':'rsi->r12','om_s':'rdx->rbp','g1_s':'rcx->[rsp+0x60]',
+              'g2_s':'r8->[rsp+0x78]','f_s':'r9->[rsp+0x80]','ds_s':'stack1->[rsp+0x88]'
+            },
+            'deltaSemanticStatus':'PASS_EXACT_BINARY',
+            'deltaScatteringFormula':'tau_scat_nondelta = dt_s * om_s * (1 - ds_s)',
+            'derivedTransportFormula':'tau_eff = dt_s * (1 - om_s * ds_s); ssa_eff = om_s*(1-ds_s)/(1-om_s*ds_s) when denominator != 0',
+            'phaseStorageStatus':'PASS_EXACT_BINARY_STORAGE',
+            'phaseStorage':{'g1_s':'profile+0xd0','g2_s':'profile+0xd8','f_s':'profile+0xe0'},
+            'getG1FallbackReads':'profile+0xd0',
+            'phaseFallbackReads':['profile+0xd8','profile+0xe0'],
+            'hg2Prototype':'sc_HG2_mu(g1,g2,ff)',
+            'frozenStateHG2BranchSelectionProved':False,
+            'falseMysticSetLiteralRspInferenceRejected':True,
+            'exactZeroPolicy':'preserve raw IEEE-754 signed zeros; no epsilon substitution',
+            'rendererParityAuthorized':False,
+            'korkinGateAuthorized':False,
+            'levelBChanged':False
+          }
+          (root/'entry-to-scatter-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          evidence='\n===== CALLSITE1 =====\n'+call1+'\n===== CALLSITE2 =====\n'+call2+'\n===== MYSTIC_TO_SETUP =====\n'+setup_call+'\n===== SETUP_PROLOGUE =====\n'+pro+'\n===== DS_ARITHMETIC =====\n'+ds+'\n===== PHASE_COPY =====\n'+cp+'\n===== GET_G1 =====\n'+g1+'\n===== PHASE_FALLBACK =====\n'+phase
+          (root/'exact-selected-disassembly.txt').write_text(evidence)
+          (root/'exact-selected-disassembly-sha256.txt').write_text(hashlib.sha256(evidence.encode()).hexdigest()+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-phase-delta-entry-to-scatter-v24
+          path: deep-twilight-phase-delta-entry-to-scatter-v24-output
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: Fresh terminal fence before material checkpoint write
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re, subprocess
+          repo=os.environ['GITHUB_REPOSITORY']; current=int(os.environ['GITHUB_RUN_ID'])
+          main=json.loads(subprocess.run(['gh','api',f'repos/{repo}/branches/main'],text=True,capture_output=True,check=True).stdout)
+          if main['commit']['sha'] != os.environ['EXPECTED_MAIN']: raise SystemExit('main moved')
+          blockers=[]; needles=('reptran','recovery4','ordinal45','avps','level-b','level b','lowalt')
+          for status in ('in_progress','queued'):
+              q=json.loads(subprocess.run(['gh','api',f'repos/{repo}/actions/runs?status={status}&per_page=100'],text=True,capture_output=True,check=True).stdout)
+              for r in q.get('workflow_runs',[]):
+                  if int(r['id']) == current: continue
+                  text=(str(r.get('name',''))+' '+str(r.get('head_branch',''))).lower()
+                  if any(n in text for n in needles): blockers.append(r['id'])
+          if blockers: raise SystemExit('V1 contention appeared; skip checkpoint write')
+          issue=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60'],text=True,capture_output=True,check=True).stdout)
+          pages=(int(issue.get('comments',0))+99)//100; marker_re=re.compile(r'^\s*WRITE_QUIET_(BEGIN|END)\b'); markers=[]
+          for page in range(1,pages+1):
+              cs=json.loads(subprocess.run(['gh','api',f'repos/{repo}/issues/60/comments?per_page=100&page={page}'],text=True,capture_output=True,check=True).stdout)
+              for c in cs:
+                  fenced=False
+                  for raw in str(c.get('body','')).splitlines():
+                      line=raw.rstrip('\r')
+                      if line.lstrip().startswith('```'): fenced=not fenced; continue
+                      if fenced or line.lstrip().startswith('>'): continue
+                      m=marker_re.match(line)
+                      if m: markers.append((int(c['id']),m.group(1)))
+          markers.sort()
+          if markers and markers[-1][1]=='BEGIN': raise SystemExit('unmatched WRITE_QUIET_BEGIN')
+          PY
+
+      - name: Post bounded Issue 60 V24 readout
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=deep-twilight-phase-delta-entry-to-scatter-v24-output
+          SUMMARY="$(cat "$OUT/entry-to-scatter-summary.json")"
+          EVSHA="$(cat "$OUT/exact-selected-disassembly-sha256.txt")"
+          BODY=$(cat <<EOF
+          DEEP_TWILIGHT::PHASE_DELTA_ENTRY_TO_SCATTER_V24_READOUT
+
+          fence_main=$EXPECTED_MAIN
+          branch=$GITHUB_REF_NAME
+          head=$GITHUB_SHA
+          run=$GITHUB_RUN_ID attempt1
+          predecessor_v23_run=$V23_RUN head=$V23_HEAD artifact=$V23_ARTIFACT digest=$V23_ARTIFACT_DIGEST
+          STATIC_ONLY=true; uvspecExecuted=false; rngInitialized=false; seedConsumed=false; mysticBodyExecuted=false; photonTraced=false
+          protectedResultOpened=false; levelBChanged=false; Taylor/Jerusalem=false; epsilonSubstitution=false
+          exact_selected_disassembly_sha256=$EVSHA
+
+          Exact entry-to-internal dataflow closure:
+          \`\`\`json
+          $SUMMARY
+          \`\`\`
+
+          Material conclusion: ds_s is no longer name-only/fail-closed. Exact pinned-binary setup arithmetic proves it enters the non-delta scattering optical-depth term as dt_s*om_s*(1-ds_s), yielding the deterministic transport translation tau_eff=dt_s*(1-om_s*ds_s) and ssa_eff=om_s*(1-ds_s)/(1-om_s*ds_s) when the denominator is nonzero. Exact IEEE-754 zeros/signed zeros remain exact; no epsilon is introduced.
+
+          The same exact dataflow binds g1_s/g2_s/f_s into neighboring internal profile slots and proves their downstream fallback reads; the binary HG2 sampler has installed prototype sc_HG2_mu(g1,g2,ff). V24 deliberately does NOT yet claim that the frozen bare-aerosol state selects that HG2 branch, so rendererParityAuthorized=false and the Korkin gate remains closed. A prior tempting inference from literal rsp offsets near mystic_set is explicitly rejected; V24's proof uses canonical entry-stack accounting plus the setup_profiles1D callee.
+          EOF
+          )
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments" -f body="$BODY"

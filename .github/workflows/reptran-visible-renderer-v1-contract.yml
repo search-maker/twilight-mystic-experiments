@@ -1,0 +1,108 @@
+name: REPTRAN visible renderer v1 contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/reptran-visible-renderer-v1-contract.yml"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-execution.yml"
+      - "experiments/mystic-batch-v1/reptran_visible_renderer_v1.py"
+      - "experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py"
+      - "tests/test_reptran_visible_renderer_v1.py"
+      - "tests/test_reptran_visible_consumer_v1.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/reptran-visible-renderer-v1-contract.yml"
+      - ".github/workflows/mystic-batch-v1-cross-geometry-execution.yml"
+      - "experiments/mystic-batch-v1/reptran_visible_renderer_v1.py"
+      - "experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py"
+      - "tests/test_reptran_visible_renderer_v1.py"
+      - "tests/test_reptran_visible_consumer_v1.py"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile successor renderer, isolated wired consumer and tests
+        run: >-
+          python -m py_compile
+          experiments/mystic-batch-v1/reptran_visible_renderer_v1.py
+          experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py
+          tests/test_reptran_visible_renderer_v1.py
+          tests/test_reptran_visible_consumer_v1.py
+      - name: Run zero-runtime REPTRAN renderer tests
+        run: python -m unittest -v tests/test_reptran_visible_renderer_v1.py
+      - name: Run zero-runtime authoritative consumer wiring tests
+        run: python -m unittest -v tests/test_reptran_visible_consumer_v1.py
+      - name: Prove isolated V1 route cannot execute solver or alter protected consumer
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          renderer = Path("experiments/mystic-batch-v1/reptran_visible_renderer_v1.py")
+          consumer = Path("experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py")
+          historical = Path("experiments/mystic-batch-v1/cross_geometry_execution_adapter.py")
+          execution_workflow = Path(".github/workflows/mystic-batch-v1-cross-geometry-execution.yml")
+          protected_workflow = Path(".github/workflows/jerusalem-tishrei-direct-mystic-v2-package-validation.yml")
+
+          forbidden = (
+              "import subprocess",
+              "from subprocess",
+              "subprocess.run",
+              "subprocess.Popen",
+              "os.system",
+              "workflow_dispatch",
+          )
+          for path in (renderer, consumer):
+              text = path.read_text()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"forbidden execution token in {path}: {token}")
+
+          consumer_text = consumer.read_text()
+          required = (
+              'V1_VISIBLE_RENDERER = Path(__file__).with_name("reptran_visible_renderer_v1.py")',
+              'V1_VISIBLE_MOLECULAR_ABSORPTION = "reptran"',
+              '"authoritative-v1-visible-alis-reptran"',
+          )
+          for token in required:
+              if token not in consumer_text:
+                  raise SystemExit(f"missing authoritative consumer wiring token: {token}")
+
+          historical_text = historical.read_text()
+          historical_forbidden = (
+              "reptran_visible_renderer_v1.py",
+              "V1_VISIBLE_MOLECULAR_ABSORPTION",
+              "render_current_v1_case",
+          )
+          present = [token for token in historical_forbidden if token in historical_text]
+          if present:
+              raise SystemExit(f"historical shared CRS adapter was not isolated: {present}")
+          if 'text = adapter.render_input(inputs, data_dir.resolve(), repository_root.resolve(), case_dir.resolve())' not in historical_text:
+              raise SystemExit("historical shared CRS render path drift")
+
+          workflow_text = execution_workflow.read_text()
+          expected_route = "EXECUTION_ADAPTER: experiments/mystic-batch-v1/reptran_cross_geometry_execution_adapter_v1.py"
+          if workflow_text.count(expected_route) != 1:
+              raise SystemExit("authoritative non-protected V1 workflow is not uniquely routed to isolated REPTRAN adapter")
+
+          protected_text = protected_workflow.read_text()
+          if "reptran_cross_geometry_execution_adapter_v1.py" in protected_text:
+              raise SystemExit("protected v2 package lane must not reference isolated REPTRAN V1 adapter")
+          if "experiments/mystic-batch-v1/cross_geometry_execution_adapter.py" not in protected_text:
+              raise SystemExit("protected v2 package lane lost its frozen shared dependency trigger")
+
+          contract = Path(".github/workflows/reptran-visible-renderer-v1-contract.yml").read_text()
+          dispatch_key = "workflow_" + "dispatch:"
+          if dispatch_key in contract:
+              raise SystemExit("renderer contract must not expose workflow dispatch")
+          PY

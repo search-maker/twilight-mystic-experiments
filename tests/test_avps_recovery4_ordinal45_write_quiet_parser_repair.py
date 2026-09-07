@@ -35,38 +35,66 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         namespace = _parser_namespace()
         self.assertIn('write_quiet_end_binding', namespace)
         self.assertIn('record_write_quiet_end', namespace)
+        self.assertIn('is_write_quiet_begin', namespace)
 
-    def test_valid_first_line_and_later_line_end_markers(self):
+    def test_valid_marker_line_and_standalone_metadata_aliases(self):
         parse = _parser_namespace()['write_quiet_end_binding']
-        self.assertEqual(
-            parse('WRITE_QUIET_END | stage=x | beginComment=123'),
-            123,
-        )
-        self.assertEqual(
-            parse('header\n  WRITE_QUIET_END | stage=x | beginComment=123\nfooter'),
-            123,
-        )
-        # Preserve historical first-line ledger compatibility only; new/later-line
-        # linkage is canonical beginComment.
-        self.assertEqual(parse('WRITE_QUIET_END | stage=x | begin=123'), 123)
-        self.assertEqual(parse('WRITE_QUIET_END | stage=x | begin_comment=123'), 123)
+        for key in ('begin', 'beginComment', 'begin_comment'):
+            with self.subTest(key=key, surface='marker'):
+                self.assertEqual(parse(f'WRITE_QUIET_END | stage=x | {key}=123'), 123)
+            with self.subTest(key=key, surface='standalone'):
+                self.assertEqual(parse(f'WRITE_QUIET_END | stage=x\n{key}=123'), 123)
 
-    def test_unrelated_prose_does_not_close(self):
+    def test_legacy_space_delimited_end_and_owner_prefix(self):
+        parse = _parser_namespace()['write_quiet_end_binding']
+        self.assertEqual(parse('WRITE_QUIET_END begin=123 stage=x'), 123)
+        self.assertEqual(parse('WRITE_QUIET_END beginComment=123 stage=x'), 123)
+        self.assertEqual(parse('WRITE_QUIET_END begin_comment=123 stage=x'), 123)
+        self.assertEqual(
+            parse('TOTAL_SKY_OWNER::WRITE_QUIET_END | stage=x | beginComment=123'),
+            123,
+        )
+        self.assertEqual(
+            parse('header\nATMOSPHERE_OWNER::WRITE_QUIET_END | stage=x\nbegin=123'),
+            123,
+        )
+
+    def test_begin_grammar_is_first_line_exact_and_owner_aware(self):
+        is_begin = _parser_namespace()['is_write_quiet_begin']
+        for body in (
+            'WRITE_QUIET_BEGIN | stage=x',
+            'TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x',
+            'ATMOSPHERE_OWNER::WRITE_QUIET_BEGIN token=x',
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(is_begin(body))
+        for body in (
+            'prose WRITE_QUIET_BEGIN | stage=x',
+            'Total_Sky_OWNER::WRITE_QUIET_BEGIN | stage=x',
+            'TOTAL-SKY-OWNER::WRITE_QUIET_BEGIN | stage=x',
+            'header\nTOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x',
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(is_begin(body))
+
+    def test_unrelated_prose_and_quoted_markers_do_not_close(self):
         parse = _parser_namespace()['write_quiet_end_binding']
         self.assertIsNone(parse('prose WRITE_QUIET_END | beginComment=123'))
         self.assertIsNone(parse('header\n> WRITE_QUIET_END | beginComment=123'))
         self.assertIsNone(parse('header\nnot-a-marker: WRITE_QUIET_END | beginComment=123'))
+        self.assertIsNone(parse('header\n`WRITE_QUIET_END | beginComment=123`'))
 
-    def test_malformed_ambiguous_and_duplicate_markers_fail_closed(self):
+    def test_malformed_ambiguous_and_conflicting_bindings_fail_closed(self):
         parse = _parser_namespace()['write_quiet_end_binding']
         bad = (
             'WRITE_QUIET_END | stage=x',
             'WRITE_QUIET_END | beginComment=abc',
             'WRITE_QUIET_END | beginComment=123 | beginComment=123',
-            'header\nWRITE_QUIET_END | begin=123',
-            'header\nWRITE_QUIET_END | begin_comment=123',
             'WRITE_QUIET_END | begin=123 | beginComment=123',
+            'WRITE_QUIET_END begin=123 beginComment=124',
+            'WRITE_QUIET_END | stage=x\nbeginComment=123\nbegin=123',
             'WRITE_QUIET_END | beginComment=123\nWRITE_QUIET_END | beginComment=123',
+            'TOTAL_SKY_OWNER::WRITE_QUIET_END | stage=x\nNarrative only with historical `begin=123` mention',
         )
         for body in bad:
             with self.subTest(body=body):
@@ -78,7 +106,7 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         closed = set()
         self.assertTrue(
             record(
-                'header\nWRITE_QUIET_END | beginComment=123',
+                'header\nWRITE_QUIET_END | stage=x\nbeginComment=123',
                 200,
                 {123},
                 closed,
@@ -97,6 +125,8 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         self.assertEqual(text.count(BEGIN), 3)
         self.assertEqual(text.count(END), 3)
         self.assertNotIn("first.startswith('WRITE_QUIET_END')", text)
+        self.assertNotIn("elif first.startswith('WRITE_QUIET_BEGIN'):", text)
+        self.assertIn("elif is_write_quiet_begin(body):", text)
         self.assertIn(
             "end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | beginComment={begin} |",
             text,

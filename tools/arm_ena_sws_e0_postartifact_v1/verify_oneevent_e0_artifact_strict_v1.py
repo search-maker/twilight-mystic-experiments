@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Strict entrypoint for the sanitized ARM ENA/SWS one-event E0 artifact.
+
+The frozen producer has a closed seven-file output universe. Refuse every extra
+filesystem object and every unregistered semantic field before delegating to the
+deeper result-blind verifier, so future producer widening cannot silently carry
+protected data or bypass provenance cross-binding.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import datetime as dt
+import json
+import re
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import verify_oneevent_e0_artifact_v1 as base
+
+
+class StrictVerificationError(RuntimeError):
+    pass
+
+
+EXPECTED_CONTROL_COMMENT = "5487647692"
+RECEIPT_ALLOWED_KEYS = {
+    "schema", "purpose", "created_utc", "frozen_event_universe_sha256",
+    "probe_case_id", "processed_event_count", "actual_sws_native_schema_inspected",
+    "protected_variable_values_read", "raw_sws_files_retained", "credentials_persisted",
+    "credentials_source", "transport_errors_sanitized", "stage_b_authorized", "files",
+}
+RECEIPT_FILE_ALLOWED_KEYS = {"relative_path", "size_bytes", "sha256"}
+SUMMARY_ALLOWED_KEYS = {
+    "schema", "protocol", "control_comment", "candidate_event_count",
+    "processed_event_count", "remaining_event_count", "disposition_counts",
+    "e0_auditor_sha256", "collector_sha256", "raw_sws_files_retained",
+    "protected_variable_values_read", "stage_b_authorized",
+}
+SCHEMA_ROW_ALLOWED_KEYS = {
+    "kind", "source_file", "source_sha256", "dod_version", "process_version",
+    "variables", "protected_variable_values_read",
+}
+PROVENANCE_ALLOWED_KEYS = {
+    "case_id", "source_files", "e0_auditor_sha256", "collector_sha256",
+    "protected_variable_values_read", "raw_sws_files_retained",
+}
+PROVENANCE_SOURCE_ALLOWED_KEYS = {"filename", "size_bytes", "sha256"}
+QUERY_ALLOWED_KEYS = {
+    "case_id", "datastream", "date", "start", "end_exclusive", "filenames",
+    "credentials_persisted",
+}
+LEDGER_ALLOWED_KEYS = {
+    "case_id", "local_civil_date", "event", "t_minus8_utc", "t_minus7_utc", "t_minus6_utc",
+    "source_file_count", "source_files", "source_sha256", "target_wavelength_nm_requested",
+    "target_pixel_map", "qc_variables_used", "timing_pass",
+    "validity_resolved_without_photometric_values", "validity_pass",
+    "primary_holdout_eligible_after_e0", "disposition", "read_errors", "e0_semantics",
+    "protected_variable_values_read", "raw_sws_files_retained",
+}
+for _anchor in ("minus8", "minus7", "minus6"):
+    LEDGER_ALLOWED_KEYS.update({
+        f"nearest_{_anchor}_s",
+        f"samples_within_5s_{_anchor}",
+        f"samples_within_30s_{_anchor}",
+        f"safe_qc_valid_samples_within_5s_{_anchor}",
+        f"safe_qc_valid_samples_within_30s_{_anchor}",
+    })
+
+
+def _reject_unknown(obj: dict, allowed: set[str], where: str) -> None:
+    unknown = set(obj) - allowed
+    if unknown:
+        raise StrictVerificationError(f"{where} has unregistered keys {sorted(unknown)}")
+
+
+def _basename(value: object, where: str) -> str:
+    if not isinstance(value, str) or not value or Path(value).name != value:
+        raise StrictVerificationError(f"{where} must be a basename")
+    return value
+
+
+def _sha(value: object, where: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise StrictVerificationError(f"{where} must be a lowercase SHA-256")
+    return value
+
+
+def _bounded_text(value: object, where: str, max_len: int = 4096) -> str:
+    if not isinstance(value, str) or len(value) > max_len:
+        raise StrictVerificationError(f"{where} must be bounded text")
+    return value
+
+
+def _schema_variable_metadata(var: dict, where: str) -> None:
+    name = _bounded_text(var.get("name"), f"{where} name", 256)
+    if not name:
+        raise StrictVerificationError(f"{where} name must be non-empty")
+    _bounded_text(var.get("dtype"), f"{where} dtype", 128)
+    dimensions = var.get("dimensions")
+    shape = var.get("shape")
+    if not isinstance(dimensions, list) or not isinstance(shape, list) or len(dimensions) != len(shape):
+        raise StrictVerificationError(f"{where} dimensions/shape must be parallel lists")
+    if len(dimensions) > 16:
+        raise StrictVerificationError(f"{where} has implausibly many dimensions")
+    for k, dim in enumerate(dimensions, 1):
+        if not isinstance(dim, str) or not dim or len(dim) > 256:
+            raise StrictVerificationError(f"{where} dimension {k} must be bounded text")
+    for k, size in enumerate(shape, 1):
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise StrictVerificationError(f"{where} shape item {k} must be a nonnegative integer")
+    for key in ("protected_photometric_values", "safe_qc_values_allowed"):
+        if not isinstance(var.get(key), bool):
+            raise StrictVerificationError(f"{where} {key} must be boolean metadata")
+    for key in ("long_name", "standard_name", "units"):
+        _bounded_text(var.get(key), f"{where} {key}")
+
+
+def _parse_utc(text: object, where: str) -> dt.datetime:
+    if not isinstance(text, str) or not text:
+        raise StrictVerificationError(f"{where} must be a UTC timestamp")
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        value = dt.datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise StrictVerificationError(f"{where} is not valid ISO-8601") from exc
+    if value.tzinfo is None:
+        raise StrictVerificationError(f"{where} must be timezone-aware")
+    return value.astimezone(dt.timezone.utc)
+
+
+def _expected_query_windows(root: Path) -> dict[str, tuple[str, str]]:
+    path = root / "ena_sws_e0_event_universe.csv"
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            rows = [row for row in csv.DictReader(fh) if row.get("case_id") == base.PROBE_CASE_ID]
+    except Exception as exc:
+        raise StrictVerificationError(f"cannot derive pinned query windows: {type(exc).__name__}") from exc
+    if len(rows) != 1:
+        raise StrictVerificationError("pinned event must occur exactly once before query-window binding")
+    event = rows[0]
+    days: set[str] = set()
+    for key in ("t_minus8_utc", "t_minus7_utc", "t_minus6_utc"):
+        center = _parse_utc(event.get(key), f"event universe {key}")
+        for shift in (-31, 0, 31):
+            days.add((center + dt.timedelta(seconds=shift)).strftime("%Y%m%d"))
+    windows: dict[str, tuple[str, str]] = {}
+    for day in sorted(days):
+        start_date = dt.datetime.strptime(day, "%Y%m%d").date()
+        windows[day] = (start_date.isoformat(), (start_date + dt.timedelta(days=1)).isoformat())
+    return windows
+
+
+def _ledger_source_names(value: object) -> set[str]:
+    if not isinstance(value, str):
+        raise StrictVerificationError("ledger source_files must be a semicolon-delimited string")
+    names: set[str] = set()
+    for i, token in enumerate((x for x in value.split(";") if x), 1):
+        name = _basename(token, f"ledger source_files item {i}")
+        if name in names:
+            raise StrictVerificationError(f"duplicate ledger source filename: {name}")
+        names.add(name)
+    return names
+
+
+def _ledger_source_hashes(value: object) -> dict[str, str]:
+    if not isinstance(value, str):
+        raise StrictVerificationError("ledger source_sha256 must be a semicolon-delimited string")
+    out: dict[str, str] = {}
+    for i, token in enumerate((x for x in value.split(";") if x), 1):
+        if "|" not in token:
+            raise StrictVerificationError(f"ledger source_sha256 item {i} lacks filename/hash separator")
+        filename, digest = token.rsplit("|", 1)
+        filename = _basename(filename, f"ledger source_sha256 item {i} filename")
+        digest = _sha(digest, f"ledger source_sha256 item {i} digest")
+        if filename in out:
+            raise StrictVerificationError(f"duplicate ledger source_sha256 filename: {filename}")
+        out[filename] = digest
+    return out
+
+
+def _closed_semantic_preflight(root: Path) -> None:
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if path.is_symlink():
+            raise StrictVerificationError(f"symlink is forbidden in sanitized artifact: {rel}")
+        if path.is_dir():
+            raise StrictVerificationError(f"unexpected directory in closed sanitized artifact: {rel}")
+        if not path.is_file():
+            raise StrictVerificationError(f"unexpected filesystem object in sanitized artifact: {rel}")
+
+    receipt = base.read_json(root / "probe_receipt.json")
+    if not isinstance(receipt, dict):
+        raise StrictVerificationError("probe_receipt.json must contain an object")
+    _reject_unknown(receipt, RECEIPT_ALLOWED_KEYS, "receipt")
+    manifest = receipt.get("files")
+    if not isinstance(manifest, list):
+        raise StrictVerificationError("receipt files must be a list")
+    for i, row in enumerate(manifest, 1):
+        if not isinstance(row, dict):
+            raise StrictVerificationError(f"receipt files row {i} must be an object")
+        _reject_unknown(row, RECEIPT_FILE_ALLOWED_KEYS, f"receipt files row {i}")
+
+    summary = base.read_json(root / "ena_sws_e0_stream_summary.json")
+    if not isinstance(summary, dict):
+        raise StrictVerificationError("summary must contain an object")
+    _reject_unknown(summary, SUMMARY_ALLOWED_KEYS, "summary")
+    if summary.get("schema") != 1:
+        raise StrictVerificationError("summary schema must be exactly 1")
+    if summary.get("control_comment") != EXPECTED_CONTROL_COMMENT:
+        raise StrictVerificationError("summary control_comment does not match frozen E0-v2 control")
+    summary_e0_sha = _sha(summary.get("e0_auditor_sha256"), "summary e0_auditor_sha256")
+    summary_collector_sha = _sha(summary.get("collector_sha256"), "summary collector_sha256")
+
+    schema_rows = base.read_jsonl(root / "ena_sws_e0_stream_schema.jsonl")
+    sws_sources: dict[str, str] = {}
+    for i, row in enumerate(schema_rows, 1):
+        _reject_unknown(row, SCHEMA_ROW_ALLOWED_KEYS, f"schema row {i}")
+        kind = row.get("kind")
+        if kind not in {"sws", "swsaux"}:
+            raise StrictVerificationError(f"schema row {i} has unregistered kind {kind!r}")
+        if row.get("protected_variable_values_read") is not False:
+            raise StrictVerificationError(f"schema row {i} lacks protected-values=false attestation")
+        filename = _basename(row.get("source_file"), f"schema row {i} source_file")
+        digest = _sha(row.get("source_sha256"), f"schema row {i} source_sha256")
+        _bounded_text(row.get("dod_version"), f"schema row {i} dod_version", 512)
+        _bounded_text(row.get("process_version"), f"schema row {i} process_version", 512)
+        variables = row.get("variables")
+        if not isinstance(variables, list) or not variables:
+            raise StrictVerificationError(f"schema row {i} lacks variable metadata")
+        for j, var in enumerate(variables, 1):
+            if not isinstance(var, dict):
+                raise StrictVerificationError(f"schema row {i} variable {j} must be an object")
+            _reject_unknown(var, base.SCHEMA_VARIABLE_ALLOWED_KEYS, f"schema row {i} variable {j}")
+            _schema_variable_metadata(var, f"schema row {i} variable {j}")
+        if kind == "sws":
+            if filename in sws_sources:
+                raise StrictVerificationError(f"duplicate SWS schema source filename: {filename}")
+            sws_sources[filename] = digest
+
+    ledger_rows = base.read_jsonl(root / "ena_sws_e0_stream_ledger.jsonl")
+    for i, row in enumerate(ledger_rows, 1):
+        _reject_unknown(row, LEDGER_ALLOWED_KEYS, f"ledger row {i}")
+
+    provenance_rows = base.read_jsonl(root / "ena_sws_e0_stream_provenance.jsonl")
+    provenance_sources: dict[str, str] = {}
+    for i, row in enumerate(provenance_rows, 1):
+        _reject_unknown(row, PROVENANCE_ALLOWED_KEYS, f"provenance row {i}")
+        if _sha(row.get("e0_auditor_sha256"), f"provenance row {i} e0_auditor_sha256") != summary_e0_sha:
+            raise StrictVerificationError("provenance e0_auditor_sha256 does not match summary")
+        if _sha(row.get("collector_sha256"), f"provenance row {i} collector_sha256") != summary_collector_sha:
+            raise StrictVerificationError("provenance collector_sha256 does not match summary")
+        sources = row.get("source_files")
+        if not isinstance(sources, list):
+            raise StrictVerificationError(f"provenance row {i} source_files must be a list")
+        for j, src in enumerate(sources, 1):
+            if not isinstance(src, dict):
+                raise StrictVerificationError(f"provenance row {i} source {j} must be an object")
+            _reject_unknown(src, PROVENANCE_SOURCE_ALLOWED_KEYS, f"provenance row {i} source {j}")
+            filename = _basename(src.get("filename"), f"provenance row {i} source {j} filename")
+            size = src.get("size_bytes")
+            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                raise StrictVerificationError(f"provenance row {i} source {j} size_bytes must be positive integer")
+            digest = _sha(src.get("sha256"), f"provenance row {i} source {j} sha256")
+            if filename in provenance_sources:
+                raise StrictVerificationError(f"duplicate provenance source filename: {filename}")
+            provenance_sources[filename] = digest
+
+    expected_windows = _expected_query_windows(root)
+    query_rows = base.read_jsonl(root / "ena_sws_e0_query_manifest.jsonl")
+    if len(query_rows) != len(expected_windows):
+        raise StrictVerificationError("query manifest row count does not match frozen needed-date set")
+    query_filenames: set[str] = set()
+    seen_query_days: set[str] = set()
+    for i, row in enumerate(query_rows, 1):
+        _reject_unknown(row, QUERY_ALLOWED_KEYS, f"query manifest row {i}")
+        if row.get("case_id") != base.PROBE_CASE_ID:
+            raise StrictVerificationError(f"query manifest row {i} case_id mismatch")
+        if row.get("datastream") != base.EXPECTED_DATASTREAM:
+            raise StrictVerificationError(f"query manifest row {i} datastream mismatch")
+        if row.get("credentials_persisted") is not False:
+            raise StrictVerificationError(f"query manifest row {i} credentials_persisted must be false")
+        day = row.get("date")
+        if not isinstance(day, str) or day not in expected_windows or day in seen_query_days:
+            raise StrictVerificationError(f"query manifest row {i} date is unexpected or duplicated")
+        seen_query_days.add(day)
+        expected_start, expected_end = expected_windows[day]
+        if row.get("start") != expected_start or row.get("end_exclusive") != expected_end:
+            raise StrictVerificationError(f"query manifest row {i} window does not match frozen needed date")
+        names = row.get("filenames")
+        if not isinstance(names, list):
+            raise StrictVerificationError(f"query manifest row {i} filenames must be a list")
+        local_names: set[str] = set()
+        for j, name in enumerate(names, 1):
+            basename = _basename(name, f"query manifest row {i} filename {j}")
+            if basename in local_names:
+                raise StrictVerificationError(f"query manifest row {i} duplicates filename {basename}")
+            local_names.add(basename)
+            query_filenames.add(basename)
+    if seen_query_days != set(expected_windows):
+        raise StrictVerificationError("query manifest dates do not exactly match frozen needed-date set")
+
+    if provenance_sources != sws_sources:
+        raise StrictVerificationError("SWS provenance filename/SHA set does not exactly match SWS schema sources")
+    if query_filenames != set(provenance_sources):
+        raise StrictVerificationError("query-manifest filename set does not exactly match provenance sources")
+
+    if len(ledger_rows) == 1:
+        ledger = ledger_rows[0]
+        if ledger.get("source_file_count") != len(provenance_sources):
+            raise StrictVerificationError("ledger source_file_count does not match provenance source count")
+        if _ledger_source_names(ledger.get("source_files")) != set(provenance_sources):
+            raise StrictVerificationError("ledger source_files do not exactly match provenance sources")
+        if _ledger_source_hashes(ledger.get("source_sha256")) != provenance_sources:
+            raise StrictVerificationError("ledger source_sha256 map does not exactly match provenance sources")
+        disposition = ledger.get("disposition")
+        if summary.get("disposition_counts") != {disposition: 1}:
+            raise StrictVerificationError("summary disposition_counts must be exactly the one ledger disposition")
+
+
+def verify_strict(root: Path) -> dict:
+    root = root.resolve()
+    if not root.is_dir():
+        raise StrictVerificationError(f"artifact directory does not exist: {root}")
+    actual = {
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    if actual != base.REQUIRED_FILES:
+        missing = sorted(base.REQUIRED_FILES - actual)
+        unexpected = sorted(actual - base.REQUIRED_FILES)
+        raise StrictVerificationError(
+            f"closed sanitized artifact file-set mismatch missing={missing} unexpected={unexpected}"
+        )
+    try:
+        _closed_semantic_preflight(root)
+        return base.verify(root)
+    except base.VerificationError as exc:
+        raise StrictVerificationError(str(exc)) from exc
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("artifact_dir", type=Path)
+    ap.add_argument("--receipt-out", type=Path, default=None)
+    args = ap.parse_args()
+    try:
+        result = verify_strict(args.artifact_dir)
+    except StrictVerificationError as exc:
+        print(json.dumps({"status": "REFUSED", "reason": str(exc)}, indent=2, sort_keys=True))
+        return 2
+    payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.receipt_out is not None:
+        args.receipt_out.write_text(payload, encoding="utf-8")
+    print(payload, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

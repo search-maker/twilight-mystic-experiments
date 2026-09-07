@@ -120,6 +120,26 @@ class StrictClosedArtifactTests(unittest.TestCase):
             strict.verify_strict(self.root)
         self.assertIn("schema row 2 variable 1 has unregistered keys", str(ctx.exception))
 
+    def test_strict_refuses_registered_schema_boolean_with_nonboolean_payload(self):
+        path = self.root / "ena_sws_e0_stream_schema.jsonl"
+        rows = strict.base.read_jsonl(path)
+        rows[0]["variables"][0]["protected_photometric_values"] = [False, 1.23]
+        fixture_module.write_jsonl(path, rows)
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("protected_photometric_values must be boolean metadata", str(ctx.exception))
+
+    def test_strict_refuses_registered_schema_shape_with_noninteger_payload(self):
+        path = self.root / "ena_sws_e0_stream_schema.jsonl"
+        rows = strict.base.read_jsonl(path)
+        rows[0]["variables"][0]["shape"] = ["10"]
+        fixture_module.write_jsonl(path, rows)
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("shape item 1 must be a nonnegative integer", str(ctx.exception))
+
     def test_strict_refuses_query_provenance_filename_mismatch(self):
         path = self.root / "ena_sws_e0_query_manifest.jsonl"
         row = strict.base.read_jsonl(path)[0]
@@ -130,6 +150,25 @@ class StrictClosedArtifactTests(unittest.TestCase):
             strict.verify_strict(self.root)
         self.assertIn("query-manifest filename set does not exactly match provenance sources", str(ctx.exception))
 
+    def test_strict_refuses_query_window_not_bound_to_frozen_event(self):
+        path = self.root / "ena_sws_e0_query_manifest.jsonl"
+        row = strict.base.read_jsonl(path)[0]
+        row["start"] = "2017-06-15"
+        fixture_module.write_jsonl(path, [row])
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("window does not match frozen needed date", str(ctx.exception))
+
+    def test_strict_refuses_duplicate_query_day(self):
+        path = self.root / "ena_sws_e0_query_manifest.jsonl"
+        row = strict.base.read_jsonl(path)[0]
+        fixture_module.write_jsonl(path, [row, dict(row)])
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("row count does not match frozen needed-date set", str(ctx.exception))
+
     def test_strict_refuses_extra_summary_disposition(self):
         path = self.root / "ena_sws_e0_stream_summary.json"
         summary = json.loads(path.read_text(encoding="utf-8"))
@@ -139,6 +178,16 @@ class StrictClosedArtifactTests(unittest.TestCase):
         with self.assertRaises(strict.StrictVerificationError) as ctx:
             strict.verify_strict(self.root)
         self.assertIn("summary disposition_counts must be exactly", str(ctx.exception))
+
+    def test_strict_refuses_wrong_frozen_control_comment(self):
+        path = self.root / "ena_sws_e0_stream_summary.json"
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        summary["control_comment"] = "not-the-frozen-control"
+        path.write_text(json.dumps(summary), encoding="utf-8")
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("control_comment does not match frozen E0-v2 control", str(ctx.exception))
 
     def test_strict_refuses_summary_provenance_tool_hash_mismatch(self):
         path = self.root / "ena_sws_e0_stream_summary.json"

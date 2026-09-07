@@ -1,0 +1,266 @@
+name: AVPS recovery4 ordinal45 publisher exact executable stress v1
+
+on:
+  push:
+    branches:
+      - stress/avps-r4-ordinal45-publisher-exact-v1
+    paths:
+      - '.github/workflows/avps-r4-ordinal45-publisher-exact-stress-v1.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-r4-ordinal45-publisher-exact-stress-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  EXPECTED_MAIN: 6149d047662661d0b420a121039ef45ba6f3e7ba
+  EXPECTED_BRANCH: stress/avps-r4-ordinal45-publisher-exact-v1
+  STRESS_PATH: .github/workflows/avps-r4-ordinal45-publisher-exact-stress-v1.yml
+  PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+  PUBLISHER_BLOB: d14ac20110c2c1c5704d7fdb3a1125f7816d03d5
+  SCIENCE_WORKFLOW: avps-v2-postconsumption-recovery4-science.yml
+  SPENT_PUBLISHER_RUN: '34147692847'
+  CORRECTION_BEGIN: '5467776090'
+  CORRECTION_PREDECESSOR: '5467858336'
+  CORRECTION_CANONICAL: '5467875147'
+
+jobs:
+  exact-executable-stress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact stress head to repaired merged main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$EXPECTED_MAIN"
+          test "$(git merge-base "$EXPECTED_MAIN" HEAD)" = "$EXPECTED_MAIN"
+          test "$(git rev-list --count "$EXPECTED_MAIN..HEAD")" = 1
+          test -z "$(git rev-list --merges "$EXPECTED_MAIN..HEAD")"
+          git diff --name-only "$EXPECTED_MAIN"...HEAD > changed-paths.txt
+          printf '%s\n' "$STRESS_PATH" > expected-paths.txt
+          diff -u expected-paths.txt changed-paths.txt
+          test "$(git hash-object "$PUBLISHER_PATH")" = "$PUBLISHER_BLOB"
+          test -z "$(command -v uvspec || true)"
+          test -f ".github/workflows/$SCIENCE_WORKFLOW"
+
+      - name: Materialize complete result-blind live governance and run inventory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stress-evidence
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > stress-evidence/issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml/runs?event=workflow_dispatch&per_page=100" > stress-evidence/publisher-run-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/$SCIENCE_WORKFLOW/runs?event=workflow_dispatch&per_page=100" > stress-evidence/science-run-pages.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SPENT_PUBLISHER_RUN" > stress-evidence/spent-publisher-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SPENT_PUBLISHER_RUN/jobs?per_page=100" > stress-evidence/spent-publisher-jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" > stress-evidence/main-ref.json
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45" > stress-evidence/ordinal45-ref.json 2>stress-evidence/ordinal45-ref.err
+          printf '%s\n' "$?" > stress-evidence/ordinal45-ref.rc
+          set -e
+
+      - name: Diagnostic corpus from actual publisher bytes
+        shell: /usr/bin/python3 -I -S {0}
+        run: |
+          import json, os, re, textwrap
+          from pathlib import Path
+
+          errors=[]
+          notes=[]
+          def check(cond,msg):
+              if not cond: errors.append(msg)
+
+          wf=Path(os.environ['PUBLISHER_PATH']).read_text(encoding='utf-8')
+          check(wf.count('# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1')==3,'parser begin sentinel cardinality')
+          check(wf.count('# END_WRITE_QUIET_END_LINE_PARSER_V1')==3,'parser end sentinel cardinality')
+          check('on:\n  workflow_dispatch:' in wf,'publisher trigger is not exact workflow_dispatch')
+          for forbidden in ('uvspec ', 'mystic ', 'libRadtran'):
+              check(forbidden not in wf, f'hidden solver/runtime token present: {forbidden!r}')
+
+          def extract(begin,end):
+              pattern=re.compile(r'^\s*'+re.escape(begin)+r'\n(.*?)^\s*'+re.escape(end)+r'$',re.MULTILINE|re.DOTALL)
+              blocks=pattern.findall(wf)
+              return [textwrap.dedent(x).strip() for x in blocks]
+
+          parser_blocks=extract('# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1','# END_WRITE_QUIET_END_LINE_PARSER_V1')
+          check(len(parser_blocks)==3,'three actual parser blocks not extractable')
+          check(len(set(parser_blocks))==1,'actual parser call sites drifted')
+          pns={}
+          if parser_blocks:
+              try: exec(parser_blocks[0],pns)
+              except BaseException as exc: errors.append('actual parser exec: '+repr(exc))
+
+          pages=json.load(open('stress-evidence/issue60-pages.json'))
+          comments=[row for page in pages for row in page]
+          notes.append(f'issue60_comment_count={len(comments)}')
+          if pns:
+              try:
+                  closed=set(); begin_ids=set(); begins=[]
+                  for c in comments:
+                      body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
+                      if pns['record_write_quiet_end'](body,c['id'],begin_ids,closed):
+                          pass
+                      elif first.startswith('WRITE_QUIET_BEGIN'):
+                          cid=int(c['id']); begins.append(cid); begin_ids.add(cid)
+                  unmatched=[x for x in begins if x not in closed]
+                  check(not unmatched,'live ledger unmatched WRITE_QUIET_BEGIN: '+repr(unmatched))
+                  rec=pns['_write_quiet_end_records'](closed).get(int(os.environ['CORRECTION_BEGIN']),{})
+                  check(rec.get('comment_id')==int(os.environ['CORRECTION_CANONICAL']),'canonical corrected END not selected')
+                  check(rec.get('superseded_comment_ids')==(int(os.environ['CORRECTION_PREDECESSOR']),),'predecessor provenance not retained exactly')
+              except BaseException as exc:
+                  errors.append('complete live ledger actual parser: '+repr(exc))
+
+          guard_blocks=extract('# BEGIN_PUBLISHER_RUN_CARDINALITY_GUARD_V1','# END_PUBLISHER_RUN_CARDINALITY_GUARD_V1')
+          check(len(guard_blocks)==1,'publisher cardinality guard extract count')
+          gns={}
+          if guard_blocks:
+              try:
+                  exec(guard_blocks[0],gns)
+                  gns['run_publisher_guard_fixtures']()
+                  live_pages=json.load(open('stress-evidence/publisher-run-pages.json'))
+                  existing=[r for page in live_pages for r in page.get('workflow_runs',[])]
+                  spent=[r for r in existing if int(r.get('id') or 0)==int(os.environ['SPENT_PUBLISHER_RUN'])]
+                  check(len(spent)==1,'spent publisher run missing from exact workflow inventory')
+                  if spent:
+                      check(spent[0].get('status')=='completed' and spent[0].get('conclusion')=='failure' and spent[0].get('run_attempt')==1,'spent publisher run terminal identity drift')
+                  synthetic={'id':999999999001,'status':'in_progress','run_attempt':1,'event':'workflow_dispatch','run_number':999999,'head_sha':os.environ['EXPECTED_MAIN'],'head_branch':'main','path':os.environ['PUBLISHER_PATH'],'conclusion':None}
+                  combined=existing+[synthetic]
+                  gns['validate_publisher_run_pages']([{'total_count':len(combined),'workflow_runs':combined}],{'run_id':synthetic['id'],'run_attempt':1,'event':'workflow_dispatch','run_number':synthetic['run_number'],'head_sha':os.environ['EXPECTED_MAIN'],'head_branch':'main','workflow_path':os.environ['PUBLISHER_PATH']})
+              except BaseException as exc:
+                  errors.append('actual runtime/cardinality guard: '+repr(exc))
+
+          wiring_blocks=extract('# BEGIN_PUBLISHER_RUNTIME_WIRING_V2','# END_PUBLISHER_RUNTIME_WIRING_V2')
+          check(len(wiring_blocks)==1,'publisher runtime wiring extract count')
+          if wiring_blocks and guard_blocks:
+              try:
+                  prefix=wiring_blocks[0].split('RUNTIME_GUARD_RESULT=run_real_publisher_runtime_guard()',1)[0]
+                  wns=dict(gns); exec(prefix,wns)
+                  old=dict(os.environ)
+                  try:
+                      os.environ['GITHUB_RUN_ID']='999999999001'
+                      os.environ['GITHUB_RUN_ATTEMPT']='1'
+                      os.environ['GITHUB_EVENT_NAME']='workflow_dispatch'
+                      os.environ['GITHUB_RUN_NUMBER']='999999'
+                      os.environ['GITHUB_SHA']=os.environ['EXPECTED_MAIN']
+                      os.environ['GITHUB_REF']='refs/heads/main'
+                      os.environ['GITHUB_REF_NAME']='main'
+                      os.environ['GITHUB_WORKFLOW_REF']=f"{os.environ['GITHUB_REPOSITORY']}/{os.environ['PUBLISHER_PATH']}@refs/heads/main"
+                      exp=wns['_runtime_expected_from_github_env']()
+                      check(exp['head_sha']==os.environ['EXPECTED_MAIN'] and exp['head_branch']=='main' and exp['event']=='workflow_dispatch','modeled exact publisher runtime context drift')
+                  finally:
+                      os.environ.clear(); os.environ.update(old)
+              except BaseException as exc:
+                  errors.append('actual workflow_dispatch/default-branch context: '+repr(exc))
+
+          science_pages=json.load(open('stress-evidence/science-run-pages.json'))
+          science=[r for page in science_pages for r in page.get('workflow_runs',[])]
+          check(not science,'ordinal45 science workflow_dispatch already exists: '+repr([r.get('id') for r in science]))
+          try:
+              rc=int(Path('stress-evidence/ordinal45-ref.rc').read_text().strip())
+              check(rc!=0,'ordinal45 dispatch ref already exists')
+          except Exception as exc: errors.append('ordinal45 ref diagnostic: '+repr(exc))
+
+          fenced=extract('# BEGIN_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2','# END_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2')
+          check(len(fenced)==1,'fenced dispatch source extract count')
+          if fenced:
+              src=fenced[0]
+              expected_order=["--method','POST',f'repos/{REPO}/git/refs'","--method','POST',f'repos/{REPO}/issues/60/comments'","actions/workflows/{SCIENCE_WORKFLOW}/dispatches","--method','PATCH',f'repos/{REPO}/issues/comments/{begin}'","Path('publisher-dispatch-receipt.json').write_text"]
+              pos=[]
+              for token in expected_order:
+                  p=src.find(token); pos.append(p); check(p>=0,'fenced mutation/receipt token missing: '+token)
+              check(all(a<b for a,b in zip(pos,pos[1:])),'fenced mutation ordering drift')
+              check("'schemaVersion':2" in src,'publisher receipt schemaVersion drift')
+              for key in ('beginCommentId','consumedCommentId','scienceRunId','scienceHeadSha','dispatchBranch','authorizationHead','fenceToken'):
+                  check(("'"+key+"'") in src,'publisher receipt key missing: '+key)
+
+          Path('stress-evidence/diagnostic-corpus.json').write_text(json.dumps({'errors':errors,'notes':notes},sort_keys=True,indent=2)+'\n')
+
+      - name: Execute actual publisher prefence prefix result-blind
+        shell: /usr/bin/python3 -I -S {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          import json, os, re, textwrap, traceback
+          from pathlib import Path
+          wf=Path(os.environ['PUBLISHER_PATH']).read_text(encoding='utf-8')
+          m=re.search(r'^\s*# BEGIN_CANONICAL_AVPS_ORDINAL45_PREFENCE_V1\n(.*?)^\s*# END_CANONICAL_AVPS_ORDINAL45_PREFENCE_V1$',wf,re.MULTILINE|re.DOTALL)
+          result={'status':'not-run','error':None}
+          try:
+              if not m: raise RuntimeError('actual prefence source not extractable')
+              src=textwrap.dedent(m.group(1)).strip()
+              mutation="token='AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_'+os.environ['GITHUB_RUN_ID']"
+              if mutation not in src: raise RuntimeError('prefence mutation boundary missing')
+              prefix=src.split(mutation,1)[0].rstrip()
+              os.environ['GITHUB_SHA']=os.environ['EXPECTED_MAIN']
+              exec(compile(prefix,'<actual-publisher-prefence-prefix>','exec'),{})
+              result['status']='pass'
+          except BaseException as exc:
+              result['status']='fail'; result['error']=repr(exc); result['traceback']=traceback.format_exc()
+          Path('stress-evidence/actual-prefence-prefix.json').write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
+
+      - name: Collect all knowable diagnostics and classify
+        shell: /usr/bin/python3 -I -S {0}
+        run: |
+          import json, os
+          from pathlib import Path
+          errors=[]
+          corpus=json.load(open('stress-evidence/diagnostic-corpus.json'))
+          errors.extend(corpus.get('errors',[]))
+          pref=json.load(open('stress-evidence/actual-prefence-prefix.json'))
+          if pref.get('status')!='pass': errors.append('actual prefence prefix failed: '+str(pref.get('error')))
+          required=('candidate-seed-ledger.json','candidate-context.json','tracked-seed-scan.json','repository-global-seed-scan.json','repository-global-scan-success-attempt.txt')
+          for path in required:
+              if not Path(path).is_file(): errors.append('missing actual prefence evidence file: '+path)
+          if Path('tracked-seed-scan.json').is_file():
+              x=json.load(open('tracked-seed-scan.json'))
+              if x.get('trackedTreeExternalCollisionCount')!=0: errors.append('tracked candidate collision')
+          if Path('repository-global-seed-scan.json').is_file():
+              x=json.load(open('repository-global-seed-scan.json'))
+              if x.get('repositoryGlobalCollisionCount',x.get('collisionCount'))!=0: errors.append('repository-global candidate collision')
+              if x.get('repositoryGlobalDoubleEnumerationStable') is not True: errors.append('repository-global double enumeration unstable')
+              if x.get('auditedBranchHeadMatchesRepositoryHead') is not True: errors.append('audited branch/head mismatch')
+              if int(x.get('repositoryGlobalPostFenceCandidateSeedCollisionCount',0) or 0)!=0: errors.append('post-fence candidate collision')
+          summary={'classification':'PASS_EXACT_EXECUTABLE_STRESS_PASS' if not errors else 'FAIL_EXACT_EXECUTABLE_STRESS_PASS','expectedMain':os.environ['EXPECTED_MAIN'],'publisherPath':os.environ['PUBLISHER_PATH'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'issue60CommentCount':corpus.get('notes',[]),'errors':errors,'scienceRuntimeExecuted':False,'publisherInvoked':False,'writeQuietEntered':False,'dispatchConsumed':False,'protectedResultsOpened':False}
+          Path('stress-evidence/stress-summary.json').write_text(json.dumps(summary,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(summary,sort_keys=True,indent=2))
+          if errors: raise SystemExit('EXACT_EXECUTABLE_STRESS_PASS diagnostic defects present')
+
+      - name: Upload non-authorizing stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: avps-r4-ordinal45-publisher-exact-executable-stress-v1
+          path: |
+            stress-evidence/
+            candidate-seed-ledger.json
+            candidate-context.json
+            tracked-seed-scan.json
+            repository-global-seed-scan.json
+            repository-global-scan-success-attempt.txt
+            publisher-global-scan-attempts/
+          if-no-files-found: warn
+          retention-days: 14

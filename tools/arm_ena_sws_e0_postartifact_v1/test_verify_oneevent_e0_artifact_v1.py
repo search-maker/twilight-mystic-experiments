@@ -27,10 +27,19 @@ def make_universe_bytes() -> bytes:
     for i in range(906):
         case = V.PROBE_CASE_ID if i == 100 else f"fixture-{i:04d}_dusk"
         date = "2017-06-16" if i == 100 else "2017-01-01"
-        out.append(
-            f"{case},{date},dusk,2017-06-17T01:00:00Z,"
-            "2017-06-17T00:55:00Z,2017-06-17T00:50:00Z\r\n"
-        )
+        if i == 100:
+            t8, t7, t6 = (
+                "2017-06-16T23:00:00Z",
+                "2017-06-16T22:55:00Z",
+                "2017-06-16T22:50:00Z",
+            )
+        else:
+            t8, t7, t6 = (
+                "2017-01-01T23:00:00Z",
+                "2017-01-01T22:55:00Z",
+                "2017-01-01T22:50:00Z",
+            )
+        out.append(f"{case},{date},dusk,{t8},{t7},{t6}\r\n")
     return "".join(out).encode("utf-8")
 
 
@@ -96,6 +105,7 @@ class ArtifactFixture:
         (root / "ena_sws_e0_stream_summary.json").write_text(json.dumps({
             "schema": 1,
             "protocol": V.EXPECTED_PROTOCOL,
+            "control_comment": "5487647692",
             "candidate_event_count": 906,
             "processed_event_count": 1,
             "remaining_event_count": 905,

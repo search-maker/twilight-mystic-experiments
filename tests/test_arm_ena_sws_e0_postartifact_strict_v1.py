@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools" / "arm_ena_sws_e0_postartifact_v1"
 
 base_spec = importlib.util.spec_from_file_location(
-    "arm_e0_fixture_tests", TOOLS / "test_verify_oneevent_e0_artifact_v1.py"
+    "arm_e0_fixture_tests_strict", TOOLS / "test_verify_oneevent_e0_artifact_v1.py"
 )
 assert base_spec is not None and base_spec.loader is not None
 fixture_module = importlib.util.module_from_spec(base_spec)
@@ -23,28 +24,31 @@ strict = importlib.util.module_from_spec(strict_spec)
 strict_spec.loader.exec_module(strict)
 
 
-def test_strict_clean_fixture_passes(monkeypatch):
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        fx = fixture_module.ArtifactFixture(root)
-        monkeypatch.setattr(strict.base, "FROZEN_UNIVERSE_SHA256", fx.fixture_universe_sha)
-        fx.refresh_receipt()
-        result = strict.verify_strict(root)
-        assert result["status"] == "SAFE_E0_ONEEVENT_SANITIZED_ARTIFACT_VERIFIED"
-        assert result["stage_b_authorized"] is False
-        assert result["heldout_radiance_opening_authorized"] is False
+class StrictClosedArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        self.original_hash = strict.base.FROZEN_UNIVERSE_SHA256
+        self.fx = fixture_module.ArtifactFixture(self.root)
+        strict.base.FROZEN_UNIVERSE_SHA256 = self.fx.fixture_universe_sha
+        self.fx.refresh_receipt()
+
+    def tearDown(self):
+        strict.base.FROZEN_UNIVERSE_SHA256 = self.original_hash
+        self.td.cleanup()
+
+    def test_strict_clean_fixture_passes(self):
+        result = strict.verify_strict(self.root)
+        self.assertEqual(result["status"], "SAFE_E0_ONEEVENT_SANITIZED_ARTIFACT_VERIFIED")
+        self.assertFalse(result["stage_b_authorized"])
+        self.assertFalse(result["heldout_radiance_opening_authorized"])
+
+    def test_strict_refuses_unexpected_text_file(self):
+        (self.root / "unexpected-notes.txt").write_text("unexpected payload\n", encoding="utf-8")
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("unexpected=['unexpected-notes.txt']", str(ctx.exception))
 
 
-def test_strict_refuses_unexpected_text_file(monkeypatch):
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        fx = fixture_module.ArtifactFixture(root)
-        monkeypatch.setattr(strict.base, "FROZEN_UNIVERSE_SHA256", fx.fixture_universe_sha)
-        fx.refresh_receipt()
-        (root / "unexpected-notes.txt").write_text("unexpected payload\n", encoding="utf-8")
-        try:
-            strict.verify_strict(root)
-        except strict.StrictVerificationError as exc:
-            assert "unexpected=['unexpected-notes.txt']" in str(exc)
-        else:
-            raise AssertionError("strict verifier accepted an unexpected artifact file")
+if __name__ == "__main__":
+    unittest.main()

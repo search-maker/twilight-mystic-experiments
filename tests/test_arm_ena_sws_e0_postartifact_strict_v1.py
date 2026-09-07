@@ -28,13 +28,16 @@ class StrictClosedArtifactTests(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         self.root = Path(self.td.name)
-        self.original_hash = strict.base.FROZEN_UNIVERSE_SHA256
+        self.original_strict_hash = strict.base.FROZEN_UNIVERSE_SHA256
+        self.original_fixture_hash = fixture_module.V.FROZEN_UNIVERSE_SHA256
         self.fx = fixture_module.ArtifactFixture(self.root)
         strict.base.FROZEN_UNIVERSE_SHA256 = self.fx.fixture_universe_sha
+        fixture_module.V.FROZEN_UNIVERSE_SHA256 = self.fx.fixture_universe_sha
         self.fx.refresh_receipt()
 
     def tearDown(self):
-        strict.base.FROZEN_UNIVERSE_SHA256 = self.original_hash
+        strict.base.FROZEN_UNIVERSE_SHA256 = self.original_strict_hash
+        fixture_module.V.FROZEN_UNIVERSE_SHA256 = self.original_fixture_hash
         self.td.cleanup()
 
     def test_strict_clean_fixture_passes(self):

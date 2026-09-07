@@ -9,6 +9,8 @@ protected data or bypass provenance cross-binding.
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
 import json
 import re
 import sys
@@ -25,6 +27,7 @@ class StrictVerificationError(RuntimeError):
     pass
 
 
+EXPECTED_CONTROL_COMMENT = "5487647692"
 RECEIPT_ALLOWED_KEYS = {
     "schema", "purpose", "created_utc", "frozen_event_universe_sha256",
     "probe_case_id", "processed_event_count", "actual_sws_native_schema_inspected",
@@ -87,6 +90,71 @@ def _sha(value: object, where: str) -> str:
     return value
 
 
+def _bounded_text(value: object, where: str, max_len: int = 4096) -> str:
+    if not isinstance(value, str) or len(value) > max_len:
+        raise StrictVerificationError(f"{where} must be bounded text")
+    return value
+
+
+def _schema_variable_metadata(var: dict, where: str) -> None:
+    name = _bounded_text(var.get("name"), f"{where} name", 256)
+    if not name:
+        raise StrictVerificationError(f"{where} name must be non-empty")
+    _bounded_text(var.get("dtype"), f"{where} dtype", 128)
+    dimensions = var.get("dimensions")
+    shape = var.get("shape")
+    if not isinstance(dimensions, list) or not isinstance(shape, list) or len(dimensions) != len(shape):
+        raise StrictVerificationError(f"{where} dimensions/shape must be parallel lists")
+    if len(dimensions) > 16:
+        raise StrictVerificationError(f"{where} has implausibly many dimensions")
+    for k, dim in enumerate(dimensions, 1):
+        if not isinstance(dim, str) or not dim or len(dim) > 256:
+            raise StrictVerificationError(f"{where} dimension {k} must be bounded text")
+    for k, size in enumerate(shape, 1):
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise StrictVerificationError(f"{where} shape item {k} must be a nonnegative integer")
+    for key in ("protected_photometric_values", "safe_qc_values_allowed"):
+        if not isinstance(var.get(key), bool):
+            raise StrictVerificationError(f"{where} {key} must be boolean metadata")
+    for key in ("long_name", "standard_name", "units"):
+        _bounded_text(var.get(key), f"{where} {key}")
+
+
+def _parse_utc(text: object, where: str) -> dt.datetime:
+    if not isinstance(text, str) or not text:
+        raise StrictVerificationError(f"{where} must be a UTC timestamp")
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        value = dt.datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise StrictVerificationError(f"{where} is not valid ISO-8601") from exc
+    if value.tzinfo is None:
+        raise StrictVerificationError(f"{where} must be timezone-aware")
+    return value.astimezone(dt.timezone.utc)
+
+
+def _expected_query_windows(root: Path) -> dict[str, tuple[str, str]]:
+    path = root / "ena_sws_e0_event_universe.csv"
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            rows = [row for row in csv.DictReader(fh) if row.get("case_id") == base.PROBE_CASE_ID]
+    except Exception as exc:
+        raise StrictVerificationError(f"cannot derive pinned query windows: {type(exc).__name__}") from exc
+    if len(rows) != 1:
+        raise StrictVerificationError("pinned event must occur exactly once before query-window binding")
+    event = rows[0]
+    days: set[str] = set()
+    for key in ("t_minus8_utc", "t_minus7_utc", "t_minus6_utc"):
+        center = _parse_utc(event.get(key), f"event universe {key}")
+        for shift in (-31, 0, 31):
+            days.add((center + dt.timedelta(seconds=shift)).strftime("%Y%m%d"))
+    windows: dict[str, tuple[str, str]] = {}
+    for day in sorted(days):
+        start_date = dt.datetime.strptime(day, "%Y%m%d").date()
+        windows[day] = (start_date.isoformat(), (start_date + dt.timedelta(days=1)).isoformat())
+    return windows
+
+
 def _ledger_source_names(value: object) -> set[str]:
     if not isinstance(value, str):
         raise StrictVerificationError("ledger source_files must be a semicolon-delimited string")
@@ -141,6 +209,10 @@ def _closed_semantic_preflight(root: Path) -> None:
     if not isinstance(summary, dict):
         raise StrictVerificationError("summary must contain an object")
     _reject_unknown(summary, SUMMARY_ALLOWED_KEYS, "summary")
+    if summary.get("schema") != 1:
+        raise StrictVerificationError("summary schema must be exactly 1")
+    if summary.get("control_comment") != EXPECTED_CONTROL_COMMENT:
+        raise StrictVerificationError("summary control_comment does not match frozen E0-v2 control")
     summary_e0_sha = _sha(summary.get("e0_auditor_sha256"), "summary e0_auditor_sha256")
     summary_collector_sha = _sha(summary.get("collector_sha256"), "summary collector_sha256")
 
@@ -155,6 +227,8 @@ def _closed_semantic_preflight(root: Path) -> None:
             raise StrictVerificationError(f"schema row {i} lacks protected-values=false attestation")
         filename = _basename(row.get("source_file"), f"schema row {i} source_file")
         digest = _sha(row.get("source_sha256"), f"schema row {i} source_sha256")
+        _bounded_text(row.get("dod_version"), f"schema row {i} dod_version", 512)
+        _bounded_text(row.get("process_version"), f"schema row {i} process_version", 512)
         variables = row.get("variables")
         if not isinstance(variables, list) or not variables:
             raise StrictVerificationError(f"schema row {i} lacks variable metadata")
@@ -162,6 +236,7 @@ def _closed_semantic_preflight(root: Path) -> None:
             if not isinstance(var, dict):
                 raise StrictVerificationError(f"schema row {i} variable {j} must be an object")
             _reject_unknown(var, base.SCHEMA_VARIABLE_ALLOWED_KEYS, f"schema row {i} variable {j}")
+            _schema_variable_metadata(var, f"schema row {i} variable {j}")
         if kind == "sws":
             if filename in sws_sources:
                 raise StrictVerificationError(f"duplicate SWS schema source filename: {filename}")
@@ -187,20 +262,47 @@ def _closed_semantic_preflight(root: Path) -> None:
                 raise StrictVerificationError(f"provenance row {i} source {j} must be an object")
             _reject_unknown(src, PROVENANCE_SOURCE_ALLOWED_KEYS, f"provenance row {i} source {j}")
             filename = _basename(src.get("filename"), f"provenance row {i} source {j} filename")
+            size = src.get("size_bytes")
+            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                raise StrictVerificationError(f"provenance row {i} source {j} size_bytes must be positive integer")
             digest = _sha(src.get("sha256"), f"provenance row {i} source {j} sha256")
             if filename in provenance_sources:
                 raise StrictVerificationError(f"duplicate provenance source filename: {filename}")
             provenance_sources[filename] = digest
 
+    expected_windows = _expected_query_windows(root)
     query_rows = base.read_jsonl(root / "ena_sws_e0_query_manifest.jsonl")
+    if len(query_rows) != len(expected_windows):
+        raise StrictVerificationError("query manifest row count does not match frozen needed-date set")
     query_filenames: set[str] = set()
+    seen_query_days: set[str] = set()
     for i, row in enumerate(query_rows, 1):
         _reject_unknown(row, QUERY_ALLOWED_KEYS, f"query manifest row {i}")
+        if row.get("case_id") != base.PROBE_CASE_ID:
+            raise StrictVerificationError(f"query manifest row {i} case_id mismatch")
+        if row.get("datastream") != base.EXPECTED_DATASTREAM:
+            raise StrictVerificationError(f"query manifest row {i} datastream mismatch")
+        if row.get("credentials_persisted") is not False:
+            raise StrictVerificationError(f"query manifest row {i} credentials_persisted must be false")
+        day = row.get("date")
+        if not isinstance(day, str) or day not in expected_windows or day in seen_query_days:
+            raise StrictVerificationError(f"query manifest row {i} date is unexpected or duplicated")
+        seen_query_days.add(day)
+        expected_start, expected_end = expected_windows[day]
+        if row.get("start") != expected_start or row.get("end_exclusive") != expected_end:
+            raise StrictVerificationError(f"query manifest row {i} window does not match frozen needed date")
         names = row.get("filenames")
         if not isinstance(names, list):
             raise StrictVerificationError(f"query manifest row {i} filenames must be a list")
+        local_names: set[str] = set()
         for j, name in enumerate(names, 1):
-            query_filenames.add(_basename(name, f"query manifest row {i} filename {j}"))
+            basename = _basename(name, f"query manifest row {i} filename {j}")
+            if basename in local_names:
+                raise StrictVerificationError(f"query manifest row {i} duplicates filename {basename}")
+            local_names.add(basename)
+            query_filenames.add(basename)
+    if seen_query_days != set(expected_windows):
+        raise StrictVerificationError("query manifest dates do not exactly match frozen needed-date set")
 
     if provenance_sources != sws_sources:
         raise StrictVerificationError("SWS provenance filename/SHA set does not exactly match SWS schema sources")

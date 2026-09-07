@@ -67,8 +67,21 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
         self.assertEqual(self.publisher.count('# END_WRITE_QUIET_END_LINE_PARSER_V1'), 3)
         self.assertEqual(self.publisher.count('def avps_governance_blocker(body,cid=None):'), 1)
         self.assertEqual(len(re.findall(r'(?m)^\s*KNOWN_DEFECT=\d+$', self.publisher)), 1)
-        self.assertGreaterEqual(self.publisher.count("elif first.startswith('WRITE_QUIET_BEGIN'):"), 1)
-        self.assertEqual(self.publisher.count('elif is_write_quiet_begin(body):'), 0)
+        old_count = self.publisher.count("elif first.startswith('WRITE_QUIET_BEGIN'):")
+        owner_aware_count = self.publisher.count('elif is_write_quiet_begin(body):')
+        self.assertIn((old_count, owner_aware_count), {(3, 0), (0, 3)})
+        self.assertEqual(old_count + owner_aware_count, 3)
+
+    def test_projection_masks_classifier_before_parser_and_keeps_negative_control(self):
+        projection = self.reviewer.split('          def projection(text, label):\n', 1)[1].split(
+            "          if projection(base, 'base') != projection(head, 'head'):\n", 1
+        )[0]
+        self.assertLess(
+            projection.index("text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER', text)"),
+            projection.index("text = parser.sub('          # AVPS_GOVERNED_WRITE_QUIET_END_AND_BEGIN_GRAMMAR', text)"),
+        )
+        self.assertIn('synthetic unauthorized publisher mutation', self.reviewer)
+        self.assertIn('projection failed to reject unauthorized publisher mutation', self.reviewer)
 
     def test_existing_corrected_end_regression_remains_part_of_durable_review(self):
         self.assertTrue(PARSER_TEST.is_file())

@@ -8,6 +8,7 @@ on:
       - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
       - .github/workflows/avps-governance-mechanical-repair-review-v1.yml
       - tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      - tests/test_avps_governance_mechanical_repair_review_extension.py
       - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v67.yml
       - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v71.yml
       - .github/workflows/avps-v2-recovery4-ordinal45-publisher-v3-accepted-canonical-apply-review-v76.yml
@@ -29,6 +30,7 @@ jobs:
     env:
       PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
       PARSER_TEST_PATH: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      REVIEW_EXTENSION_TEST_PATH: tests/test_avps_governance_mechanical_repair_review_extension.py
       SELF_PATH: .github/workflows/avps-governance-mechanical-repair-review-v1.yml
       LEGACY_V67: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v67.yml
       LEGACY_V71: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v71.yml
@@ -87,6 +89,7 @@ jobs:
           allowed = {
               os.environ['PUBLISHER_PATH'],
               os.environ['PARSER_TEST_PATH'],
+              os.environ['REVIEW_EXTENSION_TEST_PATH'],
               os.environ['SELF_PATH'],
               os.environ['LEGACY_V67'],
               os.environ['LEGACY_V71'],
@@ -118,7 +121,7 @@ jobs:
           test ! -e "$LEGACY_V71"
           test ! -e "$LEGACY_V76"
 
-      - name: Prove publisher changes are parser-block-only
+      - name: Prove publisher changes stay inside the Coordinator-authorized mechanical surface
         shell: bash
         run: |
           set -euo pipefail
@@ -127,16 +130,162 @@ jobs:
           path = os.environ['PUBLISHER_PATH']
           base = subprocess.check_output(['git','show',os.environ['EVENT_BASE'] + ':' + path], text=True)
           head = open(path, encoding='utf-8').read()
+          if base == head:
+              print('publisher unchanged: reviewer-extension-only Phase A')
+              raise SystemExit(0)
+
           begin = '# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'
           end = '# END_WRITE_QUIET_END_LINE_PARSER_V1'
-          pattern = re.compile(r'(?ms)^\s*' + re.escape(begin) + r'\n.*?^\s*' + re.escape(end) + r'$')
+          parser = re.compile(r'(?ms)^\s*' + re.escape(begin) + r'\n.*?^\s*' + re.escape(end) + r'$')
+          gov = re.compile(r'(?ms)^          def avps_governance_blocker\(body,cid=None\):\n.*?(?=^          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1$)')
+          cutoff = re.compile(r'(?m)^          KNOWN_DEFECT=\d+$')
+          old_begin = "                  elif first.startswith('WRITE_QUIET_BEGIN'):"
+          new_begin = "                  elif is_write_quiet_begin(body):"
+
+          base_parser = parser.findall(base)
+          head_parser = parser.findall(head)
+          if len(base_parser) != 3 or len(head_parser) != 3:
+              raise SystemExit(f'expected exactly three governed parser blocks: base={len(base_parser)} head={len(head_parser)}')
+          base_gov = gov.findall(base)
+          head_gov = gov.findall(head)
+          if len(base_gov) != 1 or len(head_gov) != 1:
+              raise SystemExit(f'expected exactly one governance-classifier block: base={len(base_gov)} head={len(head_gov)}')
+          if len(cutoff.findall(base)) != 1 or len(cutoff.findall(head)) != 1:
+              raise SystemExit('expected exactly one KNOWN_DEFECT cutoff line')
+          base_begin_count = base.count(old_begin)
+          if base_begin_count < 1:
+              raise SystemExit('base WRITE_QUIET_BEGIN scan anchor missing')
+          if head.count(old_begin) != 0 or head.count(new_begin) != base_begin_count:
+              raise SystemExit('owner-prefix BEGIN scan must replace every and only existing BEGIN scan anchor')
+
           def projection(text, label):
-              blocks = pattern.findall(text)
-              if len(blocks) != 3:
-                  raise SystemExit(f'{label}: expected exactly three governed parser blocks, got {len(blocks)}')
-              return pattern.sub('          # WRITE_QUIET_END_LINE_PARSER_V1_CANONICAL_BLOCK', text)
+              text = parser.sub('          # AVPS_GOVERNED_WRITE_QUIET_END_AND_BEGIN_GRAMMAR', text)
+              text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER', text)
+              text = cutoff.sub('          KNOWN_DEFECT=AVPS_GOVERNANCE_COMPACTION_CUTOFF', text)
+              text = text.replace(old_begin, '                  elif AVPS_GOVERNED_WRITE_QUIET_BEGIN(body):')
+              text = text.replace(new_begin, '                  elif AVPS_GOVERNED_WRITE_QUIET_BEGIN(body):')
+              return text
           if projection(base, 'base') != projection(head, 'head'):
-              raise SystemExit('publisher changed outside the explicitly governed parser blocks')
+              raise SystemExit('publisher changed outside the Coordinator-authorized mechanical compatibility surface')
+          PY
+
+      - name: Run exact Phase-B semantic fixtures against ACTUAL publisher bytes when publisher changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet "$EVENT_BASE...$EVENT_HEAD" -- "$PUBLISHER_PATH"; then
+            echo 'publisher unchanged: Phase-B semantic fixtures not applicable to reviewer-only Phase A'
+            exit 0
+          fi
+          python - <<'PY'
+          import json, os, re, subprocess, textwrap
+          text = open(os.environ['PUBLISHER_PATH'], encoding='utf-8').read()
+          pattern = re.compile(r'^\s*# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1\n(.*?)^\s*# END_WRITE_QUIET_END_LINE_PARSER_V1$', re.MULTILINE | re.DOTALL)
+          blocks = [textwrap.dedent(x).strip() for x in pattern.findall(text)]
+          if len(blocks) != 3 or len(set(blocks)) != 1:
+              raise SystemExit('ACTUAL publisher grammar blocks must be exactly three and byte-identical after dedent')
+          ns = {}
+          exec(blocks[0], ns)
+          parse = ns.get('write_quiet_end_binding')
+          is_begin = ns.get('is_write_quiet_begin')
+          if not callable(parse) or not callable(is_begin):
+              raise SystemExit('ACTUAL publisher mechanical grammar helpers missing')
+
+          def issue_comment_body(cid):
+              cp = subprocess.run(
+                  ['/usr/bin/gh','api','--hostname','github.com',f'repos/{os.environ["GITHUB_REPOSITORY"]}/issues/comments/{cid}'],
+                  capture_output=True, text=True, check=False,
+              )
+              if cp.returncode != 0:
+                  raise SystemExit(f'unable to read exact historical fixture comment {cid}: {cp.stderr}')
+              return json.loads(cp.stdout).get('body') or ''
+
+          structured_end = issue_comment_body(5563105177)
+          if parse(structured_end) != 5562775627:
+              raise SystemExit('exact structured-below-marker fixture 5563105177 -> 5562775627 failed')
+          legacy_end = issue_comment_body(5471174859)
+          if parse(legacy_end) != 5471141095:
+              raise SystemExit('exact legacy-space-header fixture 5471174859 -> 5471141095 failed')
+          incidental_history_end = issue_comment_body(5472575510)
+          if parse(incidental_history_end) != 5472560826:
+              raise SystemExit('exact authoritative-marker-line fixture 5472575510 -> 5472560826 failed')
+
+          owner_pairs = (
+              (5570943664, 5571484946),
+              (5572437921, 5572470304),
+              (5573615763, 5573638267),
+              (5575542890, 5575683976),
+          )
+          for begin_id, end_id in owner_pairs:
+              begin_body = issue_comment_body(begin_id)
+              end_body = issue_comment_body(end_id)
+              if not is_begin(begin_body):
+                  raise SystemExit(f'exact owner-prefixed BEGIN fixture {begin_id} failed')
+              if parse(end_body) != begin_id:
+                  raise SystemExit(f'exact owner-prefixed END fixture {end_id} -> {begin_id} failed')
+
+          if parse('WRITE_QUIET_END | LUNAR_FINITE_DISK_EXEC004_AUTHORIZATION_RECHECK_GLOBAL_SCAN_V1\nbeginComment=5562775627') != 5562775627:
+              raise SystemExit('synthetic structured-below-marker alias fixture failed')
+          if parse('WRITE_QUIET_END begin=5471141095 stage=LUNAR_FINITE_DISK_EXEC002_PREFLIGHT_GLOBAL_SCAN_V1') != 5471141095:
+              raise SystemExit('synthetic legacy-space-header alias fixture failed')
+          if parse('WRITE_QUIET_END | stage=x\nbegin_comment=123') != 123:
+              raise SystemExit('standalone begin_comment alias fixture failed')
+          if parse('WRITE_QUIET_END | stage=x\nbegin=123') != 123:
+              raise SystemExit('standalone begin alias fixture failed')
+          for body in (
+              'prose WRITE_QUIET_END begin=123',
+              'header\n> WRITE_QUIET_END | beginComment=123',
+              'WRITE_QUIET_END | stage=x\nbeginComment=123\nbegin=123',
+              'WRITE_QUIET_END begin=123 beginComment=124',
+              'WRITE_QUIET_END begin=abc',
+              'WRITE_QUIET_END | stage=x\nNarrative only with historical `begin=123` mention',
+              'WRITE_QUIET_END | beginComment=123\nWRITE_QUIET_END | beginComment=123',
+          ):
+              try:
+                  value = parse(body)
+              except SystemExit:
+                  continue
+              if value is not None:
+                  raise SystemExit(f'malformed/incidental END fixture unexpectedly bound: {body!r}')
+
+          for body in (
+              'WRITE_QUIET_BEGIN | stage=x',
+              'TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x',
+              'ATMOSPHERE_OWNER::WRITE_QUIET_BEGIN | stage=x',
+          ):
+              if not is_begin(body):
+                  raise SystemExit(f'valid BEGIN grammar fixture failed: {body!r}')
+          for body in (
+              'prose TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x',
+              'Total_Sky_OWNER::WRITE_QUIET_BEGIN | stage=x',
+              'TOTAL-SKY-OWNER::WRITE_QUIET_BEGIN | stage=x',
+              'header\nTOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x',
+          ):
+              if is_begin(body):
+                  raise SystemExit(f'malformed/incidental BEGIN fixture unexpectedly bound: {body!r}')
+
+          a = text.index('          import re\n          B={')
+          b = text.index('          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1', a)
+          gov = {}
+          exec(textwrap.dedent(text[a:b]), gov)
+          if gov.get('KNOWN_DEFECT') != 5576203465:
+              raise SystemExit('AVPS governance compaction cutoff drift')
+          blocker = gov.get('avps_governance_blocker')
+          if not callable(blocker):
+              raise SystemExit('AVPS governance classifier missing')
+          false_positive = issue_comment_body(5535375905)
+          if blocker(false_positive, 5535375905):
+              raise SystemExit('known narrative false positive 5535375905 remains adverse')
+          if blocker('AVPS narrative only: fail-closed wording is explanatory, not a structured governance marker.', 5576203466):
+              raise SystemExit('post-cutoff narrative FAIL-CLOSED text must not bind')
+          if not blocker('AVPS_GOVERNANCE | CLASSIFICATION=BLOCKER', 5576203466):
+              raise SystemExit('structured post-cutoff AVPS blocker must remain fail-closed')
+          if not blocker('AVPS_GOVERNANCE\nDISPOSITION: DO_NOT_USE', 5576203466):
+              raise SystemExit('structured post-cutoff AVPS disposition must remain fail-closed')
+          if not blocker('COORDINATOR::AVPS_PUBLISHER_BLOCKER', 5576203466):
+              raise SystemExit('explicit later Coordinator AVPS blocker transition must remain fail-closed')
           PY
 
       - name: Run canonical WRITE_QUIET parser regression
@@ -146,6 +295,13 @@ jobs:
           test -f "$PARSER_TEST_PATH"
           python "$PARSER_TEST_PATH"
 
+      - name: Run durable reviewer extension contract fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$REVIEW_EXTENSION_TEST_PATH"
+          python "$REVIEW_EXTENSION_TEST_PATH"
+
       - name: Prove reviewer is branch-agnostic and not historical-identity-bound
         shell: bash
         run: |
@@ -153,9 +309,6 @@ jobs:
           python - <<'PY'
           import os, re
           text = open(os.environ['SELF_PATH'], encoding='utf-8').read()
-          # Look only for actual YAML env bindings, not for words used inside this
-          # regression itself. The durable reviewer must derive identity from the
-          # live PR event and must not carry frozen historical PR/branch/blob pins.
           historical_env = re.compile(
               r'(?m)^\s+(?:EXPECTED_BASE|EXPECTED_BRANCH|PUBLISHER_BLOB|SOURCE_PUBLISHER_BLOB|PUBLISHER_BRANCH|PR939|PR941|PR942|PR943|PR944)\s*:'
           )
@@ -175,8 +328,9 @@ jobs:
             echo '- exact PR head/base bound dynamically'
             echo '- only governance allowlisted paths changed'
             echo '- historical identity-bound reviewers remain retired'
-            echo '- publisher projection outside canonical parser blocks is unchanged'
-            echo '- canonical parser regression passed'
+            echo '- publisher changes, when present, are confined to the Coordinator-authorized mechanical surface'
+            echo '- Phase-B semantic fixtures execute the ACTUAL publisher grammar/classifier bytes, the full seven-case Total-Sky V3 parser corpus, and exact owner-fence history'
+            echo '- canonical parser and durable reviewer-extension contracts passed'
             echo '- no historical branch/PR/commit identity coupling exists in this reviewer'
-            echo '- no solver, publisher invocation, dispatch, seed allocation, or science is authorized by this workflow'
+            echo '- no solver, publisher invocation, WRITE_QUIET entry, dispatch, seed allocation, result opening, or science is authorized by this workflow'
           } >> "$GITHUB_STEP_SUMMARY"

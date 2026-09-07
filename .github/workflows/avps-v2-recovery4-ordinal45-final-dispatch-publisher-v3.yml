@@ -250,6 +250,35 @@ jobs:
               for x in map(str.upper,surfaces):
                   if re.search(r'NOT[\s_-]+ADMISSIBLE',x) or re.search(r'DO[\s_-]+NOT[\s_-]+USE',x) or re.search(r'COORDINATOR[\s_-]+RECOVERY',x) or re.search(r'SUPERSEDING[\s_-]+DIRECTIVE',x) or re.search(r'(?<![A-Z0-9_])CLOSED(?![A-Z0-9_])',x) or re.search(r'(?<![A-Z0-9_])BLOCKER(?![A-Z0-9_])',x):return True
               return False
+          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
+          def write_quiet_end_binding(body):
+              markers=[]
+              for index,raw in enumerate(str(body or '').splitlines()):
+                  line=raw.strip()
+                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
+              if not markers:return None
+              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
+              index,marker=markers[0]; fields={}
+              for tok in marker.replace('|',' ').split():
+                  if '=' in tok:
+                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
+              if index>0:
+                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
+                  vals=list(fields.get('beginComment',[]))
+              else:
+                  vals=[]
+                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
+              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
+              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
+              return int(vals[0])
+          def record_write_quiet_end(body,comment_id,begin_ids,closed):
+              binding=write_quiet_end_binding(body)
+              if binding is None:return False
+              cid=int(comment_id)
+              if binding not in begin_ids or binding>=cid: raise SystemExit(f'mismatched WRITE_QUIET_END beginComment={binding} comment={cid}')
+              if binding in closed: raise SystemExit(f'duplicate WRITE_QUIET_END binding: {binding}')
+              closed.add(binding); return True
+          # END_WRITE_QUIET_END_LINE_PARSER_V1
           def state_check():
               ref=subprocess.run(['/usr/bin/git','ls-remote','--exit-code','--heads','origin',DISPATCH_BRANCH],text=True,capture_output=True)
               if ref.returncode==0: raise SystemExit('ordinal45 dispatch ref already exists')
@@ -260,21 +289,12 @@ jobs:
               if any(b.startswith(CONSUMED_MARKER) for b in bodies): raise SystemExit('ordinal45 consumed marker already exists')
               runs=[r for p in gh_pages(f'repos/{REPO}/actions/workflows/avps-v2-postconsumption-recovery4-science.yml/runs?event=workflow_dispatch&per_page=100') for r in p.get('workflow_runs',[])]
               if runs: raise SystemExit(f'ordinal45 science workflow_dispatch already exists: {[r.get("id") for r in runs]}')
-              closed=set(); begins=[]
+              closed=set(); begins=[]; begin_ids=set()
               for c in comments:
-                  body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; fields={}
-                  for tok in first.replace('|',' ').split():
-                      if '=' in tok:
-                          k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
-                  if first.startswith('WRITE_QUIET_END'):
-                      vals=[]
-                      for key in ('begin','beginComment','begin_comment'):
-                          for v in fields.get(key,[]):
-                              if not v.isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END alias: {v!r}')
-                              vals.append(int(v))
-                      if len(set(vals))>1: raise SystemExit(f'conflicting WRITE_QUIET_END aliases: {vals}')
-                      if vals: closed.add(vals[0])
-                  elif first.startswith('WRITE_QUIET_BEGIN'): begins.append(int(c['id']))
+                  body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
+                  if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
+                  elif first.startswith('WRITE_QUIET_BEGIN'):
+                      cid=int(c['id']); begins.append(cid); begin_ids.add(cid)
                   if int(c.get('id') or 0)>KNOWN_DEFECT:
                       b=str(c.get('body') or '')
                       if avps_governance_blocker(b,int(c.get('id') or 0)): raise SystemExit(f'newer AVPS blocker/defect exists: {c.get("id")}')
@@ -336,27 +356,50 @@ jobs:
               if cp.returncode!=0: raise SystemExit(f'GitHub API failure args={args!r} rc={cp.returncode} stderr={cp.stderr.strip()}')
               return cp
           def pages(endpoint): return json.loads(api([endpoint],slurp=True).stdout)
+          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
+          def write_quiet_end_binding(body):
+              markers=[]
+              for index,raw in enumerate(str(body or '').splitlines()):
+                  line=raw.strip()
+                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
+              if not markers:return None
+              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
+              index,marker=markers[0]; fields={}
+              for tok in marker.replace('|',' ').split():
+                  if '=' in tok:
+                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
+              if index>0:
+                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
+                  vals=list(fields.get('beginComment',[]))
+              else:
+                  vals=[]
+                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
+              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
+              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
+              return int(vals[0])
+          def record_write_quiet_end(body,comment_id,begin_ids,closed):
+              binding=write_quiet_end_binding(body)
+              if binding is None:return False
+              cid=int(comment_id)
+              if binding not in begin_ids or binding>=cid: raise SystemExit(f'mismatched WRITE_QUIET_END beginComment={binding} comment={cid}')
+              if binding in closed: raise SystemExit(f'duplicate WRITE_QUIET_END binding: {binding}')
+              closed.add(binding); return True
+          # END_WRITE_QUIET_END_LINE_PARSER_V1
           begin=int(os.environ['FENCE_BEGIN']); token=os.environ['FENCE_TOKEN']
           if not token.startswith(TOKEN_PREFIX): raise SystemExit('fence token prefix incompatible with frozen science')
           dispatch_ref_check=subprocess.run(['/usr/bin/git','ls-remote','--exit-code','--heads','origin',DISPATCH_BRANCH],text=True,capture_output=True)
           if dispatch_ref_check.returncode==0: raise SystemExit('dispatch ref exists immediately before fenced mutation')
           if dispatch_ref_check.returncode!=2: raise SystemExit(f'dispatch ref read failure immediately before fenced mutation: rc={dispatch_ref_check.returncode} stderr={dispatch_ref_check.stderr.strip()}')
           comments=[c for p in pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
-          closed=set(); begins=[]
+          closed=set(); begins=[]; begin_ids=set()
           for c in comments:
               body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; f={}
               for item in first.replace('|',' ').split():
                   if '=' in item:
                       k,v=item.split('=',1); f[k]=v
-              if first.startswith('WRITE_QUIET_END'):
-                  ids=[]
-                  for key in ('begin','beginComment','begin_comment'):
-                      if key in f:
-                          if not f[key].isdigit(): raise SystemExit('non-numeric END alias')
-                          ids.append(int(f[key]))
-                  if len(set(ids))>1: raise SystemExit('conflicting END aliases')
-                  if ids: closed.add(ids[0])
-              elif first.startswith('WRITE_QUIET_BEGIN'): begins.append((int(c['id']),f))
+              if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
+              elif first.startswith('WRITE_QUIET_BEGIN'):
+                  cid=int(c['id']); begins.append((cid,f)); begin_ids.add(cid)
           unmatched=[x for x in begins if x[0] not in closed]
           exact=[x for x in unmatched if x[0]==begin and x[1].get('token')==token and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('science_run')=='PENDING' and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck']
           if len(exact)!=1 or len(unmatched)!=1: raise SystemExit(f'exact sole PENDING publisher BEGIN required before mutation, unmatched={unmatched}')
@@ -414,22 +457,45 @@ jobs:
               cp=subprocess.run(['/usr/bin/gh','api','--hostname','github.com','--paginate','--slurp',endpoint],text=True,capture_output=True)
               if cp.returncode!=0: raise SystemExit(f'GitHub API failure endpoint={endpoint} rc={cp.returncode} stderr={cp.stderr.strip()}')
               return json.loads(cp.stdout)
+          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
+          def write_quiet_end_binding(body):
+              markers=[]
+              for index,raw in enumerate(str(body or '').splitlines()):
+                  line=raw.strip()
+                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
+              if not markers:return None
+              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
+              index,marker=markers[0]; fields={}
+              for tok in marker.replace('|',' ').split():
+                  if '=' in tok:
+                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
+              if index>0:
+                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
+                  vals=list(fields.get('beginComment',[]))
+              else:
+                  vals=[]
+                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
+              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
+              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
+              return int(vals[0])
+          def record_write_quiet_end(body,comment_id,begin_ids,closed):
+              binding=write_quiet_end_binding(body)
+              if binding is None:return False
+              cid=int(comment_id)
+              if binding not in begin_ids or binding>=cid: raise SystemExit(f'mismatched WRITE_QUIET_END beginComment={binding} comment={cid}')
+              if binding in closed: raise SystemExit(f'duplicate WRITE_QUIET_END binding: {binding}')
+              closed.add(binding); return True
+          # END_WRITE_QUIET_END_LINE_PARSER_V1
           comments=[c for p in pages(f'repos/{REPO}/issues/60/comments?per_page=100') for c in p]
-          closed=set(); begins=[]
+          closed=set(); begins=[]; begin_ids=set()
           for c in comments:
               body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''; f={}
               for item in first.replace('|',' ').split():
                   if '=' in item:
                       k,v=item.split('=',1); f[k]=v
-              if first.startswith('WRITE_QUIET_END'):
-                  ids=[]
-                  for key in ('begin','beginComment','begin_comment'):
-                      if key in f:
-                          if not f[key].isdigit(): raise SystemExit('non-numeric END alias')
-                          ids.append(int(f[key]))
-                  if len(set(ids))>1: raise SystemExit('conflicting END aliases')
-                  if ids: closed.add(ids[0])
-              elif first.startswith('WRITE_QUIET_BEGIN'): begins.append((int(c['id']),f))
+              if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
+              elif first.startswith('WRITE_QUIET_BEGIN'):
+                  cid=int(c['id']); begins.append((cid,f)); begin_ids.add(cid)
           unmatched=[x for x in begins if x[0] not in closed]
           matching=[x for x in unmatched if x[1].get('token','').startswith(TOKEN_PREFIX) and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck' and (x[1].get('science_run')=='PENDING' or str(x[1].get('science_run','')).isdigit())]
           if not matching:
@@ -459,7 +525,7 @@ jobs:
           unexpected=[int(c['id']) for c in comments if int(c['id'])>begin and int(c['id']) not in allowed]
           if len(unmatched)!=1 or len(consumed_ids)!=1 or unexpected: conclusion='failure'
           science_field=str(science_id) if science_id is not None else str(fields.get('science_run') or 'PENDING')
-          end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | begin={begin} | token={token} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | science_run={science_field} | guard=repository-global-candidate-seed-recheck | step_conclusion={conclusion}'
+          end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | beginComment={begin} | token={token} | authorization={AUTH_HEAD} | dispatch={DISPATCH_BRANCH} | science_run={science_field} | guard=repository-global-candidate-seed-recheck | step_conclusion={conclusion}'
           cp=subprocess.run(['/usr/bin/gh','api','--hostname','github.com','--method','POST',f'repos/{REPO}/issues/60/comments','-f',f'body={end_body}'],text=True,capture_output=True)
           if cp.returncode!=0: raise SystemExit(f'WRITE_QUIET_END post failed: {cp.stderr.strip()}')
           if conclusion!='success': raise SystemExit(f'publisher/science fence failed closed; bootstrap={BOOTSTRAP} science={science_field} consumed={sorted(consumed_ids)} unexpected={unexpected}')

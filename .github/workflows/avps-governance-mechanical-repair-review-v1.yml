@@ -1,0 +1,182 @@
+name: AVPS governance mechanical repair review v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      - .github/workflows/avps-governance-mechanical-repair-review-v1.yml
+      - tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v67.yml
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v71.yml
+      - .github/workflows/avps-v2-recovery4-ordinal45-publisher-v3-accepted-canonical-apply-review-v76.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+
+concurrency:
+  group: avps-governance-mechanical-repair-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      PARSER_TEST_PATH: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      SELF_PATH: .github/workflows/avps-governance-mechanical-repair-review-v1.yml
+      LEGACY_V67: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v67.yml
+      LEGACY_V71: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-choreography-review-v71.yml
+      LEGACY_V76: .github/workflows/avps-v2-recovery4-ordinal45-publisher-v3-accepted-canonical-apply-review-v76.yml
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+
+      - name: Bind live PR identity dynamically
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$EVENT_BASE_REF" = main
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          git merge-base --is-ancestor "$EVENT_BASE" "$EVENT_HEAD"
+          test -z "$(git rev-list --merges "$EVENT_BASE..$EVENT_HEAD")"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > /tmp/pr.json
+          EVENT_HEAD="$EVENT_HEAD" EVENT_BASE="$EVENT_BASE" python - <<'PY'
+          import json, os
+          p = json.load(open('/tmp/pr.json', encoding='utf-8'))
+          if p.get('state') != 'open' or p.get('merged_at') is not None:
+              raise SystemExit('review requires an open unmerged PR')
+          if (p.get('base') or {}).get('ref') != 'main':
+              raise SystemExit('base ref drift')
+          if (p.get('head') or {}).get('sha') != os.environ['EVENT_HEAD']:
+              raise SystemExit('head SHA drift')
+          if (p.get('base') or {}).get('sha') != os.environ['EVENT_BASE']:
+              raise SystemExit('base SHA drift')
+          PY
+          echo "EVENT_HEAD=$EVENT_HEAD" >> "$GITHUB_ENV"
+          echo "EVENT_BASE=$EVENT_BASE" >> "$GITHUB_ENV"
+
+      - name: Enforce governance-only diff scope and one-way retirement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-status "$EVENT_BASE...$EVENT_HEAD" > /tmp/changed.txt
+          cat /tmp/changed.txt
+          python - <<'PY'
+          import os
+          allowed = {
+              os.environ['PUBLISHER_PATH'],
+              os.environ['PARSER_TEST_PATH'],
+              os.environ['SELF_PATH'],
+              os.environ['LEGACY_V67'],
+              os.environ['LEGACY_V71'],
+              os.environ['LEGACY_V76'],
+          }
+          rows = []
+          for raw in open('/tmp/changed.txt', encoding='utf-8'):
+              raw = raw.rstrip('\n')
+              if not raw:
+                  continue
+              parts = raw.split('\t')
+              status, path = parts[0], parts[-1]
+              rows.append((status, path))
+              if path not in allowed:
+                  raise SystemExit(f'non-governance path changed: {status} {path}')
+          if not rows:
+              raise SystemExit('empty review diff')
+          legacy = {os.environ['LEGACY_V67'], os.environ['LEGACY_V71'], os.environ['LEGACY_V76']}
+          for status, path in rows:
+              if path in legacy and not status.startswith('D'):
+                  raise SystemExit(f'historical reviewer may only be deleted, never recreated/modified: {status} {path}')
+          PY
+
+      - name: Require historical identity-bound reviewers to stay retired
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$LEGACY_V67"
+          test ! -e "$LEGACY_V71"
+          test ! -e "$LEGACY_V76"
+
+      - name: Prove publisher changes are parser-block-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, re, subprocess
+          path = os.environ['PUBLISHER_PATH']
+          base = subprocess.check_output(['git','show',os.environ['EVENT_BASE'] + ':' + path], text=True)
+          head = open(path, encoding='utf-8').read()
+          begin = '# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'
+          end = '# END_WRITE_QUIET_END_LINE_PARSER_V1'
+          pattern = re.compile(r'(?ms)^\s*' + re.escape(begin) + r'\n.*?^\s*' + re.escape(end) + r'$')
+          def projection(text, label):
+              blocks = pattern.findall(text)
+              if len(blocks) != 3:
+                  raise SystemExit(f'{label}: expected exactly three governed parser blocks, got {len(blocks)}')
+              return pattern.sub('          # WRITE_QUIET_END_LINE_PARSER_V1_CANONICAL_BLOCK', text)
+          if projection(base, 'base') != projection(head, 'head'):
+              raise SystemExit('publisher changed outside the explicitly governed parser blocks')
+          PY
+
+      - name: Run canonical WRITE_QUIET parser regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$PARSER_TEST_PATH"
+          python "$PARSER_TEST_PATH"
+
+      - name: Prove reviewer is branch-agnostic and not historical-identity-bound
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, re
+          text = open(os.environ['SELF_PATH'], encoding='utf-8').read()
+          # Look only for actual YAML env bindings, not for words used inside this
+          # regression itself. The durable reviewer must derive identity from the
+          # live PR event and must not carry frozen historical PR/branch/blob pins.
+          historical_env = re.compile(
+              r'(?m)^\s+(?:EXPECTED_BASE|EXPECTED_BRANCH|PUBLISHER_BLOB|SOURCE_PUBLISHER_BLOB|PUBLISHER_BRANCH|PR939|PR941|PR942|PR943|PR944)\s*:'
+          )
+          if historical_env.search(text):
+              raise SystemExit('historical identity env binding found in durable reviewer')
+          hardcoded_sha_env = re.compile(r'(?m)^\s+[A-Z][A-Z0-9_]*:\s*[0-9a-f]{40}\s*$')
+          if hardcoded_sha_env.search(text):
+              raise SystemExit('hard-coded 40-hex commit binding found in durable reviewer env')
+          PY
+
+      - name: Review summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### AVPS governance mechanical review v1'
+            echo '- exact PR head/base bound dynamically'
+            echo '- only governance allowlisted paths changed'
+            echo '- historical identity-bound reviewers remain retired'
+            echo '- publisher projection outside canonical parser blocks is unchanged'
+            echo '- canonical parser regression passed'
+            echo '- no historical branch/PR/commit identity coupling exists in this reviewer'
+            echo '- no solver, publisher invocation, dispatch, seed allocation, or science is authorized by this workflow'
+          } >> "$GITHUB_STEP_SUMMARY"

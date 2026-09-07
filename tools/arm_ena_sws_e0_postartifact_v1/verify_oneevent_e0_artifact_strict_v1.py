@@ -87,6 +87,34 @@ def _sha(value: object, where: str) -> str:
     return value
 
 
+def _ledger_source_names(value: object) -> set[str]:
+    if not isinstance(value, str):
+        raise StrictVerificationError("ledger source_files must be a semicolon-delimited string")
+    names: set[str] = set()
+    for i, token in enumerate((x for x in value.split(";") if x), 1):
+        name = _basename(token, f"ledger source_files item {i}")
+        if name in names:
+            raise StrictVerificationError(f"duplicate ledger source filename: {name}")
+        names.add(name)
+    return names
+
+
+def _ledger_source_hashes(value: object) -> dict[str, str]:
+    if not isinstance(value, str):
+        raise StrictVerificationError("ledger source_sha256 must be a semicolon-delimited string")
+    out: dict[str, str] = {}
+    for i, token in enumerate((x for x in value.split(";") if x), 1):
+        if "|" not in token:
+            raise StrictVerificationError(f"ledger source_sha256 item {i} lacks filename/hash separator")
+        filename, digest = token.rsplit("|", 1)
+        filename = _basename(filename, f"ledger source_sha256 item {i} filename")
+        digest = _sha(digest, f"ledger source_sha256 item {i} digest")
+        if filename in out:
+            raise StrictVerificationError(f"duplicate ledger source_sha256 filename: {filename}")
+        out[filename] = digest
+    return out
+
+
 def _closed_semantic_preflight(root: Path) -> None:
     for path in root.rglob("*"):
         rel = path.relative_to(root)
@@ -113,6 +141,8 @@ def _closed_semantic_preflight(root: Path) -> None:
     if not isinstance(summary, dict):
         raise StrictVerificationError("summary must contain an object")
     _reject_unknown(summary, SUMMARY_ALLOWED_KEYS, "summary")
+    summary_e0_sha = _sha(summary.get("e0_auditor_sha256"), "summary e0_auditor_sha256")
+    summary_collector_sha = _sha(summary.get("collector_sha256"), "summary collector_sha256")
 
     schema_rows = base.read_jsonl(root / "ena_sws_e0_stream_schema.jsonl")
     sws_sources: dict[str, str] = {}
@@ -145,6 +175,10 @@ def _closed_semantic_preflight(root: Path) -> None:
     provenance_sources: dict[str, str] = {}
     for i, row in enumerate(provenance_rows, 1):
         _reject_unknown(row, PROVENANCE_ALLOWED_KEYS, f"provenance row {i}")
+        if _sha(row.get("e0_auditor_sha256"), f"provenance row {i} e0_auditor_sha256") != summary_e0_sha:
+            raise StrictVerificationError("provenance e0_auditor_sha256 does not match summary")
+        if _sha(row.get("collector_sha256"), f"provenance row {i} collector_sha256") != summary_collector_sha:
+            raise StrictVerificationError("provenance collector_sha256 does not match summary")
         sources = row.get("source_files")
         if not isinstance(sources, list):
             raise StrictVerificationError(f"provenance row {i} source_files must be a list")
@@ -174,7 +208,14 @@ def _closed_semantic_preflight(root: Path) -> None:
         raise StrictVerificationError("query-manifest filename set does not exactly match provenance sources")
 
     if len(ledger_rows) == 1:
-        disposition = ledger_rows[0].get("disposition")
+        ledger = ledger_rows[0]
+        if ledger.get("source_file_count") != len(provenance_sources):
+            raise StrictVerificationError("ledger source_file_count does not match provenance source count")
+        if _ledger_source_names(ledger.get("source_files")) != set(provenance_sources):
+            raise StrictVerificationError("ledger source_files do not exactly match provenance sources")
+        if _ledger_source_hashes(ledger.get("source_sha256")) != provenance_sources:
+            raise StrictVerificationError("ledger source_sha256 map does not exactly match provenance sources")
+        disposition = ledger.get("disposition")
         if summary.get("disposition_counts") != {disposition: 1}:
             raise StrictVerificationError("summary disposition_counts must be exactly the one ledger disposition")
 

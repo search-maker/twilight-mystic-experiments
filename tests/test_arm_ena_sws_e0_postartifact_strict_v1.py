@@ -25,6 +25,12 @@ strict = importlib.util.module_from_spec(strict_spec)
 strict_spec.loader.exec_module(strict)
 
 
+SOURCE_NAME = "enaswsC1.b1.20170616.000000.cdf"
+SOURCE_SHA = "1" * 64
+AUDITOR_SHA = "2" * 64
+COLLECTOR_SHA = "3" * 64
+
+
 class StrictClosedArtifactTests(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -34,6 +40,21 @@ class StrictClosedArtifactTests(unittest.TestCase):
         self.fx = fixture_module.ArtifactFixture(self.root)
         strict.base.FROZEN_UNIVERSE_SHA256 = self.fx.fixture_universe_sha
         fixture_module.V.FROZEN_UNIVERSE_SHA256 = self.fx.fixture_universe_sha
+
+        ledger_path = self.root / "ena_sws_e0_stream_ledger.jsonl"
+        ledger = strict.base.read_jsonl(ledger_path)[0]
+        ledger.update({
+            "source_file_count": 1,
+            "source_files": SOURCE_NAME,
+            "source_sha256": f"{SOURCE_NAME}|{SOURCE_SHA}",
+        })
+        fixture_module.write_jsonl(ledger_path, [ledger])
+
+        summary_path = self.root / "ena_sws_e0_stream_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["e0_auditor_sha256"] = AUDITOR_SHA
+        summary["collector_sha256"] = COLLECTOR_SHA
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
         self.fx.refresh_receipt()
 
     def tearDown(self):
@@ -118,6 +139,26 @@ class StrictClosedArtifactTests(unittest.TestCase):
         with self.assertRaises(strict.StrictVerificationError) as ctx:
             strict.verify_strict(self.root)
         self.assertIn("summary disposition_counts must be exactly", str(ctx.exception))
+
+    def test_strict_refuses_summary_provenance_tool_hash_mismatch(self):
+        path = self.root / "ena_sws_e0_stream_summary.json"
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        summary["collector_sha256"] = "4" * 64
+        path.write_text(json.dumps(summary), encoding="utf-8")
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("provenance collector_sha256 does not match summary", str(ctx.exception))
+
+    def test_strict_refuses_ledger_source_hash_mismatch(self):
+        path = self.root / "ena_sws_e0_stream_ledger.jsonl"
+        row = strict.base.read_jsonl(path)[0]
+        row["source_sha256"] = f"{SOURCE_NAME}|{'4' * 64}"
+        fixture_module.write_jsonl(path, [row])
+        self.fx.refresh_receipt()
+        with self.assertRaises(strict.StrictVerificationError) as ctx:
+            strict.verify_strict(self.root)
+        self.assertIn("ledger source_sha256 map does not exactly match provenance sources", str(ctx.exception))
 
 
 if __name__ == "__main__":

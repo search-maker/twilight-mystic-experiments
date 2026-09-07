@@ -44,6 +44,12 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
             '5562775627',
             '5471174859',
             '5471141095',
+            '5472575510',
+            '5472560826',
+            '5573615763',
+            '5573638267',
+            'WRITE_QUIET_END begin=123 beginComment=124',
+            'Narrative only with historical `begin=123` mention',
             'TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN',
             'ATMOSPHERE_OWNER::WRITE_QUIET_BEGIN',
             'COORDINATOR::AVPS_PUBLISHER_BLOCKER',
@@ -51,6 +57,7 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
             'ACTUAL publisher mechanical grammar helpers missing',
             'post-cutoff narrative FAIL-CLOSED text must not bind',
             'structured post-cutoff AVPS blocker must remain fail-closed',
+            'full seven-case Total-Sky V3 parser corpus',
         )
         for token in required:
             self.assertIn(token, self.reviewer)

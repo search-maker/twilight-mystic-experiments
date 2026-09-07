@@ -1,0 +1,98 @@
+name: ARM ENA SWS E0 one-event authenticated runtime v1
+
+on:
+  push:
+    branches:
+      - review/arm-ena-sws-v1-stage0
+    paths:
+      - .github/workflows/arm-ena-sws-e0-oneevent-auth-runtime-v1.yml
+      - review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py
+      - review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen_v3.py
+      - review/arm-ena-sws-v1-stage0/stream_ena_sws_e0_from_arm_live_v2.py
+      - review/arm-ena-sws-v1-stage0/test_ena_sws_e0_transport_v3.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile authenticated one-event path
+        run: |
+          python -m py_compile \
+            review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py \
+            review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen_v3.py \
+            review/arm-ena-sws-v1-stage0/stream_ena_sws_e0_from_arm_live_v2.py \
+            review/arm-ena-sws-v1-stage0/test_ena_sws_e0_transport_v3.py
+      - name: Verify sanitized result-blind transport contracts
+        working-directory: review/arm-ena-sws-v1-stage0
+        run: python test_ena_sws_e0_transport_v3.py
+      - name: Verify workflow is dispatch-only for authenticated execution
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/arm-ena-sws-e0-oneevent-auth-runtime-v1.yml')
+          s = p.read_text(encoding='utf-8')
+          runtime = s.split('\n  authenticated-oneevent:', 1)[1]
+          assert "if: github.event_name == 'workflow_dispatch'" in runtime
+          assert 'ARM_USER_ID:' in runtime and ('secrets.' + 'ARM_USER_ID') in runtime
+          assert 'ARM_ACCESS_TOKEN:' in runtime and ('secrets.' + 'ARM_ACCESS_TOKEN') in runtime
+          assert 'run_one_ena_sws_schema_probe_v3.py' in runtime
+          assert 'out="$RUNNER_TEMP/ena-sws-e0-oneevent-v1"' in runtime
+          assert '--output-dir "$out"' in runtime
+          assert 'actions/upload-artifact@v4' in runtime
+          assert ('continue-' + 'on-error') not in runtime
+          assert '--user-id' not in runtime
+          assert '--access-token' not in runtime
+          print('PASS authenticated E0 runtime remains explicit-dispatch and fail-closed')
+          PY
+
+  authenticated-oneevent:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+      ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refuse execution without both ARM credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ARM_USER_ID:-}" ] || [ -z "${ARM_ACCESS_TOKEN:-}" ]; then
+            echo '::error::Authenticated ARM environment is unavailable; no E0 result was produced.'
+            exit 2
+          fi
+      - name: Install frozen E0 dependencies
+        run: python -m pip install -r review/arm-ena-sws-v1-stage0/requirements-ena-sws-e0.txt
+      - name: Run exactly one sanitized result-blind E0 schema/QC probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/ena-sws-e0-oneevent-v1"
+          rm -rf "$out"
+          mkdir -p "$out"
+          python review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py --output-dir "$out"
+          if find "$out" -type f \( -name '*.nc' -o -name '*.cdf' \) -print -quit | grep -q .; then
+            echo '::error::HOLDOUT FIREWALL: raw SWS payload persisted in output.'
+            exit 3
+          fi
+      - name: Upload sanitized one-event E0 evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-e0-oneevent-auth-v1
+          path: ${{ runner.temp }}/ena-sws-e0-oneevent-v1
+          if-no-files-found: error
+          retention-days: 14

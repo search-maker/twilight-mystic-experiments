@@ -75,7 +75,7 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
 
     def test_projection_masks_classifier_before_parser_and_keeps_negative_control(self):
         projection = self.reviewer.split('          def projection(text, label):\n', 1)[1].split(
-            "          if projection(base, 'base') != projection(head, 'head'):\n", 1
+            '          def projection_sha(text):\n', 1
         )[0]
         self.assertLess(
             projection.index("text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\\n', text)"),
@@ -95,6 +95,31 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
         self.assertEqual(projected.count(begin), 3)
         self.assertEqual(len(parser.findall(projected)), 3)
         self.assertIn('# AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\n          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1', projected)
+
+    def test_frozen_pr978_exact_projection_diagnostic_is_pinned(self):
+        required = (
+            'f73eed74738ce0354f75a2ad2dbb375322737089',
+            '0a30788b93dcf0bc08753dd03e6840c961c1bd9d',
+            'FROZEN_PR978_BASE',
+            'FROZEN_PR978_HEAD',
+            'PROJECTION_SHA256',
+            'PROJECTION_RESIDUAL_UNIFIED_DIFF_BEGIN',
+            'PROJECTION_RESIDUAL_UNIFIED_DIFF_END',
+            'difflib.unified_diff',
+            "hashlib.sha256(text.encode('utf-8')).hexdigest()",
+            'repository_file_at_ref',
+            'frozen PR978 exact-byte diagnostic PASS',
+        )
+        for token in required:
+            self.assertIn(token, self.reviewer)
+        self.assertIn("r'(?ms)^          ' + re.escape(begin)", self.reviewer)
+        projection_step = self.reviewer.split(
+            '      - name: Prove publisher changes stay inside the Coordinator-authorized mechanical surface\n', 1
+        )[1].split(
+            '      - name: Run exact Phase-B semantic fixtures against ACTUAL publisher bytes when publisher changes\n', 1
+        )[0]
+        self.assertNotIn("parser = re.compile(r'(?ms)^\\s*'", projection_step)
+        self.assertIn("if projection(frozen_synthetic, 'FROZEN_PR978_SYNTHETIC') == projection(frozen_head, 'FROZEN_PR978_HEAD'):", projection_step)
 
     def test_stale_second_whole_marker_negative_is_replaced_by_first_line_conflict(self):
         self.assertIn("'WRITE_QUIET_END | beginComment=123\\nbegin=124'", self.reviewer)

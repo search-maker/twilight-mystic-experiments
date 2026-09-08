@@ -49,6 +49,7 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
             '5573615763',
             '5573638267',
             'WRITE_QUIET_END begin=123 beginComment=124',
+            'WRITE_QUIET_END | beginComment=123\\nbegin=124',
             'Narrative only with historical `begin=123` mention',
             'TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN',
             'ATMOSPHERE_OWNER::WRITE_QUIET_BEGIN',
@@ -77,11 +78,27 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
             "          if projection(base, 'base') != projection(head, 'head'):\n", 1
         )[0]
         self.assertLess(
-            projection.index("text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER', text)"),
+            projection.index("text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\\n', text)"),
             projection.index("text = parser.sub('          # AVPS_GOVERNED_WRITE_QUIET_END_AND_BEGIN_GRAMMAR', text)"),
         )
+        self.assertNotIn("text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER', text)", projection)
         self.assertIn('synthetic unauthorized publisher mutation', self.reviewer)
         self.assertIn('projection failed to reject unauthorized publisher mutation', self.reviewer)
+
+    def test_projection_separator_preserves_parser_sentinel_cardinality(self):
+        begin = '# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'
+        end = '# END_WRITE_QUIET_END_LINE_PARSER_V1'
+        parser = re.compile(r'(?ms)^\s*' + re.escape(begin) + r'\n.*?^\s*' + re.escape(end) + r'$')
+        gov = re.compile(r'(?ms)^          def avps_governance_blocker\(body,cid=None\):\n.*?(?=^          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1$)')
+        self.assertEqual(len(gov.findall(self.publisher)), 1)
+        projected = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\n', self.publisher)
+        self.assertEqual(projected.count(begin), 3)
+        self.assertEqual(len(parser.findall(projected)), 3)
+        self.assertIn('# AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\n          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1', projected)
+
+    def test_stale_second_whole_marker_negative_is_replaced_by_first_line_conflict(self):
+        self.assertIn("'WRITE_QUIET_END | beginComment=123\\nbegin=124'", self.reviewer)
+        self.assertNotIn("'WRITE_QUIET_END | beginComment=123\\nWRITE_QUIET_END | beginComment=123'", self.reviewer)
 
     def test_existing_corrected_end_regression_remains_part_of_durable_review(self):
         self.assertTrue(PARSER_TEST.is_file())

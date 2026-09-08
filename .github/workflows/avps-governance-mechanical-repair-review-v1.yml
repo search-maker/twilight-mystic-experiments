@@ -123,50 +123,126 @@ jobs:
 
       - name: Prove publisher changes stay inside the Coordinator-authorized mechanical surface
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, re, subprocess
+          import base64, difflib, hashlib, json, os, re, subprocess
           path = os.environ['PUBLISHER_PATH']
-          base = subprocess.check_output(['git','show',os.environ['EVENT_BASE'] + ':' + path], text=True)
-          head = open(path, encoding='utf-8').read()
-          if base == head:
-              print('publisher unchanged: reviewer-extension-only Phase A')
-              raise SystemExit(0)
+          frozen_base_ref = 'f73eed74738ce0354f75a2ad2dbb375322737089'
+          frozen_head_ref = '0a30788b93dcf0bc08753dd03e6840c961c1bd9d'
 
           begin = '# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'
           end = '# END_WRITE_QUIET_END_LINE_PARSER_V1'
-          parser = re.compile(r'(?ms)^\s*' + re.escape(begin) + r'\n.*?^\s*' + re.escape(end) + r'$')
-          gov = re.compile(r'(?ms)^          def avps_governance_blocker\(body,cid=None\):\n.*?(?=^          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1$)')
+          parser = re.compile(
+              r'(?ms)^          ' + re.escape(begin) + r'\n.*?^          ' + re.escape(end) + r'(?=\n|$)'
+          )
+          gov = re.compile(
+              r'(?ms)^          def avps_governance_blocker\(body,cid=None\):\n.*?'
+              r'(?=^          # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1\n)'
+          )
           cutoff = re.compile(r'(?m)^          KNOWN_DEFECT=\d+$')
           old_begin = "                  elif first.startswith('WRITE_QUIET_BEGIN'):"
           new_begin = "                  elif is_write_quiet_begin(body):"
+          canonical_begin = '                  elif AVPS_GOVERNED_WRITE_QUIET_BEGIN(body):'
 
-          base_parser = parser.findall(base)
-          head_parser = parser.findall(head)
-          if len(base_parser) != 3 or len(head_parser) != 3:
-              raise SystemExit(f'expected exactly three governed parser blocks: base={len(base_parser)} head={len(head_parser)}')
-          base_gov = gov.findall(base)
-          head_gov = gov.findall(head)
-          if len(base_gov) != 1 or len(head_gov) != 1:
-              raise SystemExit(f'expected exactly one governance-classifier block: base={len(base_gov)} head={len(head_gov)}')
-          if len(cutoff.findall(base)) != 1 or len(cutoff.findall(head)) != 1:
-              raise SystemExit('expected exactly one KNOWN_DEFECT cutoff line')
-          base_begin_count = base.count(old_begin)
-          if base_begin_count < 1:
-              raise SystemExit('base WRITE_QUIET_BEGIN scan anchor missing')
-          if head.count(old_begin) != 0 or head.count(new_begin) != base_begin_count:
-              raise SystemExit('owner-prefix BEGIN scan must replace every and only existing BEGIN scan anchor')
+          def validate_surface(text, label):
+              parser_count = len(parser.findall(text))
+              gov_count = len(gov.findall(text))
+              cutoff_count = len(cutoff.findall(text))
+              if parser_count != 3:
+                  raise SystemExit(f'{label}: expected exactly three governed parser blocks, found {parser_count}')
+              if gov_count != 1:
+                  raise SystemExit(f'{label}: expected exactly one governance-classifier block, found {gov_count}')
+              if cutoff_count != 1:
+                  raise SystemExit(f'{label}: expected exactly one KNOWN_DEFECT cutoff line, found {cutoff_count}')
+              old_count = text.count(old_begin)
+              new_count = text.count(new_begin)
+              return old_count, new_count
 
           def projection(text, label):
+              validate_surface(text, label)
               text = gov.sub('          # AVPS_GOVERNED_POST_CUTOFF_CLASSIFIER\n', text)
               text = parser.sub('          # AVPS_GOVERNED_WRITE_QUIET_END_AND_BEGIN_GRAMMAR', text)
               text = cutoff.sub('          KNOWN_DEFECT=AVPS_GOVERNANCE_COMPACTION_CUTOFF', text)
-              text = text.replace(old_begin, '                  elif AVPS_GOVERNED_WRITE_QUIET_BEGIN(body):')
-              text = text.replace(new_begin, '                  elif AVPS_GOVERNED_WRITE_QUIET_BEGIN(body):')
+              text = text.replace(old_begin, canonical_begin)
+              text = text.replace(new_begin, canonical_begin)
               return text
-          if projection(base, 'base') != projection(head, 'head'):
-              raise SystemExit('publisher changed outside the Coordinator-authorized mechanical compatibility surface')
+
+          def projection_sha(text):
+              return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+          def require_projection_equal(left, right, left_label, right_label):
+              pleft = projection(left, left_label)
+              pright = projection(right, right_label)
+              left_sha = projection_sha(pleft)
+              right_sha = projection_sha(pright)
+              print(f'PROJECTION_SHA256 {left_label}={left_sha}')
+              print(f'PROJECTION_SHA256 {right_label}={right_sha}')
+              if pleft != pright:
+                  residual = ''.join(difflib.unified_diff(
+                      pleft.splitlines(keepends=True),
+                      pright.splitlines(keepends=True),
+                      fromfile=left_label,
+                      tofile=right_label,
+                      n=3,
+                  ))
+                  print('PROJECTION_RESIDUAL_UNIFIED_DIFF_BEGIN')
+                  print(residual, end='' if residual.endswith('\n') else '\n')
+                  print('PROJECTION_RESIDUAL_UNIFIED_DIFF_END')
+                  raise SystemExit(f'publisher changed outside the Coordinator-authorized mechanical compatibility surface: {left_label} != {right_label}')
+              return pleft, pright
+
+          def repository_file_at_ref(ref):
+              endpoint = f'repos/{os.environ["GITHUB_REPOSITORY"]}/contents/{path}?ref={ref}'
+              cp = subprocess.run(
+                  ['/usr/bin/gh', 'api', '--hostname', 'github.com', endpoint],
+                  capture_output=True, text=True, check=False,
+              )
+              if cp.returncode != 0:
+                  raise SystemExit(f'unable to read frozen publisher ref {ref}: {cp.stderr.strip()}')
+              payload = json.loads(cp.stdout)
+              if payload.get('encoding') != 'base64' or not isinstance(payload.get('content'), str):
+                  raise SystemExit(f'unexpected contents payload for frozen publisher ref {ref}')
+              return base64.b64decode(payload['content']).decode('utf-8')
+
+          # Coordinator 5578236804 requires the reviewer repair itself to reproduce
+          # the exact frozen PR978 projection, not merely a synthetic copy.
+          frozen_base = repository_file_at_ref(frozen_base_ref)
+          frozen_head = repository_file_at_ref(frozen_head_ref)
+          frozen_base_old, frozen_base_new = validate_surface(frozen_base, 'FROZEN_PR978_BASE')
+          frozen_head_old, frozen_head_new = validate_surface(frozen_head, 'FROZEN_PR978_HEAD')
+          if frozen_base_old < 1 or frozen_base_new != 0:
+              raise SystemExit(f'FROZEN_PR978_BASE BEGIN grammar drift: old={frozen_base_old} new={frozen_base_new}')
+          if frozen_head_old != 0 or frozen_head_new != frozen_base_old:
+              raise SystemExit(f'FROZEN_PR978_HEAD BEGIN grammar drift: old={frozen_head_old} new={frozen_head_new} expected_new={frozen_base_old}')
+          require_projection_equal(frozen_base, frozen_head, 'FROZEN_PR978_BASE', 'FROZEN_PR978_HEAD')
+
+          frozen_synthetic = frozen_head.replace(
+              'name: AVPS v2 Recovery4 ordinal45 final one-use dispatch publisher v1',
+              'name: AVPS v2 Recovery4 ordinal45 final one-use dispatch publisher v1 synthetic unauthorized publisher mutation',
+              1,
+          )
+          if frozen_synthetic == frozen_head:
+              raise SystemExit('synthetic unauthorized publisher mutation fixture anchor missing')
+          if projection(frozen_synthetic, 'FROZEN_PR978_SYNTHETIC') == projection(frozen_head, 'FROZEN_PR978_HEAD'):
+              raise SystemExit('projection failed to reject unauthorized publisher mutation')
+
+          base = subprocess.check_output(['git','show',os.environ['EVENT_BASE'] + ':' + path], text=True)
+          head = open(path, encoding='utf-8').read()
+          if base == head:
+              print('publisher unchanged: reviewer-extension-only Phase A; frozen PR978 exact-byte diagnostic PASS')
+              raise SystemExit(0)
+
+          base_old, base_new = validate_surface(base, 'EVENT_BASE')
+          head_old, head_new = validate_surface(head, 'EVENT_HEAD')
+          if base_old < 1 or base_new != 0:
+              raise SystemExit(f'base WRITE_QUIET_BEGIN scan anchor drift: old={base_old} new={base_new}')
+          if head_old != 0 or head_new != base_old:
+              raise SystemExit('owner-prefix BEGIN scan must replace every and only existing BEGIN scan anchor')
+          require_projection_equal(base, head, 'EVENT_BASE', 'EVENT_HEAD')
+
           synthetic = head.replace(
               'name: AVPS v2 Recovery4 ordinal45 final one-use dispatch publisher v1',
               'name: AVPS v2 Recovery4 ordinal45 final one-use dispatch publisher v1 synthetic unauthorized publisher mutation',
@@ -174,7 +250,7 @@ jobs:
           )
           if synthetic == head:
               raise SystemExit('synthetic unauthorized publisher mutation fixture anchor missing')
-          if projection(synthetic, 'synthetic') == projection(head, 'head'):
+          if projection(synthetic, 'EVENT_SYNTHETIC') == projection(head, 'EVENT_HEAD'):
               raise SystemExit('projection failed to reject unauthorized publisher mutation')
           PY
 
@@ -337,6 +413,7 @@ jobs:
             echo '- exact PR head/base bound dynamically'
             echo '- only governance allowlisted paths changed'
             echo '- historical identity-bound reviewers remain retired'
+            echo '- exact frozen PR978 base/head projection is reproduced with deterministic SHA-256 and unified-diff diagnostics'
             echo '- publisher changes, when present, are confined to the Coordinator-authorized mechanical surface'
             echo '- Phase-B semantic fixtures execute the ACTUAL publisher grammar/classifier bytes, the full seven-case Total-Sky V3 parser corpus, and exact owner-fence history'
             echo '- canonical parser and durable reviewer-extension contracts passed'

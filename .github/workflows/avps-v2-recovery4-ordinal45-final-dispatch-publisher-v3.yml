@@ -147,7 +147,7 @@ jobs:
           DISPATCH_BRANCH='dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45'
           SEED_SHA='ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de'
           ROWS_SHA='c439de417520b330c037e2628df02b6955f652563300aa5ef30477abf7661a98'
-          KNOWN_DEFECT=5534167752
+          KNOWN_DEFECT=5576203465
           def run(cmd,**kw):
               cp=subprocess.run(cmd,text=True,capture_output=True,**kw)
               if cp.returncode!=0: raise SystemExit(f'command failed rc={cp.returncode} cmd={cmd!r} stderr={cp.stderr.strip()}')
@@ -223,22 +223,22 @@ jobs:
               ok=bool(re.fullmatch(r'(?:BLOCKER|AVPS(?:_[A-Z0-9]+)*_(?:CLOSED|NOT_ADMISSIBLE|DO_NOT_USE|COORDINATOR_RECOVERY|SUPERSEDING_DIRECTIVE|BLOCKER))',h))
               return ok,False
           def avps_governance_blocker(body,cid=None):
-              if cid is not None and int(cid) in B:return False
+              if cid is not None and int(cid)<=KNOWN_DEFECT:return False
               t=str(body or '');u=t.upper()
               if 'AVPS' not in u:return False
               if len(t)>MAX_BODY_CHARS:return True
               if any(len(x)>MAX_LINE_CHARS for x in t.splitlines()):return True
-              if any(x in u for x in ('CONFIRMED_DEFECT','MATERIAL_RISK','QUARANTINE_DOWNSTREAM=TRUE','FAIL_CLOSED','FAIL-CLOSED')):return True
               raw=[x for x in t.splitlines() if x.strip()];surfaces=[]
               if raw:
+                  first,exhausted=strip(raw[0])
+                  if exhausted:return True
+                  if re.match(r'^COORDINATOR::AVPS(?:_[A-Z0-9]+)*_(?:CLOSED|NOT_ADMISSIBLE|DO_NOT_USE|COORDINATOR_RECOVERY|SUPERSEDING_DIRECTIVE|BLOCKER)(?=$|[\s|:])',first.upper()):return True
                   fatal,exhausted=first_state(raw[0])
                   if exhausted:return True
                   if fatal:return True
                   x,exhausted=structured(raw[0])
                   if exhausted:return True
                   if x:surfaces.append(x)
-                  first,exhausted=strip(raw[0])
-                  if exhausted:return True
                   for seg in first.split('|')[1:]:
                       x,exhausted=structured(seg)
                       if exhausted:return True
@@ -251,37 +251,45 @@ jobs:
                   if re.search(r'NOT[\s_-]+ADMISSIBLE',x) or re.search(r'DO[\s_-]+NOT[\s_-]+USE',x) or re.search(r'COORDINATOR[\s_-]+RECOVERY',x) or re.search(r'SUPERSEDING[\s_-]+DIRECTIVE',x) or re.search(r'(?<![A-Z0-9_])CLOSED(?![A-Z0-9_])',x) or re.search(r'(?<![A-Z0-9_])BLOCKER(?![A-Z0-9_])',x):return True
               return False
           # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
-          def write_quiet_end_binding(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if not markers:return None
-              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
-              index,marker=markers[0]; fields={}
-              for tok in marker.replace('|',' ').split():
-                  if '=' in tok:
-                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
-              if index>0:
-                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
-                  vals=list(fields.get('beginComment',[]))
-              else:
-                  vals=[]
-                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
-              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
-              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
-              return int(vals[0])
-          def _write_quiet_end_marker_details(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if len(markers)!=1:return None
-              index,marker=markers[0];fields={}
+          import re
+          _WRITE_QUIET_END_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_END(?=$|[\s|])')
+          _WRITE_QUIET_BEGIN_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_BEGIN(?=$|[\s|])')
+          _WRITE_QUIET_LINK_RE=re.compile(r'^(begin|beginComment|begin_comment)=([^\s|]+)$')
+          def _write_quiet_end_marker(body):
+              lines=str(body or '').splitlines()
+              if not lines:return None
+              line=lines[0].strip()
+              if not _WRITE_QUIET_END_RE.match(line):return None
+              return (0,line)
+          def _write_quiet_marker_fields(marker):
+              fields={}
               for tok in marker.replace('|',' ').split():
                   if '=' in tok:
                       k,v=tok.split('=',1);fields.setdefault(k,[]).append(v)
-              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':fields}
+              return fields
+          def is_write_quiet_begin(body):
+              lines=str(body or '').splitlines()
+              if not lines:return False
+              return bool(_WRITE_QUIET_BEGIN_RE.match(lines[0].strip()))
+          def write_quiet_end_binding(body):
+              lines=str(body or '').splitlines(); found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found;fields=_write_quiet_marker_fields(marker);vals=[]
+              for key in ('begin','beginComment','begin_comment'):vals.extend(fields.get(key,[]))
+              for raw in lines[index+1:]:
+                  m=_WRITE_QUIET_LINK_RE.fullmatch(raw.strip())
+                  if m:vals.append(m.group(2))
+              if not vals:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              for value in vals:
+                  if not value.isdigit():raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {value!r}')
+              distinct=tuple(dict.fromkeys(vals))
+              if len(distinct)!=1:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              return int(distinct[0])
+          def _write_quiet_end_marker_details(body):
+              found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found
+              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':_write_quiet_marker_fields(marker)}
           def _authorized_corrected_end_supersession(binding,previous,current):
               if binding!=5467776090 or previous.get('comment_id')!=5467858336 or current.get('comment_id')!=5467875147:return False
               p=_write_quiet_end_marker_details(previous.get('body'));c=_write_quiet_end_marker_details(current.get('body'))
@@ -352,7 +360,7 @@ jobs:
               for c in comments:
                   body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
                   if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
-                  elif first.startswith('WRITE_QUIET_BEGIN'):
+                  elif is_write_quiet_begin(body):
                       cid=int(c['id']); begins.append(cid); begin_ids.add(cid)
                   if int(c.get('id') or 0)>KNOWN_DEFECT:
                       b=str(c.get('body') or '')
@@ -416,37 +424,45 @@ jobs:
               return cp
           def pages(endpoint): return json.loads(api([endpoint],slurp=True).stdout)
           # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
-          def write_quiet_end_binding(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if not markers:return None
-              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
-              index,marker=markers[0]; fields={}
-              for tok in marker.replace('|',' ').split():
-                  if '=' in tok:
-                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
-              if index>0:
-                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
-                  vals=list(fields.get('beginComment',[]))
-              else:
-                  vals=[]
-                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
-              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
-              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
-              return int(vals[0])
-          def _write_quiet_end_marker_details(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if len(markers)!=1:return None
-              index,marker=markers[0];fields={}
+          import re
+          _WRITE_QUIET_END_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_END(?=$|[\s|])')
+          _WRITE_QUIET_BEGIN_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_BEGIN(?=$|[\s|])')
+          _WRITE_QUIET_LINK_RE=re.compile(r'^(begin|beginComment|begin_comment)=([^\s|]+)$')
+          def _write_quiet_end_marker(body):
+              lines=str(body or '').splitlines()
+              if not lines:return None
+              line=lines[0].strip()
+              if not _WRITE_QUIET_END_RE.match(line):return None
+              return (0,line)
+          def _write_quiet_marker_fields(marker):
+              fields={}
               for tok in marker.replace('|',' ').split():
                   if '=' in tok:
                       k,v=tok.split('=',1);fields.setdefault(k,[]).append(v)
-              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':fields}
+              return fields
+          def is_write_quiet_begin(body):
+              lines=str(body or '').splitlines()
+              if not lines:return False
+              return bool(_WRITE_QUIET_BEGIN_RE.match(lines[0].strip()))
+          def write_quiet_end_binding(body):
+              lines=str(body or '').splitlines(); found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found;fields=_write_quiet_marker_fields(marker);vals=[]
+              for key in ('begin','beginComment','begin_comment'):vals.extend(fields.get(key,[]))
+              for raw in lines[index+1:]:
+                  m=_WRITE_QUIET_LINK_RE.fullmatch(raw.strip())
+                  if m:vals.append(m.group(2))
+              if not vals:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              for value in vals:
+                  if not value.isdigit():raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {value!r}')
+              distinct=tuple(dict.fromkeys(vals))
+              if len(distinct)!=1:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              return int(distinct[0])
+          def _write_quiet_end_marker_details(body):
+              found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found
+              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':_write_quiet_marker_fields(marker)}
           def _authorized_corrected_end_supersession(binding,previous,current):
               if binding!=5467776090 or previous.get('comment_id')!=5467858336 or current.get('comment_id')!=5467875147:return False
               p=_write_quiet_end_marker_details(previous.get('body'));c=_write_quiet_end_marker_details(current.get('body'))
@@ -516,7 +532,7 @@ jobs:
                   if '=' in item:
                       k,v=item.split('=',1); f[k]=v
               if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
-              elif first.startswith('WRITE_QUIET_BEGIN'):
+              elif is_write_quiet_begin(body):
                   cid=int(c['id']); begins.append((cid,f)); begin_ids.add(cid)
           unmatched=[x for x in begins if x[0] not in closed]
           exact=[x for x in unmatched if x[0]==begin and x[1].get('token')==token and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('science_run')=='PENDING' and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck']
@@ -576,37 +592,45 @@ jobs:
               if cp.returncode!=0: raise SystemExit(f'GitHub API failure endpoint={endpoint} rc={cp.returncode} stderr={cp.stderr.strip()}')
               return json.loads(cp.stdout)
           # BEGIN_WRITE_QUIET_END_LINE_PARSER_V1
-          def write_quiet_end_binding(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if not markers:return None
-              if len(markers)!=1: raise SystemExit('duplicate WRITE_QUIET_END marker lines')
-              index,marker=markers[0]; fields={}
-              for tok in marker.replace('|',' ').split():
-                  if '=' in tok:
-                      k,v=tok.split('=',1); fields.setdefault(k,[]).append(v)
-              if index>0:
-                  if fields.get('begin') or fields.get('begin_comment'): raise SystemExit('later-line WRITE_QUIET_END must use beginComment')
-                  vals=list(fields.get('beginComment',[]))
-              else:
-                  vals=[]
-                  for key in ('begin','beginComment','begin_comment'): vals.extend(fields.get(key,[]))
-              if len(vals)!=1: raise SystemExit('WRITE_QUIET_END requires exactly one begin binding on marker line')
-              if not vals[0].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {vals[0]!r}')
-              return int(vals[0])
-          def _write_quiet_end_marker_details(body):
-              markers=[]
-              for index,raw in enumerate(str(body or '').splitlines()):
-                  line=raw.strip()
-                  if line.startswith('WRITE_QUIET_END |'): markers.append((index,line))
-              if len(markers)!=1:return None
-              index,marker=markers[0];fields={}
+          import re
+          _WRITE_QUIET_END_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_END(?=$|[\s|])')
+          _WRITE_QUIET_BEGIN_RE=re.compile(r'^(?:(?:[A-Z_]+)::)?WRITE_QUIET_BEGIN(?=$|[\s|])')
+          _WRITE_QUIET_LINK_RE=re.compile(r'^(begin|beginComment|begin_comment)=([^\s|]+)$')
+          def _write_quiet_end_marker(body):
+              lines=str(body or '').splitlines()
+              if not lines:return None
+              line=lines[0].strip()
+              if not _WRITE_QUIET_END_RE.match(line):return None
+              return (0,line)
+          def _write_quiet_marker_fields(marker):
+              fields={}
               for tok in marker.replace('|',' ').split():
                   if '=' in tok:
                       k,v=tok.split('=',1);fields.setdefault(k,[]).append(v)
-              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':fields}
+              return fields
+          def is_write_quiet_begin(body):
+              lines=str(body or '').splitlines()
+              if not lines:return False
+              return bool(_WRITE_QUIET_BEGIN_RE.match(lines[0].strip()))
+          def write_quiet_end_binding(body):
+              lines=str(body or '').splitlines(); found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found;fields=_write_quiet_marker_fields(marker);vals=[]
+              for key in ('begin','beginComment','begin_comment'):vals.extend(fields.get(key,[]))
+              for raw in lines[index+1:]:
+                  m=_WRITE_QUIET_LINK_RE.fullmatch(raw.strip())
+                  if m:vals.append(m.group(2))
+              if not vals:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              for value in vals:
+                  if not value.isdigit():raise SystemExit(f'non-numeric WRITE_QUIET_END begin binding: {value!r}')
+              distinct=tuple(dict.fromkeys(vals))
+              if len(distinct)!=1:raise SystemExit('WRITE_QUIET_END requires exactly one authoritative begin binding')
+              return int(distinct[0])
+          def _write_quiet_end_marker_details(body):
+              found=_write_quiet_end_marker(body)
+              if found is None:return None
+              index,marker=found
+              return {'index':index,'parts':[x.strip() for x in marker.split('|')],'fields':_write_quiet_marker_fields(marker)}
           def _authorized_corrected_end_supersession(binding,previous,current):
               if binding!=5467776090 or previous.get('comment_id')!=5467858336 or current.get('comment_id')!=5467875147:return False
               p=_write_quiet_end_marker_details(previous.get('body'));c=_write_quiet_end_marker_details(current.get('body'))
@@ -671,7 +695,7 @@ jobs:
                   if '=' in item:
                       k,v=item.split('=',1); f[k]=v
               if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
-              elif first.startswith('WRITE_QUIET_BEGIN'):
+              elif is_write_quiet_begin(body):
                   cid=int(c['id']); begins.append((cid,f)); begin_ids.add(cid)
           unmatched=[x for x in begins if x[0] not in closed]
           matching=[x for x in unmatched if x[1].get('token','').startswith(TOKEN_PREFIX) and x[1].get('authorization')==AUTH_HEAD and x[1].get('dispatch')==DISPATCH_BRANCH and x[1].get('expected_science_workflow')==SCIENCE_WORKFLOW and x[1].get('execution_key')==EXECUTION_KEY and x[1].get('guard')=='repository-global-candidate-seed-recheck' and (x[1].get('science_run')=='PENDING' or str(x[1].get('science_run','')).isdigit())]

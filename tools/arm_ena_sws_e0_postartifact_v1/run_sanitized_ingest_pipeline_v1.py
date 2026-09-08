@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,16 @@ def _require_false(payload: dict[str, Any], key: str, where: str) -> None:
         fail(f"{where} {key} must remain exactly false")
 
 
+def _canonical_sha256(value: object, where: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        fail(f"{where} must be a lowercase SHA-256")
+    return value
+
+
 def _bind_digest_to_envelope(envelope: dict[str, Any], digest: dict[str, Any]) -> None:
     for key in (
         "authority_comment",
@@ -103,7 +115,28 @@ def _bind_digest_to_envelope(envelope: dict[str, Any], digest: dict[str, Any]) -
         _require_false(digest, key, "ZIP-digest receipt")
 
 
-def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any]) -> None:
+def _validate_extracted_file_manifest(payload: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(payload, dict) or set(payload) != extraction_gate.REQUIRED_FILES:
+        fail("safe-extraction receipt extracted_files must cover the exact seven-file set")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name in sorted(payload):
+        row = payload[name]
+        if not isinstance(row, dict) or set(row) != {"size_bytes", "sha256"}:
+            fail(f"safe-extraction receipt extracted_files[{name!r}] has invalid shape")
+        size = row.get("size_bytes")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            fail(f"safe-extraction receipt extracted_files[{name!r}].size_bytes is invalid")
+        normalized[name] = {
+            "size_bytes": size,
+            "sha256": _canonical_sha256(
+                row.get("sha256"),
+                f"safe-extraction receipt extracted_files[{name!r}].sha256",
+            ),
+        }
+    return normalized
+
+
+def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for key in (
         "authority_comment",
         "run_id",
@@ -121,6 +154,11 @@ def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any
         fail("safe-extraction receipt does not attest completed bounded extraction")
     if extraction.get("artifact_content_values_parsed") is not False:
         fail("safe-extraction gate parsed artifact values")
+    if extraction.get("archive_member_count") != len(extraction_gate.REQUIRED_FILES):
+        fail("safe-extraction receipt archive_member_count drifted")
+    if extraction.get("extracted_file_names") != sorted(extraction_gate.REQUIRED_FILES):
+        fail("safe-extraction receipt extracted_file_names drifted")
+    extracted_files = _validate_extracted_file_manifest(extraction.get("extracted_files"))
     for key in (
         "protected_results_opened",
         "stage_b_authorized",
@@ -128,6 +166,84 @@ def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any
         "science_execution_authorized",
     ):
         _require_false(extraction, key, "safe-extraction receipt")
+    return extracted_files
+
+
+def _hash_regular_file_stably(path: Path) -> dict[str, Any]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open extracted file safely {path.name!r}: {type(exc).__name__}")
+    try:
+        with os.fdopen(fd, "rb", closefd=True) as fh:
+            before = os.fstat(fh.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                fail(f"extracted file is not regular: {path.name!r}")
+            h = hashlib.sha256()
+            size = 0
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                size += len(block)
+                h.update(block)
+            after = os.fstat(fh.fileno())
+    except PipelineVerificationError:
+        raise
+    except OSError as exc:
+        fail(f"cannot hash extracted file {path.name!r}: {type(exc).__name__}")
+
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if identity_before != identity_after or size != before.st_size:
+        fail(f"extracted file changed while hashing: {path.name!r}")
+    try:
+        path_state = path.lstat()
+    except OSError as exc:
+        fail(f"cannot restat extracted file {path.name!r}: {type(exc).__name__}")
+    if (
+        not stat.S_ISREG(path_state.st_mode)
+        or path_state.st_dev != after.st_dev
+        or path_state.st_ino != after.st_ino
+        or path_state.st_size != after.st_size
+        or path_state.st_mtime_ns != after.st_mtime_ns
+    ):
+        fail(f"extracted file path changed while hashing: {path.name!r}")
+    return {"size_bytes": size, "sha256": h.hexdigest()}
+
+
+def snapshot_extracted_tree(root: Path) -> dict[str, dict[str, Any]]:
+    if root.is_symlink() or not root.is_dir():
+        fail("sanitized artifact root must remain a non-symlink directory")
+    try:
+        names_before = {path.name for path in root.iterdir()}
+    except OSError as exc:
+        fail(f"cannot enumerate sanitized artifact root: {type(exc).__name__}")
+    if names_before != extraction_gate.REQUIRED_FILES:
+        fail("sanitized artifact root no longer has the exact seven-file set")
+    snapshot = {
+        name: _hash_regular_file_stably(root / name)
+        for name in sorted(extraction_gate.REQUIRED_FILES)
+    }
+    try:
+        names_after = {path.name for path in root.iterdir()}
+    except OSError as exc:
+        fail(f"cannot re-enumerate sanitized artifact root: {type(exc).__name__}")
+    if names_after != names_before:
+        fail("sanitized artifact file set changed during byte snapshot")
+    return snapshot
 
 
 def _validate_content_receipt(content: dict[str, Any]) -> None:
@@ -172,13 +288,20 @@ def run_pipeline(
 
     extracted_dir = work_dir / "sanitized-artifact"
     extraction = extraction_gate.extract_safely(digest, artifact_zip, extracted_dir)
-    _bind_extraction_to_digest(digest, extraction)
+    extraction_manifest = _bind_extraction_to_digest(digest, extraction)
+    extracted_before_content = snapshot_extracted_tree(extracted_dir)
+    if extracted_before_content != extraction_manifest:
+        fail("safe-extraction file manifest does not match extracted bytes")
     write_receipt(work_dir / "03-safe-extraction-receipt.json", extraction)
 
     content = content_gate.verify_strict(extracted_dir)
     _validate_content_receipt(content)
+    extracted_after_content = snapshot_extracted_tree(extracted_dir)
+    if extracted_after_content != extracted_before_content:
+        fail("sanitized artifact bytes changed during strict content verification")
     write_receipt(work_dir / "04-strict-content-receipt.json", content)
 
+    sanitized_manifest_sha256 = receipt_sha256(extracted_before_content)
     final = {
         "schema": 1,
         "status": STATUS,
@@ -193,6 +316,8 @@ def run_pipeline(
         "artifact_name": envelope["artifact_name"],
         "artifact_digest": envelope["artifact_digest"],
         "downloaded_zip_sha256": digest["downloaded_zip_sha256"],
+        "sanitized_file_manifest_sha256": sanitized_manifest_sha256,
+        "same_extracted_bytes_verified_before_and_after_content_check": True,
         "probe_case_id": content["probe_case_id"],
         "frozen_event_universe_sha256": content["frozen_event_universe_sha256"],
         "e0_disposition": content["e0_disposition"],

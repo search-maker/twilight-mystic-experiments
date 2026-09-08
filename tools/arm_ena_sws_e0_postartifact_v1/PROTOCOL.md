@@ -17,7 +17,13 @@ It does **not** invoke ARM Live, read credentials, open SWS/SASZE radiance, auth
 
 Before any ZIP extraction or artifact-content parsing, first verify the authorized GitHub run envelope with `verify_authorized_run_envelope_v1.py`, then bind the exact downloaded archive bytes with `verify_downloaded_artifact_zip_v1.py`.
 
-The byte-binding gate is deliberately content-blind. It requires the exact closed run-envelope receipt, hashes the downloaded file as opaque bytes, and requires byte-for-byte SHA-256 equality with GitHub's canonical `artifact.digest`. It refuses missing, empty, non-regular or symlink inputs, does not inspect the ZIP central directory, and emits `zip_contents_inspected=false` and `zip_extracted=false`. Only after this gate passes may a safely extracted directory be supplied to the strict content verifier.
+The byte-binding gate is deliberately content-blind. It requires the exact closed run-envelope receipt, hashes the downloaded file as opaque bytes, and requires byte-for-byte SHA-256 equality with GitHub's canonical `artifact.digest`. It refuses missing, empty, non-regular or symlink inputs, does not inspect the ZIP central directory, and emits `zip_contents_inspected=false` and `zip_extracted=false`.
+
+## Mandatory safe extraction gate
+
+Only after the outer-byte gate passes may `extract_sanitized_artifact_zip_v1.py` inspect ZIP structure. The extractor re-hashes the same archive against the closed digest receipt before opening it, then requires the exact seven root-level sanitized filenames, no directories/nested/traversal paths, duplicates, encrypted members, explicit symlink/non-regular Unix file types or unsupported compression methods. Permission-only Unix mode bits with no file-type bits are accepted rather than misclassified as a non-regular member; explicit regular-file mode bits are also accepted. It bounds every uncompressed member to 32 MiB and the total to 64 MiB, extracts only into a fresh directory, removes its own partial output on any failure, and parses no artifact file values. Its receipt keeps protected-result, Stage-B, held-out and science authority false.
+
+Only after safe extraction succeeds may the extracted directory be supplied to the strict content verifier below.
 
 ## Fail-closed ingest contract
 

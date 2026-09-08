@@ -13,8 +13,13 @@ Stage B, held-out radiance opening, scientific execution, or production authorit
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
 import hashlib
+import io
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -77,6 +82,16 @@ def _require_false(payload: dict[str, Any], key: str, where: str) -> None:
         fail(f"{where} {key} must remain exactly false")
 
 
+def _canonical_sha256(value: object, where: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        fail(f"{where} must be a lowercase SHA-256")
+    return value
+
+
 def _bind_digest_to_envelope(envelope: dict[str, Any], digest: dict[str, Any]) -> None:
     for key in (
         "authority_comment",
@@ -103,7 +118,28 @@ def _bind_digest_to_envelope(envelope: dict[str, Any], digest: dict[str, Any]) -
         _require_false(digest, key, "ZIP-digest receipt")
 
 
-def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any]) -> None:
+def _validate_extracted_file_manifest(payload: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(payload, dict) or set(payload) != extraction_gate.REQUIRED_FILES:
+        fail("safe-extraction receipt extracted_files must cover the exact seven-file set")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name in sorted(payload):
+        row = payload[name]
+        if not isinstance(row, dict) or set(row) != {"size_bytes", "sha256"}:
+            fail(f"safe-extraction receipt extracted_files[{name!r}] has invalid shape")
+        size = row.get("size_bytes")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            fail(f"safe-extraction receipt extracted_files[{name!r}].size_bytes is invalid")
+        normalized[name] = {
+            "size_bytes": size,
+            "sha256": _canonical_sha256(
+                row.get("sha256"),
+                f"safe-extraction receipt extracted_files[{name!r}].sha256",
+            ),
+        }
+    return normalized
+
+
+def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for key in (
         "authority_comment",
         "run_id",
@@ -121,6 +157,11 @@ def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any
         fail("safe-extraction receipt does not attest completed bounded extraction")
     if extraction.get("artifact_content_values_parsed") is not False:
         fail("safe-extraction gate parsed artifact values")
+    if extraction.get("archive_member_count") != len(extraction_gate.REQUIRED_FILES):
+        fail("safe-extraction receipt archive_member_count drifted")
+    if extraction.get("extracted_file_names") != sorted(extraction_gate.REQUIRED_FILES):
+        fail("safe-extraction receipt extracted_file_names drifted")
+    extracted_files = _validate_extracted_file_manifest(extraction.get("extracted_files"))
     for key in (
         "protected_results_opened",
         "stage_b_authorized",
@@ -128,6 +169,268 @@ def _bind_extraction_to_digest(digest: dict[str, Any], extraction: dict[str, Any
         "science_execution_authorized",
     ):
         _require_false(extraction, key, "safe-extraction receipt")
+    return extracted_files
+
+
+def _capture_regular_file_stably(path: Path) -> tuple[bytes, dict[str, Any]]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open extracted file safely {path.name!r}: {type(exc).__name__}")
+    try:
+        with os.fdopen(fd, "rb", closefd=True) as fh:
+            before = os.fstat(fh.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                fail(f"extracted file is not regular: {path.name!r}")
+            chunks: list[bytes] = []
+            size = 0
+            h = hashlib.sha256()
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                chunks.append(block)
+                size += len(block)
+                h.update(block)
+            after = os.fstat(fh.fileno())
+    except PipelineVerificationError:
+        raise
+    except OSError as exc:
+        fail(f"cannot capture extracted file {path.name!r}: {type(exc).__name__}")
+
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if identity_before != identity_after or size != before.st_size:
+        fail(f"extracted file changed while capturing bytes: {path.name!r}")
+    try:
+        path_state = path.lstat()
+    except OSError as exc:
+        fail(f"cannot restat extracted file {path.name!r}: {type(exc).__name__}")
+    if (
+        not stat.S_ISREG(path_state.st_mode)
+        or path_state.st_dev != after.st_dev
+        or path_state.st_ino != after.st_ino
+        or path_state.st_size != after.st_size
+        or path_state.st_mtime_ns != after.st_mtime_ns
+    ):
+        fail(f"extracted file path changed while capturing bytes: {path.name!r}")
+    return b"".join(chunks), {"size_bytes": size, "sha256": h.hexdigest()}
+
+
+def capture_extracted_tree(root: Path) -> tuple[dict[str, bytes], dict[str, dict[str, Any]]]:
+    if root.is_symlink() or not root.is_dir():
+        fail("sanitized artifact root must remain a non-symlink directory")
+    try:
+        names_before = {path.name for path in root.iterdir()}
+    except OSError as exc:
+        fail(f"cannot enumerate sanitized artifact root: {type(exc).__name__}")
+    if names_before != extraction_gate.REQUIRED_FILES:
+        fail("sanitized artifact root no longer has the exact seven-file set")
+    payloads: dict[str, bytes] = {}
+    manifest: dict[str, dict[str, Any]] = {}
+    for name in sorted(extraction_gate.REQUIRED_FILES):
+        payload, row = _capture_regular_file_stably(root / name)
+        payloads[name] = payload
+        manifest[name] = row
+    try:
+        names_after = {path.name for path in root.iterdir()}
+    except OSError as exc:
+        fail(f"cannot re-enumerate sanitized artifact root: {type(exc).__name__}")
+    if names_after != names_before:
+        fail("sanitized artifact file set changed during byte capture")
+    return payloads, manifest
+
+
+def snapshot_extracted_tree(root: Path) -> dict[str, dict[str, Any]]:
+    _payloads, manifest = capture_extracted_tree(root)
+    return manifest
+
+
+def _captured_payload(payloads: dict[str, bytes], path: Path) -> bytes:
+    name = Path(path).name
+    if name not in payloads:
+        content_gate.base.fail(f"captured sanitized payload missing: {name}")
+    return payloads[name]
+
+
+def _captured_read_json(payloads: dict[str, bytes], path: Path) -> Any:
+    try:
+        return json.loads(_captured_payload(payloads, path).decode("utf-8"))
+    except Exception as exc:
+        content_gate.base.fail(f"invalid JSON in {Path(path).name}: {type(exc).__name__}")
+
+
+def _captured_read_jsonl(payloads: dict[str, bytes], path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = _captured_payload(payloads, path).decode("utf-8").splitlines()
+    except Exception as exc:
+        content_gate.base.fail(f"unreadable JSONL {Path(path).name}: {type(exc).__name__}")
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception as exc:
+            content_gate.base.fail(f"invalid JSONL {Path(path).name}:{lineno}: {type(exc).__name__}")
+        if not isinstance(obj, dict):
+            content_gate.base.fail(f"non-object JSONL record in {Path(path).name}:{lineno}")
+        rows.append(obj)
+    return rows
+
+
+def _captured_check_no_raw_or_secret_leak(payloads: dict[str, bytes]) -> None:
+    base = content_gate.base
+    for name, data in payloads.items():
+        if Path(name).suffix.lower() in {".nc", ".cdf"}:
+            base.fail(f"raw native payload is forbidden: {name}")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            base.fail(f"unexpected non-text file in sanitized artifact: {name}")
+        for pattern in base.SECRET_LEAK_PATTERNS:
+            if pattern.search(text):
+                base.fail(f"possible credential-bearing transport text in {name}")
+
+
+def _captured_verify_receipt_and_coverage(payloads: dict[str, bytes]) -> dict[str, Any]:
+    base = content_gate.base
+    receipt = _captured_read_json(payloads, Path("probe_receipt.json"))
+    if not isinstance(receipt, dict):
+        base.fail("probe_receipt.json must contain an object")
+    expected_scalars = {
+        "schema": 4,
+        "purpose": base.EXPECTED_PURPOSE,
+        "frozen_event_universe_sha256": base.FROZEN_UNIVERSE_SHA256,
+        "probe_case_id": base.PROBE_CASE_ID,
+        "processed_event_count": 1,
+        "actual_sws_native_schema_inspected": True,
+        "protected_variable_values_read": False,
+        "raw_sws_files_retained": False,
+        "credentials_persisted": False,
+        "credentials_source": "environment_presence_only",
+        "transport_errors_sanitized": True,
+        "stage_b_authorized": False,
+    }
+    for key, expected in expected_scalars.items():
+        if receipt.get(key) != expected:
+            base.fail(f"receipt {key} mismatch: expected {expected!r}, got {receipt.get(key)!r}")
+    files = receipt.get("files")
+    if not isinstance(files, list) or not files:
+        base.fail("receipt files manifest missing/empty")
+    manifest: dict[str, tuple[int, str]] = {}
+    for item in files:
+        if not isinstance(item, dict):
+            base.fail("receipt manifest row must be an object")
+        rel = base.normalized_relative_path(item.get("relative_path"))
+        if rel in manifest:
+            base.fail(f"duplicate receipt manifest path: {rel}")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        if not isinstance(size, int) or size < 0:
+            base.fail(f"invalid manifest size for {rel}")
+        if not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            base.fail(f"invalid manifest sha256 for {rel}")
+        manifest[rel] = (size, digest)
+    actual = set(payloads) - {"probe_receipt.json"}
+    if set(manifest) != actual:
+        missing = sorted(actual - set(manifest))
+        extra = sorted(set(manifest) - actual)
+        base.fail(f"receipt manifest coverage mismatch missing={missing} extra={extra}")
+    for rel, (size, digest) in manifest.items():
+        data = payloads[rel]
+        if len(data) != size:
+            base.fail(f"size mismatch for {rel}")
+        if hashlib.sha256(data).hexdigest() != digest:
+            base.fail(f"sha256 mismatch for {rel}")
+    return receipt
+
+
+def _captured_verify_universe(payloads: dict[str, bytes]) -> None:
+    base = content_gate.base
+    data = payloads["ena_sws_e0_event_universe.csv"]
+    if hashlib.sha256(data).hexdigest() != base.FROZEN_UNIVERSE_SHA256:
+        base.fail("frozen event-universe SHA-256 mismatch")
+    try:
+        rows = list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+    except Exception as exc:
+        base.fail(f"unreadable event universe: {type(exc).__name__}")
+    if len(rows) != 906:
+        base.fail(f"expected 906 frozen events, got {len(rows)}")
+    matches = [row for row in rows if row.get("case_id") == base.PROBE_CASE_ID]
+    if len(matches) != 1 or matches[0].get("event") != "dusk":
+        base.fail("pinned probe event is missing/duplicated/not dusk in frozen universe")
+
+
+def _captured_expected_query_windows(payloads: dict[str, bytes]) -> dict[str, tuple[str, str]]:
+    try:
+        rows = [
+            row
+            for row in csv.DictReader(io.StringIO(payloads["ena_sws_e0_event_universe.csv"].decode("utf-8-sig")))
+            if row.get("case_id") == content_gate.base.PROBE_CASE_ID
+        ]
+    except Exception as exc:
+        raise content_gate.StrictVerificationError(
+            f"cannot derive pinned query windows from captured bytes: {type(exc).__name__}"
+        ) from exc
+    if len(rows) != 1:
+        raise content_gate.StrictVerificationError(
+            "pinned event must occur exactly once before query-window binding"
+        )
+    event = rows[0]
+    days: set[str] = set()
+    for key in ("t_minus8_utc", "t_minus7_utc", "t_minus6_utc"):
+        center = content_gate._parse_utc(event.get(key), f"event universe {key}")
+        for shift in (-31, 0, 31):
+            days.add((center + dt.timedelta(seconds=shift)).strftime("%Y%m%d"))
+    windows: dict[str, tuple[str, str]] = {}
+    for day in sorted(days):
+        start_date = dt.datetime.strptime(day, "%Y%m%d").date()
+        windows[day] = (start_date.isoformat(), (start_date + dt.timedelta(days=1)).isoformat())
+    return windows
+
+
+def _verify_strict_from_captured_bytes(root: Path, payloads: dict[str, bytes]) -> dict[str, Any]:
+    """Run the existing strict semantics while all content reads resolve to captured bytes."""
+    base = content_gate.base
+    originals = {
+        "read_json": base.read_json,
+        "read_jsonl": base.read_jsonl,
+        "sha256_file": base.sha256_file,
+        "check_no_raw_or_secret_leak": base.check_no_raw_or_secret_leak,
+        "verify_receipt_and_coverage": base.verify_receipt_and_coverage,
+        "verify_universe": base.verify_universe,
+        "expected_query_windows": content_gate._expected_query_windows,
+    }
+    base.read_json = lambda path: _captured_read_json(payloads, Path(path))
+    base.read_jsonl = lambda path: _captured_read_jsonl(payloads, Path(path))
+    base.sha256_file = lambda path: hashlib.sha256(_captured_payload(payloads, Path(path))).hexdigest()
+    base.check_no_raw_or_secret_leak = lambda _root: _captured_check_no_raw_or_secret_leak(payloads)
+    base.verify_receipt_and_coverage = lambda _root: _captured_verify_receipt_and_coverage(payloads)
+    base.verify_universe = lambda _root: _captured_verify_universe(payloads)
+    content_gate._expected_query_windows = lambda _root: _captured_expected_query_windows(payloads)
+    try:
+        return content_gate.verify_strict(root)
+    finally:
+        base.read_json = originals["read_json"]
+        base.read_jsonl = originals["read_jsonl"]
+        base.sha256_file = originals["sha256_file"]
+        base.check_no_raw_or_secret_leak = originals["check_no_raw_or_secret_leak"]
+        base.verify_receipt_and_coverage = originals["verify_receipt_and_coverage"]
+        base.verify_universe = originals["verify_universe"]
+        content_gate._expected_query_windows = originals["expected_query_windows"]
 
 
 def _validate_content_receipt(content: dict[str, Any]) -> None:
@@ -172,13 +475,20 @@ def run_pipeline(
 
     extracted_dir = work_dir / "sanitized-artifact"
     extraction = extraction_gate.extract_safely(digest, artifact_zip, extracted_dir)
-    _bind_extraction_to_digest(digest, extraction)
+    extraction_manifest = _bind_extraction_to_digest(digest, extraction)
+    captured_payloads, captured_manifest = capture_extracted_tree(extracted_dir)
+    if captured_manifest != extraction_manifest:
+        fail("safe-extraction file manifest does not match captured extracted bytes")
     write_receipt(work_dir / "03-safe-extraction-receipt.json", extraction)
 
-    content = content_gate.verify_strict(extracted_dir)
+    content = _verify_strict_from_captured_bytes(extracted_dir, captured_payloads)
     _validate_content_receipt(content)
+    extracted_after_content = snapshot_extracted_tree(extracted_dir)
+    if extracted_after_content != captured_manifest:
+        fail("sanitized artifact bytes changed during strict content verification")
     write_receipt(work_dir / "04-strict-content-receipt.json", content)
 
+    sanitized_manifest_sha256 = receipt_sha256(captured_manifest)
     final = {
         "schema": 1,
         "status": STATUS,
@@ -193,6 +503,9 @@ def run_pipeline(
         "artifact_name": envelope["artifact_name"],
         "artifact_digest": envelope["artifact_digest"],
         "downloaded_zip_sha256": digest["downloaded_zip_sha256"],
+        "sanitized_file_manifest_sha256": sanitized_manifest_sha256,
+        "same_extracted_bytes_verified_before_and_after_content_check": True,
+        "strict_semantics_verified_from_captured_bytes": True,
         "probe_case_id": content["probe_case_id"],
         "frozen_event_universe_sha256": content["frozen_event_universe_sha256"],
         "e0_disposition": content["e0_disposition"],

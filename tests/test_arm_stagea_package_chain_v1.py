@@ -13,14 +13,39 @@ class StageAPackageChainV1Tests(unittest.TestCase):
 
     def test_current_component_implementation_pins_are_exact(self):
         receipt = v.verify_component_implementation_pins()
-        self.assertEqual(
-            receipt["continuity_verify_git_blob_sha1"],
-            v.EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1,
-        )
-        self.assertEqual(
-            receipt["source_binding_verify_git_blob_sha1"],
-            v.EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1,
-        )
+        self.assertEqual(receipt["continuity_verify_git_blob_sha1"], v.EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1)
+        self.assertEqual(receipt["source_binding_verify_git_blob_sha1"], v.EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1)
+        self.assertEqual(v.continuity.__verified_source_git_blob_sha1__, v.EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1)
+        self.assertEqual(v.source_binding.__verified_source_git_blob_sha1__, v.EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1)
+        self.assertIs(v.source_binding.__verified_continuity_module__, v.continuity)
+
+    def test_transient_component_source_swap_restore_is_refused_before_execution(self):
+        original_continuity_path, original_source_binding_path = v._component_source_paths()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            continuity_path = root / "continuity_verify.py"
+            source_binding_path = root / "source_binding_verify.py"
+            continuity_path.write_bytes(original_continuity_path.read_bytes())
+            original_source_bytes = original_source_binding_path.read_bytes()
+            source_binding_path.write_bytes(original_source_bytes)
+            original_capture = v.stable_capture_regular_file
+
+            def transient_capture(path: Path) -> bytes:
+                if path != source_binding_path:
+                    return original_capture(path)
+                path.write_bytes(original_source_bytes + b"\nraise RuntimeError('TRANSIENT_COMPONENT_EXECUTED')\n")
+                try:
+                    return original_capture(path)
+                finally:
+                    path.write_bytes(original_source_bytes)
+
+            with (
+                mock.patch.object(v, "_component_source_paths", return_value=(continuity_path, source_binding_path)),
+                mock.patch.object(v, "stable_capture_regular_file", side_effect=transient_capture),
+            ):
+                with self.assertRaisesRegex(v.PackageChainError, "component implementation drift"):
+                    v.verify_component_implementation_pins()
+            self.assertEqual(source_binding_path.read_bytes(), original_source_bytes)
 
     def test_repository_input_lock_is_exact_and_fail_closed(self):
         receipt = v.verify_input_lock(self.REPO_LOCK)
@@ -36,9 +61,104 @@ class StageAPackageChainV1Tests(unittest.TestCase):
             with self.assertRaises(v.PackageChainError):
                 v.verify_input_lock(drift)
 
-    def test_composite_receipt_binds_both_components_to_same_csv_bytes(self):
+    def _run_mocked_package(self, root: Path, *, csv_loader=None):
+        lock = root / "lock.json"
+        priority = root / "priority.csv"
+        continuity_csv = root / "continuity.csv"
+        continuity_json = root / "continuity.json"
+        lock.write_text("{}", encoding="utf-8")
+        priority.write_text("priority\n", encoding="utf-8")
+        continuity_csv.write_text("same-continuity-bytes\n", encoding="utf-8")
+        continuity_json.write_text("[]\n", encoding="utf-8")
+
+        rows = [{"case_id": "sentinel", "stream": "hsrl"}]
+        cases = {"sentinel": {}}
+        case_continuity = {f"case-{i:02d}": "FAIL" for i in range(20)}
+        false_boundary = {
+            "scientific_pass_inferred": False,
+            "missing_native_data_counts_as_pass": False,
+            "protected_results_opened": False,
+            "heldout_sws_sasze_radiance_opened": False,
+            "heldout_radiance_opening_authorized": False,
+            "stage_b_authorized": False,
+            "science_execution_authorized": False,
+            "production_authorized": False,
+        }
+        continuity_receipt = {
+            "schema": 1,
+            "artifact_contract_valid": True,
+            "case_continuity": case_continuity,
+            "case_pass_count": 0,
+            "case_fail_count": 20,
+            **false_boundary,
+        }
+        source_receipt = {
+            "schema": 1,
+            "source_file_binding_valid": True,
+            "upstream_continuity_contract_pass_inferred": False,
+            **false_boundary,
+        }
+        lock_receipt = {
+            "input_lock_git_blob_sha1": "a" * 40,
+            "priority_csv_sha256": hashlib.sha256(priority.read_bytes()).hexdigest(),
+            "priority_data_row_count": 20,
+            "historical_extract_request_active_execution_contract": False,
+            "protected_sasze_radiance_must_remain_sealed": True,
+        }
+        if csv_loader is None:
+            csv_loader = mock.Mock(return_value=rows)
+        with (
+            mock.patch.object(v, "verify_component_implementation_pins", return_value={"pinned": "yes"}),
+            mock.patch.object(v, "verify_input_lock", return_value=lock_receipt),
+            mock.patch.object(v, "load_priority_cases_bytes", return_value=cases),
+            mock.patch.object(v, "load_continuity_csv_rows_bytes", csv_loader),
+            mock.patch.object(v, "load_continuity_json_rows_bytes", return_value=[{"json": "rows"}]),
+            mock.patch.object(v.continuity, "verify_json_equivalence") as eq,
+            mock.patch.object(v.continuity, "verify_rows", return_value=dict(continuity_receipt)) as cv,
+            mock.patch.object(v.source_binding, "verify_source_file_bindings", return_value=dict(source_receipt)) as sv,
+        ):
+            receipt = v.build_package_receipt(
+                input_lock_json=lock,
+                priority_csv=priority,
+                continuity_csv=continuity_csv,
+                continuity_json=continuity_json,
+            )
+        return receipt, rows, cases, eq, cv, sv, continuity_csv
+
+    def test_composite_receipt_binds_components_to_same_captured_csv_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            receipt, rows, cases, eq, cv, sv, continuity_csv = self._run_mocked_package(Path(td))
+            eq.assert_called_once()
+            cv.assert_called_once_with(rows, cases)
+            sv.assert_called_once_with(rows)
+            expected_csv_sha = hashlib.sha256(continuity_csv.read_bytes()).hexdigest()
+            self.assertEqual(receipt["inputs"]["continuity_csv_sha256"], expected_csv_sha)
+            self.assertTrue(receipt["component_code_executed_from_verified_captured_bytes"])
+            self.assertTrue(receipt["same_input_bytes_hashed_and_parsed"])
+            self.assertTrue(receipt["same_continuity_csv_bound_across_components"])
+            self.assertTrue(receipt["stagea_timing_package_contract_valid"])
+            self.assertEqual(receipt["case_fail_count"], 20)
+            self.assertFalse(receipt["scientific_pass_inferred"])
+            self.assertFalse(receipt["heldout_sws_sasze_radiance_opened"])
+            self.assertFalse(receipt["stage_b_authorized"])
+
+    def test_transient_mutate_read_restore_cannot_change_bound_csv_bytes(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            continuity_path: list[Path] = []
+
+            def csv_loader(data: bytes):
+                path = continuity_path[0]
+                original = path.read_bytes()
+                self.assertEqual(data, original)
+                path.write_bytes(b"transient-different-bytes\n")
+                try:
+                    self.assertNotEqual(path.read_bytes(), data)
+                    return [{"case_id": "sentinel", "stream": "hsrl"}]
+                finally:
+                    path.write_bytes(original)
+
+            loader = mock.Mock(side_effect=csv_loader)
             lock = root / "lock.json"
             priority = root / "priority.csv"
             continuity_csv = root / "continuity.csv"
@@ -47,6 +167,7 @@ class StageAPackageChainV1Tests(unittest.TestCase):
             priority.write_text("priority\n", encoding="utf-8")
             continuity_csv.write_text("same-continuity-bytes\n", encoding="utf-8")
             continuity_json.write_text("[]\n", encoding="utf-8")
+            continuity_path.append(continuity_csv)
 
             rows = [{"case_id": "sentinel", "stream": "hsrl"}]
             cases = {"sentinel": {}}
@@ -61,20 +182,6 @@ class StageAPackageChainV1Tests(unittest.TestCase):
                 "science_execution_authorized": False,
                 "production_authorized": False,
             }
-            continuity_receipt = {
-                "schema": 1,
-                "artifact_contract_valid": True,
-                "case_continuity": case_continuity,
-                "case_pass_count": 0,
-                "case_fail_count": 20,
-                **false_boundary,
-            }
-            source_receipt = {
-                "schema": 1,
-                "source_file_binding_valid": True,
-                "upstream_continuity_contract_pass_inferred": False,
-                **false_boundary,
-            }
             lock_receipt = {
                 "input_lock_git_blob_sha1": "a" * 40,
                 "priority_csv_sha256": hashlib.sha256(priority.read_bytes()).hexdigest(),
@@ -82,17 +189,28 @@ class StageAPackageChainV1Tests(unittest.TestCase):
                 "historical_extract_request_active_execution_contract": False,
                 "protected_sasze_radiance_must_remain_sealed": True,
             }
-
+            cont_receipt = {
+                "artifact_contract_valid": True,
+                "case_continuity": case_continuity,
+                "case_pass_count": 0,
+                "case_fail_count": 20,
+                **false_boundary,
+            }
+            source_receipt = {
+                "source_file_binding_valid": True,
+                "upstream_continuity_contract_pass_inferred": False,
+                **false_boundary,
+            }
+            original_sha = hashlib.sha256(continuity_csv.read_bytes()).hexdigest()
             with (
-                mock.patch.object(v, "verify_component_implementation_pins", return_value={"pinned": "yes"}),
+                mock.patch.object(v, "verify_component_implementation_pins", return_value={}),
                 mock.patch.object(v, "verify_input_lock", return_value=lock_receipt),
-                mock.patch.object(v.continuity, "load_priority_cases", return_value=cases),
-                mock.patch.object(v.continuity, "load_csv_rows", return_value=rows),
-                mock.patch.object(v.continuity, "load_json_rows", return_value=[{"json": "rows"}]),
-                mock.patch.object(v.continuity, "verify_json_equivalence") as eq,
-                mock.patch.object(v.continuity, "verify_rows", return_value=dict(continuity_receipt)) as cv,
-                mock.patch.object(v.source_binding, "verify_source_file_bindings", return_value=dict(source_receipt)) as sv,
-                mock.patch.object(v.continuity, "sha256", side_effect=lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()),
+                mock.patch.object(v, "load_priority_cases_bytes", return_value=cases),
+                mock.patch.object(v, "load_continuity_csv_rows_bytes", loader),
+                mock.patch.object(v, "load_continuity_json_rows_bytes", return_value=[]),
+                mock.patch.object(v.continuity, "verify_json_equivalence"),
+                mock.patch.object(v.continuity, "verify_rows", return_value=cont_receipt),
+                mock.patch.object(v.source_binding, "verify_source_file_bindings", return_value=source_receipt),
             ):
                 receipt = v.build_package_receipt(
                     input_lock_json=lock,
@@ -100,18 +218,9 @@ class StageAPackageChainV1Tests(unittest.TestCase):
                     continuity_csv=continuity_csv,
                     continuity_json=continuity_json,
                 )
-
-            eq.assert_called_once()
-            cv.assert_called_once_with(rows, cases)
-            sv.assert_called_once_with(rows)
-            expected_csv_sha = hashlib.sha256(continuity_csv.read_bytes()).hexdigest()
-            self.assertEqual(receipt["inputs"]["continuity_csv_sha256"], expected_csv_sha)
-            self.assertTrue(receipt["same_continuity_csv_bound_across_components"])
-            self.assertTrue(receipt["stagea_timing_package_contract_valid"])
-            self.assertEqual(receipt["case_fail_count"], 20)
-            self.assertFalse(receipt["scientific_pass_inferred"])
-            self.assertFalse(receipt["heldout_sws_sasze_radiance_opened"])
-            self.assertFalse(receipt["stage_b_authorized"])
+            self.assertEqual(receipt["inputs"]["continuity_csv_sha256"], original_sha)
+            self.assertTrue(receipt["same_input_bytes_hashed_and_parsed"])
+            loader.assert_called_once()
 
     def test_source_binding_failure_prevents_package_receipt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -144,17 +253,12 @@ class StageAPackageChainV1Tests(unittest.TestCase):
             with (
                 mock.patch.object(v, "verify_component_implementation_pins", return_value={}),
                 mock.patch.object(v, "verify_input_lock", return_value=lock_receipt),
-                mock.patch.object(v.continuity, "load_priority_cases", return_value={}),
-                mock.patch.object(v.continuity, "load_csv_rows", return_value=[]),
-                mock.patch.object(v.continuity, "load_json_rows", return_value=[]),
+                mock.patch.object(v, "load_priority_cases_bytes", return_value={}),
+                mock.patch.object(v, "load_continuity_csv_rows_bytes", return_value=[]),
+                mock.patch.object(v, "load_continuity_json_rows_bytes", return_value=[]),
                 mock.patch.object(v.continuity, "verify_json_equivalence"),
                 mock.patch.object(v.continuity, "verify_rows", return_value=cont_receipt),
-                mock.patch.object(v.continuity, "sha256", side_effect=lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()),
-                mock.patch.object(
-                    v.source_binding,
-                    "verify_source_file_bindings",
-                    side_effect=v.source_binding.SourceBindingError("wrong datastream"),
-                ),
+                mock.patch.object(v.source_binding, "verify_source_file_bindings", side_effect=v.source_binding.SourceBindingError("wrong datastream")),
             ):
                 with self.assertRaises(v.source_binding.SourceBindingError):
                     v.build_package_receipt(

@@ -201,6 +201,7 @@ def extract_safely(digest_receipt: Any, artifact_zip: Path, output_dir: Path) ->
         fail("output directory parent must be an existing non-symlink directory")
 
     created = False
+    extracted_files: dict[str, dict[str, Any]] = {}
     try:
         with zipfile.ZipFile(artifact_zip, "r") as archive:
             infos = validate_archive_structure(archive)
@@ -210,6 +211,7 @@ def extract_safely(digest_receipt: Any, artifact_zip: Path, output_dir: Path) ->
                 name = info.filename
                 target = output_dir / name
                 written = 0
+                member_hash = hashlib.sha256()
                 with archive.open(info, "r") as src, target.open("xb") as dst:
                     while True:
                         block = src.read(1024 * 1024)
@@ -218,9 +220,14 @@ def extract_safely(digest_receipt: Any, artifact_zip: Path, output_dir: Path) ->
                         written += len(block)
                         if written > info.file_size or written > MAX_FILE_BYTES:
                             fail(f"ZIP member expanded beyond declared/bounded size: {name!r}")
+                        member_hash.update(block)
                         dst.write(block)
                 if written != info.file_size:
                     fail(f"ZIP member extracted size mismatch: {name!r}")
+                extracted_files[name] = {
+                    "size_bytes": written,
+                    "sha256": member_hash.hexdigest(),
+                }
         extracted = sorted(path.name for path in output_dir.iterdir())
         if extracted != sorted(REQUIRED_FILES) or any(not path.is_file() or path.is_symlink() for path in output_dir.iterdir()):
             fail("post-extraction filesystem is not the exact closed regular-file set")
@@ -248,6 +255,7 @@ def extract_safely(digest_receipt: Any, artifact_zip: Path, output_dir: Path) ->
         "downloaded_zip_sha256": digest,
         "archive_member_count": len(REQUIRED_FILES),
         "extracted_file_names": sorted(REQUIRED_FILES),
+        "extracted_files": {name: extracted_files[name] for name in sorted(extracted_files)},
         "zip_contents_inspected": True,
         "zip_extracted": True,
         "artifact_content_values_parsed": False,

@@ -21,22 +21,24 @@ The byte-binding gate is deliberately content-blind. It requires the exact close
 
 ## Mandatory safe extraction gate
 
-Only after the outer-byte gate passes may `extract_sanitized_artifact_zip_v1.py` inspect ZIP structure. The extractor re-hashes the same archive against the closed digest receipt before opening it, then requires the exact seven root-level sanitized filenames, no directories/nested/traversal paths, duplicates, encrypted members, explicit symlink/non-regular Unix file types or unsupported compression methods. Permission-only Unix mode bits with no file-type bits are accepted rather than misclassified as a non-regular member; explicit regular-file mode bits are also accepted. It bounds every uncompressed member to 32 MiB and the total to 64 MiB, extracts only into a fresh directory, removes its own partial output on any failure, and parses no artifact file values. Its receipt keeps protected-result, Stage-B, held-out and science authority false.
+Only after the outer-byte gate passes may `extract_sanitized_artifact_zip_v1.py` inspect ZIP structure. The extractor re-hashes the same archive against the closed digest receipt before opening it, then requires the exact seven root-level sanitized filenames, no directories/nested/traversal paths, duplicates, encrypted members, explicit symlink/non-regular Unix file types or unsupported compression methods. Permission-only Unix mode bits with no file-type bits are accepted rather than misclassified as a non-regular member; explicit regular-file mode bits are also accepted. It bounds every uncompressed member to 32 MiB and the total to 64 MiB, extracts only into a fresh directory, removes its own partial output on any failure, and parses no artifact file values.
 
-Only after safe extraction succeeds may the extracted directory be supplied to the strict content verifier below.
+While extracting, the gate computes the SHA-256 and exact byte count of every one of the seven output files from the same decompressed byte stream that is written to disk. The safe-extraction receipt therefore binds the authorized outer ZIP digest to an exact closed per-file byte manifest. The receipt keeps protected-result, Stage-B, held-out and science authority false.
 
 ## Integrated offline ingest pipeline
 
-`run_sanitized_ingest_pipeline_v1.py` composes the reviewed gates in exactly that order without contacting GitHub or ARM itself. It accepts already-fetched GitHub run JSON, artifact JSON, a complete workflow-dispatch inventory JSON, and the already-downloaded artifact ZIP. It then performs:
+`run_sanitized_ingest_pipeline_v1.py` composes the reviewed gates in order without contacting GitHub or ARM itself. It accepts already-fetched GitHub run JSON, artifact JSON, a complete workflow-dispatch inventory JSON, and the already-downloaded artifact ZIP. It then performs:
 
 1. exact authorized-run-envelope verification;
 2. opaque downloaded-ZIP digest binding to GitHub's canonical artifact digest;
-3. bounded safe extraction of the exact seven sanitized files; and
-4. strict sanitized-content verification.
+3. bounded safe extraction of the exact seven sanitized files plus a closed per-file SHA-256/size manifest; and
+4. strict sanitized-content verification from an immutable in-memory capture of those exact seven files.
+
+After extraction, the pipeline opens each required file once with fail-closed no-follow regular-file handling, captures its exact bytes, and computes SHA-256/size from those same bytes. The captured manifest must exactly match the extractor manifest. Every content-bearing read used by the strict/base semantic verifiers is then redirected to this captured byte map; the live paths are used only for closed file-set/type checks, not for semantic content. A transient live-path mutate/read/restore therefore cannot alter the bytes consumed by semantic verification. A post-verification live snapshot remains as a defense against persistent file-set or byte drift.
+
+The final success receipt records the canonical SHA-256 of the captured per-file manifest, `strict_semantics_verified_from_captured_bytes=true`, and endpoint equality with the post-verification snapshot. This supersedes the weaker pre/post-snapshot-only interpretation: matching endpoint hashes alone is not treated as proof of the bytes consumed by the verifier.
 
 The pipeline requires a fresh work directory, writes a separate canonical JSON receipt for every completed gate, SHA-256 binds those receipts in a final success receipt, and emits no final success receipt if a later gate refuses. It cross-checks run/artifact/ref/head/digest identity between stages and requires all protected-result, Stage-B, held-out, science, credential-read, network-access and production authority flags to remain false. An E0 timing/QC disposition is preserved exactly as a result-blind disposition; even `E0_PASS_BLIND_CANDIDATE` is not Stage-B or held-out-opening authority.
-
-This orchestration layer is optional convenience around the mandatory gates, not a broader trust boundary. The individual gates remain authoritative for their own checks.
 
 ## Fail-closed ingest contract
 
@@ -44,13 +46,15 @@ The verifier must refuse unless all of the following hold:
 
 1. No `.nc`/`.cdf`, symlink, binary payload, credential-bearing ARM Live URL, access token, or Authorization bearer text is present.
 2. `probe_receipt.json` is schema 4 with the frozen purpose/case/universe identity and explicit `protected_variable_values_read=false`, `raw_sws_files_retained=false`, `credentials_persisted=false`, `transport_errors_sanitized=true`, `stage_b_authorized=false`.
-3. The receipt manifest covers every non-receipt file exactly once and every recorded size/SHA-256 matches the extracted file. Path traversal and absolute paths are forbidden.
+3. The receipt manifest covers every non-receipt file exactly once and every recorded size/SHA-256 matches the captured file bytes. Path traversal and absolute paths are forbidden.
 4. The event-universe CSV has the exact frozen SHA-256, 906 rows, and exactly one `2017-06-16_dusk` row.
 5. The summary has the exact E0-v2 protocol, 906 candidates, exactly one processed event, 905 remaining, and all holdout/Stage-B firewall flags false.
 6. At least one native `kind=sws` schema record exists, with `protected_variable_values_read=false`, source SHA-256 provenance, and metadata-only variable records. Unexpected per-variable keys are refused so a future value-bearing field cannot silently enter this artifact.
 7. The ledger contains exactly one pinned case. `SOURCE_FILE_MISSING`, transport/query errors, stream/audit errors, unreadable data, or unknown dispositions are refused and never count as good. A genuine non-photometric E0 timing/QC FAIL may be preserved as a valid result-blind disposition, but it is never promoted to PASS.
 8. Provenance contains exactly one pinned case, raw/protected flags false, basename-only source filenames, positive sizes and SHA-256 values represented by SWS schema records.
 9. Query-manifest rows are only for `enaswsC1.b1`, the pinned case, with `credentials_persisted=false` and basename-only returned filenames.
-10. Output remains an ingest/verifier receipt only. It must always state `stage_b_authorized=false` and `heldout_radiance_opening_authorized=false`.
+10. Strict semantic parsing/hashing must consume the exact stable-captured seven-file bytes bound to the extractor manifest; transient live-path mutation is irrelevant to semantic content.
+11. Persistent live-path/file-set drift during verification is refused by the post-verification snapshot.
+12. Output remains an ingest/verifier receipt only. It must always state `stage_b_authorized=false` and `heldout_radiance_opening_authorized=false`.
 
 `missing` never counts as PASS. A verifier PASS is only `SAFE_E0_ONEEVENT_SANITIZED_ARTIFACT_VERIFIED`; it is not Stage-B authority and is not authority to open held-out radiance or to run later native gates.

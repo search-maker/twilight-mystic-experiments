@@ -128,6 +128,18 @@ class StressTests(unittest.TestCase):
         ]
         S.audit_arm_governance(comments)
 
+    def test_current_owner_ready_for_coordinator_classification_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5591870413,
+                'ARM_OWNER::QUERY_ONLY_POSTMERGE_GOVERNANCE_FALSE_POSITIVE_REPAIR_PR1006_READY_FOR_COORDINATOR_CLASSIFICATION\n\n'
+                'MATERIAL / RESULT_BLIND / NON_SCIENCE / NO_ARM_LIVE_QUERY.\n\n'
+                'Authenticated workflow_dispatch remains FALSE and requires a separate fresh Coordinator protected-boundary transition.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
     def test_positive_vocabulary_in_actual_nonadmissibility_still_refuses(self):
         comments = [
             baseline(),
@@ -159,6 +171,28 @@ class StressTests(unittest.TestCase):
                 S.BASELINE_COORDINATOR_COMMENT + 10,
                 'COORDINATOR::ARM_QUERY_ONLY_REFUSAL__AUTHENTICATED_INVOCATION_FALSE\n\n'
                 'Do not treat earlier accepted infrastructure as current authority.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_negated_acceptance_cannot_match_positive_substring(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_PR1007_NOT_ACCEPTED__AUTHENTICATED_INVOCATION_FALSE',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_negated_coordinator_readiness_cannot_match_positive_substring(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::QUERY_ONLY_PR1007_NOT_READY_FOR_COORDINATOR_CLASSIFICATION',
             ),
         ]
         with self.assertRaises(S.StressFailure):

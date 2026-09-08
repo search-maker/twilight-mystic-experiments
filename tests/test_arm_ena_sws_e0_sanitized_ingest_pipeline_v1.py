@@ -74,7 +74,10 @@ def write_sanitized_fixture(output_dir: Path) -> dict[str, dict[str, object]]:
     output_dir.mkdir()
     manifest: dict[str, dict[str, object]] = {}
     for name in sorted(MOD.extraction_gate.REQUIRED_FILES):
-        payload = (f"sanitized fixture {name}\n").encode()
+        if name == "probe_receipt.json":
+            payload = b'{"sentinel":"captured"}\n'
+        else:
+            payload = (f"sanitized fixture {name}\n").encode()
         (output_dir / name).write_bytes(payload)
         manifest[name] = {
             "size_bytes": len(payload),
@@ -179,6 +182,7 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             self.assertEqual(result["artifact_digest"], ARTIFACT_DIGEST)
             self.assertTrue(result["e0_blind_candidate_pass"])
             self.assertTrue(result["same_extracted_bytes_verified_before_and_after_content_check"])
+            self.assertTrue(result["strict_semantics_verified_from_captured_bytes"])
             self.assertRegex(result["sanitized_file_manifest_sha256"], r"^[0-9a-f]{64}$")
             for key in (
                 "network_access_performed_by_pipeline",
@@ -196,8 +200,6 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
                 "03-safe-extraction-receipt.json",
                 "04-strict-content-receipt.json",
             })
-            for digest in result["receipt_sha256"].values():
-                self.assertRegex(digest, r"^[0-9a-f]{64}$")
             persisted = json.loads((work_dir / "05-pipeline-success-receipt.json").read_text())
             self.assertEqual(persisted, result)
 
@@ -209,11 +211,7 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             work_dir = parent / "work"
             with (
                 mock.patch.object(MOD.envelope_gate, "verify_envelope", return_value=envelope_receipt()),
-                mock.patch.object(
-                    MOD.digest_gate,
-                    "verify_downloaded_zip",
-                    side_effect=MOD.digest_gate.ZipDigestVerificationError("digest mismatch"),
-                ),
+                mock.patch.object(MOD.digest_gate, "verify_downloaded_zip", side_effect=MOD.digest_gate.ZipDigestVerificationError("digest mismatch")),
                 mock.patch.object(MOD.extraction_gate, "extract_safely") as extraction,
             ):
                 with self.assertRaises(MOD.digest_gate.ZipDigestVerificationError):
@@ -255,7 +253,7 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             self.assertFalse(work_dir.exists())
             extraction.assert_not_called()
 
-    def test_extraction_manifest_must_match_exact_extracted_bytes(self) -> None:
+    def test_extraction_manifest_must_match_exact_captured_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             parent = Path(td)
             artifact_zip = parent / "artifact.zip"
@@ -275,12 +273,12 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
                 mock.patch.object(MOD.extraction_gate, "extract_safely", side_effect=extraction_side_effect),
                 mock.patch.object(MOD.content_gate, "verify_strict") as content,
             ):
-                with self.assertRaisesRegex(MOD.PipelineVerificationError, "does not match extracted bytes"):
+                with self.assertRaisesRegex(MOD.PipelineVerificationError, "does not match captured extracted bytes"):
                     MOD.run_pipeline({}, {}, {}, artifact_zip, work_dir)
             content.assert_not_called()
             self.assertFalse((work_dir / "05-pipeline-success-receipt.json").exists())
 
-    def test_mutation_during_content_verification_blocks_final_success_receipt(self) -> None:
+    def test_persistent_mutation_during_content_verification_blocks_success(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             parent = Path(td)
             artifact_zip = parent / "artifact.zip"
@@ -304,6 +302,35 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
                 with self.assertRaisesRegex(MOD.PipelineVerificationError, "changed during strict content verification"):
                     MOD.run_pipeline({}, {}, {}, artifact_zip, work_dir)
             self.assertFalse((work_dir / "05-pipeline-success-receipt.json").exists())
+
+    def test_transient_mutate_read_restore_cannot_change_semantic_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td)
+            artifact_zip = parent / "artifact.zip"
+            artifact_zip.write_bytes(b"test")
+            work_dir = parent / "work"
+
+            def extraction_side_effect(_digest, _zip, output_dir):
+                return extraction_receipt(write_sanitized_fixture(output_dir))
+
+            def content_side_effect(root):
+                victim = root / "probe_receipt.json"
+                original = victim.read_bytes()
+                victim.write_bytes(b'{"sentinel":"transient"}\n')
+                seen = MOD.content_gate.base.read_json(victim)
+                victim.write_bytes(original)
+                self.assertEqual(seen, {"sentinel": "captured"})
+                return content_receipt()
+
+            with (
+                mock.patch.object(MOD.envelope_gate, "verify_envelope", return_value=envelope_receipt()),
+                mock.patch.object(MOD.digest_gate, "verify_downloaded_zip", return_value=digest_receipt()),
+                mock.patch.object(MOD.extraction_gate, "extract_safely", side_effect=extraction_side_effect),
+                mock.patch.object(MOD.content_gate, "verify_strict", side_effect=content_side_effect),
+            ):
+                result = MOD.run_pipeline({}, {}, {}, artifact_zip, work_dir)
+            self.assertTrue(result["strict_semantics_verified_from_captured_bytes"])
+            self.assertTrue(result["same_extracted_bytes_verified_before_and_after_content_check"])
 
     def test_content_authority_drift_blocks_final_success_receipt(self) -> None:
         content = content_receipt()

@@ -15,6 +15,37 @@ class StageAPackageChainV1Tests(unittest.TestCase):
         receipt = v.verify_component_implementation_pins()
         self.assertEqual(receipt["continuity_verify_git_blob_sha1"], v.EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1)
         self.assertEqual(receipt["source_binding_verify_git_blob_sha1"], v.EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1)
+        self.assertEqual(v.continuity.__verified_source_git_blob_sha1__, v.EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1)
+        self.assertEqual(v.source_binding.__verified_source_git_blob_sha1__, v.EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1)
+        self.assertIs(v.source_binding.__verified_continuity_module__, v.continuity)
+
+    def test_transient_component_source_swap_restore_is_refused_before_execution(self):
+        original_continuity_path, original_source_binding_path = v._component_source_paths()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            continuity_path = root / "continuity_verify.py"
+            source_binding_path = root / "source_binding_verify.py"
+            continuity_path.write_bytes(original_continuity_path.read_bytes())
+            original_source_bytes = original_source_binding_path.read_bytes()
+            source_binding_path.write_bytes(original_source_bytes)
+            original_capture = v.stable_capture_regular_file
+
+            def transient_capture(path: Path) -> bytes:
+                if path != source_binding_path:
+                    return original_capture(path)
+                path.write_bytes(original_source_bytes + b"\nraise RuntimeError('TRANSIENT_COMPONENT_EXECUTED')\n")
+                try:
+                    return original_capture(path)
+                finally:
+                    path.write_bytes(original_source_bytes)
+
+            with (
+                mock.patch.object(v, "_component_source_paths", return_value=(continuity_path, source_binding_path)),
+                mock.patch.object(v, "stable_capture_regular_file", side_effect=transient_capture),
+            ):
+                with self.assertRaisesRegex(v.PackageChainError, "component implementation drift"):
+                    v.verify_component_implementation_pins()
+            self.assertEqual(source_binding_path.read_bytes(), original_source_bytes)
 
     def test_repository_input_lock_is_exact_and_fail_closed(self):
         receipt = v.verify_input_lock(self.REPO_LOCK)
@@ -102,6 +133,7 @@ class StageAPackageChainV1Tests(unittest.TestCase):
             sv.assert_called_once_with(rows)
             expected_csv_sha = hashlib.sha256(continuity_csv.read_bytes()).hexdigest()
             self.assertEqual(receipt["inputs"]["continuity_csv_sha256"], expected_csv_sha)
+            self.assertTrue(receipt["component_code_executed_from_verified_captured_bytes"])
             self.assertTrue(receipt["same_input_bytes_hashed_and_parsed"])
             self.assertTrue(receipt["same_continuity_csv_bound_across_components"])
             self.assertTrue(receipt["stagea_timing_package_contract_valid"])
@@ -127,7 +159,6 @@ class StageAPackageChainV1Tests(unittest.TestCase):
                     path.write_bytes(original)
 
             loader = mock.Mock(side_effect=csv_loader)
-            # Build paths first so the loader can mutate the live pathname during parsing.
             lock = root / "lock.json"
             priority = root / "priority.csv"
             continuity_csv = root / "continuity.csv"

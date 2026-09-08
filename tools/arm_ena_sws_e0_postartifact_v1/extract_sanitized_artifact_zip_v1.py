@@ -161,7 +161,8 @@ def canonical_member_name(info: zipfile.ZipInfo) -> str:
     if info.compress_type not in ALLOWED_COMPRESSION:
         fail(f"unsupported ZIP compression method for {name!r}: {info.compress_type}")
     mode = (info.external_attr >> 16) & 0xFFFF
-    if mode and (stat.S_ISLNK(mode) or not stat.S_ISREG(mode)):
+    file_type = stat.S_IFMT(mode)
+    if file_type and file_type != stat.S_IFREG:
         fail(f"non-regular ZIP member is forbidden: {name!r}")
     if info.file_size < 0 or info.file_size > MAX_FILE_BYTES:
         fail(f"ZIP member exceeds bounded uncompressed size: {name!r}")

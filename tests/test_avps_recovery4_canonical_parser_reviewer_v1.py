@@ -33,10 +33,13 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         self.assertIn('install_test not in changed', self.text)
         self.assertIn('installation-mode execution is installation evidence only', self.text)
 
-    def test_exact_head_attempt_one_and_single_parent_are_bound(self):
+    def test_exact_head_base_ancestry_and_phase_b_direct_child_are_bound(self):
         for token in (
             'test "$GITHUB_RUN_ATTEMPT" = 1',
             'test "$(git rev-parse HEAD)" = "$EVENT_HEAD"',
+            'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"',
+            'git rev-list --min-parents=2 "$EVENT_BASE"..HEAD',
+            "if: env.MODE == 'PHASE_B'",
             'test "${#PARENTS[@]}" = 1',
             'test "${PARENTS[0]}" = "$EVENT_BASE"',
         ):

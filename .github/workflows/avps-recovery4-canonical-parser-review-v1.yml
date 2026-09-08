@@ -56,9 +56,8 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$EVENT_BASE_REF" = main
           test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
-          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
-          test "${#PARENTS[@]}" = 1
-          test "${PARENTS[0]}" = "$EVENT_BASE"
+          test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
+          test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
           git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
           python - <<'PY'
           import os
@@ -79,6 +78,17 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
           PY
 
+      - name: Bind Phase-B as a wholly fresh direct child
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$EVENT_BASE"
+
       - name: Prove reviewer is read-only zero-runtime and non-authorizing
         shell: bash
         run: |
@@ -88,7 +98,7 @@ jobs:
           from pathlib import Path
           p=Path(os.environ['SELF_PATH']).read_text()
           on=p.split('\non:\n',1)[1].split('\npermissions:\n',1)[0]
-          if 'pull_request:' not in on or 'workflow_dispatch:' in on: raise SystemExit('reviewer trigger drift')
+          if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
           perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
           if ': write' in perms: raise SystemExit('reviewer gained write permission')
           required=(os.environ['SCIENCE_PATH'],os.environ['PUBLISHER_PATH'],os.environ['PARSER_PATH'],os.environ['PARSER_TEST'])

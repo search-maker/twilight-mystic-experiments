@@ -111,11 +111,65 @@ def _arm_control_text(body: str) -> str:
     return '\n'.join(captured)
 
 
+_DIRECT_ADVERSE_TITLE_MARKERS = (
+    'REVOKED', 'DO_NOT_USE', 'NOT_ADMISSIBLE', 'NONADMISSIBLE', 'QUARANTINE',
+    'CANCELLED', 'CANCELED', 'WITHDRAWN', 'DO NOT MERGE', 'DO_NOT_MERGE',
+    'MUST NOT MERGE', 'MUST_NOT_MERGE', 'READ-ONLY', 'READ_ONLY', 'PARKED',
+    'MERGE_PROHIBITED', 'REFUSAL', 'REFUSED', 'AUTHORITY_EXPIRED',
+    'AUTHORITY_EXPIRY', 'EXPIRED',
+    'NOT_ACCEPTED', 'NOT_MERGE_AUTHORIZED', 'MERGE_NOT_AUTHORIZED',
+    'NOT_INSTALL_AUTHORIZED', 'INSTALL_NOT_AUTHORIZED',
+    'NOT_REPAIR_AUTHORIZED', 'REPAIR_NOT_AUTHORIZED',
+    'NOT_SUCCESSOR_AUTHORIZED', 'SUCCESSOR_NOT_AUTHORIZED',
+    'NOT_CANDIDATE_AUTHORIZED', 'CANDIDATE_NOT_AUTHORIZED',
+    'NOT_BLOCKER_CLEARED', 'NOT_READY_FOR_REVIEW',
+    'NOT_READY_FOR_CLASSIFICATION', 'NOT_READY_FOR_COORDINATOR_REVIEW',
+    'NOT_READY_FOR_COORDINATOR_CLASSIFICATION',
+)
+
+_DIRECT_ALLOWED_TITLE_MARKERS = (
+    'ACCEPTED', 'MERGE_AUTHORIZED', 'INSTALL_AUTHORIZED', 'REPAIR_AUTHORIZED',
+    'SUCCESSOR_AUTHORIZED', 'CANDIDATE_AUTHORIZED', 'BLOCKER_CLEARED',
+    'READY_FOR_REVIEW', 'READY_FOR_CLASSIFICATION',
+    'READY_FOR_COORDINATOR_REVIEW', 'READY_FOR_COORDINATOR_CLASSIFICATION',
+)
+
+
+def _direct_arm_control_disposition(first: str) -> str:
+    """Classify direct ARM owner/Coordinator governance from its structured title.
+
+    Protected-boundary phrases such as AUTHENTICATED_INVOCATION_*_FALSE or
+    NOT_AUTHORIZED do not themselves make a positive acceptance/repair
+    transition adverse. Explicit revocation/nonadmissibility/refusal titles do.
+    Unknown direct ARM governance remains fail-closed.
+    """
+    upper = first.upper()
+    if not (upper.startswith('ARM_OWNER::') or upper.startswith('COORDINATOR::ARM')):
+        raise StressFailure('direct ARM disposition called for non-direct control')
+
+    if any(marker in upper for marker in _DIRECT_ADVERSE_TITLE_MARKERS):
+        return 'adverse'
+    if re.search(r'(?<!NO_)(?<!NON_)\bBLOCKER\b', upper) and 'BLOCKER_CLEARED' not in upper:
+        return 'adverse'
+    if ('FAIL_CLOSED' in upper or 'FAIL-CLOSED' in upper) and not any(
+        marker in upper for marker in ('REPAIR_AUTHORIZED', 'SUCCESSOR_AUTHORIZED', 'CANDIDATE_AUTHORIZED')
+    ):
+        return 'adverse'
+    if any(marker in upper for marker in _DIRECT_ALLOWED_TITLE_MARKERS):
+        return 'allowed'
+    raise StressFailure(f'ambiguous/unclassified direct ARM governance title: {first}')
+
+
 def _adverse_arm_control(body: str) -> bool:
-    first = first_nonempty(body).upper()
+    first_raw = first_nonempty(body)
+    first = first_raw.upper()
     text = _arm_control_text(body)
     if not text:
         return False
+
+    if first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM'):
+        return _direct_arm_control_disposition(first_raw) == 'adverse'
+
     upper = text.upper()
     fatal = (
         'REVOKED', 'DO_NOT_USE', 'NOT_ADMISSIBLE', 'NONADMISSIBLE', 'QUARANTINE',
@@ -125,10 +179,6 @@ def _adverse_arm_control(body: str) -> bool:
     if any(word in upper for word in fatal):
         return True
     if re.search(r'(?<!NO_)(?<!NON_)\bBLOCKER\b', upper) and 'BLOCKER_CLEARED' not in upper:
-        return True
-    if ('FAIL_CLOSED' in first or 'FAIL-CLOSED' in first) and (
-        first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM')
-    ):
         return True
     return False
 

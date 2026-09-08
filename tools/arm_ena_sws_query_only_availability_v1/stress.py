@@ -111,26 +111,88 @@ def _arm_control_text(body: str) -> str:
     return '\n'.join(captured)
 
 
-def _adverse_arm_control(body: str) -> bool:
-    first = first_nonempty(body).upper()
-    text = _arm_control_text(body)
-    if not text:
-        return False
-    upper = text.upper()
+def _title_tokenized(first: str) -> str:
+    return re.sub(r'[^A-Z0-9]+', '_', str(first or '').upper()).strip('_')
+
+
+def _direct_arm_title_class(first: str) -> str:
+    """Classify a direct ARM control title without mining unrelated body history.
+
+    Direct ARM checkpoints commonly mention older rejected candidates and protected
+    boundaries in their body. Those historical/protective statements must not turn
+    an explicit positive transition into an adverse transition. Conversely, actual
+    revocation/nonadmissibility/refusal is required to be explicit in the title and
+    remains fail-closed. Unknown direct ARM governance is ambiguous and refused.
+    """
+    upper = str(first or '').upper()
+    if not (upper.startswith('ARM_OWNER::') or upper.startswith('COORDINATOR::ARM')):
+        return 'not_direct'
+    title = _title_tokenized(first)
+
+    if 'BLOCKER_CLEARED' not in title:
+        adverse_tokens = (
+            'REVOKED', 'DO_NOT_USE', 'NOT_ADMISSIBLE', 'NONADMISSIBLE',
+            'QUARANTINE', 'CANCELLED', 'CANCELED', 'WITHDRAWN',
+            'DO_NOT_MERGE', 'MUST_NOT_MERGE', 'READ_ONLY', 'PARKED',
+            'FAIL_CLOSED', 'REFUSAL', 'REFUSED', 'AUTHORITY_EXPIRED',
+            'AUTHORIZATION_EXPIRED', 'MERGE_AUTHORITY_EXPIRED', 'BLOCKER',
+        )
+        if any(token in title for token in adverse_tokens):
+            return 'adverse'
+
+    positive_tokens = (
+        'ACCEPTED', 'MERGE_AUTHORIZED', 'INSTALL_AUTHORIZED', 'INSTALLED',
+        'REPAIR_AUTHORIZED', 'BLOCKER_CLEARED',
+    )
+    if upper.startswith('COORDINATOR::ARM') and any(token in title for token in positive_tokens):
+        return 'positive'
+
+    owner_progress_tokens = (
+        'READY_FOR_REVIEW', 'READY_FOR_CLASSIFICATION', 'READY_FOR_REVIEW_AND_MERGE_CLASSIFICATION',
+        'CHECKPOINT', 'PREPARED', 'PREPARATION', 'RESULT_BLIND',
+    )
+    if upper.startswith('ARM_OWNER::') and any(token in title for token in owner_progress_tokens):
+        return 'progress'
+
+    return 'ambiguous'
+
+
+def _cross_lane_arm_adverse(text: str) -> bool:
+    """Inspect only the explicit ARM section of a cross-lane Coordinator transition."""
     fatal = (
         'REVOKED', 'DO_NOT_USE', 'NOT_ADMISSIBLE', 'NONADMISSIBLE', 'QUARANTINE',
         'CANCELLED', 'CANCELED', 'WITHDRAWN', 'DO NOT MERGE', 'MUST NOT MERGE',
-        'READ-ONLY', 'PARKED',
+        'READ-ONLY', 'READ_ONLY', 'PARKED', 'AUTHORITY EXPIRED', 'AUTHORITY_EXPIRED',
+        'AUTHORIZATION EXPIRED', 'AUTHORIZATION_EXPIRED', 'REFUSAL', 'REFUSED',
     )
-    if any(word in upper for word in fatal):
-        return True
-    if re.search(r'(?<!NO_)(?<!NON_)\bBLOCKER\b', upper) and 'BLOCKER_CLEARED' not in upper:
-        return True
-    if ('FAIL_CLOSED' in first or 'FAIL-CLOSED' in first) and (
-        first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM')
-    ):
-        return True
+    for raw in str(text or '').splitlines():
+        upper = raw.upper().strip()
+        if not upper or upper.startswith('ARM /') or upper.startswith('ARM:') or upper.startswith('ARM|'):
+            continue
+        if any(word in upper for word in fatal):
+            return True
+        if re.search(r'(?<!NO_)(?<!NON_)\bBLOCKER\b', upper) and 'BLOCKER_CLEARED' not in upper:
+            return True
+        if ('FAIL_CLOSED' in upper or 'FAIL-CLOSED' in upper) and 'BLOCKER_CLEARED' not in upper:
+            return True
     return False
+
+
+def _adverse_arm_control(body: str) -> bool:
+    first = first_nonempty(body)
+    text = _arm_control_text(body)
+    if not text:
+        return False
+
+    direct_class = _direct_arm_title_class(first)
+    if direct_class == 'adverse':
+        return True
+    if direct_class in {'positive', 'progress'}:
+        return False
+    if direct_class == 'ambiguous':
+        raise StressFailure(f'ambiguous/unclassified direct ARM governance transition: {first}')
+
+    return _cross_lane_arm_adverse(text)
 
 
 def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:

@@ -27,6 +27,19 @@ def baseline() -> dict:
     )
 
 
+def positive_5591488326_shape() -> str:
+    return (
+        'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1003_ACCEPTED__EXACT_HEAD_ORDINARY_MERGE_AUTHORIZED__AUTHENTICATED_INVOCATION_STILL_FALSE\n\n'
+        'STATUS=PR1003_RESULT_BLIND_QUERY_ONLY_INFRA_ACCEPTED / EXACT_HEAD_37FEA3_MERGE_AUTHORIZED / ARM_LIVE_QUERY_FALSE / AUTHENTICATED_WORKFLOW_DISPATCH_NOT_AUTHORIZED / SCIENCE_FALSE\n\n'
+        'ARM PR1003 CLASSIFICATION\n'
+        '- ACCEPT exact Draft PR #1003 at the reviewed head.\n'
+        '- PR1001 remains frozen governance-NONADMISSIBLE and MUST NOT merge or be reused as installation/authority evidence.\n\n'
+        'AUTHORITY\n'
+        'Exactly one ordinary merge of PR1003 is authorized while the exact guards remain unchanged. Any drift expires this merge authority unspent.\n\n'
+        'This does NOT authorize any authenticated workflow_dispatch, ARM Live /query, credential-value read, native SWS file download/open, protected SWS/SASZE value opening, Stage B, MYSTIC/science, or production.\n'
+    )
+
+
 class StressTests(unittest.TestCase):
     def test_actual_candidate_bytes_pass_static_contract(self):
         workflow = (REPO_ROOT / '.github/workflows/arm-ena-sws-query-only-availability-v1.yml').read_text(encoding='utf-8')
@@ -95,6 +108,64 @@ class StressTests(unittest.TestCase):
             ),
         ]
         S.audit_arm_governance(comments)
+
+    def test_owner_ready_checkpoint_can_reference_old_nonadmissible_candidate(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::QUERY_ONLY_AVAILABILITY_FRESH_SUCCESSOR_PR1003_READY_FOR_REVIEW_AND_MERGE_CLASSIFICATION\n\n'
+                'Current fresh successor is ready. PR1001 remains governance-NONADMISSIBLE and MUST NOT merge. '
+                'Authenticated invocation remains separately unauthorized.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_exact_5591488326_shape_positive_acceptance_passes(self):
+        comments = [baseline(), row(5591488326, positive_5591488326_shape())]
+        S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_does_not_hide_actual_revocation(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1003_REVOKED__AUTHENTICATED_INVOCATION_STILL_FALSE\n\n'
+                'STATUS=PR1003_RESULT_BLIND_QUERY_ONLY_INFRA_ACCEPTED / ARM_LIVE_QUERY_FALSE / SCIENCE_FALSE\n'
+                'The earlier acceptance is revoked.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_does_not_hide_nonadmissibility(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1003_NONADMISSIBLE__DO_NOT_MERGE__AUTHENTICATED_INVOCATION_STILL_FALSE\n\n'
+                'Earlier MERGE_AUTHORIZED language is superseded; candidate is NOT_ADMISSIBLE.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_does_not_hide_refusal_or_expiry(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1003_REFUSAL__MERGE_AUTHORITY_EXPIRED__AUTHENTICATED_INVOCATION_STILL_FALSE\n\n'
+                'The former ACCEPTED transition no longer authorizes merge.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_ambiguous_direct_arm_governance_refuses(self):
+        comments = [baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, 'COORDINATOR::ARM_QUERY_ONLY_STATE_CHANGED')]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
 
     def test_cleared_blocker_title_is_not_adverse(self):
         comments = [baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, 'COORDINATOR::ARM_QUERY_ONLY_BLOCKER_CLEARED')]

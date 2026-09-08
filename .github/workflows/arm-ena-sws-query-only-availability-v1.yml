@@ -1,0 +1,117 @@
+name: ARM ENA SWS query-only availability v1
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/arm-ena-sws-query-only-availability-v1.yml
+      - tools/arm_ena_sws_query_only_availability_v1/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/arm-ena-sws-query-only-availability-v1.yml
+      - tools/arm_ena_sws_query_only_availability_v1/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+env:
+  QUERY_TOOL: tools/arm_ena_sws_query_only_availability_v1
+
+jobs:
+  exact-executable-stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run query-only refusal tests
+        run: |
+          set -euo pipefail
+          python -m py_compile "$QUERY_TOOL/discover.py" "$QUERY_TOOL/stress.py" "$QUERY_TOOL/test_discover.py" "$QUERY_TOOL/test_stress.py"
+          python "$QUERY_TOOL/test_discover.py"
+          python "$QUERY_TOOL/test_stress.py"
+      - name: EXACT_EXECUTABLE_STRESS_PASS on actual bytes and complete Issue 60
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/arm-query-only-stress-v1/stress-receipt.json"
+          rm -rf "$(dirname "$out")"
+          mkdir -p "$(dirname "$out")"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python "$QUERY_TOOL/stress.py" \
+              --workflow .github/workflows/arm-ena-sws-query-only-availability-v1.yml \
+              --executable "$QUERY_TOOL/discover.py" \
+              --manifest "$QUERY_TOOL/ordered_25_cases.json" \
+              --output "$out"
+          test -s "$out"
+      - name: Upload zero-runtime stress evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-query-only-stress-v1
+          path: ${{ runner.temp }}/arm-query-only-stress-v1/stress-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  query-only-discovery:
+    needs: exact-executable-stress
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+      ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refuse query without both ARM credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ARM_USER_ID:-}" ] || [ -z "${ARM_ACCESS_TOKEN:-}" ]; then
+            echo '::error::Authenticated ARM environment unavailable; no query was made.'
+            exit 2
+          fi
+      - name: Run metadata/query-only ordered availability discovery
+        id: query
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/arm-ena-sws-query-only-v1"
+          rm -rf "$out"
+          mkdir -p "$out"
+          set +e
+          python "$QUERY_TOOL/discover.py" --output "$out/query-only-receipt.json"
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          test -s "$out/query-only-receipt.json"
+          test "$(find "$out" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
+          test "$(find "$out" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" -eq 0
+          python - "$out/query-only-receipt.json" <<'PY'
+          import importlib.util, json, pathlib, sys
+          root = pathlib.Path('tools/arm_ena_sws_query_only_availability_v1')
+          spec = importlib.util.spec_from_file_location('discover_verify', root / 'discover.py')
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          obj = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          manifest = mod.load_manifest(root / mod.MANIFEST_NAME)
+          mod._validate_receipt(obj, list(manifest['ordered_case_ids']))
+          print('PASS sanitized closed-schema query-only receipt')
+          PY
+      - name: Upload sanitized query-only evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-query-only-availability-v1
+          path: ${{ runner.temp }}/arm-ena-sws-query-only-v1/query-only-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve fail-closed query transport error as terminal failure
+        if: steps.query.outputs.rc != '0'
+        run: exit 2

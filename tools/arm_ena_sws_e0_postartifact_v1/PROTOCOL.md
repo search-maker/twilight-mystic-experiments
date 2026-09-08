@@ -13,6 +13,12 @@ It does **not** invoke ARM Live, read credentials, open SWS/SASZE radiance, auth
 - protocol: `ARM_ENA_SWS_V1_STAGE0_E0_RESULT_BLIND_V2`
 - expected workflow artifact name: `arm-ena-sws-e0-oneevent-auth-v1`
 
+## Mandatory outer-archive gate before extraction
+
+Before any ZIP extraction or artifact-content parsing, first verify the authorized GitHub run envelope with `verify_authorized_run_envelope_v1.py`, then bind the exact downloaded archive bytes with `verify_downloaded_artifact_zip_v1.py`.
+
+The byte-binding gate is deliberately content-blind. It requires the exact closed run-envelope receipt, hashes the downloaded file as opaque bytes, and requires byte-for-byte SHA-256 equality with GitHub's canonical `artifact.digest`. It refuses missing, empty, non-regular or symlink inputs, does not inspect the ZIP central directory, and emits `zip_contents_inspected=false` and `zip_extracted=false`. Only after this gate passes may a safely extracted directory be supplied to the strict content verifier.
+
 ## Fail-closed ingest contract
 
 The verifier must refuse unless all of the following hold:

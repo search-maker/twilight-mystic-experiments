@@ -1,0 +1,97 @@
+name: Low-altitude stellar libRadtran build provenance probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/low-altitude-stellar-build-provenance-probe.yml"
+      - "review/low-altitude-stellar-transport-v3/lowalt_libradtran_build_provenance_probe.py"
+
+permissions:
+  contents: read
+
+jobs:
+  exact-package-producer-and-source-reprobe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-libradtran-provenance-probe-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Recover exact package container and metadata
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          OUT=lowalt-libradtran-provenance-probe-output
+          mkdir -p "$OUT" package-container-temp package-info-temp package-payload-temp
+          micromamba list --explicit > "$OUT/runtime-package-explicit.txt"
+          micromamba list --json > "$OUT/runtime-package-list.json"
+          PACKAGE_URL="$(grep 'rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda' "$OUT/runtime-package-explicit.txt" | tail -n 1)"
+          test -n "$PACKAGE_URL"
+          printf '%s\n' "$PACKAGE_URL" > "$OUT/exact-package-url.txt"
+          curl --fail --location --silent --show-error "$PACKAGE_URL" --output exact-package.conda
+          sha256sum exact-package.conda > "$OUT/exact-package-archive-sha256.txt"
+          python - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('exact-package.conda') as archive:
+              archive.extractall('package-container-temp')
+          PY
+          INFO_TAR="$(find package-container-temp -maxdepth 1 -name 'info-*.tar.zst' -print -quit)"
+          PKG_TAR="$(find package-container-temp -maxdepth 1 -name 'pkg-*.tar.zst' -print -quit)"
+          test -n "$INFO_TAR"
+          test -n "$PKG_TAR"
+          tar --zstd -xf "$INFO_TAR" -C package-info-temp
+          tar --zstd -xf "$PKG_TAR" -C package-payload-temp
+          test -f package-info-temp/info/about.json
+          test -f package-info-temp/info/recipe/build.sh
+          test -f package-payload-temp/bin/uvspec
+      - name: Bind actual package producer and reprobe unresolved source paths
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python review/low-altitude-stellar-transport-v3/lowalt_libradtran_build_provenance_probe.py \
+            --package-archive exact-package.conda \
+            --package-info-dir package-info-temp \
+            --package-payload-dir package-payload-temp \
+            --installed-uvspec "$(command -v uvspec)" \
+            --output-dir lowalt-libradtran-provenance-probe-output \
+            | tee lowalt-libradtran-provenance-probe-output/probe-stdout.json
+      - name: Enforce non-science fail-closed boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('lowalt-libradtran-provenance-probe-output/lowalt-libradtran-build-provenance-probe.json')
+          assert path.is_file(), 'probe report missing'
+          report = json.loads(path.read_text())
+          assert report['scientificExecution'] is False
+          assert report['solverExecutionCount'] == 0
+          assert report['protectedResultOpened'] is False
+          assert report['avpsStateMutated'] is False
+          assert report['v1SeamChanged'] is False
+          assert report['expectedSourceHashChanged'] is False
+          assert report['solverEquivalencePromotionPermitted'] is False
+          assert report['packageProducerProvenancePassed'] is True
+          assert report['package']['packageProducerCommit'] == '52d709673d44aa958680321ea745d30b58ecf103'
+          assert report['package']['embeddedSourceSha256'] == '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+          PY
+      - name: Upload bounded provenance evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lowalt-libradtran-build-provenance-probe-v1
+          path: lowalt-libradtran-provenance-probe-output
+          if-no-files-found: error
+          retention-days: 90
+      - name: Clean large transient package material
+        if: always()
+        run: |
+          rm -f exact-package.conda
+          rm -rf package-container-temp package-info-temp package-payload-temp

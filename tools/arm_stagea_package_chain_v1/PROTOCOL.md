@@ -18,6 +18,8 @@ The chain refuses silent drift of its control components. It pins the Git blob i
 
 Any byte change requires an explicit successor/version update; the package never silently follows a changed implementation.
 
+The two executable component source files are part of the consumed-code boundary, not merely endpoint path checks. Before either component is executed, the chain no-follow stable-captures both source files, verifies the Git-blob identities of those captured bytes, and then compiles/executes exactly those verified captured bytes in isolated module namespaces. The source-binding component receives the already verified captured continuity module through an isolated import binding, so it cannot silently import a different live-path implementation. A transient source swap at import time followed by restoration is therefore either rejected by the pin check or irrelevant to execution; live path bytes are never re-opened to obtain the code that the package consumes. `component_code_executed_from_verified_captured_bytes=true` attests this boundary in the final receipt.
+
 ## Input-lock checks
 
 The exact input lock must still say that:

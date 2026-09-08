@@ -1,0 +1,107 @@
+name: Deep Twilight author workbook byte recovery v83
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-author-workbook-byte-recovery-v83
+    paths:
+      - .github/workflows/deep-twilight-author-workbook-byte-recovery-v83.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover-public-author-bytes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recover exact public author-issued workbook archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/meta
+
+          fetch_exact() {
+            name="$1"
+            url="$2"
+            curl --fail --location --silent --show-error \
+              --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+              --dump-header "out/meta/${name}.headers.txt" \
+              --write-out 'effective_url=%{url_effective}\nhttp_code=%{http_code}\nsize_download=%{size_download}\n' \
+              --output "out/raw/${name}" "$url" > "out/meta/${name}.curl.txt"
+            printf 'source_url=%s\n' "$url" >> "out/meta/${name}.curl.txt"
+          }
+
+          # Korkin et al. 2020 author-issued Mendeley Data v1 workbook bundle.
+          fetch_exact \
+            korkin2020_mendeley_bundle.zip \
+            'https://data.mendeley.com/public-api/zip/y92b2h27jv/download/1'
+
+          # Preserve Mendeley file metadata alongside the bytes.
+          fetch_exact \
+            korkin2020_mendeley_files.json \
+            'https://data.mendeley.com/public-api/datasets/y92b2h27jv/files?folder_id=root&version=1'
+
+          # Korkin et al. 2022 MD-SOAR archived ScienceDirect supplementary bundle.
+          set +e
+          fetch_exact \
+            korkin2022_mdsoar_bundle.zip \
+            'https://mdsoar.org/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/download'
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] || [ ! -s out/raw/korkin2022_mdsoar_bundle.zip ]; then
+            rm -f out/raw/korkin2022_mdsoar_bundle.zip
+            fetch_exact \
+              korkin2022_mdsoar_bundle.zip \
+              'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content'
+          fi
+
+          sha256sum out/raw/* | sort > out/raw_sha256.txt
+          find out/raw -maxdepth 1 -type f -printf '%f\t%s\n' | sort > out/raw_sizes.tsv
+
+          # Fail closed unless the two author archive bytes are exactly the already-bound V39 identities.
+          echo '77818d2dd2dd7b3f9c1765e89e7f647c1df928384658be6912c5a29c935f4da1  out/raw/korkin2020_mendeley_bundle.zip' | sha256sum -c -
+          echo 'f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e  out/raw/korkin2022_mdsoar_bundle.zip' | sha256sum -c -
+
+          python - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          out = {}
+          for name in ('korkin2020_mendeley_bundle.zip','korkin2022_mdsoar_bundle.zip'):
+              p = Path('out/raw') / name
+              with zipfile.ZipFile(p) as zf:
+                  out[name] = {
+                      'member_count': len(zf.infolist()),
+                      'members': [
+                          {'name': i.filename, 'size': i.file_size, 'compressed_size': i.compress_size, 'crc32': f'{i.CRC:08x}'}
+                          for i in zf.infolist()
+                      ],
+                  }
+          Path('out/outer_archive_inventory.json').write_text(json.dumps(out, indent=2) + '\n', encoding='utf-8')
+          PY
+
+          printf '%s\n' \
+            'classification=EXACT_AUTHOR_ARCHIVE_BYTES_RECOVERED_V83' \
+            'normalizationBridgeResolved=false' \
+            'korkinGateAuthorized=false' \
+            'rendererParityAuthorized=false' \
+            'deepScienceAuthorized=false' \
+            'rendererExecuted=false' \
+            'solverExecuted=false' \
+            'photonsTraced=0' \
+            'protectedResultOpened=false' > out/classification.txt
+
+      - name: Upload exact bytes and lossless outer inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-author-workbook-byte-recovery-v83
+          path: |
+            out/raw/
+            out/meta/
+            out/raw_sha256.txt
+            out/raw_sizes.tsv
+            out/outer_archive_inventory.json
+            out/classification.txt
+          if-no-files-found: error
+          retention-days: 90

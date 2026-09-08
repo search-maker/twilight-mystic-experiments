@@ -1,0 +1,220 @@
+name: LOWALT pinned SDISORT pre-solver ABI capture v10
+run-name: LOWALT pinned pre-solver ABI ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - review/low-altitude-source-cache-recovery-v1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-pinned-presolver-abi-capture-v10
+  cancel-in-progress: false
+
+env:
+  EXACT_PACKAGE: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+  QA001_BLACKBOX_TAU: '9.43164899864486'
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact diagnostic head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up exact pinned libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-pinned-presolver-abi-v10
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Install debugger outside the pinned conda environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb
+          command -v gdb
+
+      - name: Capture exact pre-solver REAL*4 boundary and reconstruct GEOFAST
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = review/low-altitude-source-cache-recovery-v1
+          test "$(uname -m)" = x86_64
+          command -v gdb >/dev/null
+          mkdir -p lowalt-presolver-abi-v10
+
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c -
+          PACKAGE_SPEC="$(python - <<'PY'
+          import subprocess
+          rows=[]
+          for raw in subprocess.check_output(['micromamba','list','rubin-libradtran'],text=True).splitlines():
+              p=raw.split()
+              if len(p)>=3 and p[0]=='rubin-libradtran': rows.append(p[:3])
+          if len(rows)!=1: raise SystemExit(f'package identity ambiguity: {rows!r}')
+          print('='.join(rows[0]))
+          PY
+          )"
+          test "$PACKAGE_SPEC" = "$EXACT_PACKAGE"
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data',u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf '%s  %s\n' "$AFGLUS_SHA256" "$DATA_DIR/atmmod/afglus.dat" | sha256sum -c -
+
+          # This diagnostic deliberately uses the same physical qa-001 coordinates but
+          # does NOT reuse its consumed science identity and never executes SDISORT.
+          # GDB stops at the wrapper entry and kills the inferior before the first
+          # solver instruction can execute.
+          python - "$DATA_DIR" <<'PY'
+          import importlib.util, sys
+          from pathlib import Path
+          data=Path(sys.argv[1])
+          root=Path('.').resolve()
+          spec=importlib.util.spec_from_file_location('phase',root/'review/low-altitude-stellar-transport-v1/low_altitude_phase_a.py')
+          if spec is None or spec.loader is None: raise SystemExit('phase module unavailable')
+          phase=importlib.util.module_from_spec(spec); sys.modules[spec.name]=phase; spec.loader.exec_module(phase)
+          zgrid=phase.elevated_site_grid_ascending(data/'atmmod'/'afglus.dat',640.0)
+          text='\n'.join([
+              f'data_files_path {data}',
+              f'atmosphere_file {data / "atmmod" / "afglus.dat"}',
+              f'source solar {data / "solar_flux" / "atlas_plus_modtran"}',
+              'mol_abs_param crs',
+              f'wavelength_grid_file {root / "experiments" / "aerosol-family-challenge-v2-r8" / "wavelength-grid-1nm.dat"}',
+              'wavelength 400 400',
+              'sza 89.59000000',
+              'atm_z_grid ' + ' '.join(f'{z:.6f}' for z in zgrid),
+              'zout 0.000000',
+              'albedo 0.15000000',
+              'rte_solver sdisort',
+              'sdisort nscat 1',
+              'output_quantity transmittance',
+              'output_user lambda edir',
+              '',
+          ])
+          Path('lowalt-presolver-abi-v10/diag-presolver-001.inp').write_text(text)
+          PY
+
+          nm -a "$UVSPEC" > lowalt-presolver-abi-v10/nm.txt
+          SYMBOL="$(awk '$3=="sdisort_" || $3=="sdisort" {if (symbol=="") symbol=$3} END {if (symbol!="") print symbol}' lowalt-presolver-abi-v10/nm.txt)"
+          test -n "$SYMBOL"
+          echo "symbol=$SYMBOL" | tee lowalt-presolver-abi-v10/symbol.txt
+          grep -E '(^|[[:space:]])sdisort_?$' lowalt-presolver-abi-v10/nm.txt >> lowalt-presolver-abi-v10/symbol.txt
+
+          {
+            echo 'set pagination off'
+            echo 'set confirm off'
+            echo 'set breakpoint pending off'
+            printf 'break %s\n' "$SYMBOL"
+            cat <<'GDB'
+          run < lowalt-presolver-abi-v10/diag-presolver-001.inp
+          python
+          import gdb, json, struct
+          inf=gdb.selected_inferior()
+          rsp=int(gdb.parse_and_eval('$rsp'))
+          regs={1:'rdi',2:'rsi',3:'rdx',4:'rcx',5:'r8',6:'r9'}
+          def mem(addr,n):
+              return bytes(inf.read_memory(addr,n))
+          def argptr(n):
+              if n <= 6:
+                  return int(gdb.parse_and_eval('$'+regs[n]))
+              return struct.unpack('<Q',mem(rsp+8*(n-6),8))[0]
+          def i32p(n): return struct.unpack('<i',mem(argptr(n),4))[0]
+          def f32p(n): return struct.unpack('<f',mem(argptr(n),4))[0]
+          def f32arr(n,count):
+              raw=mem(argptr(n),4*count)
+              return list(struct.unpack('<'+'f'*count,raw))
+          nlyr=i32p(1)
+          maxcly=i32p(39)
+          out={
+            'capturePoint':'sdisort wrapper entry; solver not executed',
+            'nlyr':nlyr,
+            'maxcly':maxcly,
+            'dtauc':f32arr(2,nlyr),
+            'umu0':f32p(20),
+            'newgeoRawI32':i32p(22),
+            'zd':f32arr(23,nlyr+1),
+            'spherRawI32':i32p(24),
+            'radiusKm':f32p(25),
+            'nrefrac':i32p(55),
+            'ichap':i32p(56),
+            'vn':f32arr(57,nlyr+1),
+          }
+          open('lowalt-presolver-abi-v10/capture.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print('CAPTURED',json.dumps({k:out[k] for k in ('nlyr','maxcly','umu0','radiusKm','nrefrac','ichap','newgeoRawI32','spherRawI32')},sort_keys=True))
+          end
+          kill
+          quit
+          GDB
+          } > lowalt-presolver-abi-v10/capture.gdb
+
+          gdb -q -nx -batch -x lowalt-presolver-abi-v10/capture.gdb "$UVSPEC" | tee lowalt-presolver-abi-v10/gdb.txt
+          test -s lowalt-presolver-abi-v10/capture.json
+
+          python - <<'PY'
+          import importlib.util, json, math, sys
+          from pathlib import Path
+          root=Path('.').resolve()
+          spec=importlib.util.spec_from_file_location('ref',root/'review/low-altitude-stellar-transport-v3/qa001_geofast_reference.py')
+          if spec is None or spec.loader is None: raise SystemExit('qa001 reference unavailable')
+          ref=importlib.util.module_from_spec(spec); sys.modules[spec.name]=ref; spec.loader.exec_module(ref)
+          d=json.loads(Path('lowalt-presolver-abi-v10/capture.json').read_text())
+          n=d['nlyr']; zd=tuple(float(x) for x in d['zd']); vn_desc=tuple(float(x) for x in d['vn']); dtau=tuple(float(x) for x in d['dtauc'])
+          if len(zd)!=n+1 or len(vn_desc)!=n+1 or len(dtau)!=n: raise SystemExit('captured array length mismatch')
+          if not all(zd[i] > zd[i+1] for i in range(n)): raise SystemExit(f'ZD ordering drift: {zd[:3]} ... {zd[-3:]}')
+          # SDISORT receives ZD relative to the solver surface; the forced 0.640 km
+          # site is therefore ZD=0 while TOA is 120-0.640=119.360 km.
+          if abs(zd[-1])>2e-7 or abs(zd[0]-119.36)>2e-4: raise SystemExit(f'relative ZD drift: top={zd[0]} surface={zd[-1]}')
+          sza=math.degrees(math.acos(float(d['umu0'])))
+          z_cm=tuple(zd[n-i]*1.0e5 for i in range(n+1))
+          vn=tuple(vn_desc[n-i] for i in range(n+1))
+          factors,nfac=ref._opathfast_bottom_factors(sza,z_cm,vn,float(d['radiusKm'])*1.0e5,0.5)
+          if nfac!=n: raise SystemExit(f'pre-tangent factor count drift: {nfac} != {n}')
+          chp2=sum(f*t for f,t in zip(factors,dtau,strict=True))
+          taup=sum(dtau[:-1])+0.5*dtau[-1]
+          tauv=sum(dtau)
+          predicted=tauv*chp2/taup
+          blackbox=float('9.43164899864486')
+          summary={
+              'capturePoint':'exact pinned REAL*4 sdisort entry, killed before solver execution',
+              'physicalCoordinates':{'altitudeDeg':0.41,'observerElevationM':640.0,'wavelengthNm':400.0},
+              'zdConvention':'relative to forced solver surface; surface=0 km',
+              'nlyr':n,'szaFromCapturedUmu0Deg':sza,'radiusKm':d['radiusKm'],
+              'nrefrac':d['nrefrac'],'ichap':d['ichap'],
+              'tauVerticalFromCapturedDtauc':tauv,'taupBottomMidpoint':taup,
+              'chp2FromExactCapturedBoundary':chp2,
+              'predictedTauFromExactCapturedBoundary':predicted,
+              'frozenConsumedQa001BlackboxTauForComparisonOnly':blackbox,
+              'residualTau':predicted-blackbox,
+              'relativeResidual':(predicted-blackbox)/blackbox,
+              'vnSurface':vn_desc[-1],'vnTop':vn_desc[0],
+          }
+          Path('lowalt-presolver-abi-v10/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+
+      - name: Upload immutable pre-solver ABI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-pinned-presolver-abi-capture-v10
+          path: lowalt-presolver-abi-v10/
+          if-no-files-found: warn
+          retention-days: 90

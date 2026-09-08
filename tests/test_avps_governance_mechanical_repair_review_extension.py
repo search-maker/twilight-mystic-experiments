@@ -75,6 +75,34 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
         self.assertIn("'WRITE_QUIET_END | beginComment=123\\nbegin=124'", malformed)
         self.assertIn("'WRITE_QUIET_END begin=123 beginComment=124'", malformed)
 
+    def test_governance_cutoff_is_inside_executed_surface_and_bad_forms_fail_closed(self):
+        semantic = self.reviewer.split(
+            '      - name: Run exact Phase-B semantic fixtures against ACTUAL publisher bytes when publisher changes\n', 1
+        )[1].split(
+            '      - name: Run canonical WRITE_QUIET parser regression\n', 1
+        )[0]
+        required = (
+            "cutoff_decl = re.compile(r'(?m)^          KNOWN_DEFECT(?P<gap>[ \\t]*)=(?P<raw>[^\\r\\n]*)$')",
+            'def governance_namespace(source, expected_cutoff=5576203465):',
+            'a = decl.start()',
+            'gov_surface = source[a:b]',
+            'exec(textwrap.dedent(gov_surface), gov)',
+            "if gov.get('KNOWN_DEFECT') != expected_cutoff:",
+            "('missing', cutoff_fixture.replace",
+            "('duplicate', cutoff_fixture.replace",
+            "('nondecimal', cutoff_fixture.replace",
+            "('drifted', cutoff_fixture.replace",
+            "raise SystemExit(f'{label} authoritative KNOWN_DEFECT cutoff fixture unexpectedly passed')",
+            'gov = governance_namespace(text)',
+        )
+        for token in required:
+            self.assertIn(token, semantic)
+        self.assertNotIn("a = text.index('          import re\\n          B={')", semantic)
+        self.assertIn('AVPS authoritative KNOWN_DEFECT cutoff cardinality must be exactly one', semantic)
+        self.assertIn('AVPS authoritative KNOWN_DEFECT cutoff must use exact decimal assignment syntax', semantic)
+        self.assertIn('AVPS governance compaction cutoff drift', semantic)
+        self.assertIn('AVPS governance executed namespace did not retain authoritative cutoff', semantic)
+
     def test_actual_publisher_anchor_cardinalities_match_reviewer_projection_contract(self):
         self.assertEqual(self.publisher.count('# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'), 3)
         self.assertEqual(self.publisher.count('# END_WRITE_QUIET_END_LINE_PARSER_V1'), 3)

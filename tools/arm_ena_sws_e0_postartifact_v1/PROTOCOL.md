@@ -25,6 +25,19 @@ Only after the outer-byte gate passes may `extract_sanitized_artifact_zip_v1.py`
 
 Only after safe extraction succeeds may the extracted directory be supplied to the strict content verifier below.
 
+## Integrated offline ingest pipeline
+
+`run_sanitized_ingest_pipeline_v1.py` composes the reviewed gates in exactly that order without contacting GitHub or ARM itself. It accepts already-fetched GitHub run JSON, artifact JSON, a complete workflow-dispatch inventory JSON, and the already-downloaded artifact ZIP. It then performs:
+
+1. exact authorized-run-envelope verification;
+2. opaque downloaded-ZIP digest binding to GitHub's canonical artifact digest;
+3. bounded safe extraction of the exact seven sanitized files; and
+4. strict sanitized-content verification.
+
+The pipeline requires a fresh work directory, writes a separate canonical JSON receipt for every completed gate, SHA-256 binds those receipts in a final success receipt, and emits no final success receipt if a later gate refuses. It cross-checks run/artifact/ref/head/digest identity between stages and requires all protected-result, Stage-B, held-out, science, credential-read, network-access and production authority flags to remain false. An E0 timing/QC disposition is preserved exactly as a result-blind disposition; even `E0_PASS_BLIND_CANDIDATE` is not Stage-B or held-out-opening authority.
+
+This orchestration layer is optional convenience around the mandatory gates, not a broader trust boundary. The individual gates remain authoritative for their own checks.
+
 ## Fail-closed ingest contract
 
 The verifier must refuse unless all of the following hold:

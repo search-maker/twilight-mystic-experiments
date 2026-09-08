@@ -100,6 +100,81 @@ class StressTests(unittest.TestCase):
         comments = [baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, 'COORDINATOR::ARM_QUERY_ONLY_BLOCKER_CLEARED')]
         S.audit_arm_governance(comments)
 
+    def test_exact_5591488326_shape_positive_acceptance_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5591488326,
+                'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1003_ACCEPTED__EXACT_HEAD_ORDINARY_MERGE_AUTHORIZED__AUTHENTICATED_INVOCATION_STILL_FALSE\n\n'
+                'STATUS=PR1003_RESULT_BLIND_QUERY_ONLY_INFRA_ACCEPTED / EXACT_HEAD_37FEA3_MERGE_AUTHORIZED / ARM_LIVE_QUERY_FALSE / AUTHENTICATED_WORKFLOW_DISPATCH_NOT_AUTHORIZED / SCIENCE_FALSE\n\n'
+                'ARM PR1003 CLASSIFICATION\n'
+                '- ACCEPT exact Draft PR #1003.\n'
+                '- PR1001 remains frozen governance-NONADMISSIBLE and MUST NOT merge or be reused.\n\n'
+                'AUTHORITY\n'
+                'Exactly one ordinary merge of PR1003 is authorized.\n\n'
+                'This does NOT authorize authenticated workflow_dispatch, ARM Live /query, protected opening, Stage B, science, or production.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_current_postmerge_repair_authorization_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5591521704,
+                'COORDINATOR::ARM_QUERY_ONLY_POSTMERGE_STRESS_FALSE_POSITIVE_DEFECT__ONE_FRESH_NARROW_MECHANICAL_REPAIR_AUTHORIZED__AUTHENTICATED_INVOCATION_REMAINS_FALSE\n\n'
+                'STATUS=PR1003_MERGED_TO_MAIN / POSTMERGE_LIVE_GOVERNANCE_STRESS_FAIL_CLOSED / POSITIVE_COORDINATOR_ACCEPTANCE_MISCLASSIFIED_AS_ADVERSE / ONE_FRESH_NONSCIENCE_REPAIR_CANDIDATE_AUTHORIZED / ARM_LIVE_QUERY_FALSE / AUTHENTICATED_WORKFLOW_DISPATCH_FALSE',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_in_actual_nonadmissibility_still_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AVAILABILITY_PR1005_NONADMISSIBLE__DO_NOT_MERGE__AUTHENTICATED_INVOCATION_FALSE\n\n'
+                'A different historical PR was accepted, but this candidate is NOT_ADMISSIBLE.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_in_actual_revocation_still_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AUTHORITY_REVOKED__REPAIR_NOT_AUTHORIZED\n\n'
+                'Earlier merge acceptance is historical; current ARM authority is revoked.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_positive_vocabulary_in_actual_refusal_still_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_REFUSAL__AUTHENTICATED_INVOCATION_FALSE\n\n'
+                'Do not treat earlier accepted infrastructure as current authority.',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_ambiguous_direct_arm_governance_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_BOUNDARY_UPDATE__AUTHENTICATED_INVOCATION_FALSE',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
     def test_baseline_absence_refuses(self):
         with self.assertRaises(S.StressFailure):
             S.audit_arm_governance([row(S.BASELINE_COORDINATOR_COMMENT + 1, 'ARM_OWNER::OK')])

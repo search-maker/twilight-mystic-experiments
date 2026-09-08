@@ -48,6 +48,7 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
             '5472560826',
             '5573615763',
             '5573638267',
+            'repeated-identical standalone aliases must collapse to one distinct BEGIN id',
             'WRITE_QUIET_END begin=123 beginComment=124',
             'WRITE_QUIET_END | beginComment=123\\nbegin=124',
             'Narrative only with historical `begin=123` mention',
@@ -62,6 +63,17 @@ class AvpsGovernanceMechanicalReviewerExtensionContract(unittest.TestCase):
         )
         for token in required:
             self.assertIn(token, self.reviewer)
+
+    def test_repeated_identical_binding_is_positive_but_distinct_conflict_stays_negative(self):
+        semantic = self.reviewer.split("raise SystemExit('standalone begin alias fixture failed')", 1)[1].split(
+            "          for body in (\n              'WRITE_QUIET_BEGIN | stage=x'", 1
+        )[0]
+        positive = "if parse('WRITE_QUIET_END | stage=x\\nbeginComment=123\\nbegin=123') != 123:"
+        self.assertIn(positive, semantic)
+        malformed = semantic.split('          for body in (', 1)[1]
+        self.assertNotIn("'WRITE_QUIET_END | stage=x\\nbeginComment=123\\nbegin=123'", malformed)
+        self.assertIn("'WRITE_QUIET_END | beginComment=123\\nbegin=124'", malformed)
+        self.assertIn("'WRITE_QUIET_END begin=123 beginComment=124'", malformed)
 
     def test_actual_publisher_anchor_cardinalities_match_reviewer_projection_contract(self):
         self.assertEqual(self.publisher.count('# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1'), 3)

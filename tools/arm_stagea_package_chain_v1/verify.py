@@ -10,6 +10,7 @@ Stage-B, science, identity, seed, ordinal, or production authority.
 from __future__ import annotations
 
 import argparse
+import builtins
 import csv
 import hashlib
 import io
@@ -17,17 +18,17 @@ import json
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 from typing import Any
-
-from tools.arm_stagea_source_file_binding_v1 import verify as source_binding
-from tools.arm_stagea_time_continuity_contract_v1 import verify as continuity
 
 EXPECTED_INPUT_LOCK_GIT_BLOB_SHA1 = "9b3e32b319a1aa29f9de9b4e92ae94ecf3091929"
 EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1 = "49818b96c8c172d68a4b8d5cdc4e542bc7933c69"
 EXPECTED_SOURCE_BINDING_IMPL_GIT_BLOB_SHA1 = "d00895f21f61a3f8d9ad9921a3d50eb46f047b75"
 EXPECTED_PRIORITY_NAME = "ARM_SGP_C1_stageA_priority20.csv"
 EXPECTED_HISTORICAL_REQUEST_NAME = "ARM_SGP_C1_MINIMAL_NEXT_EXTRACT_REQUEST.md"
+CONTINUITY_MODULE_NAME = "tools.arm_stagea_time_continuity_contract_v1.verify"
+SOURCE_BINDING_MODULE_NAME = "tools.arm_stagea_source_file_binding_v1.verify"
 
 
 class PackageChainError(ValueError):
@@ -86,10 +87,53 @@ def stable_capture_regular_file(path: Path) -> bytes:
     return data
 
 
-def verify_component_implementation_pins() -> dict[str, str]:
+def _component_source_paths() -> tuple[Path, Path]:
+    repo_root = Path(__file__).resolve().parents[2]
+    return (
+        repo_root / "tools/arm_stagea_time_continuity_contract_v1/verify.py",
+        repo_root / "tools/arm_stagea_source_file_binding_v1/verify.py",
+    )
+
+
+def _exec_captured_module(
+    name: str,
+    source_path: Path,
+    source_bytes: bytes,
+    *,
+    continuity_override: types.ModuleType | None = None,
+) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__file__ = str(source_path)
+    module.__package__ = name.rpartition(".")[0]
+    if continuity_override is not None:
+        original_import = builtins.__import__
+        builtins_map = dict(vars(builtins))
+
+        def captured_import(import_name, globals=None, locals=None, fromlist=(), level=0):
+            if (
+                level == 0
+                and import_name == "tools.arm_stagea_time_continuity_contract_v1"
+                and "verify" in tuple(fromlist or ())
+            ):
+                package = types.ModuleType(import_name)
+                package.verify = continuity_override
+                return package
+            return original_import(import_name, globals, locals, fromlist, level)
+
+        builtins_map["__import__"] = captured_import
+        module.__dict__["__builtins__"] = builtins_map
+    code = compile(source_bytes, str(source_path), "exec", dont_inherit=True)
+    exec(code, module.__dict__)
+    return module
+
+
+def _load_verified_component_modules() -> tuple[types.ModuleType, types.ModuleType, dict[str, str]]:
+    continuity_path, source_binding_path = _component_source_paths()
+    continuity_bytes = stable_capture_regular_file(continuity_path)
+    source_binding_bytes = stable_capture_regular_file(source_binding_path)
     observed = {
-        "continuity_verify_git_blob_sha1": git_blob_sha1(Path(continuity.__file__).resolve()),
-        "source_binding_verify_git_blob_sha1": git_blob_sha1(Path(source_binding.__file__).resolve()),
+        "continuity_verify_git_blob_sha1": git_blob_sha1_bytes(continuity_bytes),
+        "source_binding_verify_git_blob_sha1": git_blob_sha1_bytes(source_binding_bytes),
     }
     expected = {
         "continuity_verify_git_blob_sha1": EXPECTED_CONTINUITY_IMPL_GIT_BLOB_SHA1,
@@ -98,6 +142,34 @@ def verify_component_implementation_pins() -> dict[str, str]:
     for key, wanted in expected.items():
         if observed[key] != wanted:
             raise PackageChainError(f"component implementation drift for {key}: {observed[key]} != {wanted}")
+
+    continuity_module = _exec_captured_module(
+        CONTINUITY_MODULE_NAME,
+        continuity_path,
+        continuity_bytes,
+    )
+    source_binding_module = _exec_captured_module(
+        SOURCE_BINDING_MODULE_NAME,
+        source_binding_path,
+        source_binding_bytes,
+        continuity_override=continuity_module,
+    )
+    continuity_module.__verified_source_git_blob_sha1__ = observed["continuity_verify_git_blob_sha1"]
+    source_binding_module.__verified_source_git_blob_sha1__ = observed["source_binding_verify_git_blob_sha1"]
+    source_binding_module.__verified_continuity_module__ = continuity_module
+    return continuity_module, source_binding_module, observed
+
+
+# Import-time execution itself is fail-closed: both component source files are
+# stable-captured and pin-verified before either component's code is executed.
+continuity, source_binding, _INITIAL_COMPONENT_PINS = _load_verified_component_modules()
+
+
+def verify_component_implementation_pins() -> dict[str, str]:
+    global continuity, source_binding
+    verified_continuity, verified_source_binding, observed = _load_verified_component_modules()
+    continuity = verified_continuity
+    source_binding = verified_source_binding
     return observed
 
 
@@ -330,6 +402,7 @@ def build_package_receipt(
         "schema": 1,
         "stagea_timing_package_contract_valid": True,
         "result_blind": True,
+        "component_code_executed_from_verified_captured_bytes": True,
         "same_input_bytes_hashed_and_parsed": True,
         "same_continuity_csv_bound_across_components": True,
         "input_lock": lock_receipt,

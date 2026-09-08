@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -69,8 +70,26 @@ def digest_receipt() -> dict:
     }
 
 
-def extraction_receipt() -> dict:
+def write_sanitized_fixture(output_dir: Path) -> dict[str, dict[str, object]]:
+    output_dir.mkdir()
+    manifest: dict[str, dict[str, object]] = {}
+    for name in sorted(MOD.extraction_gate.REQUIRED_FILES):
+        payload = (f"sanitized fixture {name}\n").encode()
+        (output_dir / name).write_bytes(payload)
+        manifest[name] = {
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+    return manifest
+
+
+def extraction_receipt(manifest: dict[str, dict[str, object]] | None = None) -> dict:
     digest = digest_receipt()
+    if manifest is None:
+        manifest = {
+            name: {"size_bytes": 1, "sha256": "0" * 64}
+            for name in sorted(MOD.extraction_gate.REQUIRED_FILES)
+        }
     return {
         "schema": 1,
         "status": "ARM_E0_SANITIZED_ARTIFACT_ZIP_SAFELY_EXTRACTED",
@@ -85,7 +104,8 @@ def extraction_receipt() -> dict:
         "artifact_name": digest["artifact_name"],
         "downloaded_zip_sha256": digest["downloaded_zip_sha256"],
         "archive_member_count": 7,
-        "extracted_file_names": ["dummy"] * 7,
+        "extracted_file_names": sorted(MOD.extraction_gate.REQUIRED_FILES),
+        "extracted_files": manifest,
         "zip_contents_inspected": True,
         "zip_extracted": True,
         "artifact_content_values_parsed": False,
@@ -121,7 +141,6 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
         calls: list[str] = []
         env = envelope_receipt()
         dig = digest_receipt()
-        ext = extraction_receipt()
         content = content_receipt()
 
         def envelope_side_effect(*_args):
@@ -134,8 +153,7 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
 
         def extraction_side_effect(_digest, _zip, output_dir):
             calls.append("extraction")
-            output_dir.mkdir()
-            return ext
+            return extraction_receipt(write_sanitized_fixture(output_dir))
 
         def content_side_effect(_root):
             calls.append("content")
@@ -160,6 +178,8 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             self.assertEqual(result["execution_head"], FROZEN_HEAD)
             self.assertEqual(result["artifact_digest"], ARTIFACT_DIGEST)
             self.assertTrue(result["e0_blind_candidate_pass"])
+            self.assertTrue(result["same_extracted_bytes_verified_before_and_after_content_check"])
+            self.assertRegex(result["sanitized_file_manifest_sha256"], r"^[0-9a-f]{64}$")
             for key in (
                 "network_access_performed_by_pipeline",
                 "credential_values_read_by_pipeline",
@@ -235,6 +255,56 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             self.assertFalse(work_dir.exists())
             extraction.assert_not_called()
 
+    def test_extraction_manifest_must_match_exact_extracted_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td)
+            artifact_zip = parent / "artifact.zip"
+            artifact_zip.write_bytes(b"test")
+            work_dir = parent / "work"
+
+            def extraction_side_effect(_digest, _zip, output_dir):
+                manifest = write_sanitized_fixture(output_dir)
+                receipt = extraction_receipt(manifest)
+                victim = sorted(manifest)[0]
+                receipt["extracted_files"][victim]["sha256"] = "f" * 64
+                return receipt
+
+            with (
+                mock.patch.object(MOD.envelope_gate, "verify_envelope", return_value=envelope_receipt()),
+                mock.patch.object(MOD.digest_gate, "verify_downloaded_zip", return_value=digest_receipt()),
+                mock.patch.object(MOD.extraction_gate, "extract_safely", side_effect=extraction_side_effect),
+                mock.patch.object(MOD.content_gate, "verify_strict") as content,
+            ):
+                with self.assertRaisesRegex(MOD.PipelineVerificationError, "does not match extracted bytes"):
+                    MOD.run_pipeline({}, {}, {}, artifact_zip, work_dir)
+            content.assert_not_called()
+            self.assertFalse((work_dir / "05-pipeline-success-receipt.json").exists())
+
+    def test_mutation_during_content_verification_blocks_final_success_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td)
+            artifact_zip = parent / "artifact.zip"
+            artifact_zip.write_bytes(b"test")
+            work_dir = parent / "work"
+
+            def extraction_side_effect(_digest, _zip, output_dir):
+                return extraction_receipt(write_sanitized_fixture(output_dir))
+
+            def content_side_effect(root):
+                victim = root / sorted(MOD.extraction_gate.REQUIRED_FILES)[0]
+                victim.write_bytes(victim.read_bytes() + b"mutation")
+                return content_receipt()
+
+            with (
+                mock.patch.object(MOD.envelope_gate, "verify_envelope", return_value=envelope_receipt()),
+                mock.patch.object(MOD.digest_gate, "verify_downloaded_zip", return_value=digest_receipt()),
+                mock.patch.object(MOD.extraction_gate, "extract_safely", side_effect=extraction_side_effect),
+                mock.patch.object(MOD.content_gate, "verify_strict", side_effect=content_side_effect),
+            ):
+                with self.assertRaisesRegex(MOD.PipelineVerificationError, "changed during strict content verification"):
+                    MOD.run_pipeline({}, {}, {}, artifact_zip, work_dir)
+            self.assertFalse((work_dir / "05-pipeline-success-receipt.json").exists())
+
     def test_content_authority_drift_blocks_final_success_receipt(self) -> None:
         content = content_receipt()
         content["stage_b_authorized"] = True
@@ -245,8 +315,7 @@ class SanitizedIngestPipelineTests(unittest.TestCase):
             work_dir = parent / "work"
 
             def extraction_side_effect(_digest, _zip, output_dir):
-                output_dir.mkdir()
-                return extraction_receipt()
+                return extraction_receipt(write_sanitized_fixture(output_dir))
 
             with (
                 mock.patch.object(MOD.envelope_gate, "verify_envelope", return_value=envelope_receipt()),

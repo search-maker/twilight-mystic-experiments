@@ -1,0 +1,53 @@
+from pathlib import Path
+import unittest
+
+REVIEWER = Path('.github/workflows/avps-recovery4-canonical-parser-review-v1.yml')
+
+class CanonicalParserReviewerInstallationContract(unittest.TestCase):
+    def setUp(self):
+        self.text = REVIEWER.read_text(encoding='utf-8')
+
+    def test_pull_request_only_read_only(self):
+        on = self.text.split('\non:\n', 1)[1].split('\npermissions:\n', 1)[0]
+        self.assertIn('pull_request:', on)
+        self.assertNotIn('workflow_dispatch:', on)
+        permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]
+        for key in ('contents: read', 'actions: read', 'issues: read', 'pull-requests: read'):
+            self.assertIn(key, permissions)
+        self.assertNotIn(': write', permissions)
+
+    def test_future_phase_b_surface_is_explicit(self):
+        for path in (
+            '.github/workflows/avps-v2-postconsumption-recovery4-science.yml',
+            '.github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml',
+            'scripts/avps_write_quiet_parser_v1.py',
+            'tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py',
+        ):
+            self.assertIn(path, self.text)
+
+    def test_installation_cannot_self_certify_phase_b(self):
+        self.assertIn("mode='INSTALLATION'", self.text)
+        self.assertIn("mode='PHASE_B'", self.text)
+        self.assertIn('changed==install', self.text)
+        self.assertIn('self_path not in changed', self.text)
+        self.assertIn('install_test not in changed', self.text)
+        self.assertIn('installation-mode execution is installation evidence only', self.text)
+
+    def test_exact_head_attempt_one_and_single_parent_are_bound(self):
+        for token in (
+            'test "$GITHUB_RUN_ATTEMPT" = 1',
+            'test "$(git rev-parse HEAD)" = "$EVENT_HEAD"',
+            'test "${#PARENTS[@]}" = 1',
+            'test "${PARENTS[0]}" = "$EVENT_BASE"',
+        ):
+            self.assertIn(token, self.text)
+
+    def test_reviewer_contains_no_authorizing_or_science_runtime_surface(self):
+        permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]
+        self.assertNotIn(': write', permissions)
+        for token in ('gh workflow '+'run', 'gh api -X '+'POST', 'command -v '+'uvspec', 'rte_solver '+'mystic', 'mc_'+'photons 20000000'):
+            self.assertNotIn(token, self.text)
+        self.assertIn('no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority', self.text)
+
+if __name__ == '__main__':
+    unittest.main()

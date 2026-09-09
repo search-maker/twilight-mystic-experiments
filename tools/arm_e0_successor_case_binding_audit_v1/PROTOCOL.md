@@ -17,16 +17,18 @@ The audit does not alter the frozen E0 scientific semantics:
 
 The lower frozen runner remains capable of receiving a selected `--start-case` through its forwarded argument surface. The legacy portable wrapper, however, hard-pins `PROBE_CASE_ID = "2017-06-16_dusk"` and supplies that value to `--start-case`.
 
+The portable wrapper and lower runner live only on the frozen execution ref; they are intentionally absent from an ordinary current-main checkout. The audit therefore records their immutable Git blob identities (`d8c29b09b39918415dabc6c9c6cb4110ec4c82c2` and `de0c3978ba3c01c723ff1ff7cd33fee8f840c89d`) without pretending current-main CI re-read absent bytes. A separately materialized frozen-ref checkout can be passed through `--frozen-source-root` to reverify the exact wrapper/runner tokens fail-closed.
+
 ## Complete rebind surface identified before any new query result
 
 The audit freezes seven result-blind/provenance surfaces that cannot be reused unchanged for a different selected case or a fresh authorization identity:
 
-1. `review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py` — legacy portable wrapper/case pin.
-2. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_v1.py` — legacy content verifier/case pin.
-3. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_strict_v1.py` — strict verifier inherits the same case identity through `base.PROBE_CASE_ID`.
-4. `tools/arm_ena_sws_e0_postartifact_v1/verify_authorized_run_envelope_v1.py` — historical authority `5575796491`, frozen branch/head, and one-dispatch envelope.
-5. `tools/arm_ena_sws_e0_postartifact_v1/verify_downloaded_artifact_zip_v1.py` — downloaded-ZIP digest receipt is also bound to the historical authority/branch/head.
-6. `tools/arm_ena_sws_e0_postartifact_v1/extract_sanitized_artifact_zip_v1.py` — safe-extraction receipt is likewise bound to the historical authority/branch/head.
+1. frozen-ref `review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py` — legacy portable wrapper/case pin;
+2. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_v1.py` — legacy content verifier/case pin;
+3. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_strict_v1.py` — strict verifier inherits the same case identity through `base.PROBE_CASE_ID`;
+4. `tools/arm_ena_sws_e0_postartifact_v1/verify_authorized_run_envelope_v1.py` — historical authority `5575796491`, frozen branch/head, and one-dispatch envelope;
+5. `tools/arm_ena_sws_e0_postartifact_v1/verify_downloaded_artifact_zip_v1.py` — downloaded-ZIP digest receipt is also bound to the historical authority/branch/head;
+6. `tools/arm_ena_sws_e0_postartifact_v1/extract_sanitized_artifact_zip_v1.py` — safe-extraction receipt is likewise bound to the historical authority/branch/head;
 7. `tools/arm_ena_sws_e0_postartifact_v1/run_sanitized_ingest_pipeline_v1.py` — offline ingest cross-checks the legacy case through the strict content verifier and its own case binding.
 
 This is broader than the wrapper alone: the content verifiers, exact run envelope, ZIP-digest gate, extraction gate, and complete sanitized ingest chain are all case/authorization-bound.
@@ -48,8 +50,8 @@ There must be no fallback to `2017-06-16_dusk`, no reuse of historical authority
 
 ## Audit behavior
 
-`audit.py` is source-only. It hashes every known legacy rebind surface, confirms the expected hard-pins remain present (so an unexpected source drift fails closed), and confirms the lower frozen runner still forwards remaining arguments without acquiring the legacy one-case hard-pin itself.
+`audit.py` is source-only. In an ordinary current-main checkout it hashes and verifies all six current-tree legacy rebind surfaces and records the immutable frozen-ref wrapper/runner Git blob identities as external frozen evidence. With `--frozen-source-root`, it additionally hashes and token-verifies the separately materialized frozen wrapper and lower runner, including the runner's selected-case passthrough and absence of the legacy one-case hard-pin.
 
-A successful audit emits `ARM_E0_SUCCESSOR_REBIND_SURFACE_FROZEN` with the source hashes and explicit false flags for network access, credential reading, native download/opening, protected-value reading, held-out opening, Stage B, MYSTIC/science, and production.
+A successful audit emits `ARM_E0_SUCCESSOR_REBIND_SURFACE_FROZEN` with explicit false flags for network access, credential reading, native download/opening, protected-value reading, held-out opening, Stage B, MYSTIC/science, and production.
 
 A success receipt is preparation evidence only. It does not authorize authenticated ARM activity or any scientific execution.

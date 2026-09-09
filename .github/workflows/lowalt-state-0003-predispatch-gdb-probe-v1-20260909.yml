@@ -1,0 +1,243 @@
+name: LOWALT STATE-0003 pre-dispatch gdb probe v1
+run-name: LOWALT STATE-0003 pre-dispatch gdb probe ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-predispatch-gdb-probe-v1-20260909
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-state-0003-predispatch-gdb-probe-v1-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-predispatch-gdb-probe-v1-20260909
+  BASE_MAIN_SHA: c9f1d3abc3af704f9a54176f32932e87ee084068
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PACKAGE_SPEC: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+
+jobs:
+  capture-before-solver-entry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact probe commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify fresh one-file nonprotected probe boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = '.github/workflows/lowalt-state-0003-predispatch-gdb-probe-v1-20260909.yml'
+
+      - name: Set up exact inherited libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-predispatch-gdb-probe-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact package, executable, data, and debugger
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          UVSPEC="$(command -v uvspec)"
+          GDB="$(command -v gdb || true)"
+          test -n "$UVSPEC"
+          test -n "$GDB"
+          ACTUAL_UVSPEC_SHA="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$ACTUAL_UVSPEC_SHA" = "$UVSPEC_SHA256"
+          ACTUAL_PACKAGE_SPEC="$(python - <<'PY'
+          import json, subprocess
+          obj=json.loads(subprocess.check_output(['micromamba','list','--json'],text=True))
+          rows=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if x.get('name')=='rubin-libradtran': rows.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(obj)
+          specs=set()
+          for r in rows:
+              v=r.get('version'); b=r.get('build_string',r.get('build'))
+              if v and b: specs.add(f'rubin-libradtran={v}={b}')
+          if len(specs)!=1: raise SystemExit(f'unresolved exact package: {sorted(specs)!r}')
+          print(next(iter(specs)))
+          PY
+          )"
+          test "$ACTUAL_PACKAGE_SPEC" = "$PACKAGE_SPEC"
+          DATA_DIR="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data',u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data directory not found')
+          PY
+          )"
+          printf 'uvspec=%s\nuvspec_sha256=%s\npackage_spec=%s\ngdb=%s\ndata_dir=%s\n' "$UVSPEC" "$ACTUAL_UVSPEC_SHA" "$ACTUAL_PACKAGE_SPEC" "$GDB" "$DATA_DIR" > evidence/runtime-binding.txt
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "GDB=$GDB" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+
+      - name: Freeze exact single-case probe input before runtime interception
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          cat > evidence/probe-contract.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "purpose": "result-blind interception at the exact SDISORT entry boundary",
+            "sourceState": "LOWALT-STELLAR-STATE-0003",
+            "governingSourceSha256": "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85",
+            "targetGeometricAltitudeDeg": 0.41,
+            "sourceZenithAngleDeg": 89.59,
+            "wavelengthNm": 452,
+            "observerElevationKm": 0.0,
+            "aerosol": "OFF",
+            "rteSolver": "sdisort",
+            "sdisortNscat": 1,
+            "protectedGeographyUsed": false,
+            "taylorOrJerusalemUsed": false,
+            "seedOrOrdinalUsed": false,
+            "solverContinuationAllowed": false,
+            "solverResultOpeningAllowed": false,
+            "epsilonSubstitutionAllowed": false
+          }
+          EOF
+          cat > /tmp/probe.inp <<EOF
+          data_files_path $LIBRADTRAN_DATA
+          atmosphere_file $LIBRADTRAN_DATA/atmmod/afglus.dat
+          source solar
+          mol_abs_param crs
+          wavelength 452 452
+          sza 89.59000000
+          zout 0.000000
+          albedo 0.15000000
+          rte_solver sdisort
+          sdisort nscat 1
+          output_quantity transmittance
+          output_user lambda edir
+          quiet
+          EOF
+          sha256sum /tmp/probe.inp > evidence/probe-input.sha256
+          cp /tmp/probe.inp evidence/probe.inp
+
+      - name: Resolve exact installed SDISORT symbol without execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          nm -an "$UVSPEC" > evidence/nm-all.txt
+          readelf -Ws "$UVSPEC" > evidence/readelf-symbols.txt
+          readelf -S "$UVSPEC" > evidence/readelf-sections.txt
+          mapfile -t SYMS < <(awk '$2 ~ /^[Tt]$/ && $3 ~ /^sdisort_?$/ {print $3}' evidence/nm-all.txt | sort -u)
+          if [ "${#SYMS[@]}" -ne 1 ]; then
+            echo "expected exactly one text symbol matching sdisort/sdisort_; got ${#SYMS[@]}: ${SYMS[*]-}" >&2
+            exit 91
+          fi
+          printf '%s\n' "${SYMS[0]}" > evidence/resolved-sdisort-symbol.txt
+          echo "SDISORT_SYMBOL=${SYMS[0]}" >> "$GITHUB_ENV"
+          "$GDB" -q -batch -ex "file $UVSPEC" -ex "info address ${SYMS[0]}" -ex "ptype ${SYMS[0]}" > evidence/gdb-static-symbol.txt 2>&1 || true
+
+      - name: Intercept once at SDISORT entry and terminate before first instruction
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          cat > /tmp/capture.gdb <<EOF
+          set pagination off
+          set confirm off
+          set print elements 0
+          file $UVSPEC
+          break $SDISORT_SYMBOL
+          run < /tmp/probe.inp > /tmp/inferior.stdout 2> /tmp/inferior.stderr
+          printf "LOWALT_PREDISPATCH_BREAKPOINT_HIT=1\\n"
+          printf "pc_at_entry=%p\\n", \$pc
+          bt 4
+          info args
+          printf "abi_arg1_nlyr_ptr=%p\\n", \$rdi
+          printf "abi_arg2_dtauc_ptr=%p\\n", \$rsi
+          printf "abi_arg3_ssalb_ptr=%p\\n", \$rdx
+          printf "abi_arg5_temper_ptr=%p\\n", \$r8
+          printf "abi_arg6_wvnmlo_ptr=%p\\n", \$r9
+          x/wd \$rdi
+          x/8wx \$rsi
+          x/8wx \$rdx
+          kill
+          quit
+          EOF
+          set +e
+          timeout 300 "$GDB" -q -batch -x /tmp/capture.gdb > evidence/gdb-runtime-capture.txt 2>&1
+          GDB_RC=$?
+          set -e
+          printf '%s\n' "$GDB_RC" > evidence/gdb-exit-code.txt
+          test "$GDB_RC" -eq 0
+          grep -q 'LOWALT_PREDISPATCH_BREAKPOINT_HIT=1' evidence/gdb-runtime-capture.txt
+          grep -Eq 'Breakpoint [0-9]+, .*sdisort_?' evidence/gdb-runtime-capture.txt
+          if grep -Eq 'exited normally|Inferior .* exited' evidence/gdb-runtime-capture.txt; then
+            echo 'inferior reached terminal exit instead of remaining stopped at entry' >&2
+            exit 92
+          fi
+          test -f /tmp/inferior.stdout
+          test -f /tmp/inferior.stderr
+          sha256sum /tmp/inferior.stdout /tmp/inferior.stderr > evidence/inferior-stream-sha256.txt
+          wc -c /tmp/inferior.stdout /tmp/inferior.stderr > evidence/inferior-stream-byte-counts.txt
+
+      - name: Emit result-blind interception receipt
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,pathlib,re
+          e=pathlib.Path('evidence')
+          log=(e/'gdb-runtime-capture.txt').read_text(errors='replace')
+          sym=(e/'resolved-sdisort-symbol.txt').read_text().strip()
+          receipt={
+            'schemaVersion':1,
+            'classification':'PINNED_UVSPEC_SDISORT_ENTRY_GDB_INTERCEPTION_PASS',
+            'exactPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'resolvedEntrySymbol':sym,
+            'breakpointHit': 'LOWALT_PREDISPATCH_BREAKPOINT_HIT=1' in log,
+            'solverBodyContinued':False,
+            'solverResultOpened':False,
+            'scientificSolverExecutionCompleted':False,
+            'protectedResultOpened':False,
+            'taylorOrJerusalemUsed':False,
+            'seedOrOrdinalUsed':False,
+            'epsilonSubstitutionUsed':False,
+            'productionChanged':False,
+            'v1FiveDegreeSeamChanged':False,
+          }
+          def sha(p): return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          receipt['evidenceSha256']={p.name:sha(p) for p in sorted(e.iterdir()) if p.is_file() and p.name!='receipt.json'}
+          (e/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+
+      - name: Publish immutable result-blind interception evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-predispatch-gdb-probe-v1
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

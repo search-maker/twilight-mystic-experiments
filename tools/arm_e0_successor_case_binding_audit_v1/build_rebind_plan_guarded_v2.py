@@ -2,14 +2,15 @@
 """Guarded result-blind ARM E0 successor rebind planner v2.
 
 This wrapper strengthens the existing v1 planner by binding the claimed future
-query-only authorization to the exact ARM-relevant governance set recorded in
-the same zero-runtime stress receipt. It performs no ARM access, credential
-read, native download/opening, protected-value read, source rebind, or science
-execution.
+query-only authorization to the exact ARM-relevant governance set and complete
+Issue #60 ledger hash recorded in the same zero-runtime stress receipt. It
+performs no ARM access, credential read, native download/opening, protected-value
+read, source rebind, or science execution.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -38,6 +39,14 @@ ADVERSE_AUTH_TITLE_MARKERS = (
     "EXPIRED",
     "DO_NOT_USE",
     "SECOND_ATTEMPT",
+    "REQUEST",
+    "PENDING",
+    "PROPOSED",
+)
+POSITIVE_AUTH_TITLE_MARKERS = (
+    "AUTHORIZED",
+    "AUTHORIZATION_GRANTED",
+    "AUTHORITY_GRANTED",
 )
 
 
@@ -51,8 +60,35 @@ def _positive(value: Any, where: str) -> int:
     return value
 
 
+def _canonical_issue60_snapshot(snapshot: Any) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(snapshot, list) or not snapshot:
+        raise GuardedPlanRefusal("Issue #60 ledger snapshot must be a nonempty list")
+    canonical_rows: list[dict[str, Any]] = []
+    previous = 0
+    for row in snapshot:
+        if not isinstance(row, dict):
+            raise GuardedPlanRefusal("Issue #60 ledger snapshot row must be an object")
+        cid = row.get("id")
+        if not isinstance(cid, int) or isinstance(cid, bool) or cid <= previous:
+            raise GuardedPlanRefusal("Issue #60 ledger snapshot IDs must be positive and strictly increasing")
+        previous = cid
+        canonical_rows.append({"id": cid, "body": str(row.get("body", ""))})
+    canonical = json.dumps(
+        canonical_rows,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return canonical_rows, hashlib.sha256(canonical).hexdigest()
+
+
+def _first_nonempty(body: str) -> str:
+    return next((line.strip() for line in str(body or "").splitlines() if line.strip()), "")
+
+
 def verify_query_authority_binding(
     stress_receipt: dict[str, Any],
+    issue60_comments_snapshot: Any,
     *,
     query_authorization_comment: int,
     query_authorization_title: str,
@@ -72,9 +108,19 @@ def verify_query_authority_binding(
     if query_dispatch_ref != "refs/heads/main":
         raise GuardedPlanRefusal("query authorization binding requires main dispatch ref")
 
+    rows, ledger_sha = _canonical_issue60_snapshot(issue60_comments_snapshot)
+    expected_count = _positive(stress_receipt.get("issue60_comment_count"), "issue60_comment_count")
+    expected_latest = _positive(stress_receipt.get("issue60_latest_comment_id"), "issue60_latest_comment_id")
+    expected_ledger_sha = stress_receipt.get("issue60_ledger_sha256")
+    if len(rows) != expected_count:
+        raise GuardedPlanRefusal("Issue #60 ledger snapshot count differs from stress receipt")
+    if rows[-1]["id"] != expected_latest:
+        raise GuardedPlanRefusal("Issue #60 ledger snapshot latest ID differs from stress receipt")
+    if ledger_sha != expected_ledger_sha:
+        raise GuardedPlanRefusal("Issue #60 ledger snapshot hash differs from stress receipt")
+
     comment_id = _positive(query_authorization_comment, "query_authorization_comment")
     baseline = _positive(stress_receipt.get("baseline_coordinator_comment"), "baseline_coordinator_comment")
-    latest = _positive(stress_receipt.get("issue60_latest_comment_id"), "issue60_latest_comment_id")
     ids = stress_receipt.get("arm_relevant_comment_ids_after_baseline")
     if not isinstance(ids, list) or not ids:
         raise GuardedPlanRefusal("stress receipt has no ARM-relevant governance after baseline")
@@ -82,9 +128,9 @@ def verify_query_authority_binding(
         raise GuardedPlanRefusal("ARM-relevant governance IDs must be positive integers")
     if ids != sorted(set(ids)):
         raise GuardedPlanRefusal("ARM-relevant governance IDs must be unique and increasing")
-    if any(x <= baseline or x > latest for x in ids):
+    if any(x <= baseline or x > expected_latest for x in ids):
         raise GuardedPlanRefusal("ARM-relevant governance ID lies outside stress ledger bounds")
-    if comment_id <= baseline or comment_id > latest:
+    if comment_id <= baseline or comment_id > expected_latest:
         raise GuardedPlanRefusal("claimed query authorization lies outside stress ledger bounds")
     if comment_id not in ids:
         raise GuardedPlanRefusal("claimed query authorization is absent from stress ARM governance set")
@@ -93,26 +139,37 @@ def verify_query_authority_binding(
     if comment_id == P.LEGACY_AUTHORITY:
         raise GuardedPlanRefusal("legacy consumed E0 authority may not be reused")
 
+    row = next((item for item in rows if item["id"] == comment_id), None)
+    if row is None:
+        raise GuardedPlanRefusal("claimed query authorization comment is absent from exact Issue #60 snapshot")
+    actual_title = _first_nonempty(row["body"])
     if not isinstance(query_authorization_title, str) or "\n" in query_authorization_title:
         raise GuardedPlanRefusal("query authorization title must be one exact line")
-    upper = query_authorization_title.upper()
+    if actual_title != query_authorization_title:
+        raise GuardedPlanRefusal("supplied query authorization title does not match exact stress-bound comment")
+    upper = actual_title.upper()
     if not upper.startswith("COORDINATOR::ARM"):
         raise GuardedPlanRefusal("query authorization must be a direct COORDINATOR::ARM transition")
-    if "QUERY" not in upper or "AUTHORIZ" not in upper:
-        raise GuardedPlanRefusal("query authorization title lacks explicit QUERY + AUTHORIZ semantics")
+    if "QUERY" not in upper:
+        raise GuardedPlanRefusal("query authorization title lacks explicit QUERY semantics")
     if any(marker in upper for marker in ADVERSE_AUTH_TITLE_MARKERS):
-        raise GuardedPlanRefusal("query authorization title carries adverse/false/reuse semantics")
+        raise GuardedPlanRefusal("query authorization title carries adverse/false/request/reuse semantics")
+    if not any(marker in upper for marker in POSITIVE_AUTH_TITLE_MARKERS):
+        raise GuardedPlanRefusal("query authorization title lacks explicit positive authorization semantics")
 
     return {
-        "schema": 1,
-        "status": "QUERY_AUTHORITY_BOUND_TO_STRESS_LEDGER",
+        "schema": 2,
+        "status": "QUERY_AUTHORITY_BOUND_TO_EXACT_STRESS_LEDGER",
         "query_authorization_comment": comment_id,
-        "query_authorization_title": query_authorization_title,
+        "query_authorization_title": actual_title,
         "baseline_coordinator_comment": baseline,
-        "issue60_latest_comment_id": latest,
+        "issue60_comment_count": expected_count,
+        "issue60_latest_comment_id": expected_latest,
+        "issue60_ledger_sha256": ledger_sha,
         "latest_arm_relevant_comment_id": ids[-1],
         "query_authorization_is_latest_arm_governance": True,
         "query_authorization_present_in_stress_ledger": True,
+        "query_authorization_title_exactly_bound": True,
         "legacy_authority_reused": False,
         "arm_network_access_performed": False,
         "arm_credentials_read": False,
@@ -125,9 +182,10 @@ def verify_query_authority_binding(
     }
 
 
-def build_guarded_plan(**kwargs: Any) -> dict[str, Any]:
+def build_guarded_plan(*, issue60_comments_snapshot: Any, **kwargs: Any) -> dict[str, Any]:
     proof = verify_query_authority_binding(
         kwargs["stress_receipt"],
+        issue60_comments_snapshot,
         query_authorization_comment=kwargs["query_authorization_comment"],
         query_authorization_title=kwargs["query_authorization_title"],
         query_dispatch_ref=kwargs["query_dispatch_ref"],
@@ -144,14 +202,23 @@ def build_guarded_plan(**kwargs: Any) -> dict[str, Any]:
     out["v1_plan_status"] = base["status"]
     out["query_authority_binding"] = proof
     out["query_authorization_bound_to_stress_ledger"] = True
+    out["query_authorization_title_exactly_bound"] = True
     out["query_authorization_is_latest_arm_governance"] = True
     return out
+
+
+def _read_json_any(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise GuardedPlanRefusal(f"invalid UTF-8 JSON: {path.name}") from None
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--query-receipt", type=Path, required=True)
     p.add_argument("--stress-receipt", type=Path, required=True)
+    p.add_argument("--issue60-comments-snapshot", type=Path, required=True)
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--query-authorization-comment", type=int, required=True)
     p.add_argument("--query-authorization-title", required=True)
@@ -167,8 +234,10 @@ def main() -> int:
     try:
         query, qsha = P._read_json(a.query_receipt)
         stress, ssha = P._read_json(a.stress_receipt)
+        comments = _read_json_any(a.issue60_comments_snapshot)
         _manifest, cases = P.load_manifest(a.manifest)
         out = build_guarded_plan(
+            issue60_comments_snapshot=comments,
             query_receipt=query,
             query_receipt_sha256=qsha,
             stress_receipt=stress,

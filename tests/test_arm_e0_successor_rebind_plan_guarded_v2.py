@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -16,8 +18,9 @@ P = G.P
 DISPATCH_SHA = "a" * 40
 DISPATCH_REF = "refs/heads/main"
 BASELINE = 5000000000
+PREP_COMMENT = 5000000001
 AUTH_COMMENT = 6000000001
-AUTH_TITLE = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_AUTHORIZATION"
+AUTH_TITLE = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_AUTHORIZED"
 
 
 def ordered_cases() -> list[str]:
@@ -64,7 +67,30 @@ def make_query(*, ordinal: int = 3) -> dict:
     }
 
 
-def make_stress() -> dict:
+def make_comments(*, auth_title: str = AUTH_TITLE, extra_after: bool = False) -> list[dict]:
+    rows = [
+        {"id": BASELINE, "body": "COORDINATOR::BASELINE\nsynthetic baseline"},
+        {"id": PREP_COMMENT, "body": "ARM_OWNER::SAFE_PREP_READY_FOR_REVIEW\nsynthetic prep"},
+        {"id": AUTH_COMMENT, "body": auth_title + "\nsynthetic positive authority"},
+    ]
+    if extra_after:
+        rows.append({"id": AUTH_COMMENT + 1, "body": "ARM_OWNER::LATER_READY_FOR_REVIEW\nsynthetic later ARM control"})
+    return rows
+
+
+def ledger_sha(comments: list[dict]) -> str:
+    canonical = json.dumps(
+        [{"id": int(r.get("id", 0)), "body": str(r.get("body", ""))} for r in comments],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def make_stress(*, comments: list[dict] | None = None, arm_ids: list[int] | None = None) -> dict:
+    comments = make_comments() if comments is None else comments
+    arm_ids = [PREP_COMMENT, AUTH_COMMENT] if arm_ids is None else arm_ids
     return {
         "schema": 1,
         "status": "EXACT_EXECUTABLE_STRESS_PASS",
@@ -76,11 +102,11 @@ def make_stress() -> dict:
         "github_ref": DISPATCH_REF,
         "github_sha": DISPATCH_SHA,
         "default_branch": "main",
-        "issue60_comment_count": 1300,
-        "issue60_latest_comment_id": AUTH_COMMENT,
-        "issue60_ledger_sha256": "d" * 64,
+        "issue60_comment_count": len(comments),
+        "issue60_latest_comment_id": comments[-1]["id"],
+        "issue60_ledger_sha256": ledger_sha(comments),
         "baseline_coordinator_comment": BASELINE,
-        "arm_relevant_comment_ids_after_baseline": [5000000001, AUTH_COMMENT],
+        "arm_relevant_comment_ids_after_baseline": arm_ids,
         "write_quiet_begin_ids_after_baseline": [],
         "write_quiet_end_ids_after_baseline": [],
         "arm_network_access_performed": False,
@@ -95,10 +121,13 @@ def make_stress() -> dict:
 
 
 def build(**overrides):
+    comments = overrides.pop("issue60_comments_snapshot", make_comments())
+    stress = overrides.pop("stress_receipt", make_stress(comments=comments))
     kwargs = {
+        "issue60_comments_snapshot": comments,
         "query_receipt": make_query(),
         "query_receipt_sha256": "e" * 64,
-        "stress_receipt": make_stress(),
+        "stress_receipt": stress,
         "stress_receipt_sha256": "f" * 64,
         "ordered_cases": ordered_cases(),
         "query_authorization_comment": AUTH_COMMENT,
@@ -122,63 +151,104 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
         self.assertEqual(out["schema"], 2)
         self.assertEqual(out["status"], G.STATUS)
         self.assertTrue(out["query_authorization_bound_to_stress_ledger"])
+        self.assertTrue(out["query_authorization_title_exactly_bound"])
         self.assertTrue(out["query_authorization_is_latest_arm_governance"])
-        self.assertEqual(out["query_authority_binding"]["query_authorization_comment"], AUTH_COMMENT)
-        self.assertFalse(out["query_authority_binding"]["legacy_authority_reused"])
+        proof = out["query_authority_binding"]
+        self.assertEqual(proof["query_authorization_comment"], AUTH_COMMENT)
+        self.assertEqual(proof["query_authorization_title"], AUTH_TITLE)
+        self.assertFalse(proof["legacy_authority_reused"])
         self.assertFalse(out["plan_is_authorization"])
         self.assertFalse(out["protected_sws_sasze_values_read"])
         self.assertFalse(out["stage_b_authorized"])
         self.assertFalse(out["mystic_science_authorized"])
         self.assertFalse(out["production_authorized"])
 
-    def test_refuses_authority_absent_from_stress_arm_ledger(self):
-        stress = make_stress()
-        stress["arm_relevant_comment_ids_after_baseline"] = [5000000001]
+    def test_refuses_supplied_title_not_matching_exact_comment(self):
         with self.assertRaises(G.GuardedPlanRefusal):
-            build(stress_receipt=stress)
+            build(query_authorization_title="COORDINATOR::ARM_DIFFERENT_QUERY_AUTHORIZED")
+
+    def test_refuses_tampered_issue60_snapshot_hash(self):
+        comments = make_comments()
+        stress = make_stress(comments=comments)
+        tampered = [dict(row) for row in comments]
+        tampered[-1]["body"] += "\ntamper"
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=tampered, stress_receipt=stress)
+
+    def test_refuses_incomplete_issue60_snapshot(self):
+        comments = make_comments()
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments[:-1], stress_receipt=stress)
+
+    def test_refuses_authority_absent_from_stress_arm_ledger(self):
+        comments = make_comments()
+        stress = make_stress(comments=comments, arm_ids=[PREP_COMMENT])
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
 
     def test_refuses_authority_that_is_not_latest_arm_governance(self):
-        stress = make_stress()
-        stress["issue60_latest_comment_id"] = AUTH_COMMENT + 1
-        stress["arm_relevant_comment_ids_after_baseline"] = [5000000001, AUTH_COMMENT, AUTH_COMMENT + 1]
+        comments = make_comments(extra_after=True)
+        stress = make_stress(comments=comments, arm_ids=[PREP_COMMENT, AUTH_COMMENT, AUTH_COMMENT + 1])
         with self.assertRaises(G.GuardedPlanRefusal):
-            build(stress_receipt=stress)
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
 
     def test_refuses_non_arm_coordinator_title(self):
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(query_authorization_title="COORDINATOR::AVPS_QUERY_ONLY_AUTHORIZATION")
-
-    def test_refuses_false_authority_title(self):
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(query_authorization_title="COORDINATOR::ARM_QUERY_ONLY_AUTHORITY_REMAINS_FALSE")
-
-    def test_refuses_not_authorized_title(self):
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(query_authorization_title="COORDINATOR::ARM_QUERY_ONLY_NOT_AUTHORIZED")
-
-    def test_refuses_unordered_or_duplicate_arm_governance_ids(self):
-        stress = make_stress()
-        stress["arm_relevant_comment_ids_after_baseline"] = [AUTH_COMMENT, 5000000001]
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(stress_receipt=stress)
-        stress = make_stress()
-        stress["arm_relevant_comment_ids_after_baseline"] = [5000000001, AUTH_COMMENT, AUTH_COMMENT]
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(stress_receipt=stress)
-
-    def test_refuses_arm_governance_id_beyond_ledger_latest(self):
-        stress = make_stress()
-        stress["issue60_latest_comment_id"] = AUTH_COMMENT - 1
-        with self.assertRaises(G.GuardedPlanRefusal):
-            build(stress_receipt=stress)
-
-    def test_refuses_consumed_legacy_authority_identity(self):
-        stress = make_stress()
-        stress["baseline_coordinator_comment"] = 1
-        stress["issue60_latest_comment_id"] = P.LEGACY_AUTHORITY
-        stress["arm_relevant_comment_ids_after_baseline"] = [P.LEGACY_AUTHORITY]
+        comments = make_comments(auth_title="COORDINATOR::AVPS_QUERY_ONLY_AUTHORIZED")
+        stress = make_stress(comments=comments)
         with self.assertRaises(G.GuardedPlanRefusal):
             build(
+                issue60_comments_snapshot=comments,
+                stress_receipt=stress,
+                query_authorization_title="COORDINATOR::AVPS_QUERY_ONLY_AUTHORIZED",
+            )
+
+    def test_refuses_false_authority_title(self):
+        title = "COORDINATOR::ARM_QUERY_ONLY_AUTHORITY_REMAINS_FALSE"
+        comments = make_comments(auth_title=title)
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress, query_authorization_title=title)
+
+    def test_refuses_not_authorized_title(self):
+        title = "COORDINATOR::ARM_QUERY_ONLY_NOT_AUTHORIZED"
+        comments = make_comments(auth_title=title)
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress, query_authorization_title=title)
+
+    def test_refuses_authorization_request_title(self):
+        title = "COORDINATOR::ARM_QUERY_ONLY_AUTHORIZATION_REQUEST"
+        comments = make_comments(auth_title=title)
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress, query_authorization_title=title)
+
+    def test_refuses_unordered_or_duplicate_arm_governance_ids(self):
+        comments = make_comments()
+        stress = make_stress(comments=comments, arm_ids=[AUTH_COMMENT, PREP_COMMENT])
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
+        stress = make_stress(comments=comments, arm_ids=[PREP_COMMENT, AUTH_COMMENT, AUTH_COMMENT])
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
+
+    def test_refuses_arm_governance_id_beyond_ledger_latest(self):
+        comments = make_comments()
+        stress = make_stress(comments=comments, arm_ids=[PREP_COMMENT, AUTH_COMMENT, AUTH_COMMENT + 1])
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
+
+    def test_refuses_consumed_legacy_authority_identity(self):
+        comments = [
+            {"id": 1, "body": "COORDINATOR::BASELINE"},
+            {"id": P.LEGACY_AUTHORITY, "body": AUTH_TITLE},
+        ]
+        stress = make_stress(comments=comments, arm_ids=[P.LEGACY_AUTHORITY])
+        stress["baseline_coordinator_comment"] = 1
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(
+                issue60_comments_snapshot=comments,
                 stress_receipt=stress,
                 query_authorization_comment=P.LEGACY_AUTHORITY,
                 query_authorization_title=AUTH_TITLE,

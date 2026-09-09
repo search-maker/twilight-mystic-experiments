@@ -1,0 +1,152 @@
+name: LOWALT STATE-0003 buildenv provenance R13c
+run-name: LOWALT STATE-0003 buildenv provenance R13c ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-buildenv-provenance-r13c-20260909
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-state-0003-buildenv-provenance-r13c-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-buildenv-provenance-r13c-20260909
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  PACKAGE_URL: https://conda.anaconda.org/conda-forge/linux-64/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda
+  PACKAGE_SHA256: 9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact provenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify additive non-science boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_MAIN_SHA"..HEAD | sort)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = ".github/workflows/lowalt-state-0003-buildenv-provenance-r13c-20260909.yml"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_buildenv_provenance_r13c_20260909"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR/package-info" "$EVIDENCE_DIR/runtime" "$EVIDENCE_DIR/elf" "$EVIDENCE_DIR/static-object" "$EVIDENCE_DIR/download"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary.json" <<EOF
+          {"schemaVersion":1,"classification":"STATE_0003_EXACT_PACKAGE_BUILDENV_PROVENANCE_R13C","baseMainSha":"$BASE_MAIN_SHA","workflowHeadSha":"$GITHUB_SHA","scienceExecution":false,"solverExecution":false,"scienceIdentityAllocated":false,"protectedResultOpened":false,"taylorOrJerusalemUsed":false,"productionMutationAuthorized":false,"fiveDegreeSeamMutationAuthorized":false}
+          EOF
+
+      - name: Install exact inherited runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-buildenv-provenance-r13c
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Recover exact package metadata and governing object provenance
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = "$UVSPEC_SHA256"
+          micromamba list rubin-libradtran --json > "$EVIDENCE_DIR/runtime/micromamba-rubin-libradtran.json"
+          micromamba info --json > "$EVIDENCE_DIR/runtime/micromamba-info.json"
+          cp "$CONDA_PREFIX/conda-meta/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.json" "$EVIDENCE_DIR/package-info/installed-conda-meta.json"
+
+          PKG="$RUNNER_TEMP/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda"
+          curl --proto '=https' --tlsv1.2 -fL -D "$EVIDENCE_DIR/download/headers.txt" -o "$PKG" -w 'url_effective=%{url_effective}\nhttp_code=%{http_code}\nsize_download=%{size_download}\nnum_redirects=%{num_redirects}\n' "$PACKAGE_URL" > "$EVIDENCE_DIR/download/summary.txt"
+          ACTUAL_PACKAGE_SHA="$(sha256sum "$PKG" | awk '{print $1}')"
+          test "$ACTUAL_PACKAGE_SHA" = "$PACKAGE_SHA256"
+          printf 'sha256=%s\nsize=%s\n' "$ACTUAL_PACKAGE_SHA" "$(stat -c %s "$PKG")" > "$EVIDENCE_DIR/download/archive-binding.txt"
+
+          OUTER="$RUNNER_TEMP/r13c_outer"
+          INNER="$RUNNER_TEMP/r13c_inner"
+          rm -rf "$OUTER" "$INNER"; mkdir -p "$OUTER" "$INNER"
+          python - "$PKG" "$OUTER" "$EVIDENCE_DIR/download/container-members.txt" <<'PY'
+          import pathlib, sys, zipfile
+          pkg,out,listing=map(pathlib.Path,sys.argv[1:])
+          with zipfile.ZipFile(pkg) as z:
+              names=sorted(z.namelist())
+              listing.write_text('\n'.join(names)+'\n')
+              z.extractall(out)
+          PY
+          INFO_TAR="$(find "$OUTER" -maxdepth 1 -type f -name 'info-*.tar.zst' -print | head -n1)"
+          test -n "$INFO_TAR"
+          if ! command -v unzstd >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq zstd; fi
+          tar --use-compress-program=unzstd -xf "$INFO_TAR" -C "$INNER"
+          test -f "$INNER/info/hash_input.json"
+          test -d "$INNER/info/recipe"
+          find "$INNER/info" -type f -print | sed "s#^$INNER/##" | sort > "$EVIDENCE_DIR/package-info/extracted-info-file-list.txt"
+          cp "$INNER/info/hash_input.json" "$EVIDENCE_DIR/package-info/hash_input.json"
+          cp "$INNER/info/index.json" "$EVIDENCE_DIR/package-info/index.json"
+          cp "$INNER/info/about.json" "$EVIDENCE_DIR/package-info/about.json"
+          [ ! -f "$INNER/info/run_exports.json" ] || cp "$INNER/info/run_exports.json" "$EVIDENCE_DIR/package-info/run_exports.json"
+          cp -a "$INNER/info/recipe" "$EVIDENCE_DIR/package-info/recipe"
+          [ ! -d "$INNER/info/test" ] || cp -a "$INNER/info/test" "$EVIDENCE_DIR/package-info/test"
+
+          file "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-file.txt"
+          readelf -d "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-dynamic.txt"
+          ldd "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-ldd.txt"
+          readelf -p .comment "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-comment.txt" 2>&1 || true
+          readelf -p .GCC.command.line "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-gcc-command-line.txt" 2>&1 || true
+
+          FLIB="$(find "$CONDA_PREFIX" -type f -name 'libRadtran_f.a' -print | head -n1)"
+          test -n "$FLIB"
+          sha256sum "$FLIB" > "$EVIDENCE_DIR/static-object/libRadtran_f.sha256"
+          ar t "$FLIB" > "$EVIDENCE_DIR/static-object/libRadtran_f-members.txt"
+          OBJ="$(ar t "$FLIB" | grep -E '(^|/)dpmisc\.o$' | head -n1)"
+          test -n "$OBJ"
+          printf '%s\n' "$OBJ" > "$EVIDENCE_DIR/static-object/object-member.txt"
+          OBJDIR="$RUNNER_TEMP/r13c_obj"; rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"
+          (cd "$OBJDIR" && ar x "$FLIB" "$OBJ")
+          OBJPATH="$OBJDIR/$OBJ"
+          test -f "$OBJPATH"
+          sha256sum "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object.sha256"
+          file "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-file.txt"
+          readelf -S "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-sections.txt"
+          readelf -p .comment "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-comment.txt" 2>&1 || true
+          readelf -p .GCC.command.line "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-gcc-command-line.txt" 2>&1 || true
+          nm -a "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-nm.txt"
+          objdump -dr "$OBJPATH" > "$EVIDENCE_DIR/static-object/dpmisc-object-disassembly.txt"
+
+          python - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ['EVIDENCE_DIR'])
+          meta=json.loads((root/'package-info/installed-conda-meta.json').read_text())
+          hi=json.loads((root/'package-info/hash_input.json').read_text())
+          idx=json.loads((root/'package-info/index.json').read_text())
+          assert meta['name']=='rubin-libradtran' and meta['version']=='2.0.6' and meta['build']=='py312pl5321he9373c2_1' and meta['build_number']==1
+          assert meta.get('sha256')==os.environ['PACKAGE_SHA256']
+          summary={'schemaVersion':1,'classification':'STATE_0003_EXACT_PACKAGE_BUILDENV_PROVENANCE_R13C_PASS','packageSha256':os.environ['PACKAGE_SHA256'],'uvspecSha256':os.environ['UVSPEC_SHA256'],'hashInput':hi,'indexDepends':idx.get('depends',[]),'recipeRecovered':True,'governingDpmiscObjectRecovered':True,'scienceExecution':False,'solverExecution':False,'protectedResultOpened':False,'productionChanged':False,'fiveDegreeSeamChanged':False}
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name!='evidence-manifest.sha256'):
+              rows.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}")
+          (root/'evidence-manifest.sha256').write_text('\n'.join(rows)+'\n')
+          PY
+
+      - name: Publish isolated exact package provenance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-buildenv-provenance-r13c-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_buildenv_provenance_r13c_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

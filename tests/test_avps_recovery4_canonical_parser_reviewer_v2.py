@@ -74,7 +74,7 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
         self.assertIn('Run reviewer-owned immutable semantic corpus against actual parser', self.text)
-        self.assertIn('reviewer-owned immutable semantic corpus independently tests actual parser semantics', self.text)
+        self.assertIn('reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test', self.text)
 
     def test_canonical_parser_is_statically_pure_before_import(self):
         for token in (
@@ -95,13 +95,26 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             self.text.index('Run reviewer-owned immutable semantic corpus against actual parser'),
         )
 
-    def test_mutable_phase_b_tests_cannot_hide_runtime(self):
-        self.assertIn('Statically refuse hidden runtime in mutable Phase-B parser tests', self.text)
-        self.assertIn('forbidden_import_roots', self.text)
-        for token in ('subprocess', 'requests', 'urllib', 'socket', 'http', 'ftplib', 'paramiko'):
+    def test_mutable_phase_b_tests_cannot_execute_or_spoof(self):
+        for token in (
+            'MUTABLE_TEST_NON_SPOOF_GUARD_V1',
+            'Statically prove mutable Phase-B tests cannot execute runtime or spoof later checks',
+            "allowed_import_roots={'pathlib','re','textwrap','unittest','scripts'}",
+            "allowed_scripts_module='scripts.avps_write_quiet_parser_v1'",
+            "forbidden_calls={'open','eval','exec','compile','__import__','input','breakpoint','globals','locals','vars','getattr','setattr','delattr'}",
+            "forbidden_methods={'open','write_text','write_bytes','touch','unlink','rename','replace','mkdir','rmdir','chmod','symlink_to','hardlink_to'}",
+            'Phase-B test imports non-whitelisted module',
+            'Phase-B test imports noncanonical project module',
+            'Phase-B test mutating/dynamic attribute forbidden',
+        ):
             self.assertIn(token, self.text)
-        for token in ("forbidden_calls={'eval','exec','compile','__import__'}", "node.func.attr in {'system','popen','spawnl','spawnlp','spawnv','spawnvp'}"):
-            self.assertIn(token, self.text)
+        static_index=self.text.index('Statically prove mutable Phase-B tests cannot execute runtime or spoof later checks')
+        semantic_index=self.text.index('Run reviewer-owned immutable semantic corpus against actual parser')
+        wiring_index=self.text.index('Verify actual executable-chain wiring before mutable tests execute')
+        mutable_index=self.text.index('Run mutable parser regressions only after immutable semantic and wiring checks')
+        self.assertLess(static_index, semantic_index)
+        self.assertLess(semantic_index, wiring_index)
+        self.assertLess(wiring_index, mutable_index)
 
     def test_reviewer_contains_no_authorizing_or_science_runtime_surface(self):
         permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]

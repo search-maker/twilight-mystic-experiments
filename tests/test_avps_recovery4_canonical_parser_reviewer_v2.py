@@ -95,9 +95,19 @@ def _write_commit(repo, path, content, message):
     return _git(repo, 'rev-parse', 'HEAD')
 
 
+def _read_github_env(path):
+    values = {}
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        if '=' in line:
+            key, value = line.split('=', 1)
+            values[key] = value
+    return values
+
+
 class CanonicalParserReviewerInstallationContract(unittest.TestCase):
     def setUp(self):
-        self.text = REVIEWER.read_text(encoding='utf-8')
+        proof = os.environ.get('REVIEWER_PROOF_PATH')
+        self.text = Path(proof).read_text(encoding='utf-8') if proof else REVIEWER.read_text(encoding='utf-8')
 
     def test_pull_request_only_read_only(self):
         on = self.text.split('\non:\n', 1)[1].split('\npermissions:\n', 1)[0]
@@ -141,6 +151,79 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             'test "${PARENTS[0]}" = "$EVENT_BASE"',
         ):
             self.assertIn(token, self.text)
+
+    def test_phase_b_reviewer_proof_bytes_are_bound_to_authoritative_base(self):
+        for token in (
+            'Bind reviewer proof bytes to authoritative source',
+            'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+            'git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
+            'REVIEWER_PROOF_PATH="$SELF_PATH"',
+            'INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"',
+            "p=Path(os.environ['REVIEWER_PROOF_PATH']).read_text()",
+            'python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring',
+        ):
+            self.assertIn(token, self.text)
+        self.assertNotIn("p=Path(os.environ['SELF_PATH']).read_text()", self.text)
+
+        _, source = _named_steps(self.text)['Bind reviewer proof bytes to authoritative source']
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _git(repo, 'init', '-q')
+            _git(repo, 'config', 'user.name', 'AVPS test')
+            _git(repo, 'config', 'user.email', 'avps-test@example.invalid')
+            Path(repo, 'reviewer.yml').write_text('stale reviewer bytes\n', encoding='utf-8')
+            Path(repo, 'reviewer_test.py').write_text('stale reviewer test bytes\n', encoding='utf-8')
+            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
+            _git(repo, 'commit', '-m', 'historical stale reviewer')
+            historical = _git(repo, 'rev-parse', 'HEAD')
+
+            _git(repo, 'checkout', '-q', '-b', 'installed', historical)
+            Path(repo, 'reviewer.yml').write_text('installed reviewer bytes\n', encoding='utf-8')
+            Path(repo, 'reviewer_test.py').write_text('installed reviewer test bytes\n', encoding='utf-8')
+            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
+            _git(repo, 'commit', '-m', 'install reviewer')
+            installed = _git(repo, 'rev-parse', 'HEAD')
+
+            _git(repo, 'checkout', '-q', '-b', 'phase', historical)
+            _write_commit(repo, 'phase.txt', 'phase bytes\n', 'phase semantic work')
+            self.assertEqual(Path(repo, 'reviewer.yml').read_text(encoding='utf-8'), 'stale reviewer bytes\n')
+
+            runner_temp = repo / 'runner-temp'
+            runner_temp.mkdir()
+            github_env = repo / 'github-env.txt'
+            phase_env = os.environ.copy()
+            phase_env.update({
+                'MODE': 'PHASE_B',
+                'EVENT_BASE': installed,
+                'SELF_PATH': 'reviewer.yml',
+                'INSTALL_TEST': 'reviewer_test.py',
+                'RUNNER_TEMP': str(runner_temp),
+                'GITHUB_ENV': str(github_env),
+            })
+            result = _run_shell(source, repo, phase_env)
+            self.assertEqual(result.returncode, 0, f'base proof binding failed: {result.stderr}')
+            values = _read_github_env(github_env)
+            reviewer_proof = Path(values['REVIEWER_PROOF_PATH'])
+            install_test_proof = Path(values['INSTALL_TEST_PROOF_PATH'])
+            self.assertEqual(reviewer_proof.read_text(encoding='utf-8'), 'installed reviewer bytes\n')
+            self.assertEqual(install_test_proof.read_text(encoding='utf-8'), 'installed reviewer test bytes\n')
+            self.assertNotEqual(reviewer_proof.read_text(encoding='utf-8'), Path(repo, 'reviewer.yml').read_text(encoding='utf-8'))
+
+            github_env.write_text('', encoding='utf-8')
+            install_env = os.environ.copy()
+            install_env.update({
+                'MODE': 'INSTALLATION',
+                'EVENT_BASE': historical,
+                'SELF_PATH': 'reviewer.yml',
+                'INSTALL_TEST': 'reviewer_test.py',
+                'RUNNER_TEMP': str(runner_temp),
+                'GITHUB_ENV': str(github_env),
+            })
+            result = _run_shell(source, repo, install_env)
+            self.assertEqual(result.returncode, 0, f'installation proof binding failed: {result.stderr}')
+            values = _read_github_env(github_env)
+            self.assertEqual(values['REVIEWER_PROOF_PATH'], 'reviewer.yml')
+            self.assertEqual(values['INSTALL_TEST_PROOF_PATH'], 'reviewer_test.py')
 
     def test_preserved_identity_exception_is_exact_deterministic_and_self_install_compatible(self):
         for token in (

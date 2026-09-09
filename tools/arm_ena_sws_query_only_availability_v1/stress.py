@@ -134,9 +134,19 @@ _DIRECT_ALLOWED_TITLE_MARKERS = (
     'READY_FOR_COORDINATOR_REVIEW', 'READY_FOR_COORDINATOR_CLASSIFICATION',
 )
 
+_DIRECT_EXACT_ALLOWED_TITLES = frozenset({
+    'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED',
+    'COORDINATOR::ARM_QUERY_ONLY_ATTEMPT1_CONSUMED_PREQUERY_STRESS_REFUSAL__ONE_FRESH_NARROW_NONSCIENCE_REPAIR_ALLOWED',
+})
+
 
 def _direct_arm_control_disposition(first: str) -> str:
     """Classify direct ARM owner/Coordinator governance from its structured title.
+
+    A tiny exact-title allowlist handles Coordinator transitions whose title
+    intentionally contains words that are otherwise adverse or ambiguous. The
+    match is whole-title only; nearby variants still flow through the ordinary
+    fail-closed adverse/ambiguous classifier.
 
     Protected-boundary phrases such as AUTHENTICATED_INVOCATION_*_FALSE or
     NOT_AUTHORIZED do not themselves make a positive acceptance/repair
@@ -147,6 +157,8 @@ def _direct_arm_control_disposition(first: str) -> str:
     if not (upper.startswith('ARM_OWNER::') or upper.startswith('COORDINATOR::ARM')):
         raise StressFailure('direct ARM disposition called for non-direct control')
 
+    if upper in _DIRECT_EXACT_ALLOWED_TITLES:
+        return 'allowed'
     if any(marker in upper for marker in _DIRECT_ADVERSE_TITLE_MARKERS):
         return 'adverse'
     if re.search(r'(?<!NO_)(?<!NON_)\bBLOCKER\b', upper) and 'BLOCKER_CLEARED' not in upper:

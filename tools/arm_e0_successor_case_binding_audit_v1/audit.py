@@ -2,10 +2,10 @@
 """Result-blind audit of ARM E0 successor case/provenance binding surfaces.
 
 This tool performs no network access, reads no credentials or ARM artifacts, and
-never opens protected SWS/SASZE values.  It freezes the exact source surfaces
-that must be rebound before a query-selected E0 successor can be executed or
-consumed.  The legacy one-event lane remains immutable/spent; this audit does
-not authorize changing it or running protected science.
+never opens protected SWS/SASZE values. It freezes the source surfaces that must
+be rebound before a query-selected E0 successor can be executed or consumed.
+The legacy one-event lane remains immutable/spent; this audit does not authorize
+changing it or running protected science.
 """
 from __future__ import annotations
 
@@ -23,17 +23,9 @@ FROZEN_SOURCE_HEAD = "b8671665a2bf8fe9972b8cb48492abcfa6765140"
 FROZEN_UNIVERSE_SHA256 = "87933189ff56322ce2b5d2821a1c2ab8094d0a472ef6c690cfbd90cd0451fa41"
 FROZEN_PROTOCOL = "ARM_ENA_SWS_V1_STAGE0_E0_RESULT_BLIND_V2"
 
-# These are deliberately source-level requirements. A future successor may be
-# implemented separately, but it must not silently reuse any of these old
-# bindings for a different query-selected case or authorization identity.
-SURFACES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "portable_wrapper": (
-        "review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py",
-        (
-            'PROBE_CASE_ID = "2017-06-16_dusk"',
-            '"--start-case", PROBE_CASE_ID',
-        ),
-    ),
+# Current-main/current-branch source surfaces. These are available in an
+# ordinary checkout and are verified by the repository's generic unit test run.
+LOCAL_SURFACES: dict[str, tuple[str, tuple[str, ...]]] = {
     "content_verifier": (
         "tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_v1.py",
         ('PROBE_CASE_ID = "2017-06-16_dusk"',),
@@ -72,12 +64,25 @@ SURFACES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
 }
 
-RUNNER_PATH = "review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen_v3.py"
-RUNNER_REQUIRED_TOKENS = (
+# The execution wrapper and lower runner live only on the frozen execution ref,
+# not in current main. Their immutable Git blob identities are frozen here so a
+# current-tree CI checkout never pretends it re-read bytes it does not contain.
+# A caller with a separately materialized frozen-ref tree may pass it via
+# --frozen-source-root to verify the actual tokens fail-closed.
+FROZEN_WRAPPER_PATH = "review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py"
+FROZEN_WRAPPER_GIT_BLOB_SHA = "d8c29b09b39918415dabc6c9c6cb4110ec4c82c2"
+FROZEN_WRAPPER_REQUIRED_TOKENS = (
+    'PROBE_CASE_ID = "2017-06-16_dusk"',
+    '"--start-case", PROBE_CASE_ID',
+)
+
+FROZEN_RUNNER_PATH = "review/arm-ena-sws-v1-stage0/run_ena_sws_e0_frozen_v3.py"
+FROZEN_RUNNER_GIT_BLOB_SHA = "de0c3978ba3c01c723ff1ff7cd33fee8f840c89d"
+FROZEN_RUNNER_REQUIRED_TOKENS = (
     "known, remaining = pre.parse_known_args()",
     'sys.argv = [sys.argv[0]] + ["--e0-script", str(e0_path)] + remaining',
 )
-RUNNER_FORBIDDEN_TOKENS = (
+FROZEN_RUNNER_FORBIDDEN_TOKENS = (
     'PROBE_CASE_ID = "2017-06-16_dusk"',
 )
 
@@ -102,30 +107,78 @@ def read_source(root: Path, rel: str) -> tuple[str, str]:
     return text, sha256_bytes(raw)
 
 
-def audit_source_tree(root: Path) -> dict[str, Any]:
+def verify_tokens(text: str, tokens: tuple[str, ...], role: str) -> None:
+    missing = [token for token in tokens if token not in text]
+    if missing:
+        raise AuditRefusal(f"{role} source binding drift; missing tokens={missing!r}")
+
+
+def audit_frozen_source_tree(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    if not root.is_dir():
+        raise AuditRefusal("frozen source root is not a directory")
+
+    wrapper_text, wrapper_digest = read_source(root, FROZEN_WRAPPER_PATH)
+    verify_tokens(wrapper_text, FROZEN_WRAPPER_REQUIRED_TOKENS, "portable_wrapper")
+
+    runner_text, runner_digest = read_source(root, FROZEN_RUNNER_PATH)
+    verify_tokens(runner_text, FROZEN_RUNNER_REQUIRED_TOKENS, "lower_frozen_runner")
+    forbidden_runner = [token for token in FROZEN_RUNNER_FORBIDDEN_TOKENS if token in runner_text]
+    if forbidden_runner:
+        raise AuditRefusal(
+            "lower frozen runner unexpectedly acquired legacy case hard-pin="
+            f"{forbidden_runner!r}"
+        )
+
+    return {
+        "verified_in_this_invocation": True,
+        "portable_wrapper": {
+            "path": FROZEN_WRAPPER_PATH,
+            "sha256": wrapper_digest,
+            "legacy_binding_tokens_present": list(FROZEN_WRAPPER_REQUIRED_TOKENS),
+        },
+        "lower_frozen_runner": {
+            "path": FROZEN_RUNNER_PATH,
+            "sha256": runner_digest,
+            "selected_case_passthrough_capable": True,
+            "legacy_case_hardpin_present": False,
+        },
+    }
+
+
+def audit_source_tree(root: Path, frozen_source_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     if not root.is_dir():
         raise AuditRefusal("repository root is not a directory")
 
     observed: dict[str, Any] = {}
-    for role, (rel, tokens) in SURFACES.items():
+    for role, (rel, tokens) in LOCAL_SURFACES.items():
         text, digest = read_source(root, rel)
-        missing = [token for token in tokens if token not in text]
-        if missing:
-            raise AuditRefusal(f"{role} source binding drift; missing tokens={missing!r}")
+        verify_tokens(text, tokens, role)
         observed[role] = {
             "path": rel,
             "sha256": digest,
             "legacy_binding_tokens_present": list(tokens),
         }
 
-    runner_text, runner_digest = read_source(root, RUNNER_PATH)
-    missing_runner = [token for token in RUNNER_REQUIRED_TOKENS if token not in runner_text]
-    if missing_runner:
-        raise AuditRefusal(f"lower frozen runner forwarding contract drift; missing={missing_runner!r}")
-    forbidden_runner = [token for token in RUNNER_FORBIDDEN_TOKENS if token in runner_text]
-    if forbidden_runner:
-        raise AuditRefusal(f"lower frozen runner unexpectedly acquired legacy case hard-pin={forbidden_runner!r}")
+    if frozen_source_root is None:
+        frozen_evidence = {
+            "verified_in_this_invocation": False,
+            "reason": "frozen execution ref is intentionally absent from an ordinary current-main checkout",
+            "portable_wrapper": {
+                "path": FROZEN_WRAPPER_PATH,
+                "git_blob_sha": FROZEN_WRAPPER_GIT_BLOB_SHA,
+                "legacy_case_id": LEGACY_CASE,
+            },
+            "lower_frozen_runner": {
+                "path": FROZEN_RUNNER_PATH,
+                "git_blob_sha": FROZEN_RUNNER_GIT_BLOB_SHA,
+                "selected_case_passthrough_capable": True,
+                "legacy_case_hardpin_present": False,
+            },
+        }
+    else:
+        frozen_evidence = audit_frozen_source_tree(frozen_source_root)
 
     return {
         "schema": 1,
@@ -137,13 +190,9 @@ def audit_source_tree(root: Path) -> dict[str, Any]:
         "frozen_e0_source_head": FROZEN_SOURCE_HEAD,
         "frozen_e0_event_universe_sha256": FROZEN_UNIVERSE_SHA256,
         "frozen_e0_protocol": FROZEN_PROTOCOL,
-        "legacy_rebind_surfaces": observed,
-        "lower_frozen_runner": {
-            "path": RUNNER_PATH,
-            "sha256": runner_digest,
-            "selected_case_passthrough_capable": True,
-            "legacy_case_hardpin_present": False,
-        },
+        "legacy_rebind_surface_count": 1 + len(observed),
+        "legacy_current_tree_rebind_surfaces": observed,
+        "frozen_execution_source_evidence": frozen_evidence,
         "successor_requirements": [
             "bind the query-selected case mechanically from an accepted freeze receipt before execution",
             "bind the exact future E0 authorization/run envelope separately from legacy authority 5575796491",
@@ -168,10 +217,11 @@ def audit_source_tree(root: Path) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--frozen-source-root", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(argv)
     try:
-        result = audit_source_tree(args.repo_root)
+        result = audit_source_tree(args.repo_root, args.frozen_source_root)
     except AuditRefusal as exc:
         print(json.dumps({"status": "REFUSED", "reason": str(exc)}, indent=2, sort_keys=True))
         return 2

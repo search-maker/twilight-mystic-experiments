@@ -5,12 +5,20 @@ on:
     paths:
       - .github/workflows/arm-ena-sws-query-only-availability-v1.yml
       - tools/arm_ena_sws_query_only_availability_v1/**
+      - tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_v1.py
+      - tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_live_v2.py
+      - tests/test_arm_e0_successor_query_authorization_preflight_v1.py
+      - tests/test_arm_e0_successor_query_authorization_live_preflight_v2.py
   push:
     branches:
       - main
     paths:
       - .github/workflows/arm-ena-sws-query-only-availability-v1.yml
       - tools/arm_ena_sws_query_only_availability_v1/**
+      - tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_v1.py
+      - tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_live_v2.py
+      - tests/test_arm_e0_successor_query_authorization_preflight_v1.py
+      - tests/test_arm_e0_successor_query_authorization_live_preflight_v2.py
   workflow_dispatch:
 
 permissions:
@@ -19,6 +27,7 @@ permissions:
 
 env:
   QUERY_TOOL: tools/arm_ena_sws_query_only_availability_v1
+  PREFLIGHT_TOOL: tools/arm_e0_successor_case_binding_audit_v1
 
 jobs:
   exact-executable-stress:
@@ -32,9 +41,19 @@ jobs:
       - name: Compile and run query-only refusal tests
         run: |
           set -euo pipefail
-          python -m py_compile "$QUERY_TOOL/discover.py" "$QUERY_TOOL/stress.py" "$QUERY_TOOL/test_discover.py" "$QUERY_TOOL/test_stress.py"
+          python -m py_compile \
+            "$QUERY_TOOL/discover.py" \
+            "$QUERY_TOOL/stress.py" \
+            "$QUERY_TOOL/test_discover.py" \
+            "$QUERY_TOOL/test_stress.py" \
+            "$PREFLIGHT_TOOL/preflight_query_authorization_v1.py" \
+            "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" \
+            tests/test_arm_e0_successor_query_authorization_preflight_v1.py \
+            tests/test_arm_e0_successor_query_authorization_live_preflight_v2.py
           python "$QUERY_TOOL/test_discover.py"
           python "$QUERY_TOOL/test_stress.py"
+          python tests/test_arm_e0_successor_query_authorization_preflight_v1.py
+          python tests/test_arm_e0_successor_query_authorization_live_preflight_v2.py
       - name: EXACT_EXECUTABLE_STRESS_PASS on actual bytes and complete Issue 60
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -63,15 +82,45 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
-      ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Live latest ARM authorization preflight before credentials
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/arm-query-only-live-preflight-v2/live-preflight-receipt.json"
+          rm -rf "$(dirname "$out")"
+          mkdir -p "$(dirname "$out")"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" > "$out"
+          test -s "$out"
+          python - "$out" <<'PY'
+          import json, pathlib, sys
+          obj = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert obj['status'] == 'QUERY_ONLY_SUCCESSOR_LIVE_PREDISPATCH_GOVERNANCE_PASS'
+          assert obj['authorization_identity_derived_from_stable_live_ledger'] is True
+          assert obj['arm_network_access_performed'] is False
+          assert obj['arm_credentials_read'] is False
+          assert obj['protected_sws_sasze_values_read'] is False
+          assert obj['e0_execution_authorized_by_this_receipt'] is False
+          print('PASS stable live authorization bound before ARM credentials')
+          PY
+      - name: Upload live pre-query governance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-query-only-live-preflight-v2
+          path: ${{ runner.temp }}/arm-query-only-live-preflight-v2/live-preflight-receipt.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Refuse query without both ARM credentials
+        env:
+          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -81,6 +130,9 @@ jobs:
           fi
       - name: Run metadata/query-only ordered availability discovery
         id: query
+        env:
+          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail

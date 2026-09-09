@@ -88,16 +88,27 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
           PY
 
-      - name: Bind reviewer proof bytes to authoritative live-main source
+      - name: Bind reviewer proof bytes to event-bound effective base
         shell: bash
         env:
           EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_MERGE_SHA: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ "$MODE" = PHASE_B ]; then
             test "$EVENT_DEFAULT_BRANCH" = "$EXPECTED_DEFAULT_BRANCH"
-            EXPECTED_DEFAULT_REF="refs/heads/$EXPECTED_DEFAULT_BRANCH"
+            test "$EVENT_BASE_REF" = "$EXPECTED_DEFAULT_BRANCH"
+            case "$EVENT_NUMBER" in (''|*[!0-9]*) exit 1;; esac
+            test "$EVENT_NUMBER" -gt 0
+            test "${#EVENT_HEAD}" = 40
+            case "$EVENT_HEAD" in (*[!0-9a-f]*) exit 1;; esac
+            test "${#EVENT_MERGE_SHA}" = 40
+            case "$EVENT_MERGE_SHA" in (*[!0-9a-f]*) exit 1;; esac
+            test "$EVENT_MERGE_SHA" != "$EVENT_HEAD"
 
             auth_header=""
             if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -111,47 +122,37 @@ jobs:
               fi
             }
 
-            mapfile -t DEFAULT_HEAD < <(git_read ls-remote --symref origin HEAD)
-            test "${#DEFAULT_HEAD[@]}" = 2
-            read -r DEFAULT_REF DEFAULT_NAME <<< "${DEFAULT_HEAD[0]#ref: }"
-            test "$DEFAULT_REF" = "$EXPECTED_DEFAULT_REF"
-            test "$DEFAULT_NAME" = HEAD
-            read -r ADVERTISED_DEFAULT_SHA ADVERTISED_DEFAULT_NAME <<< "${DEFAULT_HEAD[1]}"
-            test "$ADVERTISED_DEFAULT_NAME" = HEAD
-            test "${#ADVERTISED_DEFAULT_SHA}" = 40
-            case "$ADVERTISED_DEFAULT_SHA" in (*[!0-9a-f]*) exit 1;; esac
+            MERGE_REF="refs/pull/$EVENT_NUMBER/merge"
+            git_read fetch --no-tags --force origin "$MERGE_REF"
+            FETCHED_MERGE_SHA="$(git rev-parse FETCH_HEAD)"
+            test "$FETCHED_MERGE_SHA" = "$EVENT_MERGE_SHA"
+            git cat-file -e "$EVENT_MERGE_SHA^{commit}"
+            mapfile -t MERGE_PARENTS < <(git cat-file -p "$EVENT_MERGE_SHA" | sed -n 's/^parent //p')
+            test "${#MERGE_PARENTS[@]}" = 2
+            EFFECTIVE_EVENT_BASE="${MERGE_PARENTS[0]}"
+            test "${MERGE_PARENTS[1]}" = "$EVENT_HEAD"
+            git cat-file -e "$EFFECTIVE_EVENT_BASE^{commit}"
 
-            git_read fetch --no-tags --force origin "$EXPECTED_DEFAULT_REF"
-            LIVE_MAIN_SHA="$(git rev-parse FETCH_HEAD)"
-            test "$LIVE_MAIN_SHA" = "$ADVERTISED_DEFAULT_SHA"
+            test "$EFFECTIVE_EVENT_BASE" != "$HISTORICAL_PHASE_B_MERGE_BASE"
+            git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EFFECTIVE_EVENT_BASE"
+            git merge-base --is-ancestor "$PHASE_A4_INSTALLED_MAIN" "$EFFECTIVE_EVENT_BASE"
 
-            mapfile -t LIVE_REF < <(git_read ls-remote --heads origin "$EXPECTED_DEFAULT_REF")
-            test "${#LIVE_REF[@]}" = 1
-            read -r CONFIRMED_LIVE_SHA CONFIRMED_LIVE_REF <<< "${LIVE_REF[0]}"
-            test "$CONFIRMED_LIVE_REF" = "$EXPECTED_DEFAULT_REF"
-            test "$CONFIRMED_LIVE_SHA" = "$LIVE_MAIN_SHA"
-            git cat-file -e "$LIVE_MAIN_SHA^{commit}"
-
-            test "$LIVE_MAIN_SHA" != "$HISTORICAL_PHASE_B_MERGE_BASE"
-            git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$LIVE_MAIN_SHA"
-            git merge-base --is-ancestor "$PHASE_A4_INSTALLED_MAIN" "$LIVE_MAIN_SHA"
-
-            printf '%s\n' "$SELF_PATH" "$INSTALL_TEST" | sort > expected-live-main-paths.txt
-            git diff --name-only "$HISTORICAL_PHASE_B_MERGE_BASE" "$LIVE_MAIN_SHA" | sort > actual-live-main-net-paths.txt
-            diff -u expected-live-main-paths.txt actual-live-main-net-paths.txt
-            : > actual-live-main-touched-paths-unsorted.txt
+            printf '%s\n' "$SELF_PATH" "$INSTALL_TEST" | sort > expected-effective-base-paths.txt
+            git diff --name-only "$HISTORICAL_PHASE_B_MERGE_BASE" "$EFFECTIVE_EVENT_BASE" | sort > actual-effective-base-net-paths.txt
+            diff -u expected-effective-base-paths.txt actual-effective-base-net-paths.txt
+            : > actual-effective-base-touched-paths-unsorted.txt
             while read -r commit; do
-              git diff-tree -m --no-commit-id --name-only -r "$commit" >> actual-live-main-touched-paths-unsorted.txt
-            done < <(git rev-list --reverse "$HISTORICAL_PHASE_B_MERGE_BASE".."$LIVE_MAIN_SHA")
-            sort -u actual-live-main-touched-paths-unsorted.txt > actual-live-main-touched-paths.txt
-            diff -u expected-live-main-paths.txt actual-live-main-touched-paths.txt
+              git diff-tree -m --no-commit-id --name-only -r "$commit" >> actual-effective-base-touched-paths-unsorted.txt
+            done < <(git rev-list --reverse "$HISTORICAL_PHASE_B_MERGE_BASE".."$EFFECTIVE_EVENT_BASE")
+            sort -u actual-effective-base-touched-paths-unsorted.txt > actual-effective-base-touched-paths.txt
+            diff -u expected-effective-base-paths.txt actual-effective-base-touched-paths.txt
 
             REVIEWER_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2.yml"
             INSTALL_TEST_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2-test.py"
-            git show "$LIVE_MAIN_SHA:$SELF_PATH" > "$REVIEWER_PROOF_PATH"
-            git show "$LIVE_MAIN_SHA:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"
+            git show "$EFFECTIVE_EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"
+            git show "$EFFECTIVE_EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"
           elif [ "$MODE" = INSTALLATION ]; then
-            LIVE_MAIN_SHA=""
+            EFFECTIVE_EVENT_BASE=""
             REVIEWER_PROOF_PATH="$SELF_PATH"
             INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"
           else
@@ -159,7 +160,7 @@ jobs:
             exit 1
           fi
           {
-            echo "LIVE_MAIN_SHA=$LIVE_MAIN_SHA"
+            echo "EFFECTIVE_EVENT_BASE=$EFFECTIVE_EVENT_BASE"
             echo "REVIEWER_PROOF_PATH=$REVIEWER_PROOF_PATH"
             echo "INSTALL_TEST_PROOF_PATH=$INSTALL_TEST_PROOF_PATH"
           } >> "$GITHUB_ENV"
@@ -181,12 +182,12 @@ jobs:
           EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          test -n "$LIVE_MAIN_SHA"
+          test -n "$EFFECTIVE_EVENT_BASE"
           if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then
             git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD
             test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"
             git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"
-            git merge-base --is-ancestor "$EVENT_BASE" "$LIVE_MAIN_SHA"
+            git merge-base --is-ancestor "$EVENT_BASE" "$EFFECTIVE_EVENT_BASE"
 
             CURRENT="$(git rev-parse HEAD)"
             MERGE=""
@@ -208,7 +209,7 @@ jobs:
             ACTUAL_TREE="$(git show -s --format=%T "$MERGE")"
             test "$ACTUAL_TREE" = "$EXPECTED_TREE"
           else
-            test "$EVENT_BASE" = "$LIVE_MAIN_SHA"
+            test "$EVENT_BASE" = "$EFFECTIVE_EVENT_BASE"
             test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
             mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
             test "${#PARENTS[@]}" = 1
@@ -242,25 +243,29 @@ jobs:
           if 'HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6' not in p: raise SystemExit('historical consumed merge base binding missing')
           if 'PHASE_A4_INSTALLED_MAIN: a35365a433d08b5d65ed2134187c814f476e5aad' not in p: raise SystemExit('accepted Phase-A4 installed-main binding missing')
           for marker in (
-              'Bind reviewer proof bytes to authoritative live-main source',
+              'Bind reviewer proof bytes to event-bound effective base',
               'test "$EVENT_DEFAULT_BRANCH" = "$EXPECTED_DEFAULT_BRANCH"',
-              'git_read ls-remote --symref origin HEAD',
-              'git_read fetch --no-tags --force origin "$EXPECTED_DEFAULT_REF"',
-              'test "$LIVE_MAIN_SHA" = "$ADVERTISED_DEFAULT_SHA"',
-              'git_read ls-remote --heads origin "$EXPECTED_DEFAULT_REF"',
-              'test "$CONFIRMED_LIVE_SHA" = "$LIVE_MAIN_SHA"',
-              'test "$LIVE_MAIN_SHA" != "$HISTORICAL_PHASE_B_MERGE_BASE"',
-              'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$LIVE_MAIN_SHA"',
-              'git merge-base --is-ancestor "$PHASE_A4_INSTALLED_MAIN" "$LIVE_MAIN_SHA"',
-              'actual-live-main-net-paths.txt',
-              'actual-live-main-touched-paths.txt',
+              'test "$EVENT_BASE_REF" = "$EXPECTED_DEFAULT_BRANCH"',
+              'EVENT_MERGE_SHA: ${{ github.sha }}',
+              'EVENT_NUMBER: ${{ github.event.pull_request.number }}',
+              'MERGE_REF="refs/pull/$EVENT_NUMBER/merge"',
+              'git_read fetch --no-tags --force origin "$MERGE_REF"',
+              'test "$FETCHED_MERGE_SHA" = "$EVENT_MERGE_SHA"',
+              'mapfile -t MERGE_PARENTS',
+              'test "${#MERGE_PARENTS[@]}" = 2',
+              'EFFECTIVE_EVENT_BASE="${MERGE_PARENTS[0]}"',
+              'test "${MERGE_PARENTS[1]}" = "$EVENT_HEAD"',
+              'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EFFECTIVE_EVENT_BASE"',
+              'git merge-base --is-ancestor "$PHASE_A4_INSTALLED_MAIN" "$EFFECTIVE_EVENT_BASE"',
+              'actual-effective-base-net-paths.txt',
+              'actual-effective-base-touched-paths.txt',
               'git diff-tree -m --no-commit-id --name-only -r "$commit"',
-              'git show "$LIVE_MAIN_SHA:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
-              'git show "$LIVE_MAIN_SHA:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
+              'git show "$EFFECTIVE_EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'git show "$EFFECTIVE_EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
               'REVIEWER_PROOF_PATH="$SELF_PATH"',
               'INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"',
               'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
-              'git merge-base --is-ancestor "$EVENT_BASE" "$LIVE_MAIN_SHA"',
+              'git merge-base --is-ancestor "$EVENT_BASE" "$EFFECTIVE_EVENT_BASE"',
               'CURRENT="$(git rev-parse HEAD)"',
               'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
               'test "${#PARENTS[@]}" = 2',
@@ -269,11 +274,19 @@ jobs:
               'test "${PARENTS[1]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
               'test -n "$MERGE"',
               'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$HISTORICAL_PHASE_B_MERGE_BASE"',
-              'test "$EVENT_BASE" = "$LIVE_MAIN_SHA"',
+              'test "$EVENT_BASE" = "$EFFECTIVE_EVENT_BASE"',
           ):
-              if marker not in p: raise SystemExit('preserved-identity/live-main proof guard missing: '+marker)
-          if 'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"' in p:
-              raise SystemExit('stale pull-request event base remains an allowed reviewer proof source')
+              if marker not in p: raise SystemExit('preserved-identity/event-bound proof guard missing: '+marker)
+          proof_chunk=p.split('      - name: Bind reviewer proof bytes to event-bound effective base',1)[1].split('      - name: Bind installation ancestry as merge-free',1)[0]
+          for stale in (
+              'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'git show "$EVENT_MERGE_SHA:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'git show "$EVENT_HEAD:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'LIVE_MAIN_SHA',
+              'ls-remote --symref origin HEAD',
+              'ls-remote --heads origin',
+          ):
+              if stale in proof_chunk: raise SystemExit('stale or moving reviewer proof source remains allowed: '+stale)
           if 'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1' not in p: raise SystemExit('independent parser semantic corpus missing')
           if 'PARSER_STATIC_PURITY_GUARD_V1' not in p: raise SystemExit('parser static purity guard missing')
           if 'MUTABLE_TEST_NON_SPOOF_GUARD_V1' not in p: raise SystemExit('mutable-test non-spoof guard missing')
@@ -509,14 +522,15 @@ jobs:
             echo "mode=${MODE:-UNBOUND}"
             echo 'read-only / zero-runtime / result-blind'
             echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
-            echo 'historical pull-request base is ancestry-only; Phase-B reviewer proof bytes are bound to the separately fetched, twice-confirmed repository default-branch main tip'
-            echo 'live main must descend the frozen historical base and accepted Phase-A4 install, and every historical-base->live-main touched/net path must remain confined to the two reviewer-infrastructure paths'
+            echo 'stale pull_request.base.sha is ancestry-only for preserved Phase-B; reviewer proof bytes are bound only to the first parent of the exact event synthetic PR merge snapshot'
+            echo 'event-bound effective base must descend the frozen historical base and accepted Phase-A4 install, and every historical-base->effective-base touched/net path must remain confined to the two reviewer-infrastructure paths'
+            echo 'moving remote main is never substituted for the event-bound effective base; missing/ambiguous/wrong-head/non-two-parent synthetic snapshots fail closed'
             echo 'canonical parser is statically proven pure before import; mutable tests are import-whitelisted and forbidden working-tree mutation/runtime before execution'
             echo 'reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test'
             echo 'mutable parser regressions execute through unittest collection from repository root and each module must collect at least one passing test'
             echo 'publisher isolated Python call sites require explicit GITHUB_WORKSPACE sys.path binding proven under /usr/bin/python3 -I -S; PYTHONPATH is not accepted'
             echo 'science must consume canonical parser at exactly 2 isolated Python call sites; publisher at exactly 3; historical regression at exactly 1'
-            echo 'preserved-identity Phase-B is accepted only through the exact historical d591/4310 merge-forward followed by single-parent continuation; ordinary fresh Phase-B remains an exact live-main direct child'
+            echo 'preserved-identity Phase-B is accepted only through the exact historical d591/4310 merge-forward followed by single-parent continuation; ordinary fresh Phase-B remains an exact event-effective-base direct child'
             echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
             echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -140,6 +140,72 @@ class StressTests(unittest.TestCase):
         ]
         S.audit_arm_governance(comments)
 
+    def test_exact_authenticated_discovery_authorization_title_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5592250337,
+                'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED\n\n'
+                'STATUS=ARM_QUERY_ONLY_INFRA_POSTMERGE_STABLE / EXACTLY_ONE_AUTHENTICATED_QUERY_ONLY_ATTEMPT1_AUTHORIZED / NATIVE_FILE_DOWNLOAD_FALSE / PROTECTED_VALUE_OPENING_FALSE / STAGE_B_FALSE / SCIENCE_FALSE',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_authenticated_discovery_authorization_nearby_not_authorized_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_NOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_authenticated_discovery_authorization_nearby_revoked_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED__REVOKED',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_authenticated_discovery_authorization_nearby_extra_attempt_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED__SECOND_ATTEMPT',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_exact_consumed_attempt_repair_allowed_title_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5594247950,
+                'COORDINATOR::ARM_QUERY_ONLY_ATTEMPT1_CONSUMED_PREQUERY_STRESS_REFUSAL__ONE_FRESH_NARROW_NONSCIENCE_REPAIR_ALLOWED\n\n'
+                'STATUS=ARM_QUERY_ONLY_ATTEMPT1_TERMINAL_FAILURE_CONSUMED / QUERY_ONLY_DISCOVERY_SKIPPED / NO_ARM_LIVE_QUERY / ONE_FRESH_NONSCIENCE_STRESS_CLASSIFIER_REPAIR_ALLOWED / NEW_AUTHENTICATED_ATTEMPT_NOT_AUTHORIZED',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_consumed_attempt_repair_nearby_not_allowed_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'COORDINATOR::ARM_QUERY_ONLY_ATTEMPT1_CONSUMED_PREQUERY_STRESS_REFUSAL__ONE_FRESH_NARROW_NONSCIENCE_REPAIR_NOT_ALLOWED',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
     def test_positive_vocabulary_in_actual_nonadmissibility_still_refuses(self):
         comments = [
             baseline(),

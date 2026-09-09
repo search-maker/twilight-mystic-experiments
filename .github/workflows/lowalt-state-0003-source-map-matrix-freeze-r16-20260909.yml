@@ -1,0 +1,184 @@
+name: LOWALT STATE-0003 exact source map and fresh matrix freeze R16
+run-name: LOWALT STATE-0003 exact source map and fresh matrix freeze R16 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-source-map-matrix-freeze-r16-20260909
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-state-0003-source-map-matrix-freeze-r16-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-source-map-matrix-freeze-r16-20260909
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+  SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+  KNOWN_WIRE_SHA256: 64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840
+  GOVERNING_DPMISC_SHA256: 8ec028a406ac0fea7456d039f144b0edc8e91752d0a0fe9912e0a0fff06fdb1b
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify freeze-only boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_MAIN_SHA"..HEAD | sort)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = ".github/workflows/lowalt-state-0003-source-map-matrix-freeze-r16-20260909.yml"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_source_map_matrix_freeze_r16_20260909"
+          rm -rf "$EVIDENCE_DIR"; mkdir -p "$EVIDENCE_DIR"/{boundary,source-map,freeze}
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary/boundary.json" <<EOF
+          {"schemaVersion":1,"classification":"STATE_0003_SOURCE_MAP_AND_FRESH_MATRIX_FREEZE_R16","baseMainSha":"$BASE_MAIN_SHA","workflowHeadSha":"$GITHUB_SHA","scienceExecution":false,"solverExecution":false,"resultOpened":false,"protectedResultOpened":false,"scienceIdentityConsumed":false,"taylorOrJerusalemUsed":false,"protectedResidualUsed":false,"r12IdentityReused":false,"r12AuditOpened":false,"productionChanged":false,"fiveDegreeSeamChanged":false,"governingDpmiscExactObjectReproductionPrerequisite":"PASS_R15D_SHA_8ec028a406ac0fea7456d039f144b0edc8e91752d0a0fe9912e0a0fff06fdb1b"}
+          EOF
+
+      - name: Recover exact literal-HTTP governing source
+        shell: bash
+        run: |
+          set -euo pipefail
+          WIRE="$RUNNER_TEMP/libRadtran-2.0.6.http-wire.bin"; DECODED="$RUNNER_TEMP/libRadtran-2.0.6.governing.tar"
+          python - "$WIRE" "$DECODED" "$EVIDENCE_DIR/source-map/http-route.json" <<'PY'
+          import gzip,hashlib,json,pathlib,shutil,sys,urllib.request,os
+          wire,decoded,report=map(pathlib.Path,sys.argv[1:]); url=os.environ['SOURCE_URL']
+          class Recorder(urllib.request.HTTPRedirectHandler):
+              def __init__(self): super().__init__(); self.chain=[]
+              def redirect_request(self,req,fp,code,msg,headers,newurl): self.chain.append({'status':int(code),'fromUrl':req.full_url,'toUrl':newurl}); return super().redirect_request(req,fp,code,msg,headers,newurl)
+          rec=Recorder(); opener=urllib.request.build_opener(rec)
+          req=urllib.request.Request(url,headers={'User-Agent':'lowalt-state-0003-r16/1','Accept':'*/*'})
+          with opener.open(req,timeout=240) as r, wire.open('wb') as f:
+              shutil.copyfileobj(r,f,1024*1024); headers={str(k).lower():str(v) for k,v in r.headers.items()}; final=r.geturl(); status=int(getattr(r,'status',r.getcode()))
+          def sha(p):
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for b in iter(lambda:f.read(1024*1024),b''): h.update(b)
+              return h.hexdigest()
+          enc=headers.get('content-encoding','').strip().lower(); wsha=sha(wire)
+          if enc not in ('gzip','x-gzip'): raise RuntimeError(enc)
+          with gzip.open(wire,'rb') as src, decoded.open('wb') as dst: shutil.copyfileobj(src,dst,1024*1024)
+          dsha=sha(decoded)
+          data={'requestedUrl':url,'finalUrl':final,'status':status,'redirectChain':rec.chain,'contentEncoding':enc,'wireSize':wire.stat().st_size,'wireSha256':wsha,'decodedSize':decoded.stat().st_size,'decodedSha256':dsha,'httpsSubstitutionPerformed':False}
+          report.write_text(json.dumps(data,indent=2,sort_keys=True)+'\n')
+          assert final==url and not rec.chain and wsha==os.environ['KNOWN_WIRE_SHA256'] and dsha==os.environ['SOURCE_SHA256']
+          PY
+          SRCROOT="$RUNNER_TEMP/r16_source"; mkdir -p "$SRCROOT"; tar -xf "$DECODED" -C "$SRCROOT"
+          SRC="$(find "$SRCROOT" -mindepth 1 -maxdepth 1 -type d -name 'libRadtran-2.0.6*' -print | head -n1)"; test -n "$SRC"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+      - name: Extract exact direct-path implementation map
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$SRC" "$EVIDENCE_DIR/source-map" <<'PY'
+          import pathlib,re,sys,hashlib,json
+          root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2])
+          dpm=root/'libsrc_f'/'dpmisc.f'; text=dpm.read_text(errors='replace').splitlines()
+          (out/'dpmisc.sha256').write_text(hashlib.sha256(dpm.read_bytes()).hexdigest()+'  libsrc_f/dpmisc.f\n')
+          names=['chpman2','geofast','opathfast','optical_path_fast','points_of_incidence_fast','chapman4','geofacpr','opathpr']
+          index=[]
+          for name in names:
+              start=None
+              pat=re.compile(r'^\s*(?:double\s+precision\s+)?(?:subroutine|function)\s+'+re.escape(name)+r'\b',re.I)
+              for i,line in enumerate(text):
+                  if pat.search(line): start=i; break
+              if start is None: continue
+              end=len(text)-1
+              for j in range(start+1,len(text)):
+                  if re.match(r'^\s*end\s*$',text[j],re.I): end=j; break
+              block='\n'.join(f'{k+1:06d}: {text[k]}' for k in range(start,end+1))+'\n'
+              p=out/f'{name}.source.txt'; p.write_text(block)
+              index.append({'name':name,'file':'libsrc_f/dpmisc.f','startLine':start+1,'endLine':end+1,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+          terms=re.compile(r'6370|radius|abscut|lyrcut|rfldir|utau|chp2|fbeam|sdisort|null|dtauc|z_lay|zd\(|newgeo|spher|ichap|nrefrac',re.I)
+          hits=[]
+          for p in root.rglob('*'):
+              if not p.is_file() or p.stat().st_size>5_000_000: continue
+              try: lines=p.read_text(errors='replace').splitlines()
+              except Exception: continue
+              for n,line in enumerate(lines,1):
+                  if terms.search(line): hits.append(f'{p.relative_to(root)}:{n}:{line}')
+          (out/'cross-source-keyword-hits.txt').write_text('\n'.join(hits[:20000])+'\n')
+          (out/'source-map-index.json').write_text(json.dumps(index,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Freeze wholly fresh nonprotected source-equivalence matrix and contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$EVIDENCE_DIR/freeze" <<'PY'
+          import csv,hashlib,json,pathlib,sys
+          out=pathlib.Path(sys.argv[1]); out.mkdir(parents=True,exist_ok=True)
+          rows=[
+            ('lowalt-r16-dev-001-20260909','development',0.43,89.57,509,0.15,'OFF'),
+            ('lowalt-r16-dev-002-20260909','development',0.97,89.03,657,1.35,'DEFAULT'),
+            ('lowalt-r16-dev-003-20260909','development',1.89,88.11,823,0.75,'OFF'),
+            ('lowalt-r16-dev-004-20260909','development',2.67,87.33,509,1.65,'DEFAULT'),
+            ('lowalt-r16-dev-005-20260909','development',3.59,86.41,657,0.35,'DEFAULT'),
+            ('lowalt-r16-dev-006-20260909','development',4.49,85.51,823,1.05,'OFF'),
+            ('lowalt-r16-audit-001-20260909','audit',1.37,88.63,541,1.85,'OFF'),
+            ('lowalt-r16-audit-002-20260909','audit',4.83,85.17,761,0.55,'DEFAULT'),
+          ]
+          matrix=out/'matrix.csv'
+          with matrix.open('w',newline='') as f:
+              w=csv.writer(f,lineterminator='\n'); w.writerow(['identity','role','geometric_target_alt_deg','source_zenith_angle_deg','wavelength_nm','observer_alt_km','aerosol_mode']); w.writerows(rows)
+          msha=hashlib.sha256(matrix.read_bytes()).hexdigest()
+          contract={
+            'schemaVersion':1,'classification':'STATE_0003_FRESH_NONPROTECTED_SOURCE_EQUIVALENCE_DIAGNOSTIC_FREEZE',
+            'matrixSha256':msha,'rowCount':8,'developmentRows':6,'auditRows':2,
+            'selectionBasis':'result-blind generic low-altitude domain coverage after exact-object provenance closure; no STATE-0001/R12 residual pattern, Taylor/Jerusalem, protected geography, prior science identity, seed, or ordinal used',
+            'freshness':'all identities new and never executable before this freeze','deterministicDirectPath':True,'randomSeed':None,
+            'developmentFirst':True,'auditOpeningRule':'audit remains sealed unless all six development rows pass the frozen exact-equivalence checks','stopRule':'stop at first development mismatch; do not execute later development or any audit row','consumptionRule':'any row whose runtime/intermediate/result bytes are opened becomes consumed regardless of pass/fail and may never be rerun',
+            'comparisonSurface':{
+              'runtime':'pinned rubin-libradtran 2.0.6 py312pl5321he9373c2_1; uvspec sha256 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+              'source':'literal HTTP decoded source sha256 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'directKernelObject':'exact governing/reproduced dpmisc.o sha256 8ec028a406ac0fea7456d039f144b0edc8e91752d0a0fe9912e0a0fff06fdb1b',
+              'input':'same final pre-dispatch SDISORT handoff bytes for runtime and external exact-object evaluator',
+              'intermediates':['NFAC/NFAC2 integer topology','FAC/FAC2 binary64','CHP2 binary64','CH binary64'],
+              'final':['direct exponent argument binary64 when capturable before conversion','RFLDIR/direct output native runtime representation']},
+            'acceptance':{'NFAC_NFAC2':'bit/integer exact','FAC_FAC2_CHP2_CH':'binary64 bit exact','directExponentArgument':'binary64 bit exact if both surfaces expose it','nativeDirectOutput':'bit exact after matching native representation; no ULP relaxation','nanOrInf':'FAIL','signedZero':'must match bitwise where exposed'},
+            'noPostResultChanges':['no tolerance relaxation','no formula/grid change','no matrix substitution','no support-floor change','no rerun/resume/retry of consumed row','no audit peek after development failure'],
+            'productionAuthority':False,'fiveDegreeSeamAuthority':False,'protectedValidationAuthority':False,'trainingOrFitAuthority':False
+          }
+          c=out/'contract.json'; c.write_text(json.dumps(contract,indent=2,sort_keys=True)+'\n')
+          receipt={'matrixSha256':msha,'contractSha256':hashlib.sha256(c.read_bytes()).hexdigest(),'matrixRows':len(rows),'resultOpened':False,'scienceExecuted':False,'auditOpened':False}
+          (out/'freeze-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+
+      - name: Manifest isolated freeze evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,os,pathlib
+          root=pathlib.Path(os.environ['EVIDENCE_DIR']); rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name!='evidence-manifest.sha256'):
+              rows.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}")
+          (root/'evidence-manifest.sha256').write_text('\n'.join(rows)+'\n')
+          PY
+
+      - name: Publish isolated R16 freeze evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-source-map-matrix-freeze-r16-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_source_map_matrix_freeze_r16_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

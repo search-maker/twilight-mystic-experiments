@@ -107,26 +107,29 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
 
-    def test_preserved_identity_exception_is_exact_deterministic_and_linear(self):
+    def test_preserved_identity_exception_is_exact_deterministic_and_first_parent_linear(self):
         for token in (
             'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909',
             'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0',
             'if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then',
             'git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD',
-            'git rev-list --min-parents=2 "$FROZEN_PHASE_B_HEAD"..HEAD',
-            'test "${#MERGES[@]}" = 1',
+            'CURRENT="$(git rev-parse HEAD)"',
+            'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
+            'git cat-file -p "$CURRENT"',
+            'if [ "${#PARENTS[@]}" = 1 ]; then',
+            'CURRENT="${PARENTS[0]}"',
             'test "${#PARENTS[@]}" = 2',
+            'test -z "$MERGE"',
             'test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"',
             'test "${PARENTS[1]}" = "$EVENT_BASE"',
+            'MERGE="$CURRENT"',
+            'test -n "$MERGE"',
             'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE"',
             'git show -s --format=%T "$MERGE"',
             'test "$ACTUAL_TREE" = "$EXPECTED_TREE"',
-            'git rev-list --reverse "$MERGE"..HEAD',
-            'test "${#LINEAR_PARENTS[@]}" = 1',
-            'test "${LINEAR_PARENTS[0]}" = "$PREV"',
-            'test "$PREV" = "$(git rev-parse HEAD)"',
         ):
             self.assertIn(token, self.text)
+        self.assertNotIn('git rev-list --min-parents=2 "$FROZEN_PHASE_B_HEAD"..HEAD', self.text)
 
     def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)

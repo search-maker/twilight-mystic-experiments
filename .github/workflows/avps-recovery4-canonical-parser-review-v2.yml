@@ -86,6 +86,29 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
           PY
 
+      - name: Bind reviewer proof bytes to authoritative source
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = PHASE_B ]; then
+            REVIEWER_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2.yml"
+            INSTALL_TEST_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2-test.py"
+            git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"
+            git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"
+          elif [ "$MODE" = INSTALLATION ]; then
+            REVIEWER_PROOF_PATH="$SELF_PATH"
+            INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"
+          else
+            echo "unbound reviewer mode: ${MODE:-}" >&2
+            exit 1
+          fi
+          {
+            echo "REVIEWER_PROOF_PATH=$REVIEWER_PROOF_PATH"
+            echo "INSTALL_TEST_PROOF_PATH=$INSTALL_TEST_PROOF_PATH"
+          } >> "$GITHUB_ENV"
+
       - name: Bind installation ancestry as merge-free
         if: env.MODE == 'INSTALLATION'
         shell: bash
@@ -157,7 +180,7 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          p=Path(os.environ['SELF_PATH']).read_text()
+          p=Path(os.environ['REVIEWER_PROOF_PATH']).read_text()
           on=p.split('\non:\n',1)[1].split('\npermissions:\n',1)[0]
           if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
           perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
@@ -176,6 +199,11 @@ jobs:
           if 'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0' not in p: raise SystemExit('preserved Phase-B frozen head binding missing')
           if 'HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6' not in p: raise SystemExit('historical consumed merge base binding missing')
           for marker in (
+              'Bind reviewer proof bytes to authoritative source',
+              'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
+              'REVIEWER_PROOF_PATH="$SELF_PATH"',
+              'INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"',
               'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
               'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"',
               'test "${#BASE_MERGES[@]}" = 1',
@@ -199,11 +227,12 @@ jobs:
           if 'MUTABLE_TEST_NON_SPOOF_GUARD_V1' not in p: raise SystemExit('mutable-test non-spoof guard missing')
           if 'REVIEWER_OWNED_ISOLATED_IMPORT_FIXTURE_V1' not in p: raise SystemExit('isolated-mode publisher import proof missing')
           if 'python -m unittest -v "$PARSER_TEST"' not in p or 'python -m unittest -v "$LEGACY_PARSER_TEST"' not in p: raise SystemExit('real unittest mutable-test runner missing')
+          if 'python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring' not in p: raise SystemExit('installed-base installation-test proof runner missing')
           PY
 
       - name: Run installation contract only
         if: env.MODE == 'INSTALLATION'
-        run: python "$INSTALL_TEST"
+        run: python "$INSTALL_TEST_PROOF_PATH"
 
       - name: Statically prove canonical parser is pure before importing it
         if: env.MODE == 'PHASE_B'
@@ -374,7 +403,7 @@ jobs:
           set -euo pipefail
           # REVIEWER_OWNED_ISOLATED_IMPORT_FIXTURE_V1
           # Approved binding: sys.path.insert(0, os.environ['GITHUB_WORKSPACE']) before canonical import; /usr/bin/python3 -I -S forbids PYTHONPATH reliance.
-          python "$INSTALL_TEST" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring
+          python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring
 
       - name: Verify actual executable-chain wiring before mutable tests execute
         if: env.MODE == 'PHASE_B'
@@ -428,6 +457,7 @@ jobs:
             echo "mode=${MODE:-UNBOUND}"
             echo 'read-only / zero-runtime / result-blind'
             echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
+            echo 'reviewer proof bytes and installation-test proof bytes come from the authoritative live base in Phase-B while semantic/runtime candidate bytes remain exact-head workspace bytes'
             echo 'canonical parser is statically proven pure before import; mutable tests are import-whitelisted and forbidden working-tree mutation/runtime before execution'
             echo 'reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test'
             echo 'mutable parser regressions execute through unittest collection from repository root and each module must collect at least one passing test'

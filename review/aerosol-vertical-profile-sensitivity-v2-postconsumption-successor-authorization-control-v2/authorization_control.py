@@ -223,6 +223,26 @@ def _structural_key_use(surface: str, row: dict[str, Any], execution_key: str) -
     return any(execution_key in value for value in fields)
 
 
+def _explicitly_non_authoritative_text(text: str, execution_key: str) -> bool:
+    lowered = text.lower()
+    # Exact key shown only as inline-code narrative remains provenance, not use.
+    without_backtick_key = text.replace(f"`{execution_key}`", "")
+    if execution_key not in without_backtick_key and f"`{execution_key}`" in text:
+        return True
+    # Questions are non-authoritative by the already-reviewed claim grammar.
+    if any(execution_key in line and line.strip().endswith("?") for line in text.splitlines()):
+        return True
+    # Allow only explicit proposal/negation language; ambiguous bare occurrences fail closed.
+    non_authoritative = re.compile(
+        r"\b(?:proposal|proposed|planned|plan|pending|requested|request|not\s+created|"
+        r"not\s+allocated|not\s+reserved|not\s+dispatched|not\s+consumed|not\s+applied|"
+        r"never\s+created|never\s+allocated|never\s+reserved|never\s+dispatched|"
+        r"unauthorized|unallocated|unreserved|proposal-only)\b",
+        re.I,
+    )
+    return bool(non_authoritative.search(lowered))
+
+
 def proposal_aware_execution_key_scan(
     payload: dict[str, Any],
     execution_key: str,
@@ -269,11 +289,14 @@ def proposal_aware_execution_key_scan(
             if _structural_key_use(surface, row, execution_key):
                 authoritative.add(ident)
                 continue
-            claims = positive_candidate_claims(_row_text(row), ordinal)
+            text = _row_text(row)
+            claims = positive_candidate_claims(text, ordinal)
             if claims:
                 authoritative.add(ident)
-            else:
+            elif _explicitly_non_authoritative_text(text, execution_key):
                 proposal_only.add(ident)
+            else:
+                authoritative.add(ident)
     return {
         "schemaVersion": 1,
         "executionKeyOccurrencesInspected": len(authoritative) + len(proposal_only),
@@ -286,10 +309,9 @@ def proposal_aware_execution_key_scan(
 
 
 def proposal_aware_fixture() -> dict[str, Any]:
-    key = "aerosol-vertical-profile-sensitivity-v2-postconsumption-successor:numerical:46"
-    _, _, _ = core.load("avps_auth_control_fixture_preauth", core.ROOT / core.PREAUTH_SURFACE_PATH)._modules()
-    preauth = core.load("avps_auth_control_fixture_preauth_2", core.ROOT / core.PREAUTH_SURFACE_PATH)
+    preauth = core.load("avps_auth_control_fixture_preauth", core.ROOT / core.PREAUTH_SURFACE_PATH)
     freshness, _, _ = preauth._modules()
+    key = freshness.execution_key(46)
 
     allowed_payload = {
         "branches": [], "runs": [], "artifacts": [], "pulls": [], "issues": [],
@@ -310,12 +332,17 @@ def proposal_aware_fixture() -> dict[str, Any]:
     structural_payload = {**allowed_payload, "issue60Comments": [], "runs": [{"id": 4, "path": f".github/workflows/{key}.yml", "head_branch": "x"}]}
     structural = proposal_aware_execution_key_scan(structural_payload, key, 46, freshness.positive_candidate_claims, current_pr=None, current_run_id=None)
     core.require(structural["authoritativeExecutionKeyUseCount"] == 1, "structural execution-key use was not rejected")
+
+    ambiguous_payload = {**allowed_payload, "issue60Comments": [{"id": 5, "body": f"executionKey={key}"}]}
+    ambiguous = proposal_aware_execution_key_scan(ambiguous_payload, key, 46, freshness.positive_candidate_claims, current_pr=None, current_run_id=None)
+    core.require(ambiguous["authoritativeExecutionKeyUseCount"] == 1, "ambiguous bare execution-key occurrence did not fail closed")
     return {
         "schemaVersion": 1,
         "proposalAndNegatedProvenanceAccepted": True,
         "questionAndBacktickNarrativeAccepted": True,
         "positiveAllocationClaimRejected": True,
         "structuralRunIdentityRejected": True,
+        "ambiguousBareExecutionKeyRejected": True,
         "reviewedPositiveClaimGrammarUsed": True,
     }
 

@@ -19,15 +19,17 @@ The lower frozen runner remains capable of receiving a selected `--start-case` t
 
 ## Complete rebind surface identified before any new query result
 
-The audit freezes five result-blind/provenance surfaces that cannot be reused unchanged for a different selected case or a fresh authorization identity:
+The audit freezes seven result-blind/provenance surfaces that cannot be reused unchanged for a different selected case or a fresh authorization identity:
 
 1. `review/arm-ena-sws-v1-stage0/run_one_ena_sws_schema_probe_v3.py` — legacy portable wrapper/case pin.
 2. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_v1.py` — legacy content verifier/case pin.
 3. `tools/arm_ena_sws_e0_postartifact_v1/verify_oneevent_e0_artifact_strict_v1.py` — strict verifier inherits the same case identity through `base.PROBE_CASE_ID`.
 4. `tools/arm_ena_sws_e0_postartifact_v1/verify_authorized_run_envelope_v1.py` — historical authority `5575796491`, frozen branch/head, and one-dispatch envelope.
-5. `tools/arm_ena_sws_e0_postartifact_v1/run_sanitized_ingest_pipeline_v1.py` — offline ingest cross-checks the legacy case through the strict content verifier and its own case binding.
+5. `tools/arm_ena_sws_e0_postartifact_v1/verify_downloaded_artifact_zip_v1.py` — downloaded-ZIP digest receipt is also bound to the historical authority/branch/head.
+6. `tools/arm_ena_sws_e0_postartifact_v1/extract_sanitized_artifact_zip_v1.py` — safe-extraction receipt is likewise bound to the historical authority/branch/head.
+7. `tools/arm_ena_sws_e0_postartifact_v1/run_sanitized_ingest_pipeline_v1.py` — offline ingest cross-checks the legacy case through the strict content verifier and its own case binding.
 
-This is broader than the wrapper alone: the post-artifact verifier, exact run envelope, and complete sanitized ingest chain are also case/authorization-bound.
+This is broader than the wrapper alone: the content verifiers, exact run envelope, ZIP-digest gate, extraction gate, and complete sanitized ingest chain are all case/authorization-bound.
 
 ## Future successor requirements
 
@@ -38,6 +40,7 @@ Before any future E0 successor dispatch can be treated as consumable, a separate
 - the producer receipt `probe_case_id`;
 - strict content/postartifact verification;
 - the authorized GitHub run/artifact envelope;
+- downloaded-artifact digest and safe-extraction receipts;
 - sanitized ingest final receipt/probe case;
 - the unchanged frozen E0 source head, universe, and protocol.
 

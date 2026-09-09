@@ -74,6 +74,30 @@ class StressTests(unittest.TestCase):
         with self.assertRaises(S.StressFailure):
             S.audit_arm_governance(comments)
 
+    def test_write_quiet_reference_field_is_not_an_end_event(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ATMOSPHERE_OWNER::AVPS_CONTROL_FAILURE | write_quiet_end=5608708381 | artifact_count=0',
+            ),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [])
+
+    def test_write_quiet_reference_field_is_not_a_begin_event(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ATMOSPHERE_OWNER::AVPS_CONTROL_PREP | write_quiet_begin=5608671968 | science=false',
+            ),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [])
+
     def test_write_quiet_end_must_bind_exact_begin(self):
         begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
         comments = [

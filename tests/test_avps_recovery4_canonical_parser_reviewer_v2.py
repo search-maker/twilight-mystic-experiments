@@ -76,6 +76,22 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         self.assertIn('Run reviewer-owned immutable semantic corpus against actual parser', self.text)
         self.assertIn('reviewer-owned immutable semantic corpus independently tests actual parser semantics', self.text)
 
+    def test_canonical_parser_is_statically_pure_before_import(self):
+        for token in (
+            'PARSER_STATIC_PURITY_GUARD_V1',
+            'Statically prove canonical parser is pure before importing it',
+            "allowed_import_roots={'re'}",
+            "forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint'}",
+            "forbidden_attr_roots={'os','subprocess','socket','pathlib','requests','urllib','http','ftplib','paramiko','importlib','shutil','sys'}",
+            'canonical parser module-level assignment must be literal/container only',
+            'canonical parser has executable module-level statement',
+        ):
+            self.assertIn(token, self.text)
+        self.assertLess(
+            self.text.index('Statically prove canonical parser is pure before importing it'),
+            self.text.index('Run reviewer-owned immutable semantic corpus against actual parser'),
+        )
+
     def test_mutable_phase_b_tests_cannot_hide_runtime(self):
         self.assertIn('Statically refuse hidden runtime in mutable Phase-B parser tests', self.text)
         self.assertIn('forbidden_import_roots', self.text)

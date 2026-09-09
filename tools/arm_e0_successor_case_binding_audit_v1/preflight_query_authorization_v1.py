@@ -69,6 +69,10 @@ def _canonical_rows(comments: Any) -> tuple[list[dict[str, Any]], str]:
     return out, hashlib.sha256(canonical).hexdigest()
 
 
+def _has_binding_line(body: str, pattern: str) -> bool:
+    return re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE) is not None
+
+
 def preflight(
     comments: Any,
     *,
@@ -124,17 +128,19 @@ def preflight(
     if disposition != "allowed":
         raise PreflightRefusal("authorization title is adverse to current stress classifier")
 
-    body_lower = body.lower()
-    if WORKFLOW_PATH.lower() not in body_lower:
+    bullet = r"\s*(?:[-*]\s*)?"
+    workflow_value = re.escape(WORKFLOW_PATH)
+    main_value = re.escape(main_sha)
+    if not _has_binding_line(body, rf"^{bullet}workflow\s*:\s*`?{workflow_value}`?\s*$"):
         raise PreflightRefusal("authorization body does not bind exact query-only workflow path")
-    if "workflow_dispatch" not in body_lower:
+    if not _has_binding_line(body, rf"^{bullet}event\s*:\s*`?workflow_dispatch`?\s*$"):
         raise PreflightRefusal("authorization body does not bind workflow_dispatch event")
-    if "main" not in body_lower or main_sha not in body_lower:
-        raise PreflightRefusal("authorization body does not bind exact main SHA")
-    if not re.search(r"\battempt\s*[_-]?\s*1\b|\battempt1\b", body_lower):
-        raise PreflightRefusal("authorization body does not bind attempt 1")
-    if not re.search(r"\bone[-_ ]shot\b", body_lower):
-        raise PreflightRefusal("authorization body does not bind one-shot semantics")
+    if not _has_binding_line(body, rf"^{bullet}(?:exact\s+)?main(?:\s+sha)?\s*[:=]\s*`?{main_value}`?\s*$"):
+        raise PreflightRefusal("authorization body does not bind exact main SHA on a dedicated main binding line")
+    if not _has_binding_line(body, rf"^{bullet}attempt\s*[_-]?\s*1\s+only\s*$"):
+        raise PreflightRefusal("authorization body does not bind attempt 1 only")
+    if not _has_binding_line(body, rf"^{bullet}one[-_ ]shot\s+only\s*$"):
+        raise PreflightRefusal("authorization body does not bind one-shot only semantics")
 
     return {
         "schema": 1,

@@ -29,13 +29,18 @@ def baseline_body() -> str:
 
 
 def auth_body(*, title: str = AUTH_TITLE, main_sha: str = MAIN_SHA, include_path: bool = True,
-              include_event: bool = True, include_attempt: bool = True, include_one_shot: bool = True) -> str:
+              include_event: bool = True, include_attempt: bool = True, include_one_shot: bool = True,
+              include_main_binding: bool = True) -> str:
     lines = [title, "Exact replacement query-only governance binding:"]
     if include_path:
         lines.append(f"workflow: `{M.WORKFLOW_PATH}`")
     if include_event:
         lines.append("event: `workflow_dispatch`")
-    lines.append(f"exact main={main_sha}")
+    if include_main_binding:
+        lines.append(f"exact main={main_sha}")
+    else:
+        lines.append(f"candidate sha: {main_sha}")
+        lines.append("query authority remains granted")
     if include_one_shot:
         lines.append("one-shot only")
     if include_attempt:
@@ -46,7 +51,8 @@ def auth_body(*, title: str = AUTH_TITLE, main_sha: str = MAIN_SHA, include_path
 
 def comments(*, title: str = AUTH_TITLE, body_main_sha: str = MAIN_SHA, later_arm: bool = False,
              include_path: bool = True, include_event: bool = True,
-             include_attempt: bool = True, include_one_shot: bool = True) -> list[dict]:
+             include_attempt: bool = True, include_one_shot: bool = True,
+             include_main_binding: bool = True) -> list[dict]:
     rows = [
         {"id": BASELINE, "body": baseline_body()},
         {"id": PREP, "body": "ARM_OWNER::QUERY_ONLY_SUCCESSOR_READY_FOR_REVIEW\nresult-blind prep"},
@@ -57,6 +63,7 @@ def comments(*, title: str = AUTH_TITLE, body_main_sha: str = MAIN_SHA, later_ar
             include_event=include_event,
             include_attempt=include_attempt,
             include_one_shot=include_one_shot,
+            include_main_binding=include_main_binding,
         )},
     ]
     if later_arm:
@@ -115,6 +122,11 @@ class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
         rows = comments()
         with self.assertRaises(M.PreflightRefusal):
             invoke(rows, exact_main_sha="b" * 40)
+
+    def test_refuses_sha_plus_remains_without_dedicated_main_binding(self):
+        rows = comments(include_main_binding=False)
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows)
 
     def test_refuses_missing_workflow_path(self):
         rows = comments(include_path=False)

@@ -2,6 +2,7 @@ from pathlib import Path
 import ast
 import os
 import subprocess
+import tempfile
 import textwrap
 import unittest
 
@@ -60,6 +61,40 @@ def _is_workspace_insert(stmt):
     )
 
 
+def _run_shell(source, cwd, env):
+    return subprocess.run(
+        ['/bin/bash', '-c', source],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _git(cwd, *args, env=None):
+    result = subprocess.run(
+        ['git', *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result.stdout.strip()
+
+
+def _write_commit(repo, path, content, message):
+    target = Path(repo, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding='utf-8')
+    _git(repo, 'add', path)
+    _git(repo, 'commit', '-m', message)
+    return _git(repo, 'rev-parse', 'HEAD')
+
+
 class CanonicalParserReviewerInstallationContract(unittest.TestCase):
     def setUp(self):
         self.text = REVIEWER.read_text(encoding='utf-8')
@@ -107,29 +142,107 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
 
-    def test_preserved_identity_exception_is_exact_deterministic_and_first_parent_linear(self):
+    def test_preserved_identity_exception_is_exact_deterministic_and_self_install_compatible(self):
         for token in (
             'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909',
             'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0',
+            'HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6',
             'if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then',
-            'git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD',
+            'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+            'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"',
+            'mapfile -t BASE_MERGES',
+            'test "${#BASE_MERGES[@]}" = 1',
+            'test "${BASE_MERGES[0]}" = "$EVENT_BASE"',
+            'test "${BASE_PARENTS[0]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+            'expected-live-base-paths.txt',
+            'actual-phase-a4-candidate-paths.txt',
             'CURRENT="$(git rev-parse HEAD)"',
             'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
-            'git cat-file -p "$CURRENT"',
-            'if [ "${#PARENTS[@]}" = 1 ]; then',
-            'CURRENT="${PARENTS[0]}"',
             'test "${#PARENTS[@]}" = 2',
             'test -z "$MERGE"',
             'test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"',
-            'test "${PARENTS[1]}" = "$EVENT_BASE"',
-            'MERGE="$CURRENT"',
-            'test -n "$MERGE"',
-            'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE"',
-            'git show -s --format=%T "$MERGE"',
+            'test "${PARENTS[1]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+            'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$HISTORICAL_PHASE_B_MERGE_BASE"',
             'test "$ACTUAL_TREE" = "$EXPECTED_TREE"',
         ):
             self.assertIn(token, self.text)
         self.assertNotIn('git rev-list --min-parents=2 "$FROZEN_PHASE_B_HEAD"..HEAD', self.text)
+
+    def test_phase_b_ancestry_modes_and_adverse_self_install_cases_execute(self):
+        _, source = _named_steps(self.text)['Bind Phase-B ancestry with one exact preserved-identity exception']
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _git(repo, 'init', '-q')
+            _git(repo, 'config', 'user.name', 'AVPS test')
+            _git(repo, 'config', 'user.email', 'avps-test@example.invalid')
+            root = _write_commit(repo, 'root.txt', 'root\n', 'root')
+
+            _git(repo, 'checkout', '-q', '-b', 'frozen', root)
+            frozen = _write_commit(repo, 'frozen.txt', 'frozen\n', 'frozen')
+
+            _git(repo, 'checkout', '-q', '--detach', root)
+            historical = _write_commit(repo, 'historical.txt', 'historical\n', 'historical')
+
+            merge_tree = _git(repo, 'merge-tree', '--write-tree', frozen, historical)
+            phase_merge = _git(repo, 'commit-tree', merge_tree, '-p', frozen, '-p', historical, '-m', 'phase merge')
+            _git(repo, 'checkout', '-q', '--detach', phase_merge)
+            phase_head = _write_commit(repo, 'phase.txt', 'phase\n', 'phase linear')
+
+            _git(repo, 'checkout', '-q', '--detach', historical)
+            Path(repo, 'reviewer.yml').write_text('reviewer\n', encoding='utf-8')
+            Path(repo, 'reviewer_test.py').write_text('reviewer test\n', encoding='utf-8')
+            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
+            _git(repo, 'commit', '-m', 'phase a4 candidate')
+            phase_a4_head = _git(repo, 'rev-parse', 'HEAD')
+            phase_a4_tree = _git(repo, 'show', '-s', '--format=%T', phase_a4_head)
+            installed_main = _git(repo, 'commit-tree', phase_a4_tree, '-p', historical, '-p', phase_a4_head, '-m', 'install phase a4')
+
+            base_env = os.environ.copy()
+            base_env.update({
+                'PRESERVED_PHASE_B_REF': 'preserved/phase-b',
+                'FROZEN_PHASE_B_HEAD': frozen,
+                'HISTORICAL_PHASE_B_MERGE_BASE': historical,
+                'SELF_PATH': 'reviewer.yml',
+                'INSTALL_TEST': 'reviewer_test.py',
+            })
+
+            _git(repo, 'checkout', '-q', '--detach', phase_a4_head)
+            ordinary = base_env.copy()
+            ordinary.update({'EVENT_BASE': historical, 'EVENT_HEAD_REF': 'fresh/phase-b'})
+            result = _run_shell(source, repo, ordinary)
+            self.assertEqual(result.returncode, 0, f'ordinary direct-child mode failed: {result.stderr}')
+
+            _git(repo, 'checkout', '-q', '--detach', phase_head)
+            preserved = base_env.copy()
+            preserved.update({'EVENT_BASE': installed_main, 'EVENT_HEAD_REF': 'preserved/phase-b'})
+            result = _run_shell(source, repo, preserved)
+            self.assertEqual(result.returncode, 0, f'preserved post-install mode failed: {result.stderr}')
+
+            wrong_base = preserved.copy()
+            wrong_base['HISTORICAL_PHASE_B_MERGE_BASE'] = root
+            result = _run_shell(source, repo, wrong_base)
+            self.assertNotEqual(result.returncode, 0, 'wrong historical base unexpectedly passed')
+
+            _git(repo, 'checkout', '-q', '--detach', historical)
+            Path(repo, 'reviewer.yml').write_text('reviewer extra\n', encoding='utf-8')
+            Path(repo, 'reviewer_test.py').write_text('reviewer test extra\n', encoding='utf-8')
+            Path(repo, 'extra.txt').write_text('forbidden\n', encoding='utf-8')
+            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py', 'extra.txt')
+            _git(repo, 'commit', '-m', 'bad phase a4 candidate')
+            bad_a4_head = _git(repo, 'rev-parse', 'HEAD')
+            bad_a4_tree = _git(repo, 'show', '-s', '--format=%T', bad_a4_head)
+            bad_installed_main = _git(repo, 'commit-tree', bad_a4_tree, '-p', historical, '-p', bad_a4_head, '-m', 'bad install')
+            _git(repo, 'checkout', '-q', '--detach', phase_head)
+            extra_path = preserved.copy()
+            extra_path['EVENT_BASE'] = bad_installed_main
+            result = _run_shell(source, repo, extra_path)
+            self.assertNotEqual(result.returncode, 0, 'extra Phase-A4 path unexpectedly passed')
+
+            phase_tree = _git(repo, 'show', '-s', '--format=%T', phase_head)
+            extra_merge = _git(repo, 'commit-tree', phase_tree, '-p', phase_head, '-p', historical, '-m', 'extra phase merge')
+            _git(repo, 'checkout', '-q', '--detach', extra_merge)
+            result = _run_shell(source, repo, preserved)
+            self.assertNotEqual(result.returncode, 0, 'extra Phase-B merge unexpectedly passed')
 
     def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)
@@ -199,6 +312,55 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         self.assertLess(semantic_index, isolated_index)
         self.assertLess(isolated_index, wiring_index)
         self.assertLess(wiring_index, mutable_index)
+
+    def test_mutable_regression_runner_collects_executes_and_fails_closed(self):
+        _, source = _named_steps(self.text)['Run mutable parser regressions only after immutable semantic and wiring checks']
+        self.assertIn('python -m unittest -v "$PARSER_TEST"', source)
+        self.assertIn('python -m unittest -v "$LEGACY_PARSER_TEST"', source)
+        self.assertEqual(source.count("grep -Eq '^Ran [1-9][0-9]* tests? in '"), 2)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'scripts').mkdir()
+            (root / 'tests').mkdir()
+            (root / 'scripts' / 'helper.py').write_text('VALUE = 7\n', encoding='utf-8')
+            one = root / 'tests' / 'test_one.py'
+            two = root / 'tests' / 'test_two.py'
+            one.write_text(
+                "import os, unittest\nfrom pathlib import Path\nfrom scripts.helper import VALUE\nclass T(unittest.TestCase):\n    def test_runs(self):\n        self.assertEqual(VALUE, 7)\n        Path(os.environ['MARK_ONE']).write_text('ran')\n",
+                encoding='utf-8',
+            )
+            two.write_text(
+                "import os, unittest\nfrom pathlib import Path\nfrom scripts.helper import VALUE\nclass T(unittest.TestCase):\n    def test_runs(self):\n        self.assertEqual(VALUE, 7)\n        Path(os.environ['MARK_TWO']).write_text('ran')\n",
+                encoding='utf-8',
+            )
+            env = os.environ.copy()
+            env.update({
+                'PARSER_TEST': 'tests/test_one.py',
+                'LEGACY_PARSER_TEST': 'tests/test_two.py',
+                'RUNNER_TEMP': str(root / 'runner-temp'),
+                'MARK_ONE': str(root / 'one.marker'),
+                'MARK_TWO': str(root / 'two.marker'),
+            })
+            Path(env['RUNNER_TEMP']).mkdir()
+            result = _run_shell(source, root, env)
+            self.assertEqual(result.returncode, 0, f'real unittest runner failed: {result.stderr}\n{result.stdout}')
+            self.assertTrue(Path(env['MARK_ONE']).exists(), 'first module test body did not execute')
+            self.assertTrue(Path(env['MARK_TWO']).exists(), 'second module test body did not execute')
+
+            one.write_text('import unittest\n', encoding='utf-8')
+            result = _run_shell(source, root, env)
+            self.assertNotEqual(result.returncode, 0, 'zero-test module unexpectedly passed')
+
+            one.write_text('this is not valid python\n', encoding='utf-8')
+            result = _run_shell(source, root, env)
+            self.assertNotEqual(result.returncode, 0, 'unimportable module unexpectedly passed')
+
+            one.write_text(
+                "import unittest\nclass T(unittest.TestCase):\n    def test_fails(self):\n        self.fail('expected')\n",
+                encoding='utf-8',
+            )
+            result = _run_shell(source, root, env)
+            self.assertNotEqual(result.returncode, 0, 'failing collected test unexpectedly passed')
 
     def test_phase_b_publisher_isolated_mode_import_wiring(self):
         for token in (

@@ -1,0 +1,303 @@
+name: Deep Twilight Korkin raw byte preservation v90
+
+on:
+  push:
+    branches:
+      - review/deep-twilight-korkin-raw-byte-preservation-v90-20260908
+    paths:
+      - .github/workflows/deep-twilight-korkin-raw-byte-preservation-v90.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover-and-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Recover exact public source bytes and receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/raw out/meta out/mendeley_files out/mendeley_file_meta
+
+          fetch() {
+            name="$1"
+            url="$2"
+            dst="$3"
+            hdr="out/meta/${name}.headers.txt"
+            met="out/meta/${name}.curl.txt"
+            tmp="${dst}.part"
+            mkdir -p "$(dirname "$dst")"
+            set +e
+            curl --fail --location --silent --show-error \
+              --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 \
+              --dump-header "$hdr" \
+              --write-out 'effective_url=%{url_effective}\nhttp_code=%{http_code}\nsize_download=%{size_download}\n' \
+              --output "$tmp" "$url" > "$met"
+            rc=$?
+            set -e
+            printf 'curl_exit=%s\nsource_url=%s\n' "$rc" "$url" >> "$met"
+            if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
+              mv "$tmp" "$dst"
+            else
+              rm -f "$tmp"
+            fi
+          }
+
+          fetch mendeley_bundle \
+            'https://data.mendeley.com/public-api/zip/y92b2h27jv/download/1' \
+            out/raw/korkin2020_mendeley_bundle.zip
+          fetch mendeley_metadata \
+            'https://data.mendeley.com/public-api/datasets/y92b2h27jv/files?folder_id=root&version=1' \
+            out/raw/korkin2020_mendeley_files.json
+          fetch mdsoar_bundle \
+            'https://api.mdsoar.org/server/api/core/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/content' \
+            out/raw/korkin2022_mdsoar_bundle.zip
+          if [ ! -s out/raw/korkin2022_mdsoar_bundle.zip ]; then
+            fetch mdsoar_bundle_frontend \
+              'https://mdsoar.org/bitstreams/0f2e580a-e241-47bf-855f-c8012bd3911b/download' \
+              out/raw/korkin2022_mdsoar_bundle.zip
+          fi
+
+          python - <<'PY'
+          import json, pathlib, subprocess
+          p = pathlib.Path('out/raw/korkin2020_mendeley_files.json')
+          rows=[]
+          if p.exists():
+              try: data=json.loads(p.read_text('utf-8'))
+              except Exception: data=[]
+              if not isinstance(data,list): data=[]
+              for i,item in enumerate(data):
+                  details=item.get('content_details') or {}
+                  row={
+                      'index':i,
+                      'filename':item.get('filename'),
+                      'id':item.get('id'),
+                      'size':item.get('size'),
+                      'last_modified_date':item.get('last_modified_date'),
+                      'status':item.get('status'),
+                      'download_url':details.get('download_url'),
+                      'view_url':details.get('view_url'),
+                      'download_expiry_time':details.get('download_expiry_time'),
+                  }
+                  rows.append(row)
+              pathlib.Path('out/mendeley_metadata_normalized.json').write_text(json.dumps(rows,indent=2,sort_keys=True),encoding='utf-8')
+              for row in rows:
+                  fn=row.get('filename')
+                  url=row.get('download_url')
+                  if not isinstance(fn,str) or '/' in fn or '\\' in fn or not isinstance(url,str) or not url.startswith('https://'):
+                      continue
+                  dst=pathlib.Path('out/mendeley_files')/fn
+                  hdr=pathlib.Path('out/mendeley_file_meta')/(fn+'.headers.txt')
+                  met=pathlib.Path('out/mendeley_file_meta')/(fn+'.curl.txt')
+                  tmp=pathlib.Path(str(dst)+'.part')
+                  cmd=['curl','--fail','--location','--silent','--show-error','--connect-timeout','20','--max-time','180','--retry','2','--retry-delay','2','--dump-header',str(hdr),'--write-out','effective_url=%{url_effective}\\nhttp_code=%{http_code}\\nsize_download=%{size_download}\\n','--output',str(tmp),url]
+                  cp=subprocess.run(cmd,capture_output=True,text=True)
+                  met.write_text(cp.stdout+cp.stderr+f'curl_exit={cp.returncode}\\nsource_url={url}\\n',encoding='utf-8')
+                  if cp.returncode==0 and tmp.exists() and tmp.stat().st_size:
+                      tmp.replace(dst)
+                  elif tmp.exists(): tmp.unlink()
+          PY
+
+          find out/raw out/mendeley_files -type f -print0 | sort -z | xargs -0 -r sha256sum > out/acquired_sha256.txt
+          find out/raw out/mendeley_files -type f -printf '%p\t%s\n' | sort > out/acquired_sizes.tsv
+
+      - name: Lossless workbook inventory and producer-fingerprint comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, io, json, pathlib, re, zipfile, xml.etree.ElementTree as ET
+          from collections import Counter, defaultdict
+
+          OUT=pathlib.Path('out')
+          EXPECTED={
+            'korkin2020_mendeley_bundle.zip':('77818d2dd2dd7b3f9c1765e89e7f647c1df928384658be6912c5a29c935f4da1',147532),
+            'korkin2020_mendeley_files.json':('a209e764dbfbac96f8c03079a615e91a9991e3a0342a939a3d4d8de129911fc9',10036),
+            'korkin2022_mdsoar_bundle.zip':('f96769598f1fde70a44c69fbed3b80c22a68ce8f486c90744784eaacb208317e',3092912),
+          }
+          SENSITIVE=['[Content_Types].xml','docProps/app.xml','docProps/core.xml','xl/styles.xml','xl/workbook.xml','xl/sharedStrings.xml','xl/metadata.xml','xl/theme/theme1.xml']
+          KEYWORDS=['normaliz','unit','units','irradiance','solar flux','incident flux','incoming flux','radiance','stokes','mystic','mcssa','vlidort','serializer','export','generator','pi','π']
+          NS_MAIN='http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+          NS_REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+          NS_PKGREL='http://schemas.openxmlformats.org/package/2006/relationships'
+
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          def txt(el): return ''.join(el.itertext()).strip() if el is not None else None
+          def parse_props(z,name):
+              if name not in z.namelist(): return None
+              b=z.read(name)
+              try: root=ET.fromstring(b)
+              except Exception: return {'sha256':sha(b),'raw_text':b.decode('utf-8','replace')}
+              props={}
+              for child in list(root):
+                  key=child.tag.split('}',1)[-1]
+                  props[key]=txt(child)
+              return {'sha256':sha(b),'properties':props}
+          def sheet_map(z):
+              out=[]
+              try:
+                  wb=ET.fromstring(z.read('xl/workbook.xml'))
+                  rels=ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+                  rmap={r.attrib.get('Id'):r.attrib.get('Target') for r in rels}
+                  sheets=wb.find('{%s}sheets'%NS_MAIN)
+                  if sheets is not None:
+                      for s in sheets:
+                          rid=s.attrib.get('{%s}id'%NS_REL)
+                          target=rmap.get(rid)
+                          if target and not target.startswith('/'):
+                              target='xl/'+target.lstrip('/') if not target.startswith('xl/') else target
+                          out.append({'name':s.attrib.get('name'),'sheetId':s.attrib.get('sheetId'),'target':target})
+              except Exception: pass
+              return out
+          def worksheet_stats(z,path):
+              r={'path':path,'cell_count':0,'formula_count':0,'cell_types':{},'formula_samples':[]}
+              try: root=ET.fromstring(z.read(path))
+              except Exception: return r
+              ct=Counter()
+              for c in root.iter('{%s}c'%NS_MAIN):
+                  r['cell_count']+=1; ct[c.attrib.get('t','n')]+=1
+                  f=c.find('{%s}f'%NS_MAIN)
+                  if f is not None:
+                      r['formula_count']+=1
+                      if len(r['formula_samples'])<25: r['formula_samples'].append(txt(f))
+              r['cell_types']=dict(ct)
+              return r
+          def annotation_hits(z):
+              hits=[]
+              for n in z.namelist():
+                  if not (n.endswith('.xml') or n.endswith('.rels')): continue
+                  try: text=z.read(n).decode('utf-8','ignore')
+                  except Exception: continue
+                  low=text.lower()
+                  for k in KEYWORDS:
+                      pos=low.find(k.lower())
+                      if pos>=0:
+                          a=max(0,pos-120); b=min(len(text),pos+len(k)+180)
+                          snippet=re.sub(r'\s+',' ',text[a:b]).strip()
+                          hits.append({'member':n,'keyword':k,'snippet':snippet[:500]})
+              return hits[:200]
+          def inventory_xlsx(label,b):
+              rec={'label':label,'size':len(b),'sha256':sha(b)}
+              try:
+                  z=zipfile.ZipFile(io.BytesIO(b))
+              except Exception as e:
+                  rec['zip_error']=type(e).__name__; return rec
+              rec['zip_member_count']=len(z.infolist())
+              rec['zip_members']=[{'name':i.filename,'size':i.file_size,'compressed_size':i.compress_size,'crc32':f'{i.CRC:08x}','date_time':list(i.date_time)} for i in z.infolist()]
+              rec['member_sha256']={n:sha(z.read(n)) for n in SENSITIVE if n in z.namelist()}
+              rec['core']=parse_props(z,'docProps/core.xml')
+              rec['app']=parse_props(z,'docProps/app.xml')
+              rec['sheets']=sheet_map(z)
+              rec['worksheets']=[worksheet_stats(z,s['target']) for s in rec['sheets'] if s.get('target') in z.namelist()]
+              rec['formula_count']=sum(s['formula_count'] for s in rec['worksheets'])
+              rec['cell_count']=sum(s['cell_count'] for s in rec['worksheets'])
+              rec['annotation_hits']=annotation_hits(z)
+              return rec
+          def archive_workbooks(path,lineage):
+              res=[]
+              if not path.exists(): return res
+              with zipfile.ZipFile(path) as z:
+                  for i in z.infolist():
+                      if i.filename.lower().endswith('.xlsx'):
+                          res.append(inventory_xlsx(f'{lineage}:{i.filename}',z.read(i)))
+              return res
+
+          source_receipts=[]
+          for p in sorted((OUT/'raw').glob('*')):
+              if not p.is_file(): continue
+              b=p.read_bytes(); got=(sha(b),len(b)); exp=EXPECTED.get(p.name)
+              source_receipts.append({'name':p.name,'sha256':got[0],'size':got[1],'expected_sha256':exp[0] if exp else None,'expected_size':exp[1] if exp else None,'expected_match':bool(exp and got==exp)})
+
+          wb2020=archive_workbooks(OUT/'raw'/'korkin2020_mendeley_bundle.zip','2020_zip')
+          wb2022=archive_workbooks(OUT/'raw'/'korkin2022_mdsoar_bundle.zip','2022_zip')
+          individual=[]
+          for p in sorted((OUT/'mendeley_files').glob('*.xlsx')):
+              individual.append(inventory_xlsx('2020_individual:'+p.name,p.read_bytes()))
+
+          # Exact binding of individually retrieved Mendeley files to the author ZIP members by basename+SHA.
+          zmap={r['label'].split(':',1)[1].split('/')[-1]:r['sha256'] for r in wb2020}
+          individual_binding=[]
+          for r in individual:
+              fn=r['label'].split(':',1)[1]
+              individual_binding.append({'filename':fn,'individual_sha256':r['sha256'],'zip_member_sha256':zmap.get(fn),'exact_match':zmap.get(fn)==r['sha256']})
+
+          def prop_signature(r):
+              app=((r.get('app') or {}).get('properties') or {})
+              core=((r.get('core') or {}).get('properties') or {})
+              return {
+                'Application':app.get('Application'),'AppVersion':app.get('AppVersion'),'Company':app.get('Company'),'Manager':app.get('Manager'),
+                'creator':core.get('creator'),'lastModifiedBy':core.get('lastModifiedBy'),'created':core.get('created'),'modified':core.get('modified')}
+          for r in wb2020+wb2022+individual: r['property_signature']=prop_signature(r)
+
+          cross=[]
+          for member in SENSITIVE:
+              a=defaultdict(list); b=defaultdict(list)
+              for r in wb2020:
+                  h=(r.get('member_sha256') or {}).get(member)
+                  if h: a[h].append(r['label'])
+              for r in wb2022:
+                  h=(r.get('member_sha256') or {}).get(member)
+                  if h: b[h].append(r['label'])
+              for h in sorted(set(a)&set(b)):
+                  cross.append({'member':member,'sha256':h,'workbooks2020':a[h],'workbooks2022':b[h]})
+
+          def groups(rows,keyfn):
+              d=defaultdict(list)
+              for r in rows: d[json.dumps(keyfn(r),sort_keys=True,ensure_ascii=False)].append(r['label'])
+              return [{'signature':json.loads(k),'workbooks':v} for k,v in d.items()]
+
+          meta=[]
+          mp=OUT/'mendeley_metadata_normalized.json'
+          if mp.exists():
+              try: meta=json.loads(mp.read_text('utf-8'))
+              except Exception: meta=[]
+
+          report={
+            'classification':'POST_V1_NONBLOCKING_PROVENANCE_ONLY',
+            'normalizationBridgeResolved':False,'korkinGateAuthorized':False,'rendererParityAuthorized':False,'deepScienceAuthorized':False,
+            'source_receipts':source_receipts,
+            'mendeley_metadata':meta,
+            'mendeley_individual_binding':individual_binding,
+            'workbooks2020':wb2020,
+            'workbooks2022':wb2022,
+            'workbooks2020_individual':individual,
+            'cross_generation_exact_sensitive_member_matches':cross,
+            'property_groups_2020':groups(wb2020,prop_signature),
+            'property_groups_2022':groups(wb2022,prop_signature),
+            'limits':'No numerical-magnitude comparison, no pi/unit inference, no solver, no protected science; only bytes/package metadata/cell types/formulas/explicit strings.',
+          }
+          (OUT/'korkin_raw_byte_inventory_v90.json').write_text(json.dumps(report,indent=2,sort_keys=True,ensure_ascii=False),encoding='utf-8')
+          (OUT/'report_sha256.txt').write_text(sha((OUT/'korkin_raw_byte_inventory_v90.json').read_bytes())+'  korkin_raw_byte_inventory_v90.json\n')
+          print(json.dumps({
+            'source_receipts':source_receipts,
+            'mendeley_metadata_count':len(meta),
+            'mendeley_individual_count':len(individual),
+            'mendeley_exact_zip_bindings':sum(1 for x in individual_binding if x['exact_match']),
+            'workbooks2020':len(wb2020),'workbooks2022':len(wb2022),
+            'cross_generation_sensitive_exact_matches':len(cross),
+            'report_sha256':sha((OUT/'korkin_raw_byte_inventory_v90.json').read_bytes()),
+          },indent=2))
+          PY
+
+      - name: Safety invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib
+          r=json.loads(pathlib.Path('out/korkin_raw_byte_inventory_v90.json').read_text('utf-8'))
+          assert r['normalizationBridgeResolved'] is False
+          assert r['korkinGateAuthorized'] is False
+          assert r['rendererParityAuthorized'] is False
+          assert r['deepScienceAuthorized'] is False
+          PY
+
+      - name: Upload immutable exact-byte provenance artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-korkin-raw-byte-preservation-v90
+          path: out/
+          if-no-files-found: error
+          retention-days: 90

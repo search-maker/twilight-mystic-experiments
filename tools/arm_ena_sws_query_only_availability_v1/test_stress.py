@@ -217,6 +217,28 @@ class StressTests(unittest.TestCase):
         ]
         S.audit_arm_governance(comments)
 
+    def test_exact_pr1016_current_main_refresh_merge_classification_title_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5607859393,
+                'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE\n\n'
+                'RESULT_BLIND / NON_SCIENCE / NON_AUTHORIZING exact ordinary merge-classification request.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_pr1016_current_main_refresh_merge_classification_nearby_variant_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE__SECOND_ATTEMPT',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
     def test_current_predispatch_authorization_request_nearby_revoked_refuses(self):
         comments = [
             baseline(),

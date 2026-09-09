@@ -234,9 +234,13 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             begin_ids.append(cid)
 
         if 'WRITE_QUIET_END' in upper:
-            raw_begin = _field(first, 'beginComment')
+            raw_begin_comment = _field(first, 'beginComment')
+            raw_begin_short = _field(first, 'begin')
+            if raw_begin_comment is not None and raw_begin_short is not None and raw_begin_comment != raw_begin_short:
+                raise StressFailure(f'WRITE_QUIET_END has conflicting begin bindings: {cid}')
+            raw_begin = raw_begin_comment or raw_begin_short
             if raw_begin is None or not raw_begin.isdigit():
-                raise StressFailure(f'WRITE_QUIET_END lacks exact beginComment binding: {cid}')
+                raise StressFailure(f'WRITE_QUIET_END lacks exact begin binding: {cid}')
             begin_id = int(raw_begin)
             if begin_id not in open_begins:
                 raise StressFailure(f'WRITE_QUIET_END references no open post-baseline BEGIN: {cid}->{begin_id}')

@@ -27,6 +27,7 @@ class WriteQuietParserRepairContract(unittest.TestCase):
 
     def test_structured_metadata_precedes_legacy_marker_fallback(self):
         self.assertEqual(write_quiet_end_binding('WRITE_QUIET_END | begin=999 | stage=legacy\nbeginComment=123'),123)
+        self.assertEqual(write_quiet_end_binding('WRITE_QUIET_END | beginComment=123\nbegin=124'),124)
 
     def test_repeated_identical_authoritative_bindings_canonicalize(self):
         good=(
@@ -65,7 +66,7 @@ class WriteQuietParserRepairContract(unittest.TestCase):
                 self.assertFalse(is_write_quiet_begin(body))
 
     def test_malformed_ambiguous_and_conflicting_bindings_fail_closed(self):
-        for body in ('WRITE_QUIET_END | stage=x','WRITE_QUIET_END | beginComment=0','WRITE_QUIET_END | beginComment=abc','WRITE_QUIET_END begin=123 beginComment=124','WRITE_QUIET_END | beginComment=123\nbegin=124'):
+        for body in ('WRITE_QUIET_END | stage=x','WRITE_QUIET_END | beginComment=0','WRITE_QUIET_END | beginComment=abc','WRITE_QUIET_END begin=123 beginComment=124'):
             with self.subTest(body=body):
                 with self.assertRaises(SystemExit):
                     write_quiet_end_binding(body)

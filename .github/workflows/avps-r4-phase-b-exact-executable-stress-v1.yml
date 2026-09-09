@@ -1,0 +1,162 @@
+name: AVPS Recovery4 Phase-B exact executable stress v1
+on:
+  push:
+    branches: [stress/avps-r4-phase-b-exact-executable-20260909-1148]
+    paths: ['.github/workflows/avps-r4-phase-b-exact-executable-stress-v1.yml']
+permissions: {actions: read, contents: read, issues: read, pull-requests: read}
+concurrency:
+  group: avps-r4-phase-b-exact-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  MAIN: 7e760f347818b72395d0ffbe5de7556937696fa0
+  PB_BRANCH: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909
+  PB_HEAD: 0c8bb08828fdd8b112be9a0cc4c9e5109b820710
+  PB_TREE: 38963b786894a5c489f07939afceb9a1031c63db
+  PB_PR: '1015'
+  STRESS_BRANCH: stress/avps-r4-phase-b-exact-executable-20260909-1148
+  STRESS_PATH: .github/workflows/avps-r4-phase-b-exact-executable-stress-v1.yml
+  PUB: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+  SCI: .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+  PARSER: scripts/avps_write_quiet_parser_v1.py
+  AUTH: 6e095b4b1603c90dcee0943295909b30cd1b374d
+  AUTH_REF: authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45
+  DISPATCH_REF: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-ordinal-45
+  PUB1: '34147692847'
+  PUB2: '34247116198'
+  SCI1: '34248529569'
+  GLOBAL_DISPATCH: '62'
+  CUTOFF: '5576203465'
+jobs:
+  stress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {ref: '${{ github.sha }}', fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.13'}
+      - name: Bind exact stress and synthetic merge
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push; test "$GITHUB_RUN_ATTEMPT" = 1; test "$GITHUB_REF_NAME" = "$STRESS_BRANCH"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$MAIN"
+          test "$(git merge-base "$MAIN" HEAD)" = "$MAIN"; test "$(git rev-list --count "$MAIN..HEAD")" = 1
+          test -z "$(git rev-list --merges "$MAIN..HEAD")"
+          test "$(git diff --name-only "$MAIN"...HEAD)" = "$STRESS_PATH"
+          git fetch origin "refs/heads/$PB_BRANCH:refs/remotes/origin/$PB_BRANCH"
+          test "$(git rev-parse origin/$PB_BRANCH)" = "$PB_HEAD"; test "$(git show -s --format=%T "$PB_HEAD")" = "$PB_TREE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PB_PR" --jq .head.sha)" = "$PB_HEAD"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PB_PR" --jq .state)" = open
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PB_PR" --jq .draft)" = true
+          MT="$(git merge-tree --write-tree "$MAIN" "$PB_HEAD")"; echo "$MT" > merge-tree.txt
+          git diff --name-only "$MAIN" "$MT" | sort > paths.txt
+          printf '%s\n' "$PUB" "$SCI" "$PARSER" tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py | sort > expected.txt
+          diff -u expected.txt paths.txt
+          mkdir syn ev; git archive "$MT" | tar -x -C syn
+          for p in "$PUB" "$SCI" "$PARSER" tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py; do test -f "syn/$p"; git ls-tree "$MT" "$p"; done > ev/blobs.txt
+          git diff --unified=2 "$MAIN" "$MT" -- "$PUB" "$SCI" > ev/workflow.patch
+          for p in candidate-seed-ledger.json candidate-context.json tracked-seed-scan.json repository-global-seed-scan.json repository-global-scan-success-attempt.txt publisher-dispatch-receipt.json; do test ! -e "syn/$p"; done
+      - name: Snapshot complete live result-blind state
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > ev/c.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" > ev/g.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml/runs?event=workflow_dispatch&per_page=100" > ev/p.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/avps-v2-postconsumption-recovery4-science.yml/runs?event=workflow_dispatch&per_page=100" > ev/s.json
+          for r in "$PUB2" "$SCI1"; do gh api "repos/$GITHUB_REPOSITORY/actions/runs/$r" > "ev/run-$r.json"; gh api "repos/$GITHUB_REPOSITORY/actions/runs/$r/jobs?per_page=100" > "ev/jobs-$r.json"; gh api "repos/$GITHUB_REPOSITORY/actions/runs/$r/artifacts?per_page=100" > "ev/art-$r.json"; done
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$AUTH_REF" > ev/auth.json
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_REF" > ev/dispatch.json
+      - name: Run actual Phase-B parser regressions
+        shell: bash
+        run: |
+          set -euo pipefail; cd syn
+          python -m unittest -v tests.test_avps_recovery4_canonical_write_quiet_parser_v1 tests.test_avps_recovery4_ordinal45_write_quiet_parser_repair 2>&1 | tee ../ev/tests.txt
+          grep -Eq '^Ran [1-9][0-9]* tests? in ' ../ev/tests.txt; grep -q '^OK$' ../ev/tests.txt
+      - name: Full actual-byte current-tail context diagnostic
+        shell: /usr/bin/python3 -I -S {0}
+        run: |
+          import importlib.util,json,os,re,textwrap
+          from pathlib import Path
+          E=[];N={}
+          def ck(x,m):
+            if not x:E.append(m)
+          root=Path('syn'); pub=(root/os.environ['PUB']).read_text(); sci=(root/os.environ['SCI']).read_text()
+          spec=importlib.util.spec_from_file_location('wq',root/os.environ['PARSER']); wq=importlib.util.module_from_spec(spec); spec.loader.exec_module(wq)
+          pages=json.load(open('ev/c.json')); cs=sorted([c for p in pages for c in p],key=lambda x:int(x['id'])); N['comments']=len(cs)
+          bids={int(c['id']) for c in cs if wq.is_write_quiet_begin(str(c.get('body') or ''))}; closed=set()
+          for c in cs:wq.record_write_quiet_end(str(c.get('body') or ''),int(c['id']),bids,closed)
+          ck(not(bids-closed),'unmatched live WRITE_QUIET_BEGIN '+repr(sorted(bids-closed))); rec=wq._write_quiet_end_records(closed)
+          for b,e in ((5562775627,5563105177),(5471141095,5471174859)):ck(rec.get(b,{}).get('comment_id')==e,f'live historical binding {b}->{e} drift')
+          r=rec.get(5467776090,{}); ck(r.get('comment_id')==5467875147,'canonical corrected END drift'); ck(tuple(r.get('superseded_comment_ids') or ())==(5467858336,),'predecessor provenance drift')
+          ck(wq.write_quiet_end_binding('Narrative `WRITE_QUIET_END begin=123`') is None,'narrative ID bound'); ck(wq.write_quiet_end_binding('WRITE_QUIET_END\nbegin=123\nbeginComment=123')==123,'identical aliases fail')
+          for body in ('WRITE_QUIET_END\nbegin=123\nbegin_comment=124','WRITE_QUIET_END\nbegin=0','WRITE_QUIET_END\nbegin=nope'):
+            try:wq.write_quiet_end_binding(body)
+            except SystemExit:pass
+            else:E.append('bad alias accepted '+repr(body))
+          d=set();wq.record_write_quiet_end('WRITE_QUIET_END begin=100',101,{100},d)
+          try:wq.record_write_quiet_end('WRITE_QUIET_END begin=100',102,{100},d)
+          except SystemExit:pass
+          else:E.append('true duplicate closure accepted')
+          module=os.environ['PARSER'].replace('/','.').removesuffix('.py'); ck(module in pub and module in sci,'canonical parser not wired into both actual workflows')
+          ck('# BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' not in pub+sci,'embedded stale parser remains')
+          patch=Path('ev/workflow.patch').read_text(); bad=[x for x in patch.splitlines() if x[:1] in '+-' and not x.startswith(('+++','---')) and re.search(r'\b(?:uvspec|mystic|libRadtran|photonHistoriesPerCase|newMapping|productionAuthorized)\b',x,re.I)]; ck(not bad,'runtime/science token changed '+repr(bad))
+          def ex(a,b):return [textwrap.dedent(x).strip() for x in re.findall(r'^\s*'+re.escape(a)+r'\n(.*?)^\s*'+re.escape(b)+r'$',pub,re.M|re.S)]
+          g=ex('# BEGIN_PUBLISHER_RUN_CARDINALITY_GUARD_V1','# END_PUBLISHER_RUN_CARDINALITY_GUARD_V1'); ck(len(g)==1,'publisher guard count')
+          if g:
+            ns={};exec(g[0],ns);ns['run_publisher_guard_fixtures'](); pr=[x for p in json.load(open('ev/p.json')) for x in p.get('workflow_runs',[])]; ids=sorted(int(x['id']) for x in pr);N['publisherRuns']=ids;ck(ids==sorted([int(os.environ['PUB1']),int(os.environ['PUB2'])]),'publisher identities drift')
+            for x in pr:ck(x.get('status')=='completed' and x.get('conclusion')=='failure' and x.get('run_attempt')==1,'publisher terminal drift')
+            cur={'id':999999999001,'status':'in_progress','run_attempt':1,'event':'workflow_dispatch','run_number':999999,'head_sha':Path('merge-tree.txt').read_text().strip(),'head_branch':'main','path':os.environ['PUB'],'conclusion':None}; allr=pr+[cur]; ns['validate_publisher_run_pages']([{'total_count':len(allr),'workflow_runs':allr}],{'run_id':cur['id'],'run_attempt':1,'event':'workflow_dispatch','run_number':cur['run_number'],'head_sha':cur['head_sha'],'head_branch':'main','workflow_path':os.environ['PUB']})
+          w=ex('# BEGIN_PUBLISHER_RUNTIME_WIRING_V2','# END_PUBLISHER_RUNTIME_WIRING_V2');ck(len(w)==1,'runtime wiring count')
+          if g and w:
+            ns={};exec(g[0],ns);exec(w[0].split('RUNTIME_GUARD_RESULT=run_real_publisher_runtime_guard()',1)[0],ns);old=dict(os.environ)
+            try:
+              os.environ.update({'GITHUB_RUN_ID':'999999999001','GITHUB_RUN_ATTEMPT':'1','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_NUMBER':'999999','GITHUB_SHA':Path('merge-tree.txt').read_text().strip(),'GITHUB_REF':'refs/heads/main','GITHUB_REF_NAME':'main','GITHUB_WORKFLOW_REF':f"{old['GITHUB_REPOSITORY']}/{old['PUB']}@refs/heads/main"}); q=ns['_runtime_expected_from_github_env']();ck(q['event']=='workflow_dispatch' and q['head_branch']=='main','publisher context drift')
+            finally:os.environ.clear();os.environ.update(old)
+          gr=[x for p in json.load(open('ev/g.json')) for x in p.get('workflow_runs',[])];N['globalDispatch']=len(gr);ck(len(gr)==int(os.environ['GLOBAL_DISPATCH']),'global workflow_dispatch count drift')
+          sr=[x for p in json.load(open('ev/s.json')) for x in p.get('workflow_runs',[])];sids=sorted(int(x['id']) for x in sr);N['scienceRuns']=sids;ck(sids==[int(os.environ['SCI1'])],'science identity drift')
+          if sr:ck(sr[0].get('status')=='completed' and sr[0].get('conclusion')=='failure' and sr[0].get('run_attempt')==1,'science terminal drift')
+          for rid in (os.environ['PUB2'],os.environ['SCI1']):
+            a=json.load(open('ev/art-'+rid+'.json'));ck(a.get('total_count')==0 and not a.get('artifacts'),'protected artifact exists '+rid)
+          for f in ('auth','dispatch'):ck(json.load(open('ev/'+f+'.json')).get('object',{}).get('sha')==os.environ['AUTH'],f+' ref drift')
+          cuts=re.findall(r'(?m)^\s*KNOWN_DEFECT=(\d+)\s*$',pub);ck(cuts and all(x==os.environ['CUTOFF'] for x in cuts),'cutoff drift')
+          bs=re.findall(r'(?m)^\s*B=\{([^}]*)\}',pub);ck(bool(bs),'suppression ledger missing')
+          if bs:
+            ss=[sorted({int(x) for x in re.findall(r'\d+',b)}) for b in bs];ck(all(all(x<int(os.environ['CUTOFF']) for x in s) for s in ss),'suppression crosses cutoff');N['suppressionCounts']=[len(s) for s in ss];N['suppressionTail']=ss[0][-8:]
+          fd=ex('# BEGIN_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2','# END_CANONICAL_AVPS_ORDINAL45_FENCED_DISPATCH_V2');ck(len(fd)==1,'fenced dispatch count')
+          if fd:
+            z=fd[0]; toks=["--method','POST',f'repos/{REPO}/git/refs'","--method','POST',f'repos/{REPO}/issues/60/comments'","actions/workflows/{SCIENCE_WORKFLOW}/dispatches","--method','PATCH',f'repos/{REPO}/issues/comments/{begin}'","Path('publisher-dispatch-receipt.json').write_text"];pos=[z.find(t) for t in toks];ck(all(x>=0 for x in pos) and all(a<b for a,b in zip(pos,pos[1:])),'fenced order drift');ck("'schemaVersion':2" in z,'receipt schema drift')
+            for k in ('beginCommentId','consumedCommentId','scienceRunId','scienceHeadSha','dispatchBranch','authorizationHead','fenceToken'):ck("'"+k+"'" in z,'receipt key '+k+' missing')
+          bodies=[str(c.get('body') or '').strip() for c in cs];ck(any(x.startswith('ORDINAL45_AVPS_V2_POSTCONSUMPTION_RECOVERY4_DISPATCH_CONSUMED') for x in bodies),'consumed marker absent')
+          Path('ev/diagnostic.json').write_text(json.dumps({'errors':E,'notes':N},sort_keys=True,indent=2)+'\n');
+          if E:raise SystemExit('\n'.join(E))
+      - name: Hash/replay and fresh-workspace prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/heads/$AUTH_REF:refs/remotes/origin/$AUTH_REF"; test "$(git rev-parse origin/$AUTH_REF)" = "$AUTH"
+          test "$(git rev-parse "$AUTH:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorization.json")" = 96ee8299d00bd72cdb73de4583670730ce89c73b
+          test "$(git rev-parse "$AUTH:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-v1/seed_ledger.py")" = 16af5c68ae7e3cfc0cfbef4c8e2022517bf2ae91
+          MT="$(cat merge-tree.txt)"; test "$(git rev-parse "$MT:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery2-science-transport-v1/native_authorization_seed_transport.py")" = 2df2c3fd1ffa78e16f44e6825d67b3e82e903c1e
+          printf '%s\n' '{"freshWorkspace":true,"solverExecuted":false,"publisherInvoked":false,"scienceInvoked":false,"protectedResultsOpened":false}' > ev/workspace.json
+      - name: Classify
+        shell: /usr/bin/python3 -I -S {0}
+        run: |
+          import json,os
+          from pathlib import Path
+          d=json.load(open('ev/diagnostic.json')); out={'classification':'PASS_EXACT_EXECUTABLE_STRESS_PASS' if not d['errors'] else 'FAIL_EXACT_EXECUTABLE_STRESS_PASS','phaseBHead':os.environ['PB_HEAD'],'phaseBTree':os.environ['PB_TREE'],'baseMain':os.environ['MAIN'],'syntheticMergeTree':Path('merge-tree.txt').read_text().strip(),'errors':d['errors'],'publisherInvoked':False,'scienceInvoked':False,'writeQuietEntered':False,'seedOrOrdinalAllocatedOrReused':False,'solverExecuted':False,'protectedResultsOpened':False,'newMappingOccurred':False,'productionOccurred':False,'notes':d['notes']};Path('ev/summary.json').write_text(json.dumps(out,sort_keys=True,indent=2)+'\n');print(json.dumps(out,sort_keys=True,indent=2));raise SystemExit(1 if d['errors'] else 0)
+      - name: Persist evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-r4-phase-b-exact-stress-${{ github.run_id }}
+          path: |
+            ev/
+            merge-tree.txt
+            paths.txt
+            expected.txt
+          if-no-files-found: error
+          retention-days: 30

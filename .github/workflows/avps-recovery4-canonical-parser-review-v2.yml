@@ -1,0 +1,339 @@
+name: Review AVPS Recovery4 canonical parser repair v2
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-recovery4-canonical-parser-review-v2.yml
+      - .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      - scripts/avps_write_quiet_parser_v1.py
+      - tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+      - tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      - tests/test_avps_recovery4_canonical_parser_reviewer_v2.py
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-recovery4-canonical-parser-review-v2-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  zero-runtime-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SELF_PATH: .github/workflows/avps-recovery4-canonical-parser-review-v2.yml
+      INSTALL_TEST: tests/test_avps_recovery4_canonical_parser_reviewer_v2.py
+      SCIENCE_PATH: .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+      PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      PARSER_PATH: scripts/avps_write_quiet_parser_v1.py
+      PARSER_TEST: tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+      LEGACY_PARSER_TEST: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact event head base and changed-path mode
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE_REF" = main
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
+          test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
+          git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          changed=set(Path('changed.txt').read_text().splitlines())
+          self_path=os.environ['SELF_PATH']; install_test=os.environ['INSTALL_TEST']
+          science=os.environ['SCIENCE_PATH']; publisher=os.environ['PUBLISHER_PATH']
+          parser=os.environ['PARSER_PATH']; parser_test=os.environ['PARSER_TEST']; legacy_parser_test=os.environ['LEGACY_PARSER_TEST']
+          install={self_path,install_test}
+          phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}
+          if changed==install:
+              mode='INSTALLATION'
+          elif self_path not in changed and install_test not in changed and changed==phase_b_required:
+              mode='PHASE_B'
+          else:
+              raise SystemExit('AVPS canonical parser reviewer refuses changed-path scope: '+repr(sorted(changed)))
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
+          PY
+
+      - name: Bind Phase-B as a wholly fresh direct child
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$EVENT_BASE"
+
+      - name: Prove reviewer is read-only zero-runtime and non-authorizing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['SELF_PATH']).read_text()
+          on=p.split('\non:\n',1)[1].split('\npermissions:\n',1)[0]
+          if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
+          perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
+          if ': write' in perms: raise SystemExit('reviewer gained write permission')
+          required=(os.environ['SCIENCE_PATH'],os.environ['PUBLISHER_PATH'],os.environ['PARSER_PATH'],os.environ['PARSER_TEST'],os.environ['LEGACY_PARSER_TEST'])
+          for x in required:
+              if x not in p: raise SystemExit('reviewer missing future repair surface: '+x)
+          forbidden=('gh workflow '+'run','gh api -X '+'POST','workflow_'+'dispatch:', 'command -v '+'uvspec','rte_solver '+'mystic','mc_'+'photons 20000000')
+          body=p.split('permissions:',1)[1]
+          for x in forbidden:
+              if x in body: raise SystemExit('reviewer contains forbidden execution token: '+x)
+          if "mode='INSTALLATION'" not in p or "mode='PHASE_B'" not in p: raise SystemExit('reviewer mode gate missing')
+          if "self_path not in changed" not in p or "install_test not in changed" not in p: raise SystemExit('reviewer could self-certify Phase-B')
+          if 'phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}' not in p: raise SystemExit('complete Phase-B parser test migration is not mandatory')
+          if 'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1' not in p: raise SystemExit('independent parser semantic corpus missing')
+          if 'PARSER_STATIC_PURITY_GUARD_V1' not in p: raise SystemExit('parser static purity guard missing')
+          if 'MUTABLE_TEST_NON_SPOOF_GUARD_V1' not in p: raise SystemExit('mutable-test non-spoof guard missing')
+          PY
+
+      - name: Run installation contract only
+        if: env.MODE == 'INSTALLATION'
+        run: python "$INSTALL_TEST"
+
+      - name: Statically prove canonical parser is pure before importing it
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          # PARSER_STATIC_PURITY_GUARD_V1
+          import ast, os
+          from pathlib import Path
+          path=os.environ['PARSER_PATH']; text=Path(path).read_text()
+          try: tree=ast.parse(text, filename=path)
+          except SyntaxError as e: raise SystemExit(f'canonical parser syntax invalid before execution: {e}')
+          allowed_import_roots={'re'}
+          for stmt in tree.body:
+              if isinstance(stmt,ast.Import):
+                  for a in stmt.names:
+                      root=a.name.split('.',1)[0]
+                      if root not in allowed_import_roots: raise SystemExit(f'canonical parser imports non-pure module: {a.name}')
+              elif isinstance(stmt,ast.ImportFrom):
+                  root=(stmt.module or '').split('.',1)[0]
+                  if root not in allowed_import_roots: raise SystemExit(f'canonical parser imports non-pure module: {stmt.module}')
+              elif isinstance(stmt,ast.FunctionDef):
+                  if stmt.decorator_list: raise SystemExit(f'canonical parser function decorators forbidden: {stmt.name}')
+                  if stmt.returns is not None or any(a.annotation is not None for a in (stmt.args.posonlyargs+stmt.args.args+stmt.args.kwonlyargs)) or (stmt.args.vararg and stmt.args.vararg.annotation is not None) or (stmt.args.kwarg and stmt.args.kwarg.annotation is not None):
+                      raise SystemExit(f'canonical parser annotations are forbidden: {stmt.name}')
+                  if stmt.args.defaults or any(d is not None for d in stmt.args.kw_defaults): raise SystemExit(f'canonical parser function default expressions forbidden: {stmt.name}')
+              elif isinstance(stmt,ast.Assign):
+                  if not all(isinstance(t,ast.Name) for t in stmt.targets): raise SystemExit('canonical parser module-level assignment target must be a simple name')
+                  try: ast.literal_eval(stmt.value)
+                  except Exception: raise SystemExit('canonical parser module-level assignment must be literal/container only')
+              elif isinstance(stmt,ast.AnnAssign):
+                  raise SystemExit('canonical parser annotations are forbidden')
+              else:
+                  raise SystemExit(f'canonical parser has executable module-level statement: {type(stmt).__name__}')
+          forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint','globals','locals','vars','getattr','setattr','delattr'}
+          forbidden_attr_roots={'os','subprocess','socket','pathlib','requests','urllib','http','ftplib','paramiko','importlib','shutil','sys'}
+          aliases={}
+          for node in ast.walk(tree):
+              if isinstance(node,ast.Import):
+                  for a in node.names:
+                      root=a.name.split('.',1)[0]; aliases[a.asname or root]=root
+              elif isinstance(node,ast.ImportFrom):
+                  root=(node.module or '').split('.',1)[0]
+                  for a in node.names: aliases[a.asname or a.name]=root
+              elif isinstance(node,ast.Name):
+                  if node.id in forbidden_names or node.id.startswith('__'):
+                      raise SystemExit(f'canonical parser dunder/dynamic namespace access forbidden: {node.id}')
+              elif isinstance(node,ast.Attribute):
+                  if node.attr.startswith('__'): raise SystemExit(f'canonical parser dunder/dynamic namespace access forbidden: {node.attr}')
+              elif isinstance(node,ast.Call):
+                  if isinstance(node.func,ast.Name) and node.func.id in forbidden_names:
+                      raise SystemExit(f'canonical parser uses forbidden dynamic/I-O call: {node.func.id}')
+                  if isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name):
+                      root=aliases.get(node.func.value.id,node.func.value.id)
+                      if root in forbidden_attr_roots: raise SystemExit(f'canonical parser uses forbidden runtime/I-O call: {root}.{node.func.attr}')
+          PY
+
+      - name: Statically prove mutable Phase-B tests cannot execute runtime or spoof later checks
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          # MUTABLE_TEST_NON_SPOOF_GUARD_V1
+          import ast, os
+          from pathlib import Path
+          allowed_import_roots={'pathlib','re','textwrap','unittest','scripts'}
+          allowed_scripts_module='scripts.avps_write_quiet_parser_v1'
+          forbidden_calls={'open','eval','exec','compile','__import__','input','breakpoint','globals','locals','vars','getattr','setattr','delattr'}
+          forbidden_methods={'open','write_text','write_bytes','touch','unlink','rename','replace','mkdir','rmdir','chmod','symlink_to','hardlink_to'}
+          for path in (os.environ['PARSER_TEST'],os.environ['LEGACY_PARSER_TEST']):
+              text=Path(path).read_text()
+              try: tree=ast.parse(text, filename=path)
+              except SyntaxError as e: raise SystemExit(f'Phase-B test syntax invalid before execution: {path}: {e}')
+              for node in ast.walk(tree):
+                  if isinstance(node,ast.Import):
+                      for a in node.names:
+                          root=a.name.split('.',1)[0]
+                          if root not in allowed_import_roots: raise SystemExit(f'Phase-B test imports non-whitelisted module: {path}: {a.name}')
+                          if root=='scripts' and a.name!=allowed_scripts_module: raise SystemExit(f'Phase-B test imports noncanonical project module: {path}: {a.name}')
+                  elif isinstance(node,ast.ImportFrom):
+                      module=node.module or ''; root=module.split('.',1)[0]
+                      if root not in allowed_import_roots: raise SystemExit(f'Phase-B test imports non-whitelisted module: {path}: {module}')
+                      if root=='scripts' and module!=allowed_scripts_module: raise SystemExit(f'Phase-B test imports noncanonical project module: {path}: {module}')
+                  elif isinstance(node,ast.Name):
+                      if node.id in forbidden_calls or node.id.startswith('__'): raise SystemExit(f'Phase-B test dynamic/I-O namespace forbidden: {path}: {node.id}')
+                  elif isinstance(node,ast.Attribute):
+                      if node.attr.startswith('__') or node.attr in forbidden_methods: raise SystemExit(f'Phase-B test mutating/dynamic attribute forbidden: {path}: {node.attr}')
+                  elif isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id in forbidden_calls:
+                      raise SystemExit(f'Phase-B test uses forbidden dynamic/I-O call: {path}: {node.func.id}')
+          PY
+
+      - name: Run reviewer-owned immutable semantic corpus against actual parser
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          # REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1
+          from scripts.avps_write_quiet_parser_v1 import write_quiet_end_binding, record_write_quiet_end, is_write_quiet_begin, _write_quiet_end_records
+
+          def expect_exit(fn,label):
+              try: fn()
+              except SystemExit: return
+              raise SystemExit(label+' unexpectedly passed')
+
+          for key in ('begin','beginComment','begin_comment'):
+              if write_quiet_end_binding(f'WRITE_QUIET_END | stage=x | {key}=123') != 123: raise SystemExit('legacy marker alias failed: '+key)
+              if write_quiet_end_binding(f'WRITE_QUIET_END | stage=x\n{key}=123') != 123: raise SystemExit('standalone authoritative alias failed: '+key)
+
+          if write_quiet_end_binding('WRITE_QUIET_END | begin=999 | stage=legacy\nbeginComment=123') != 123:
+              raise SystemExit('structured standalone metadata must override legacy marker-line fallback')
+          if write_quiet_end_binding('WRITE_QUIET_END begin=5471141095 stage=x') != 5471141095:
+              raise SystemExit('historical legacy one-line END 5471174859 -> 5471141095 failed')
+          if write_quiet_end_binding('WRITE_QUIET_END | stage=x\nbeginComment=5562775627') != 5562775627:
+              raise SystemExit('historical multiline END 5563105177 -> 5562775627 failed')
+          if write_quiet_end_binding('TOTAL_SKY_OWNER::WRITE_QUIET_END | stage=x\nbegin_comment=123') != 123:
+              raise SystemExit('owner-aware END grammar failed')
+          if write_quiet_end_binding('WRITE_QUIET_END | stage=x\nbegin=123\nbeginComment=123\nbegin_comment=123') != 123:
+              raise SystemExit('repeated-identical authoritative aliases failed to canonicalize')
+
+          for body in (
+              'header\nWRITE_QUIET_END | beginComment=123',
+              'prose WRITE_QUIET_END | beginComment=123',
+              '`WRITE_QUIET_END | beginComment=123`',
+              'header\n> WRITE_QUIET_END | beginComment=123',
+          ):
+              if write_quiet_end_binding(body) is not None: raise SystemExit('narrative/quoted END unexpectedly bound')
+
+          for body in (
+              'WRITE_QUIET_END | stage=x',
+              'WRITE_QUIET_END | stage=x\nbeginComment=0',
+              'WRITE_QUIET_END | stage=x\nbeginComment=abc',
+              'WRITE_QUIET_END | stage=x\nbegin=123\nbeginComment=124',
+          ):
+              expect_exit(lambda body=body: write_quiet_end_binding(body),'malformed/conflicting END')
+
+          for body in ('WRITE_QUIET_BEGIN | stage=x','TOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x','ATMOSPHERE_OWNER::WRITE_QUIET_BEGIN token=x'):
+              if not is_write_quiet_begin(body): raise SystemExit('owner-aware BEGIN grammar failed')
+          for body in ('prose WRITE_QUIET_BEGIN | stage=x','Total_Sky_OWNER::WRITE_QUIET_BEGIN | stage=x','header\nTOTAL_SKY_OWNER::WRITE_QUIET_BEGIN | stage=x'):
+              if is_write_quiet_begin(body): raise SystemExit('narrative/noncanonical BEGIN unexpectedly bound')
+
+          generic=set(); record_write_quiet_end('WRITE_QUIET_END | beginComment=123',200,{123},generic)
+          expect_exit(lambda: record_write_quiet_end('WRITE_QUIET_END | beginComment=123',201,{123},generic),'ordinary same-BEGIN duplicate')
+          expect_exit(lambda: record_write_quiet_end('WRITE_QUIET_END | beginComment=999',202,{123},set()),'mismatched BEGIN reference')
+
+          predecessor='WRITE_QUIET_END | LUNAR_FINITE_DISK_EXEC001_FINAL_PREFLIGHT_GLOBAL_SCAN_V1 | begin_comment=5467776090 | branch=execution/lunar-finite-disk-transfer-kernel-sensitivity-v1-exec001 | head=b73d5cf4a58aee3b3e8794b396b79bbd3463f680 | run=33303099872 | attempt=1 | preflight_job=99234734783 | conclusion=success | artifact=9729769639 | digest=sha256:50b9acdf55ebe3188a3f7762c79e0365a9b5c58d5bf2c1b877244b340c9773b8 | 2026-08-30T09:22Z'
+          correction_line='WRITE_QUIET_END | LUNAR_FINITE_DISK_EXEC001_FINAL_PREFLIGHT_GLOBAL_SCAN_V1 | begin=5467776090 | head=b73d5cf4a58aee3b3e8794b396b79bbd3463f680 | run=33303099872 | attempt=1 | preflight_job=99234734783 | conclusion=success | artifact=9729769639 | digest=sha256:50b9acdf55ebe3188a3f7762c79e0365a9b5c58d5bf2c1b877244b340c9773b8 | 2026-08-30T09:27Z'
+          correction_prose='CORRECTED MACHINE-READABLE FENCE RELEASE: the prior END comment `5467858336` used the human-readable key `begin_comment=` whereas the frozen workflow barrier requires the literal token `begin=`. This comment changes no scientific result, seed, execution identity, threshold, or preflight evidence; it supplies the exact already-preregistered release token after the successful immutable preflight.'
+          canonical=correction_line+'\n\n'+correction_prose
+          closed=set(); record_write_quiet_end(predecessor,5467858336,{5467776090},closed); record_write_quiet_end(canonical,5467875147,{5467776090},closed)
+          record=_write_quiet_end_records(closed).get(5467776090,{})
+          if record.get('comment_id')!=5467875147 or tuple(record.get('superseded_comment_ids') or ())!=(5467858336,):
+              raise SystemExit('sole authorized corrected END pair did not canonicalize with predecessor provenance')
+
+          def reject_correction(candidate,label):
+              trial=set(); record_write_quiet_end(predecessor,5467858336,{5467776090},trial)
+              expect_exit(lambda: record_write_quiet_end(candidate,5467875147,{5467776090},trial),label)
+          reject_correction(canonical.replace('run=33303099872','run=33303099873'),'shared-evidence mismatch')
+          reject_correction(canonical.replace('`5467858336`','`5467858335`'),'wrong-predecessor reference')
+          PY
+
+      - name: Verify actual executable-chain wiring before mutable tests execute
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          parser=Path(os.environ['PARSER_PATH']).read_text()
+          science=Path(os.environ['SCIENCE_PATH']).read_text()
+          publisher=Path(os.environ['PUBLISHER_PATH']).read_text()
+          legacy_test=Path(os.environ['LEGACY_PARSER_TEST']).read_text()
+          if 'def write_quiet_end_binding' not in parser or 'def record_write_quiet_end' not in parser or 'def is_write_quiet_begin' not in parser or 'def _write_quiet_end_records' not in parser:
+              raise SystemExit('canonical parser API/provenance surface missing')
+          import_token='from scripts.avps_write_quiet_parser_v1 import'
+          if science.count(import_token) != 2:
+              raise SystemExit(f'science preflight must import canonical parser at exactly two isolated Python call sites, got {science.count(import_token)}')
+          if publisher.count(import_token) != 3:
+              raise SystemExit(f'publisher must import canonical parser at exactly three isolated Python call sites, got {publisher.count(import_token)}')
+          if legacy_test.count(import_token) != 1:
+              raise SystemExit(f'historical parser regression must import canonical parser exactly once, got {legacy_test.count(import_token)}')
+          stale=("first.startswith('WRITE_QUIET_END')", "elif first.startswith('WRITE_QUIET_BEGIN'):")
+          for path_name,text in (('science',science),('publisher',publisher)):
+              for x in stale:
+                  if x in text: raise SystemExit(f'stale first-line-only {path_name} parser remains: {x}')
+          if 'def write_quiet_end_binding' in science or 'def write_quiet_end_binding' in publisher:
+              raise SystemExit('embedded sibling WRITE_QUIET binding implementation remains')
+          if 'BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' in legacy_test or 'expected three embedded parser blocks' in legacy_test:
+              raise SystemExit('historical regression still depends on removed embedded parser blocks')
+          PY
+
+      - name: Run mutable parser regressions only after immutable semantic and wiring checks
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$PARSER_TEST"
+          python "$LEGACY_PARSER_TEST"
+
+      - name: Emit non-authorizing summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### AVPS Recovery4 canonical parser review v2'
+            echo "mode=${MODE:-UNBOUND}"
+            echo 'read-only / zero-runtime / result-blind'
+            echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
+            echo 'canonical parser is statically proven pure before import; mutable tests are import-whitelisted and forbidden working-tree mutation/runtime before execution'
+            echo 'reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test'
+            echo 'science must consume canonical parser at exactly 2 isolated Python call sites; publisher at exactly 3; historical regression at exactly 1'
+            echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
+            echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
+          } >> "$GITHUB_STEP_SUMMARY"

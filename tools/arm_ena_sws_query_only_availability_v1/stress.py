@@ -146,6 +146,15 @@ _DIRECT_EXACT_ALLOWED_TITLES = frozenset({
     'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE',
 })
 
+# Exact cross-lane Coordinator transition whose ARM paragraph imposed only a
+# temporary AVPS exact-base serialization. The body explicitly says this was
+# not a rejection or generic freeze and allowed ARM branch/prep/CI work in
+# parallel. This allowlist affects stress preparation only; it grants no merge
+# or authenticated-query authority, which remain separately live-gated.
+_CROSS_LANE_EXACT_ALLOWED_TITLES = frozenset({
+    'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE',
+})
+
 
 def _direct_arm_control_disposition(first: str) -> str:
     upper = first.upper()
@@ -176,6 +185,9 @@ def _adverse_arm_control(body: str) -> bool:
 
     if first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM'):
         return _direct_arm_control_disposition(first_raw) == 'adverse'
+
+    if first in _CROSS_LANE_EXACT_ALLOWED_TITLES:
+        return False
 
     upper = text.upper()
     fatal = (

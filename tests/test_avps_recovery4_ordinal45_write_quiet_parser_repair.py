@@ -108,7 +108,3 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         self.assertEqual(text.count('from scripts.avps_write_quiet_parser_v1 import'),3)
         self.assertIn("end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | beginComment={begin} |",text)
         self.assertNotIn("end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | begin={begin} |",text)
-
-
-if __name__ == '__main__':
-    unittest.main()

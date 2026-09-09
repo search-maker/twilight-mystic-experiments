@@ -17,15 +17,16 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             self.assertIn(key, permissions)
         self.assertNotIn(': write', permissions)
 
-    def test_future_phase_b_surface_requires_all_four_paths(self):
+    def test_future_phase_b_surface_requires_complete_parser_migration(self):
         for path in (
             '.github/workflows/avps-v2-postconsumption-recovery4-science.yml',
             '.github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml',
             'scripts/avps_write_quiet_parser_v1.py',
             'tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py',
+            'tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py',
         ):
             self.assertIn(path, self.text)
-        self.assertIn('phase_b_required={science,publisher,parser,parser_test}', self.text)
+        self.assertIn('phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}', self.text)
         self.assertIn('changed==phase_b_required', self.text)
 
     def test_installation_cannot_self_certify_phase_b(self):
@@ -48,12 +49,15 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
 
-    def test_both_science_and_publisher_must_consume_canonical_parser(self):
+    def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)
+        self.assertIn("legacy_test=Path(os.environ['LEGACY_PARSER_TEST']).read_text()", self.text)
         self.assertIn("if import_token not in science:", self.text)
         self.assertIn("if import_token not in publisher:", self.text)
+        self.assertIn("if import_token not in legacy_test:", self.text)
         self.assertIn("for path_name,text in (('science',science),('publisher',publisher)):", self.text)
         self.assertIn("if 'def write_quiet_end_binding' in science or 'def write_quiet_end_binding' in publisher:", self.text)
+        self.assertIn("if 'BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' in legacy_test or 'expected three embedded parser blocks' in legacy_test:", self.text)
 
     def test_reviewer_contains_no_authorizing_or_science_runtime_surface(self):
         permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]

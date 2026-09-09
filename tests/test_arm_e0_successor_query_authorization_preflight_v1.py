@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import importlib.util
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_PATH = ROOT / "tools" / "arm_e0_successor_case_binding_audit_v1" / "preflight_query_authorization_v1.py"
+SPEC = importlib.util.spec_from_file_location("arm_query_only_successor_preflight_v1", MODULE_PATH)
+assert SPEC and SPEC.loader
+M = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(M)
+
+BASELINE = M.S.BASELINE_COORDINATOR_COMMENT
+PREP = BASELINE + 100
+AUTH = BASELINE + 200
+MAIN_SHA = "a35365a433d08b5d65ed2134187c814f476e5aad"
+AUTH_TITLE = "COORDINATOR::ARM_QUERY_ONLY_SUCCESSOR_AUTHORIZED__ONE_SHOT_ATTEMPT1"
+
+
+def baseline_body() -> str:
+    return "\n".join([
+        "COORDINATOR::ARM_FENCE_CLEAR_BASELINE",
+        "ARM may resume only its already-authorized post-V5R1 fence-clear safe/query-only fresh-successor preparation",
+        "PR1001 remains governance-NONADMISSIBLE and must not merge",
+        "authenticated invocation remains separately unauthorized",
+        "GLOBAL WRITE_QUIET remains binding",
+    ])
+
+
+def auth_body(*, title: str = AUTH_TITLE, main_sha: str = MAIN_SHA, include_path: bool = True,
+              include_event: bool = True, include_attempt: bool = True, include_one_shot: bool = True) -> str:
+    lines = [title, "Exact replacement query-only governance binding:"]
+    if include_path:
+        lines.append(f"workflow: `{M.WORKFLOW_PATH}`")
+    if include_event:
+        lines.append("event: `workflow_dispatch`")
+    lines.append(f"exact main={main_sha}")
+    if include_one_shot:
+        lines.append("one-shot only")
+    if include_attempt:
+        lines.append("attempt 1 only")
+    lines.append("No native download, no protected SWS/SASZE opening, no E0/Stage-B/MYSTIC/production authority is granted here.")
+    return "\n".join(lines)
+
+
+def comments(*, title: str = AUTH_TITLE, body_main_sha: str = MAIN_SHA, later_arm: bool = False,
+             include_path: bool = True, include_event: bool = True,
+             include_attempt: bool = True, include_one_shot: bool = True) -> list[dict]:
+    rows = [
+        {"id": BASELINE, "body": baseline_body()},
+        {"id": PREP, "body": "ARM_OWNER::QUERY_ONLY_SUCCESSOR_READY_FOR_REVIEW\nresult-blind prep"},
+        {"id": AUTH, "body": auth_body(
+            title=title,
+            main_sha=body_main_sha,
+            include_path=include_path,
+            include_event=include_event,
+            include_attempt=include_attempt,
+            include_one_shot=include_one_shot,
+        )},
+    ]
+    if later_arm:
+        rows.append({"id": AUTH + 1, "body": "ARM_OWNER::LATER_READY_FOR_REVIEW\npost-authorization ARM control"})
+    return rows
+
+
+class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
+    def test_passes_exact_bound_authorization(self):
+        out = M.preflight(
+            comments(),
+            authorization_comment=AUTH,
+            authorization_title=AUTH_TITLE,
+            exact_main_sha=MAIN_SHA,
+        )
+        self.assertEqual(out["status"], M.STATUS)
+        self.assertEqual(out["stress_classifier_disposition"], "allowed")
+        self.assertEqual(out["exact_main_sha"], MAIN_SHA)
+        self.assertEqual(out["workflow_path"], M.WORKFLOW_PATH)
+        self.assertEqual(out["event_name"], "workflow_dispatch")
+        self.assertEqual(out["run_attempt"], 1)
+        self.assertTrue(out["one_shot"])
+        self.assertFalse(out["arm_network_access_performed"])
+        self.assertFalse(out["native_file_download_performed"])
+        self.assertFalse(out["protected_sws_sasze_values_read"])
+        self.assertFalse(out["e0_execution_authorized_by_this_receipt"])
+
+    def test_refuses_wrong_exact_main_binding(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha="b" * 40)
+
+    def test_refuses_missing_workflow_path(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(include_path=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_missing_workflow_dispatch(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(include_event=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_missing_attempt1_or_one_shot(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(include_attempt=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(include_one_shot=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_title_mismatch(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE + "__DRIFT", exact_main_sha=MAIN_SHA)
+
+    def test_refuses_positive_looking_but_stress_ambiguous_title(self):
+        title = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_ATTEMPT1_AUTHORIZED"
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(title=title), authorization_comment=AUTH, authorization_title=title, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_nonlatest_arm_authorization(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(later_arm=True), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_unmatched_write_quiet(self):
+        rows = comments()
+        rows.append({"id": AUTH + 1, "body": "WRITE_QUIET_BEGIN stage=synthetic"})
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(rows, authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+
+    def test_refuses_malformed_main_sha(self):
+        with self.assertRaises(M.PreflightRefusal):
+            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha="not-a-sha")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,158 @@
+name: LOWALT STATE-0003 R17d runtime-internal exact-direct gate
+run-name: LOWALT STATE-0003 R17d runtime-internal ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state0003-r17d-runtime-internal-capture-20260909
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: lowalt-state0003-r17d-runtime-internal-capture-20260909
+  cancel-in-progress: false
+
+env:
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  EXPECTED_BRANCH: execution/lowalt-state0003-r17d-runtime-internal-capture-20260909
+  DRIVER_B64_SHA256: e79a073852e419b026c084914b2f837cbb234b3fb5f7c2747571cdec08c946f3
+  DRIVER_SHA256: 311ff51dfd6eec6efdc1b90f0b644c8ec71241e13360012b18e858e48e5f2e82
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  runtime-internal-capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact execution head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base "$BASE_MAIN_SHA" HEAD)" = "$BASE_MAIN_SHA"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_r17d_runtime_internal_20260909"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/execution-boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "executionIdentity": "lowalt-state0003-r17d-runtime-internal-capture-20260909",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "workflowHeadSha": "$GITHUB_SHA",
+            "predecessorRunIds": [34415923227, 34416207137, 34416633519],
+            "r16MatrixSha256": "8cc873592650dadb2f3ed0f33fc41903c69e5788750a7cf29fd9921beb7edb9a",
+            "r16ContractSha256": "d7ef6a8e68c436728f71eba6e616126deb9f2d485af4926da4b2a294384475ca",
+            "protectedResultOpeningAuthorized": false,
+            "TaylorOrJerusalemUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false
+          }
+          EOF
+
+      - name: Prove predecessor attempts consumed no R16 science identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          out=[]
+          def get(url):
+              req=urllib.request.Request(url,headers={'Accept':'application/vnd.github+json','Authorization':'Bearer '+os.environ['GH_TOKEN'],'X-GitHub-Api-Version':'2022-11-28'})
+              with urllib.request.urlopen(req,timeout=60) as r: return json.load(r)
+          for run_id in (34415923227,34416207137):
+              run=get(f'https://api.github.com/repos/{repo}/actions/runs/{run_id}')
+              jobs=get(f'https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100')
+              assert run['status']=='completed' and run['conclusion']=='failure'
+              by={s['name']:s for s in jobs['jobs'][0]['steps']}
+              assert by['Materialize frozen R17 driver']['conclusion']=='failure'
+              assert by['Execute frozen fresh NONPROTECTED runtime-internal gate']['conclusion']=='skipped'
+              out.append({'runId':run_id,'mechanicalOnly':True,'scienceIdentityConsumed':False,'auditOpened':False})
+          pathlib.Path(os.environ['EVIDENCE_DIR'],'predecessor-mechanical-boundary.json').write_text(json.dumps({'schemaVersion':1,'predecessors':out},indent=2,sort_keys=True)+'\n')
+          PY
+          rm -rf "$RUNNER_TEMP/r17c_predecessor"
+          mkdir -p "$RUNNER_TEMP/r17c_predecessor"
+          gh run download 34416633519 -R "$GITHUB_REPOSITORY" -n lowalt-state0003-r17c-runtime-internal-20260909 -D "$RUNNER_TEMP/r17c_predecessor"
+          python - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'r17c_predecessor'
+          fatal=json.loads((p/'fatal-barrier.json').read_text())
+          assert fatal['classification']=='STATE_0003_R17_RUNTIME_INTERNAL_EXECUTION_BARRIER'
+          assert fatal['error']=='R16-NEXT-STEP'
+          assert fatal['auditMayHaveOpened'] is False
+          assert fatal['protectedResultOpened'] is False
+          assert not (p/'cases').exists()
+          out={'schemaVersion':1,'runId':34416633519,'mechanicalOnly':True,'barrier':'R16-NEXT-STEP','scienceIdentityConsumed':False,'auditOpened':False}
+          pathlib.Path(os.environ['EVIDENCE_DIR'],'predecessor-r17c-boundary.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Set up exact inherited libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state0003-r17d
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Ensure debugger compiler and binary tools
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          missing=()
+          command -v gdb >/dev/null 2>&1 || missing+=(gdb)
+          command -v gfortran >/dev/null 2>&1 || missing+=(gfortran)
+          command -v nm >/dev/null 2>&1 || missing+=(binutils)
+          command -v ar >/dev/null 2>&1 || missing+=(binutils)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${missing[@]}"
+          fi
+          gdb --version | head -n 1
+          gfortran --version | head -n 1
+          nm --version | head -n 1
+
+      - name: Materialize exact corrected frozen R17d driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          tr -d '\r\n' < experiments/lowalt-state0003/r17d_driver.py.gz.b64 > "$RUNNER_TEMP/r17d.py.gz.b64"
+          test "$(sha256sum "$RUNNER_TEMP/r17d.py.gz.b64" | awk '{print $1}')" = "$DRIVER_B64_SHA256"
+          base64 -d "$RUNNER_TEMP/r17d.py.gz.b64" | gzip -dc > "$RUNNER_TEMP/r17d.py"
+          test "$(sha256sum "$RUNNER_TEMP/r17d.py" | awk '{print $1}')" = "$DRIVER_SHA256"
+          python -m py_compile "$RUNNER_TEMP/r17d.py"
+
+      - name: Execute frozen fresh NONPROTECTED runtime-internal gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          python "$RUNNER_TEMP/r17d.py"
+
+      - name: Publish isolated R17d evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state0003-r17d-runtime-internal-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_r17d_runtime_internal_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

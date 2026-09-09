@@ -1,0 +1,124 @@
+name: LOWALT STATE-0003 compiler activation R14
+run-name: LOWALT STATE-0003 compiler activation R14 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-compiler-activation-r14-20260909
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-compiler-activation-r14-20260909
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  recover-activation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify additive provenance-only boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_MAIN_SHA"..HEAD | sort)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = ".github/workflows/lowalt-state-0003-compiler-activation-r14-20260909.yml"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_compiler_activation_r14_20260909"
+          rm -rf "$EVIDENCE_DIR"; mkdir -p "$EVIDENCE_DIR"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary.json" <<EOF
+          {"schemaVersion":1,"classification":"STATE_0003_EXACT_COMPILER_ACTIVATION_PACKAGE_PROVENANCE_R14","baseMainSha":"$BASE_MAIN_SHA","workflowHeadSha":"$GITHUB_SHA","scienceExecution":false,"solverExecution":false,"scienceIdentityAllocated":false,"protectedResultOpened":false,"productionMutationAuthorized":false,"fiveDegreeSeamMutationAuthorized":false}
+          EOF
+
+      - name: Recover exact build-requirement compiler package bytes and activation scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v unzstd >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq zstd; fi
+
+          recover_pkg() {
+            NAME="$1"; VERSION="$2"; BUILD="$3"
+            STEM="${NAME}-${VERSION}-${BUILD}"
+            URL="https://conda.anaconda.org/conda-forge/linux-64/${STEM}.conda"
+            ROOT="$EVIDENCE_DIR/$NAME"
+            mkdir -p "$ROOT/download" "$ROOT/info" "$ROOT/payload"
+            PKG="$RUNNER_TEMP/${STEM}.conda"
+            curl --proto '=https' --tlsv1.2 -fL -D "$ROOT/download/headers.txt" -o "$PKG" -w 'url_effective=%{url_effective}\nhttp_code=%{http_code}\nsize_download=%{size_download}\nnum_redirects=%{num_redirects}\n' "$URL" > "$ROOT/download/http-summary.txt"
+            SHA="$(sha256sum "$PKG" | awk '{print $1}')"
+            printf 'name=%s\nversion=%s\nbuild=%s\nurl=%s\nsha256=%s\nsize=%s\n' "$NAME" "$VERSION" "$BUILD" "$URL" "$SHA" "$(stat -c %s "$PKG")" > "$ROOT/download/binding.txt"
+
+            OUTER="$RUNNER_TEMP/${STEM}_outer"; INNER="$RUNNER_TEMP/${STEM}_inner"; PAY="$RUNNER_TEMP/${STEM}_payload"
+            rm -rf "$OUTER" "$INNER" "$PAY"; mkdir -p "$OUTER" "$INNER" "$PAY"
+            python - "$PKG" "$OUTER" <<'PY'
+          import pathlib,sys,zipfile
+          pkg,out=map(pathlib.Path,sys.argv[1:])
+          with zipfile.ZipFile(pkg) as z: z.extractall(out)
+          PY
+            INFO_TAR="$(find "$OUTER" -maxdepth 1 -type f -name 'info-*.tar.zst' -print | head -n1)"
+            PKG_TAR="$(find "$OUTER" -maxdepth 1 -type f -name 'pkg-*.tar.zst' -print | head -n1)"
+            test -n "$INFO_TAR"; test -n "$PKG_TAR"
+            tar --use-compress-program=unzstd -xf "$INFO_TAR" -C "$INNER"
+            tar --use-compress-program=unzstd -xf "$PKG_TAR" -C "$PAY"
+            test -f "$INNER/info/index.json"
+            cp "$INNER/info/index.json" "$ROOT/info/index.json"
+            [ ! -f "$INNER/info/about.json" ] || cp "$INNER/info/about.json" "$ROOT/info/about.json"
+            [ ! -f "$INNER/info/hash_input.json" ] || cp "$INNER/info/hash_input.json" "$ROOT/info/hash_input.json"
+            find "$PAY" -type f -print | sed "s#^$PAY/##" | sort > "$ROOT/payload/file-list.txt"
+            find "$PAY/etc/conda" -type f -print 2>/dev/null | sort | while read -r f; do
+              REL="${f#$PAY/}"
+              mkdir -p "$ROOT/payload/$(dirname "$REL")"
+              cp "$f" "$ROOT/payload/$REL"
+            done
+            python - "$ROOT/info/index.json" "$NAME" "$VERSION" "$BUILD" <<'PY'
+          import json,sys
+          p,name,version,build=sys.argv[1:]
+          x=json.load(open(p))
+          assert x['name']==name and x['version']==version and x['build']==build,(x,name,version,build)
+          PY
+          }
+
+          recover_pkg gcc_linux-64 13.4.0 h0a5b801_21
+          recover_pkg gfortran_linux-64 13.4.0 hce61b40_21
+
+          find "$EVIDENCE_DIR" -path '*/etc/conda/activate.d/*' -type f -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; > "$EVIDENCE_DIR/activation-scripts-verbatim.txt"
+          grep -nE 'FFLAGS|DEBUG_FFLAGS|FORTRAN|GFORTRAN|march|mtune|vector|fno-plt|fstack-protector|ffunction-sections|fdebug-prefix-map|CONDA_BUILD' "$EVIDENCE_DIR/activation-scripts-verbatim.txt" > "$EVIDENCE_DIR/activation-relevant-lines.txt" || true
+
+          python - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ['EVIDENCE_DIR'])
+          packages={}
+          for name in ('gcc_linux-64','gfortran_linux-64'):
+              p=root/name
+              idx=json.loads((p/'info/index.json').read_text())
+              about=json.loads((p/'info/about.json').read_text()) if (p/'info/about.json').exists() else {}
+              binding=dict(line.split('=',1) for line in (p/'download/binding.txt').read_text().splitlines() if '=' in line)
+              packages[name]={'identity':{'name':idx['name'],'version':idx['version'],'build':idx['build'],'build_number':idx.get('build_number')},'archiveSha256':binding['sha256'],'aboutExtra':about.get('extra',{})}
+          summary={'schemaVersion':1,'classification':'STATE_0003_EXACT_COMPILER_ACTIVATION_PACKAGE_PROVENANCE_R14_PASS','packages':packages,'scienceExecution':False,'solverExecution':False,'protectedResultOpened':False,'productionChanged':False,'fiveDegreeSeamChanged':False}
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name!='evidence-manifest.sha256'):
+              rows.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}")
+          (root/'evidence-manifest.sha256').write_text('\n'.join(rows)+'\n')
+          PY
+
+      - name: Publish isolated compiler activation provenance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-compiler-activation-r14-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_compiler_activation_r14_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

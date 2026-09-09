@@ -1,0 +1,116 @@
+name: LOWALT STATE-0003 fresh end-to-end direct R12b
+run-name: LOWALT STATE-0003 E2E direct R12b ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-e2e-direct-r12b-20260909
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: lowalt-state-0003-e2e-direct-r12b-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-e2e-direct-r12b-20260909
+  BASE_MAIN_SHA: 7e760f347818b72395d0ffbe5de7556937696fa0
+  PREDECESSOR_HEAD_SHA: 0fd6a6af84829edcb233e747724e71c8cc7eda68
+  SUCCESSOR_FREEZE_COMMIT_SHA: b495f0ef51ca17be498546eb5973d37309b89c33
+  WRAPPER_PATH: experiments/lowalt-state0003/e2e_direct_r12b_20260909.py
+  WORKFLOW_PATH: .github/workflows/lowalt-state-0003-e2e-direct-r12b-20260909.yml
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  fresh-e2e-direct-r12b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact R12b execution head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify mechanical-successor boundary and initialize isolated evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$SUCCESSOR_FREEZE_COMMIT_SHA"
+          test "$(git rev-parse "$SUCCESSOR_FREEZE_COMMIT_SHA^")" = "$PREDECESSOR_HEAD_SHA"
+          test "$(git merge-base "$BASE_MAIN_SHA" HEAD)" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$PREDECESSOR_HEAD_SHA"..HEAD | sort)
+          test "${#CHANGED[@]}" = 2
+          test "${CHANGED[0]}" = "$WORKFLOW_PATH"
+          test "${CHANGED[1]}" = "$WRAPPER_PATH"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_e2e_direct_r12b_20260909"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/execution-boundary-r12b.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "executionIdentity": "lowalt-state-0003-e2e-direct-r12b-20260909",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "predecessorHeadSha": "$PREDECESSOR_HEAD_SHA",
+            "successorFreezeCommitSha": "$SUCCESSOR_FREEZE_COMMIT_SHA",
+            "workflowHeadSha": "$GITHUB_SHA",
+            "scientificMatrixOrToleranceChanged": false,
+            "protectedResultOpeningAuthorized": false,
+            "taylorOrJerusalemUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false
+          }
+          EOF
+
+      - name: Set up exact inherited libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-e2e-direct-r12b
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Ensure debugger and Fortran compiler are available
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          missing=()
+          command -v gdb >/dev/null 2>&1 || missing+=(gdb)
+          command -v gfortran >/dev/null 2>&1 || missing+=(gfortran)
+          command -v nm >/dev/null 2>&1 || missing+=(binutils)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${missing[@]}"
+          fi
+          command -v gdb
+          command -v gfortran
+          command -v nm
+
+      - name: Execute byte-preserved R12 scientific gate through mechanical R12b successor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          python "$WRAPPER_PATH"
+
+      - name: Publish isolated R12b evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-e2e-direct-r12b-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_e2e_direct_r12b_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

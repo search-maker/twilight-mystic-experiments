@@ -83,7 +83,10 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             "allowed_import_roots={'re'}",
             "forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint'}",
             "forbidden_attr_roots={'os','subprocess','socket','pathlib','requests','urllib','http','ftplib','paramiko','importlib','shutil','sys'}",
+            'ast.literal_eval(value)',
             'canonical parser module-level assignment must be literal/container only',
+            'canonical parser annotations are forbidden',
+            'canonical parser dunder/dynamic namespace access forbidden',
             'canonical parser has executable module-level statement',
         ):
             self.assertIn(token, self.text)

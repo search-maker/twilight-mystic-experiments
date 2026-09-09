@@ -1,0 +1,185 @@
+name: LOWALT STATE-0003 buildenv provenance R13
+run-name: LOWALT STATE-0003 buildenv provenance R13 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-buildenv-provenance-r13-20260909
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-state-0003-buildenv-provenance-r13-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-buildenv-provenance-r13-20260909
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  PACKAGE_SPEC: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PACKAGE_SHA256: 9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  package-buildenv-provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact provenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify additive non-science boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff --name-only "$BASE_MAIN_SHA"..HEAD | sort)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = ".github/workflows/lowalt-state-0003-buildenv-provenance-r13-20260909.yml"
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_buildenv_provenance_r13_20260909"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR/package-info" "$EVIDENCE_DIR/elf" "$EVIDENCE_DIR/static-objects"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "classification": "STATE_0003_EXACT_PACKAGE_BUILDENV_PROVENANCE_R13",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "workflowHeadSha": "$GITHUB_SHA",
+            "scienceExecution": false,
+            "solverExecution": false,
+            "scienceIdentityAllocated": false,
+            "protectedResultOpened": false,
+            "taylorOrJerusalemUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false
+          }
+          EOF
+
+      - name: Install exact inherited libRadtran package only
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-buildenv-provenance-r13
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Recover exact package, recipe, compiler and linkage metadata
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          test "$ACTUAL_UVSPEC_SHA" = "$UVSPEC_SHA256"
+
+          micromamba list rubin-libradtran --json > "$EVIDENCE_DIR/micromamba-rubin-libradtran.json"
+          micromamba info --json > "$EVIDENCE_DIR/micromamba-info.json"
+          printf 'CONDA_PREFIX=%s\nMAMBA_ROOT_PREFIX=%s\nuvspec=%s\nuvspec_sha256=%s\npackage_spec=%s\n' \
+            "$CONDA_PREFIX" "${MAMBA_ROOT_PREFIX:-}" "$UVSPEC" "$ACTUAL_UVSPEC_SHA" "$PACKAGE_SPEC" \
+            > "$EVIDENCE_DIR/runtime-binding.txt"
+
+          META=("$CONDA_PREFIX"/conda-meta/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.json)
+          test "${#META[@]}" = 1
+          cp "${META[0]}" "$EVIDENCE_DIR/package-info/installed-conda-meta.json"
+
+          python - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path(os.environ['EVIDENCE_DIR'])/'package-info'/'installed-conda-meta.json'
+          x=json.loads(p.read_text())
+          expected='rubin-libradtran-2.0.6-py312pl5321he9373c2_1'
+          assert x.get('name')=='rubin-libradtran'
+          assert x.get('version')=='2.0.6'
+          assert x.get('build')=='py312pl5321he9373c2_1'
+          assert x.get('build_number')==1
+          out={k:x.get(k) for k in ('name','version','build','build_number','channel','url','md5','sha256','depends','constrains','subdir')}
+          (p.parent/'installed-conda-meta-summary.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+          ROOT="${MAMBA_ROOT_PREFIX:-}"
+          test -n "$ROOT"
+          PKGDIR="$ROOT/pkgs/rubin-libradtran-2.0.6-py312pl5321he9373c2_1"
+          test -d "$PKGDIR/info"
+          find "$PKGDIR/info" -maxdepth 3 -type f -print | sort > "$EVIDENCE_DIR/package-info/package-info-file-list.txt"
+          cp -a "$PKGDIR/info" "$EVIDENCE_DIR/package-info/extracted-package-info"
+
+          ARCHIVE=""
+          while IFS= read -r p; do
+            ARCHIVE="$p"
+            break
+          done < <(find "$ROOT/pkgs" -maxdepth 2 -type f -name 'rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda' -print | sort)
+          if [ -n "$ARCHIVE" ]; then
+            ACTUAL_PACKAGE_SHA="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+            printf 'archive=%s\nsha256=%s\n' "$ARCHIVE" "$ACTUAL_PACKAGE_SHA" > "$EVIDENCE_DIR/package-info/package-archive-sha256.txt"
+            test "$ACTUAL_PACKAGE_SHA" = "$PACKAGE_SHA256"
+          else
+            printf 'archive_not_retained_by_setup_micromamba=true\nexpected_sha256=%s\n' "$PACKAGE_SHA256" > "$EVIDENCE_DIR/package-info/package-archive-sha256.txt"
+          fi
+
+          file "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-file.txt"
+          readelf -p .comment "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-comment.txt" 2>&1 || true
+          readelf -p .GCC.command.line "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-gcc-command-line.txt" 2>&1 || true
+          readelf -d "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-dynamic.txt"
+          ldd "$UVSPEC" > "$EVIDENCE_DIR/elf/uvspec-ldd.txt"
+          strings "$UVSPEC" | grep -E 'GCC:|GNU Fortran|GFORTRAN|gfortran|conda-forge' | sort -u > "$EVIDENCE_DIR/elf/uvspec-compiler-strings.txt" || true
+
+          FLIB="$CONDA_PREFIX/lib/libRadtran_f.a"
+          test -f "$FLIB"
+          sha256sum "$FLIB" > "$EVIDENCE_DIR/static-objects/libRadtran_f.sha256"
+          nm -A "$FLIB" > "$EVIDENCE_DIR/static-objects/libRadtran_f-nm.txt"
+          ar t "$FLIB" > "$EVIDENCE_DIR/static-objects/libRadtran_f-members.txt"
+          OBJ="$(nm -A "$FLIB" | awk '/ [Tt] geofast_$/ {s=$1; sub(/^.*\.a:/,"",s); sub(/:$/,"",s); print s; exit}')"
+          printf 'geofast_object=%s\n' "$OBJ" > "$EVIDENCE_DIR/static-objects/geofast-object.txt"
+          if [ -n "$OBJ" ]; then
+            TMP="$RUNNER_TEMP/lowalt_r13_ar"
+            rm -rf "$TMP"; mkdir -p "$TMP"
+            (cd "$TMP" && ar x "$FLIB" "$OBJ")
+            test -f "$TMP/$OBJ"
+            sha256sum "$TMP/$OBJ" > "$EVIDENCE_DIR/static-objects/geofast-object.sha256"
+            readelf -p .comment "$TMP/$OBJ" > "$EVIDENCE_DIR/static-objects/geofast-object-comment.txt" 2>&1 || true
+            readelf -p .GCC.command.line "$TMP/$OBJ" > "$EVIDENCE_DIR/static-objects/geofast-object-gcc-command-line.txt" 2>&1 || true
+            readelf -S "$TMP/$OBJ" > "$EVIDENCE_DIR/static-objects/geofast-object-sections.txt"
+            strings "$TMP/$OBJ" | grep -E 'GCC:|GNU Fortran|GFORTRAN|gfortran|conda-forge' | sort -u > "$EVIDENCE_DIR/static-objects/geofast-object-compiler-strings.txt" || true
+          fi
+
+          python - <<'PY'
+          import hashlib, json, os, pathlib
+          root=pathlib.Path(os.environ['EVIDENCE_DIR'])
+          rows=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name!='evidence-manifest.sha256'):
+              h=hashlib.sha256(p.read_bytes()).hexdigest()
+              rows.append(f'{h}  {p.relative_to(root).as_posix()}')
+          (root/'evidence-manifest.sha256').write_text('\n'.join(rows)+'\n')
+          summary={
+            'schemaVersion':1,
+            'classification':'STATE_0003_EXACT_PACKAGE_BUILDENV_PROVENANCE_R13_CAPTURED',
+            'exactPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'expectedPackageSha256':os.environ['PACKAGE_SHA256'],
+            'uvspecSha256':os.environ['UVSPEC_SHA256'],
+            'packageInfoRecipeCaptured':(root/'package-info'/'extracted-package-info'/'recipe').is_dir(),
+            'scienceExecution':False,
+            'solverExecution':False,
+            'protectedResultOpened':False,
+            'productionChanged':False,
+            'fiveDegreeSeamChanged':False,
+          }
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish isolated build-environment provenance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-buildenv-provenance-r13-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_buildenv_provenance_r13_20260909/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

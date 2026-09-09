@@ -50,6 +50,30 @@ class StressTests(unittest.TestCase):
         self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [begin_id])
         self.assertEqual(out['write_quiet_end_ids_after_baseline'], [begin_id + 1])
 
+    def test_cross_lane_exact_short_begin_write_quiet_passes(self):
+        begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
+        comments = [
+            baseline(),
+            row(begin_id, 'AVPS_OWNER::WRITE_QUIET_BEGIN | stage=x'),
+            row(begin_id + 1, f'AVPS_OWNER::WRITE_QUIET_END | stage=x | begin={begin_id}'),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [begin_id])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [begin_id + 1])
+
+    def test_write_quiet_end_conflicting_begin_aliases_refuse(self):
+        begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
+        comments = [
+            baseline(),
+            row(begin_id, 'AVPS_OWNER::WRITE_QUIET_BEGIN | stage=x'),
+            row(
+                begin_id + 1,
+                f'AVPS_OWNER::WRITE_QUIET_END | stage=x | beginComment={begin_id} | begin={begin_id + 1}',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
     def test_write_quiet_end_must_bind_exact_begin(self):
         begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
         comments = [

@@ -117,6 +117,7 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         for key in ('contents: read', 'actions: read', 'issues: read', 'pull-requests: read'):
             self.assertIn(key, permissions)
         self.assertNotIn(': write', permissions)
+        self.assertIn('persist-credentials: false', self.text)
 
     def test_future_phase_b_surface_requires_complete_parser_migration(self):
         for path in (
@@ -146,99 +147,151 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             'Bind installation ancestry as merge-free',
             'test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"',
             "if: env.MODE == 'PHASE_B'",
-            'else',
+            'test "$EVENT_BASE" = "$LIVE_MAIN_SHA"',
             'test "${#PARENTS[@]}" = 1',
             'test "${PARENTS[0]}" = "$EVENT_BASE"',
         ):
             self.assertIn(token, self.text)
 
-    def test_phase_b_reviewer_proof_bytes_are_bound_to_authoritative_base(self):
+    def test_phase_b_reviewer_proof_bytes_are_bound_to_authoritative_live_main(self):
         for token in (
-            'Bind reviewer proof bytes to authoritative source',
-            'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
-            'git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
+            'Bind reviewer proof bytes to authoritative live-main source',
+            'EXPECTED_DEFAULT_BRANCH: main',
+            'PHASE_A4_INSTALLED_MAIN: a35365a433d08b5d65ed2134187c814f476e5aad',
+            'test "$EVENT_DEFAULT_BRANCH" = "$EXPECTED_DEFAULT_BRANCH"',
+            'git_read ls-remote --symref origin HEAD',
+            'git_read fetch --no-tags --force origin "$EXPECTED_DEFAULT_REF"',
+            'test "$LIVE_MAIN_SHA" = "$ADVERTISED_DEFAULT_SHA"',
+            'git_read ls-remote --heads origin "$EXPECTED_DEFAULT_REF"',
+            'test "$CONFIRMED_LIVE_SHA" = "$LIVE_MAIN_SHA"',
+            'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$LIVE_MAIN_SHA"',
+            'git merge-base --is-ancestor "$PHASE_A4_INSTALLED_MAIN" "$LIVE_MAIN_SHA"',
+            'git diff-tree -m --no-commit-id --name-only -r "$commit"',
+            'actual-live-main-net-paths.txt',
+            'actual-live-main-touched-paths.txt',
+            'git show "$LIVE_MAIN_SHA:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+            'git show "$LIVE_MAIN_SHA:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
             'REVIEWER_PROOF_PATH="$SELF_PATH"',
             'INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"',
             "p=Path(os.environ['REVIEWER_PROOF_PATH']).read_text()",
             'python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring',
         ):
             self.assertIn(token, self.text)
+        self.assertNotIn('git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"', self.text)
         self.assertNotIn("p=Path(os.environ['SELF_PATH']).read_text()", self.text)
 
-        _, source = _named_steps(self.text)['Bind reviewer proof bytes to authoritative source']
+        _, source = _named_steps(self.text)['Bind reviewer proof bytes to authoritative live-main source']
         with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            _git(repo, 'init', '-q')
-            _git(repo, 'config', 'user.name', 'AVPS test')
-            _git(repo, 'config', 'user.email', 'avps-test@example.invalid')
-            Path(repo, 'reviewer.yml').write_text('stale reviewer bytes\n', encoding='utf-8')
-            Path(repo, 'reviewer_test.py').write_text('stale reviewer test bytes\n', encoding='utf-8')
-            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
-            _git(repo, 'commit', '-m', 'historical stale reviewer')
-            historical = _git(repo, 'rev-parse', 'HEAD')
+            root = Path(td)
+            source_repo = root / 'source'
+            source_repo.mkdir()
+            _git(source_repo, 'init', '-q')
+            _git(source_repo, 'config', 'user.name', 'AVPS test')
+            _git(source_repo, 'config', 'user.email', 'avps-test@example.invalid')
+            _git(source_repo, 'branch', '-M', 'main')
+            Path(source_repo, 'reviewer.yml').write_text('stale reviewer bytes\n', encoding='utf-8')
+            Path(source_repo, 'reviewer_test.py').write_text('stale reviewer test bytes\n', encoding='utf-8')
+            _git(source_repo, 'add', 'reviewer.yml', 'reviewer_test.py')
+            _git(source_repo, 'commit', '-m', 'historical stale reviewer')
+            historical = _git(source_repo, 'rev-parse', 'HEAD')
 
-            _git(repo, 'checkout', '-q', '-b', 'installed', historical)
-            Path(repo, 'reviewer.yml').write_text('installed reviewer bytes\n', encoding='utf-8')
-            Path(repo, 'reviewer_test.py').write_text('installed reviewer test bytes\n', encoding='utf-8')
-            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
-            _git(repo, 'commit', '-m', 'install reviewer')
-            installed = _git(repo, 'rev-parse', 'HEAD')
+            Path(source_repo, 'reviewer.yml').write_text('installed reviewer bytes\n', encoding='utf-8')
+            Path(source_repo, 'reviewer_test.py').write_text('installed reviewer test bytes\n', encoding='utf-8')
+            _git(source_repo, 'add', 'reviewer.yml', 'reviewer_test.py')
+            _git(source_repo, 'commit', '-m', 'accepted reviewer install')
+            installed = _git(source_repo, 'rev-parse', 'HEAD')
 
-            _git(repo, 'checkout', '-q', '-b', 'phase', historical)
-            _write_commit(repo, 'phase.txt', 'phase bytes\n', 'phase semantic work')
-            self.assertEqual(Path(repo, 'reviewer.yml').read_text(encoding='utf-8'), 'stale reviewer bytes\n')
+            remote = root / 'remote.git'
+            _git(root, 'clone', '--bare', str(source_repo), str(remote))
+            workspace = root / 'workspace'
+            _git(root, 'clone', str(remote), str(workspace))
+            _git(workspace, 'config', 'user.name', 'AVPS test')
+            _git(workspace, 'config', 'user.email', 'avps-test@example.invalid')
+            _git(workspace, 'checkout', '-q', '--detach', historical)
+            _write_commit(workspace, 'phase.txt', 'phase bytes\n', 'phase semantic work')
+            self.assertEqual(Path(workspace, 'reviewer.yml').read_text(encoding='utf-8'), 'stale reviewer bytes\n')
 
-            runner_temp = repo / 'runner-temp'
+            runner_temp = workspace / 'runner-temp'
             runner_temp.mkdir()
-            github_env = repo / 'github-env.txt'
-            phase_env = os.environ.copy()
-            phase_env.update({
+            github_env = workspace / 'github-env.txt'
+            base_env = os.environ.copy()
+            base_env.pop('GITHUB_TOKEN', None)
+            base_env.update({
                 'MODE': 'PHASE_B',
-                'EVENT_BASE': installed,
+                'EVENT_DEFAULT_BRANCH': 'main',
+                'EXPECTED_DEFAULT_BRANCH': 'main',
+                'HISTORICAL_PHASE_B_MERGE_BASE': historical,
+                'PHASE_A4_INSTALLED_MAIN': installed,
                 'SELF_PATH': 'reviewer.yml',
                 'INSTALL_TEST': 'reviewer_test.py',
                 'RUNNER_TEMP': str(runner_temp),
                 'GITHUB_ENV': str(github_env),
             })
-            result = _run_shell(source, repo, phase_env)
-            self.assertEqual(result.returncode, 0, f'base proof binding failed: {result.stderr}')
+            result = _run_shell(source, workspace, base_env)
+            self.assertEqual(result.returncode, 0, f'live-main proof binding failed: {result.stderr}\n{result.stdout}')
             values = _read_github_env(github_env)
+            self.assertEqual(values['LIVE_MAIN_SHA'], installed)
             reviewer_proof = Path(values['REVIEWER_PROOF_PATH'])
             install_test_proof = Path(values['INSTALL_TEST_PROOF_PATH'])
             self.assertEqual(reviewer_proof.read_text(encoding='utf-8'), 'installed reviewer bytes\n')
             self.assertEqual(install_test_proof.read_text(encoding='utf-8'), 'installed reviewer test bytes\n')
-            self.assertNotEqual(reviewer_proof.read_text(encoding='utf-8'), Path(repo, 'reviewer.yml').read_text(encoding='utf-8'))
+            self.assertNotEqual(reviewer_proof.read_text(encoding='utf-8'), Path(workspace, 'reviewer.yml').read_text(encoding='utf-8'))
+
+            wrong_event_default = base_env.copy()
+            wrong_event_default['EVENT_DEFAULT_BRANCH'] = 'trunk'
+            result = _run_shell(source, workspace, wrong_event_default)
+            self.assertNotEqual(result.returncode, 0, 'wrong event default branch unexpectedly passed')
+
+            _git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/dev')
+            result = _run_shell(source, workspace, base_env)
+            self.assertNotEqual(result.returncode, 0, 'wrong remote default ref unexpectedly passed')
+            _git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+
+            _git(source_repo, 'push', '--force', str(remote), f'{historical}:refs/heads/main')
+            result = _run_shell(source, workspace, base_env)
+            self.assertNotEqual(result.returncode, 0, 'stale historical proof source unexpectedly passed')
+            _git(source_repo, 'push', '--force', str(remote), f'{installed}:refs/heads/main')
+
+            historical_tree = _git(source_repo, 'show', '-s', '--format=%T', historical)
+            unrelated = _git(source_repo, 'commit-tree', historical_tree, '-m', 'non-descendant live main')
+            _git(source_repo, 'push', '--force', str(remote), f'{unrelated}:refs/heads/main')
+            result = _run_shell(source, workspace, base_env)
+            self.assertNotEqual(result.returncode, 0, 'non-descendant live main unexpectedly passed')
+            _git(source_repo, 'push', '--force', str(remote), f'{installed}:refs/heads/main')
+
+            _git(source_repo, 'checkout', '-q', 'main')
+            self.assertEqual(_git(source_repo, 'rev-parse', 'HEAD'), installed)
+            drift = _write_commit(source_repo, 'semantic.txt', 'forbidden drift\n', 'unrelated semantic drift')
+            _git(source_repo, 'push', '--force', str(remote), f'{drift}:refs/heads/main')
+            result = _run_shell(source, workspace, base_env)
+            self.assertNotEqual(result.returncode, 0, 'unrelated live-main path drift unexpectedly passed')
 
             github_env.write_text('', encoding='utf-8')
             install_env = os.environ.copy()
             install_env.update({
                 'MODE': 'INSTALLATION',
-                'EVENT_BASE': historical,
                 'SELF_PATH': 'reviewer.yml',
                 'INSTALL_TEST': 'reviewer_test.py',
                 'RUNNER_TEMP': str(runner_temp),
                 'GITHUB_ENV': str(github_env),
             })
-            result = _run_shell(source, repo, install_env)
+            result = _run_shell(source, workspace, install_env)
             self.assertEqual(result.returncode, 0, f'installation proof binding failed: {result.stderr}')
             values = _read_github_env(github_env)
+            self.assertEqual(values['LIVE_MAIN_SHA'], '')
             self.assertEqual(values['REVIEWER_PROOF_PATH'], 'reviewer.yml')
             self.assertEqual(values['INSTALL_TEST_PROOF_PATH'], 'reviewer_test.py')
 
-    def test_preserved_identity_exception_is_exact_deterministic_and_self_install_compatible(self):
+    def test_preserved_identity_exception_is_exact_and_live_main_is_separate_from_historical_base(self):
         for token in (
             'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909',
             'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0',
             'HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6',
+            'PHASE_A4_INSTALLED_MAIN: a35365a433d08b5d65ed2134187c814f476e5aad',
             'if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then',
             'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
             'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"',
-            'mapfile -t BASE_MERGES',
-            'test "${#BASE_MERGES[@]}" = 1',
-            'test "${BASE_MERGES[0]}" = "$EVENT_BASE"',
-            'test "${BASE_PARENTS[0]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
-            'expected-live-base-paths.txt',
-            'actual-phase-a4-candidate-paths.txt',
+            'git merge-base --is-ancestor "$EVENT_BASE" "$LIVE_MAIN_SHA"',
             'CURRENT="$(git rev-parse HEAD)"',
             'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
             'test "${#PARENTS[@]}" = 2',
@@ -250,8 +303,9 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         ):
             self.assertIn(token, self.text)
         self.assertNotIn('git rev-list --min-parents=2 "$FROZEN_PHASE_B_HEAD"..HEAD', self.text)
+        self.assertNotIn('git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"', self.text)
 
-    def test_phase_b_ancestry_modes_and_adverse_self_install_cases_execute(self):
+    def test_phase_b_ancestry_modes_and_adverse_cases_execute(self):
         _, source = _named_steps(self.text)['Bind Phase-B ancestry with one exact preserved-identity exception']
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -272,34 +326,32 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             phase_head = _write_commit(repo, 'phase.txt', 'phase\n', 'phase linear')
 
             _git(repo, 'checkout', '-q', '--detach', historical)
-            Path(repo, 'reviewer.yml').write_text('reviewer\n', encoding='utf-8')
-            Path(repo, 'reviewer_test.py').write_text('reviewer test\n', encoding='utf-8')
-            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py')
-            _git(repo, 'commit', '-m', 'phase a4 candidate')
-            phase_a4_head = _git(repo, 'rev-parse', 'HEAD')
-            phase_a4_tree = _git(repo, 'show', '-s', '--format=%T', phase_a4_head)
-            installed_main = _git(repo, 'commit-tree', phase_a4_tree, '-p', historical, '-p', phase_a4_head, '-m', 'install phase a4')
+            live_main = _write_commit(repo, 'reviewer.yml', 'installed reviewer\n', 'installed reviewer')
+            _git(repo, 'checkout', '-q', '--detach', live_main)
+            ordinary_head = _write_commit(repo, 'ordinary.txt', 'ordinary\n', 'ordinary phase b')
 
             base_env = os.environ.copy()
             base_env.update({
                 'PRESERVED_PHASE_B_REF': 'preserved/phase-b',
                 'FROZEN_PHASE_B_HEAD': frozen,
                 'HISTORICAL_PHASE_B_MERGE_BASE': historical,
-                'SELF_PATH': 'reviewer.yml',
-                'INSTALL_TEST': 'reviewer_test.py',
             })
 
-            _git(repo, 'checkout', '-q', '--detach', phase_a4_head)
             ordinary = base_env.copy()
-            ordinary.update({'EVENT_BASE': historical, 'EVENT_HEAD_REF': 'fresh/phase-b'})
+            ordinary.update({'EVENT_BASE': live_main, 'EVENT_HEAD_REF': 'fresh/phase-b', 'LIVE_MAIN_SHA': live_main})
             result = _run_shell(source, repo, ordinary)
-            self.assertEqual(result.returncode, 0, f'ordinary direct-child mode failed: {result.stderr}')
+            self.assertEqual(result.returncode, 0, f'ordinary live-main direct-child mode failed: {result.stderr}')
+
+            ordinary_wrong_live = ordinary.copy()
+            ordinary_wrong_live['LIVE_MAIN_SHA'] = historical
+            result = _run_shell(source, repo, ordinary_wrong_live)
+            self.assertNotEqual(result.returncode, 0, 'ordinary mode with non-live event base unexpectedly passed')
 
             _git(repo, 'checkout', '-q', '--detach', phase_head)
             preserved = base_env.copy()
-            preserved.update({'EVENT_BASE': installed_main, 'EVENT_HEAD_REF': 'preserved/phase-b'})
+            preserved.update({'EVENT_BASE': historical, 'EVENT_HEAD_REF': 'preserved/phase-b', 'LIVE_MAIN_SHA': live_main})
             result = _run_shell(source, repo, preserved)
-            self.assertEqual(result.returncode, 0, f'preserved post-install mode failed: {result.stderr}')
+            self.assertEqual(result.returncode, 0, f'preserved live-main-separated mode failed: {result.stderr}')
 
             wrong_base = preserved.copy()
             wrong_base['HISTORICAL_PHASE_B_MERGE_BASE'] = root
@@ -307,25 +359,24 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, 'wrong historical base unexpectedly passed')
 
             _git(repo, 'checkout', '-q', '--detach', historical)
-            Path(repo, 'reviewer.yml').write_text('reviewer extra\n', encoding='utf-8')
-            Path(repo, 'reviewer_test.py').write_text('reviewer test extra\n', encoding='utf-8')
-            Path(repo, 'extra.txt').write_text('forbidden\n', encoding='utf-8')
-            _git(repo, 'add', 'reviewer.yml', 'reviewer_test.py', 'extra.txt')
-            _git(repo, 'commit', '-m', 'bad phase a4 candidate')
-            bad_a4_head = _git(repo, 'rev-parse', 'HEAD')
-            bad_a4_tree = _git(repo, 'show', '-s', '--format=%T', bad_a4_head)
-            bad_installed_main = _git(repo, 'commit-tree', bad_a4_tree, '-p', historical, '-p', bad_a4_head, '-m', 'bad install')
+            other_event_base = _write_commit(repo, 'other.txt', 'other\n', 'other event base')
             _git(repo, 'checkout', '-q', '--detach', phase_head)
-            extra_path = preserved.copy()
-            extra_path['EVENT_BASE'] = bad_installed_main
-            result = _run_shell(source, repo, extra_path)
-            self.assertNotEqual(result.returncode, 0, 'extra Phase-A4 path unexpectedly passed')
+            event_base_not_in_live = preserved.copy()
+            event_base_not_in_live['EVENT_BASE'] = other_event_base
+            result = _run_shell(source, repo, event_base_not_in_live)
+            self.assertNotEqual(result.returncode, 0, 'event base not ancestral to bound live main unexpectedly passed')
 
             phase_tree = _git(repo, 'show', '-s', '--format=%T', phase_head)
             extra_merge = _git(repo, 'commit-tree', phase_tree, '-p', phase_head, '-p', historical, '-m', 'extra phase merge')
             _git(repo, 'checkout', '-q', '--detach', extra_merge)
             result = _run_shell(source, repo, preserved)
             self.assertNotEqual(result.returncode, 0, 'extra Phase-B merge unexpectedly passed')
+
+            _git(repo, 'checkout', '-q', '--detach', historical)
+            replay = _write_commit(repo, 'replay.txt', 'replay\n', 'replayed identity')
+            replay_env = preserved.copy()
+            result = _run_shell(source, repo, replay_env)
+            self.assertNotEqual(result.returncode, 0, 'Phase-B replay not descending from frozen identity unexpectedly passed')
 
     def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)
@@ -543,7 +594,7 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
     def test_reviewer_contains_no_authorizing_or_science_runtime_surface(self):
         permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]
         self.assertNotIn(': write', permissions)
-        for token in ('gh workflow '+'run', 'gh api -X '+'POST', 'command -v '+'uvspec', 'rte_solver '+'mystic', 'mc_'+'photons 20000000'):
+        for token in ('gh workflow '+'run', 'gh api -X '+'POST', 'git '+'push', 'command -v '+'uvspec', 'rte_solver '+'mystic', 'mc_'+'photons 20000000'):
             self.assertNotIn(token, self.text)
         self.assertIn('no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority', self.text)
 

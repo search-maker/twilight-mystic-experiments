@@ -65,8 +65,7 @@ def fake_control_plane(rows: list[dict], *, main_before: str = MAIN_SHA, main_af
     after_count = len(rows) if issue_count_after is None else issue_count_after
 
     def fake_json(url: str, token: str):
-        self_token = token
-        if self_token != "test-token":
+        if token != "test-token":
             raise AssertionError("unexpected token")
         if url == M.REPO_URL:
             counts["repo"] += 1
@@ -87,10 +86,11 @@ def fake_control_plane(rows: list[dict], *, main_before: str = MAIN_SHA, main_af
 
 
 class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
-    def invoke(self, rows: list[dict], **fake_kwargs):
+    def invoke(self, rows: list[dict], *, second_rows: list[dict] | None = None, **fake_kwargs):
         fake_json = fake_control_plane(rows, **fake_kwargs)
+        snapshots = [rows, rows if second_rows is None else second_rows]
         with mock.patch.object(M, "_github_json", side_effect=fake_json), \
-             mock.patch.object(M, "_complete_issue_comments", return_value=rows), \
+             mock.patch.object(M, "_complete_issue_comments", side_effect=snapshots), \
              mock.patch.dict(os.environ, {}, clear=True):
             return M.live_preflight(
                 authorization_comment=AUTH,
@@ -107,7 +107,9 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
         self.assertEqual(out["issue60_updated_at"], UPDATED_AT)
         self.assertTrue(out["github_control_plane_read_performed"])
         self.assertTrue(out["live_main_double_read_stable"])
-        self.assertTrue(out["live_issue_double_read_stable"])
+        self.assertTrue(out["live_issue_metadata_double_read_stable"])
+        self.assertTrue(out["live_issue_ledger_double_read_stable"])
+        self.assertEqual(out["live_issue_ledger_sha256"], out["issue60_ledger_sha256"])
         self.assertFalse(out["arm_network_access_performed"])
         self.assertFalse(out["arm_credentials_read"])
         self.assertFalse(out["e0_execution_authorized_by_this_receipt"])
@@ -130,6 +132,20 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
         with self.assertRaises(M.LivePreflightRefusal):
             self.invoke(rows, issue_count_before=len(rows) + 1, issue_count_after=len(rows) + 1)
 
+    def test_refuses_comment_body_edit_between_complete_snapshots_even_if_metadata_stable(self):
+        first = comments()
+        second = [dict(row) for row in first]
+        second[1]["body"] = "ARM_OWNER::QUERY_ONLY_SUCCESSOR_READY_FOR_REVIEW\nedited control body"
+        with self.assertRaises(M.LivePreflightRefusal):
+            self.invoke(first, second_rows=second)
+
+    def test_refuses_comment_identity_change_between_complete_snapshots_even_if_count_stable(self):
+        first = comments()
+        second = [dict(row) for row in first]
+        second[-1]["id"] = AUTH + 1
+        with self.assertRaises(M.LivePreflightRefusal):
+            self.invoke(first, second_rows=second)
+
     def test_refuses_default_branch_drift(self):
         with self.assertRaises(M.LivePreflightRefusal):
             self.invoke(comments(), default_branch_after="other")
@@ -143,7 +159,7 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
         rows = comments()
         fake_json = fake_control_plane(rows)
         with mock.patch.object(M, "_github_json", side_effect=fake_json), \
-             mock.patch.object(M, "_complete_issue_comments", return_value=rows), \
+             mock.patch.object(M, "_complete_issue_comments", side_effect=[rows, rows]), \
              mock.patch.dict(os.environ, {"ARM_USER_ID": "present"}, clear=True):
             with self.assertRaises(M.LivePreflightRefusal):
                 M.live_preflight(

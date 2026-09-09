@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Zero-runtime pre-dispatch governance preflight for a future ARM query-only successor.
 
-This is control-plane/result-blind only. It consumes an Issue #60 comments
-snapshot plus the planned exact main SHA and proves that the claimed Coordinator
-query-only authorization is the latest ARM governance, is accepted by the exact
-current query-only stress classifier, and explicitly binds the intended
-workflow_dispatch/main/attempt-1 identity. It never reads ARM credentials,
-queries/downloads ARM, opens native data, or grants science authority.
+This is control-plane/result-blind only. It consumes a COMPLETE Issue #60
+comments snapshot plus separately fresh issue-tail metadata and the planned exact
+main SHA. It proves that the claimed Coordinator query-only authorization is the
+latest ARM governance, is accepted by the exact current query-only stress
+classifier, and explicitly binds the intended workflow_dispatch/main/attempt-1
+identity. It never reads ARM credentials, queries/downloads ARM, opens native
+data, or grants science authority.
 """
 from __future__ import annotations
 
@@ -45,6 +46,12 @@ def _sha40(value: str, where: str) -> str:
     return value.lower()
 
 
+def _positive_int(value: Any, where: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise PreflightRefusal(f"{where} must be positive integer")
+    return value
+
+
 def _canonical_rows(comments: Any) -> tuple[list[dict[str, Any]], str]:
     if not isinstance(comments, list) or not comments:
         raise PreflightRefusal("Issue #60 comments snapshot must be a nonempty list")
@@ -68,11 +75,18 @@ def preflight(
     authorization_comment: int,
     authorization_title: str,
     exact_main_sha: str,
+    expected_issue60_comment_count: int,
+    expected_issue60_latest_comment_id: int,
 ) -> dict[str, Any]:
     main_sha = _sha40(exact_main_sha, "exact_main_sha")
     rows, ledger_sha = _canonical_rows(comments)
-    if not isinstance(authorization_comment, int) or isinstance(authorization_comment, bool) or authorization_comment <= 0:
-        raise PreflightRefusal("authorization_comment must be positive integer")
+    expected_count = _positive_int(expected_issue60_comment_count, "expected_issue60_comment_count")
+    expected_latest = _positive_int(expected_issue60_latest_comment_id, "expected_issue60_latest_comment_id")
+    if len(rows) != expected_count:
+        raise PreflightRefusal("Issue #60 comments snapshot count does not match fresh issue metadata")
+    if rows[-1]["id"] != expected_latest:
+        raise PreflightRefusal("Issue #60 comments snapshot tail does not match fresh latest-comment identity")
+    _positive_int(authorization_comment, "authorization_comment")
     if not isinstance(authorization_title, str) or "\n" in authorization_title:
         raise PreflightRefusal("authorization_title must be one exact line")
 
@@ -156,6 +170,8 @@ def main() -> int:
     p.add_argument("--authorization-comment", type=int, required=True)
     p.add_argument("--authorization-title", required=True)
     p.add_argument("--exact-main-sha", required=True)
+    p.add_argument("--expected-issue60-comment-count", type=int, required=True)
+    p.add_argument("--expected-issue60-latest-comment-id", type=int, required=True)
     a = p.parse_args()
     try:
         comments = json.loads(a.issue60_comments.read_text(encoding="utf-8"))
@@ -164,6 +180,8 @@ def main() -> int:
             authorization_comment=a.authorization_comment,
             authorization_title=a.authorization_title,
             exact_main_sha=a.exact_main_sha,
+            expected_issue60_comment_count=a.expected_issue60_comment_count,
+            expected_issue60_latest_comment_id=a.expected_issue60_latest_comment_id,
         )
     except (OSError, json.JSONDecodeError, PreflightRefusal) as exc:
         raise SystemExit(f"REFUSAL: {exc}") from None

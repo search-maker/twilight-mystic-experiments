@@ -64,14 +64,23 @@ def comments(*, title: str = AUTH_TITLE, body_main_sha: str = MAIN_SHA, later_ar
     return rows
 
 
+def invoke(rows: list[dict], *, authorization_comment: int = AUTH,
+           authorization_title: str = AUTH_TITLE, exact_main_sha: str = MAIN_SHA,
+           expected_count: int | None = None, expected_latest: int | None = None):
+    return M.preflight(
+        rows,
+        authorization_comment=authorization_comment,
+        authorization_title=authorization_title,
+        exact_main_sha=exact_main_sha,
+        expected_issue60_comment_count=len(rows) if expected_count is None else expected_count,
+        expected_issue60_latest_comment_id=rows[-1]["id"] if expected_latest is None else expected_latest,
+    )
+
+
 class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
     def test_passes_exact_bound_authorization(self):
-        out = M.preflight(
-            comments(),
-            authorization_comment=AUTH,
-            authorization_title=AUTH_TITLE,
-            exact_main_sha=MAIN_SHA,
-        )
+        rows = comments()
+        out = invoke(rows)
         self.assertEqual(out["status"], M.STATUS)
         self.assertEqual(out["stress_classifier_disposition"], "allowed")
         self.assertEqual(out["exact_main_sha"], MAIN_SHA)
@@ -79,51 +88,85 @@ class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
         self.assertEqual(out["event_name"], "workflow_dispatch")
         self.assertEqual(out["run_attempt"], 1)
         self.assertTrue(out["one_shot"])
+        self.assertEqual(out["issue60_comment_count"], len(rows))
+        self.assertEqual(out["issue60_latest_comment_id"], rows[-1]["id"])
         self.assertFalse(out["arm_network_access_performed"])
         self.assertFalse(out["native_file_download_performed"])
         self.assertFalse(out["protected_sws_sasze_values_read"])
         self.assertFalse(out["e0_execution_authorized_by_this_receipt"])
 
-    def test_refuses_wrong_exact_main_binding(self):
+    def test_refuses_truncated_snapshot_against_fresh_full_metadata(self):
+        full = comments(later_arm=True)
+        truncated = full[:-1]
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha="b" * 40)
+            invoke(truncated, expected_count=len(full), expected_latest=full[-1]["id"])
+
+    def test_refuses_comment_count_metadata_drift(self):
+        rows = comments()
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_count=len(rows) + 1)
+
+    def test_refuses_latest_comment_metadata_drift(self):
+        rows = comments()
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_latest=rows[-1]["id"] + 1)
+
+    def test_refuses_wrong_exact_main_binding(self):
+        rows = comments()
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, exact_main_sha="b" * 40)
 
     def test_refuses_missing_workflow_path(self):
+        rows = comments(include_path=False)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(include_path=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
 
     def test_refuses_missing_workflow_dispatch(self):
+        rows = comments(include_event=False)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(include_event=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
 
     def test_refuses_missing_attempt1_or_one_shot(self):
+        rows = comments(include_attempt=False)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(include_attempt=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
+        rows = comments(include_one_shot=False)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(include_one_shot=False), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
 
     def test_refuses_title_mismatch(self):
+        rows = comments()
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE + "__DRIFT", exact_main_sha=MAIN_SHA)
+            invoke(rows, authorization_title=AUTH_TITLE + "__DRIFT")
 
     def test_refuses_positive_looking_but_stress_ambiguous_title(self):
         title = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_ATTEMPT1_AUTHORIZED"
+        rows = comments(title=title)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(title=title), authorization_comment=AUTH, authorization_title=title, exact_main_sha=MAIN_SHA)
+            invoke(rows, authorization_title=title)
 
     def test_refuses_nonlatest_arm_authorization(self):
+        rows = comments(later_arm=True)
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(later_arm=True), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
 
     def test_refuses_unmatched_write_quiet(self):
         rows = comments()
         rows.append({"id": AUTH + 1, "body": "WRITE_QUIET_BEGIN stage=synthetic"})
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(rows, authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha=MAIN_SHA)
+            invoke(rows)
 
     def test_refuses_malformed_main_sha(self):
+        rows = comments()
         with self.assertRaises(M.PreflightRefusal):
-            M.preflight(comments(), authorization_comment=AUTH, authorization_title=AUTH_TITLE, exact_main_sha="not-a-sha")
+            invoke(rows, exact_main_sha="not-a-sha")
+
+    def test_refuses_invalid_expected_issue_metadata(self):
+        rows = comments()
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_count=0)
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_latest=0)
 
 
 if __name__ == "__main__":

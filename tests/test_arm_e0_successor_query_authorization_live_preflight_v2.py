@@ -98,6 +98,14 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
                 token="test-token",
             )
 
+    def invoke_auto(self, rows: list[dict], *, second_rows: list[dict] | None = None, **fake_kwargs):
+        fake_json = fake_control_plane(rows, **fake_kwargs)
+        snapshots = [rows, rows if second_rows is None else second_rows]
+        with mock.patch.object(M, "_github_json", side_effect=fake_json), \
+             mock.patch.object(M, "_complete_issue_comments", side_effect=snapshots), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            return M.live_preflight(token="test-token")
+
     def test_passes_stable_double_read_and_bound_v1(self):
         rows = comments()
         out = self.invoke(rows)
@@ -110,9 +118,38 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
         self.assertTrue(out["live_issue_metadata_double_read_stable"])
         self.assertTrue(out["live_issue_ledger_double_read_stable"])
         self.assertEqual(out["live_issue_ledger_sha256"], out["issue60_ledger_sha256"])
+        self.assertFalse(out["authorization_identity_derived_from_stable_live_ledger"])
         self.assertFalse(out["arm_network_access_performed"])
         self.assertFalse(out["arm_credentials_read"])
         self.assertFalse(out["e0_execution_authorized_by_this_receipt"])
+
+    def test_auto_derives_latest_arm_authorization_from_same_stable_ledger(self):
+        out = self.invoke_auto(comments())
+        self.assertEqual(out["authorization_comment"], AUTH)
+        self.assertEqual(out["authorization_title"], AUTH_TITLE)
+        self.assertTrue(out["authorization_identity_derived_from_stable_live_ledger"])
+        self.assertEqual(out["latest_arm_relevant_comment_id"], AUTH)
+
+    def test_auto_refuses_later_generic_coordinator_arm_false_note(self):
+        rows = comments()
+        rows.append({
+            "id": AUTH + 100,
+            "body": "\n".join([
+                "COORDINATOR::AVPS_PHASE_B_STILL_PENDING",
+                "ARM: replacement authenticated-query authority remains FALSE until Phase-B is installed/postmerge-stable.",
+            ]),
+        })
+        with self.assertRaises(M.LivePreflightRefusal):
+            self.invoke_auto(rows)
+
+    def test_refuses_half_explicit_authorization_identity(self):
+        rows = comments()
+        fake_json = fake_control_plane(rows)
+        with mock.patch.object(M, "_github_json", side_effect=fake_json), \
+             mock.patch.object(M, "_complete_issue_comments", side_effect=[rows, rows]), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(M.LivePreflightRefusal):
+                M.live_preflight(authorization_comment=AUTH, token="test-token")
 
     def test_refuses_main_move_during_live_readback(self):
         with self.assertRaises(M.LivePreflightRefusal):

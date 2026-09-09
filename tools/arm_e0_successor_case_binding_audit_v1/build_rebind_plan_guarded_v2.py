@@ -3,9 +3,10 @@
 
 This wrapper strengthens the existing v1 planner by binding the claimed future
 query-only authorization to the exact ARM-relevant governance set and complete
-Issue #60 ledger hash recorded in the same zero-runtime stress receipt. It
-performs no ARM access, credential read, native download/opening, protected-value
-read, source rebind, or science execution.
+Issue #60 ledger hash recorded in the same zero-runtime stress receipt, while
+also requiring compatibility with the exact current query-only stress title
+classifier. It performs no ARM access, credential read, native download/opening,
+protected-value read, source rebind, or science execution.
 """
 from __future__ import annotations
 
@@ -17,11 +18,19 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]
 V1_PATH = ROOT / "build_rebind_plan_v1.py"
+STRESS_PATH = REPO_ROOT / "tools" / "arm_ena_sws_query_only_availability_v1" / "stress.py"
+
 SPEC = importlib.util.spec_from_file_location("arm_e0_successor_rebind_plan_v1", V1_PATH)
 assert SPEC and SPEC.loader
 P = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(P)
+
+STRESS_SPEC = importlib.util.spec_from_file_location("arm_query_only_exact_stress", STRESS_PATH)
+assert STRESS_SPEC and STRESS_SPEC.loader
+S = importlib.util.module_from_spec(STRESS_SPEC)
+STRESS_SPEC.loader.exec_module(S)
 
 PURPOSE = "ARM_ENA_SWS_V1_E0_SUCCESSOR_RESULT_BLIND_REBIND_PLAN_V2"
 STATUS = "RESULT_BLIND_SUCCESSOR_REBIND_PLAN_GUARDED_READY"
@@ -84,6 +93,15 @@ def _canonical_issue60_snapshot(snapshot: Any) -> tuple[list[dict[str, Any]], st
 
 def _first_nonempty(body: str) -> str:
     return next((line.strip() for line in str(body or "").splitlines() if line.strip()), "")
+
+
+def _require_current_stress_classifier_acceptance(title: str) -> None:
+    try:
+        disposition = S._direct_arm_control_disposition(title)
+    except S.StressFailure as exc:
+        raise GuardedPlanRefusal(f"query authorization title is not admissible to current stress classifier: {exc}") from None
+    if disposition != "allowed":
+        raise GuardedPlanRefusal("query authorization title is adverse to current stress classifier")
 
 
 def verify_query_authority_binding(
@@ -156,6 +174,7 @@ def verify_query_authority_binding(
         raise GuardedPlanRefusal("query authorization title carries adverse/false/request/reuse semantics")
     if not any(marker in upper for marker in POSITIVE_AUTH_TITLE_MARKERS):
         raise GuardedPlanRefusal("query authorization title lacks explicit positive authorization semantics")
+    _require_current_stress_classifier_acceptance(actual_title)
 
     return {
         "schema": 2,
@@ -170,6 +189,7 @@ def verify_query_authority_binding(
         "query_authorization_is_latest_arm_governance": True,
         "query_authorization_present_in_stress_ledger": True,
         "query_authorization_title_exactly_bound": True,
+        "query_authorization_current_stress_classifier_compatible": True,
         "legacy_authority_reused": False,
         "arm_network_access_performed": False,
         "arm_credentials_read": False,
@@ -203,6 +223,7 @@ def build_guarded_plan(*, issue60_comments_snapshot: Any, **kwargs: Any) -> dict
     out["query_authority_binding"] = proof
     out["query_authorization_bound_to_stress_ledger"] = True
     out["query_authorization_title_exactly_bound"] = True
+    out["query_authorization_current_stress_classifier_compatible"] = True
     out["query_authorization_is_latest_arm_governance"] = True
     return out
 

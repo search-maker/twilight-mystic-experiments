@@ -20,7 +20,7 @@ DISPATCH_REF = "refs/heads/main"
 BASELINE = 5000000000
 PREP_COMMENT = 5000000001
 AUTH_COMMENT = 6000000001
-AUTH_TITLE = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_AUTHORIZED"
+AUTH_TITLE = "COORDINATOR::ARM_QUERY_ONLY_SUCCESSOR_AUTHORIZED__ONE_SHOT_ATTEMPT1"
 
 
 def ordered_cases() -> list[str]:
@@ -152,10 +152,12 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
         self.assertEqual(out["status"], G.STATUS)
         self.assertTrue(out["query_authorization_bound_to_stress_ledger"])
         self.assertTrue(out["query_authorization_title_exactly_bound"])
+        self.assertTrue(out["query_authorization_current_stress_classifier_compatible"])
         self.assertTrue(out["query_authorization_is_latest_arm_governance"])
         proof = out["query_authority_binding"]
         self.assertEqual(proof["query_authorization_comment"], AUTH_COMMENT)
         self.assertEqual(proof["query_authorization_title"], AUTH_TITLE)
+        self.assertTrue(proof["query_authorization_current_stress_classifier_compatible"])
         self.assertFalse(proof["legacy_authority_reused"])
         self.assertFalse(out["plan_is_authorization"])
         self.assertFalse(out["protected_sws_sasze_values_read"])
@@ -163,9 +165,19 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
         self.assertFalse(out["mystic_science_authorized"])
         self.assertFalse(out["production_authorized"])
 
+    def test_exact_proposed_authority_title_is_current_stress_compatible(self):
+        self.assertEqual(G.S._direct_arm_control_disposition(AUTH_TITLE), "allowed")
+
+    def test_refuses_title_positive_here_but_ambiguous_to_current_stress(self):
+        title = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_AUTHORIZED"
+        comments = make_comments(auth_title=title)
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress, query_authorization_title=title)
+
     def test_refuses_supplied_title_not_matching_exact_comment(self):
         with self.assertRaises(G.GuardedPlanRefusal):
-            build(query_authorization_title="COORDINATOR::ARM_DIFFERENT_QUERY_AUTHORIZED")
+            build(query_authorization_title="COORDINATOR::ARM_QUERY_ONLY_SUCCESSOR_AUTHORIZED__DIFFERENT")
 
     def test_refuses_tampered_issue60_snapshot_hash(self):
         comments = make_comments()
@@ -194,13 +206,13 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
             build(issue60_comments_snapshot=comments, stress_receipt=stress)
 
     def test_refuses_non_arm_coordinator_title(self):
-        comments = make_comments(auth_title="COORDINATOR::AVPS_QUERY_ONLY_AUTHORIZED")
+        comments = make_comments(auth_title="COORDINATOR::AVPS_QUERY_ONLY_SUCCESSOR_AUTHORIZED")
         stress = make_stress(comments=comments)
         with self.assertRaises(G.GuardedPlanRefusal):
             build(
                 issue60_comments_snapshot=comments,
                 stress_receipt=stress,
-                query_authorization_title="COORDINATOR::AVPS_QUERY_ONLY_AUTHORIZED",
+                query_authorization_title="COORDINATOR::AVPS_QUERY_ONLY_SUCCESSOR_AUTHORIZED",
             )
 
     def test_refuses_false_authority_title(self):

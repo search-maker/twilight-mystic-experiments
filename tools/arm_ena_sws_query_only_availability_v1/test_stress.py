@@ -206,6 +206,39 @@ class StressTests(unittest.TestCase):
         with self.assertRaises(S.StressFailure):
             S.audit_arm_governance(comments)
 
+    def test_exact_current_predispatch_authorization_request_title_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5596023369,
+                'ARM_OWNER::FINAL_MAIN_PREDISPATCH_REALITY_CHECK_CLEAN__REPLACEMENT_QUERY_ONLY_AUTHORIZATION_REQUEST\n\n'
+                'CONTROL_ONLY / RESULT_BLIND / NON_SCIENCE. Authenticated authority is requested, not self-granted.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_current_predispatch_authorization_request_nearby_revoked_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::FINAL_MAIN_PREDISPATCH_REALITY_CHECK_CLEAN__REPLACEMENT_QUERY_ONLY_AUTHORIZATION_REQUEST__REVOKED',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_current_predispatch_authorization_request_nearby_variant_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::FINAL_MAIN_PREDISPATCH_REALITY_CHECK_CLEAN__REPLACEMENT_QUERY_ONLY_AUTHORIZATION_REQUEST__SECOND_ATTEMPT',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
     def test_positive_vocabulary_in_actual_nonadmissibility_still_refuses(self):
         comments = [
             baseline(),

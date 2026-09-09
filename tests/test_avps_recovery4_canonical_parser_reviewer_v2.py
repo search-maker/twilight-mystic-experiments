@@ -93,17 +93,43 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         self.assertIn('install_test not in changed', self.text)
         self.assertIn('installation-mode execution is installation evidence only', self.text)
 
-    def test_exact_head_base_ancestry_and_phase_b_direct_child_are_bound(self):
+    def test_exact_head_base_and_fresh_phase_b_direct_child_are_bound(self):
         for token in (
             'test "$GITHUB_RUN_ATTEMPT" = 1',
             'test "$(git rev-parse HEAD)" = "$EVENT_HEAD"',
             'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"',
-            'git rev-list --min-parents=2 "$EVENT_BASE"..HEAD',
+            'Bind installation ancestry as merge-free',
+            'test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"',
             "if: env.MODE == 'PHASE_B'",
+            'else',
             'test "${#PARENTS[@]}" = 1',
             'test "${PARENTS[0]}" = "$EVENT_BASE"',
         ):
             self.assertIn(token, self.text)
+
+    def test_preserved_identity_exception_is_exact_deterministic_and_first_parent_linear(self):
+        for token in (
+            'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909',
+            'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0',
+            'if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then',
+            'git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD',
+            'CURRENT="$(git rev-parse HEAD)"',
+            'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
+            'git cat-file -p "$CURRENT"',
+            'if [ "${#PARENTS[@]}" = 1 ]; then',
+            'CURRENT="${PARENTS[0]}"',
+            'test "${#PARENTS[@]}" = 2',
+            'test -z "$MERGE"',
+            'test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"',
+            'test "${PARENTS[1]}" = "$EVENT_BASE"',
+            'MERGE="$CURRENT"',
+            'test -n "$MERGE"',
+            'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE"',
+            'git show -s --format=%T "$MERGE"',
+            'test "$ACTUAL_TREE" = "$EXPECTED_TREE"',
+        ):
+            self.assertIn(token, self.text)
+        self.assertNotIn('git rev-list --min-parents=2 "$FROZEN_PHASE_B_HEAD"..HEAD', self.text)
 
     def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)

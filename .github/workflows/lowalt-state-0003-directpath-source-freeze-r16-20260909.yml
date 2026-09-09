@@ -1,0 +1,113 @@
+name: LowAlt STATE-0003 R16 direct-path source binding and fresh matrix freeze
+
+on:
+  push:
+    branches:
+      - research/lowalt-state0003-directpath-source-freeze-r16-20260909
+
+permissions:
+  contents: read
+
+jobs:
+  bind-and-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+      EXPECTED_SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bind exact source and freeze wholly fresh nonprotected matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/lowalt-state0003-r16"
+          OUT="$ROOT/evidence"
+          SRC="$ROOT/source"
+          mkdir -p "$OUT" "$SRC"
+
+          curl -fsS -L --max-redirs 10 --compressed \
+            -D "$OUT/http-headers.txt" -o "$ROOT/source-entity.bin" \
+            -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' \
+            "$SOURCE_URL" > "$OUT/http-route.txt"
+          SHA=$(sha256sum "$ROOT/source-entity.bin" | awk '{print $1}')
+          printf '%s\n' "$SHA" > "$OUT/source-entity-sha256.txt"
+          test "$SHA" = "$EXPECTED_SOURCE_SHA256"
+          tar -xf "$ROOT/source-entity.bin" -C "$SRC"
+          SR=$(find "$SRC" -type f -path '*/libsrc_f/dpmisc.f' -printf '%h/..\n' | head -n1)
+          SR=$(readlink -f "$SR")
+          test -f "$SR/libsrc_f/dpmisc.f"
+          test -f "$SR/libsrc_f/dpsdisort.f"
+
+          cp "$SR/libsrc_f/dpmisc.f" "$OUT/dpmisc.f"
+          cp "$SR/libsrc_f/dpsdisort.f" "$OUT/dpsdisort.f"
+          sha256sum "$OUT/dpmisc.f" "$OUT/dpsdisort.f" > "$OUT/directpath-source-files-sha256.txt"
+
+          grep -RniE 'sdisort|dpsdisort|geofast|chpman2|opathfast|optical_path_fast' "$SR/src" "$SR/libsrc_c" "$SR/libsrc_f" \
+            > "$OUT/directpath-call-sites.txt" 2>/dev/null || true
+          grep -RniE 'r_earth|earth.*radius|6370|6371|radius.*earth' "$SR/src" "$SR/libsrc_c" "$SR/libsrc_f" \
+            > "$OUT/earth-radius-hits.txt" 2>/dev/null || true
+          grep -RniE 'dtaucpr|dtauc|ssalb|utau|zd\(|zd\[|zout|altitude|aerosol|lyrcut|abscut|taup|rfl(dir|_dir)|umu0|fbeam' "$SR/src" "$SR/libsrc_c" "$SR/libsrc_f" \
+            > "$OUT/preprocess-and-direct-hits.txt" 2>/dev/null || true
+
+          cat > "$OUT/fresh-nonprotected-matrix.csv" <<'CSV'
+          identity,role,target_altitude_deg,sza_deg,wavelength_nm,observer_altitude_km,aerosol_mode
+          r16-srcdev-0001,development,0.38,89.62,413,0.18,OFF
+          r16-srcdev-0002,development,0.91,89.09,487,0.73,DEFAULT
+          r16-srcdev-0003,development,1.46,88.54,557,1.21,OFF
+          r16-srcdev-0004,development,2.08,87.92,621,0.31,DEFAULT
+          r16-srcdev-0005,development,2.77,87.23,701,1.88,OFF
+          r16-srcdev-0006,development,3.36,86.64,445,2.24,DEFAULT
+          r16-srcdev-0007,development,4.09,85.91,589,0.96,OFF
+          r16-srcdev-0008,development,4.86,85.14,763,1.52,DEFAULT
+          r16-srcaud-0009,audit,1.19,88.81,672,2.07,DEFAULT
+          r16-srcaud-0010,audit,3.73,86.27,526,0.54,OFF
+          CSV
+          sed -i 's/^          //' "$OUT/fresh-nonprotected-matrix.csv"
+          sha256sum "$OUT/fresh-nonprotected-matrix.csv" > "$OUT/fresh-nonprotected-matrix-sha256.txt"
+
+          cat > "$OUT/frozen-contract.json" <<'JSON'
+          {
+            "state": "STATE-0003",
+            "gate": "R16-FRESH-SOURCE-EQUIVALENCE-TRAINING-FREEZE",
+            "scope": "WHOLLY_FRESH_NONPROTECTED",
+            "production_floor_deg": 5.0,
+            "production_below_floor": "FAIL_CLOSED_UNCHANGED",
+            "development_rows": 8,
+            "audit_rows": 2,
+            "audit_open_rule": "DO_NOT_OPEN_UNTIL_ALL_8_DEVELOPMENT_ROWS_PASS_THE_FROZEN_CONTRACT",
+            "reference": "exact pinned libRadtran governing direct-path implementation/source and final pre-dispatch handoff",
+            "integer_structural_fields": "EXACT",
+            "fac_fac2_chp2_ch_abs_or_rel_tolerance": 1e-10,
+            "direct_float64_abs_or_rel_tolerance": 1e-12,
+            "exact_zero_preserved": true,
+            "nan_or_inf": "FAIL",
+            "post_result_retuning": "FORBIDDEN",
+            "protected_residual_selection": "FORBIDDEN",
+            "Taylor_Jerusalem_selection_or_fit": "FORBIDDEN",
+            "consumed_R12_0001_0002": "FORBIDDEN_TO_RERUN_OR_REUSE",
+            "R12_audit_0007_0008": "SEALED",
+            "solver_executed_by_this_freeze": false,
+            "science_seed_or_ordinal_allocated": false
+          }
+          JSON
+          sha256sum "$OUT/frozen-contract.json" > "$OUT/frozen-contract-sha256.txt"
+
+          cat > "$OUT/receipt.txt" <<EOF
+          STATE_0003_R16_EXACT_SOURCE_BINDING_AND_FRESH_MATRIX_FREEZE_PASS
+          source_entity_sha256=$SHA
+          solver_executed=false
+          protected_result_opened=false
+          science_identity_allocated=false
+          production_below_5deg=fail_closed_unchanged
+          results_opened_from_fresh_matrix=false
+          EOF
+          sed -i 's/^          //' "$OUT/receipt.txt"
+
+      - name: Upload immutable R16 source-binding freeze
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-state0003-r16-directpath-source-and-fresh-matrix-freeze
+          path: ${{ runner.temp }}/lowalt-state0003-r16/evidence
+          if-no-files-found: error
+          retention-days: 90

@@ -37,6 +37,7 @@ jobs:
       LEGACY_PARSER_TEST: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
       PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909
       FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0
+      HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,13 +55,18 @@ jobs:
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = pull_request
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$EVENT_BASE_REF" = main
           test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
-          test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
+          if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then
+            test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"
+          else
+            test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
+          fi
           git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
           python - <<'PY'
           import os
@@ -79,6 +85,29 @@ jobs:
               raise SystemExit('AVPS canonical parser reviewer refuses changed-path scope: '+repr(sorted(changed)))
           with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
           PY
+
+      - name: Bind reviewer proof bytes to authoritative source
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = PHASE_B ]; then
+            REVIEWER_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2.yml"
+            INSTALL_TEST_PROOF_PATH="$RUNNER_TEMP/avps-installed-reviewer-v2-test.py"
+            git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"
+            git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"
+          elif [ "$MODE" = INSTALLATION ]; then
+            REVIEWER_PROOF_PATH="$SELF_PATH"
+            INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"
+          else
+            echo "unbound reviewer mode: ${MODE:-}" >&2
+            exit 1
+          fi
+          {
+            echo "REVIEWER_PROOF_PATH=$REVIEWER_PROOF_PATH"
+            echo "INSTALL_TEST_PROOF_PATH=$INSTALL_TEST_PROOF_PATH"
+          } >> "$GITHUB_ENV"
 
       - name: Bind installation ancestry as merge-free
         if: env.MODE == 'INSTALLATION'
@@ -99,6 +128,25 @@ jobs:
           set -euo pipefail
           if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then
             git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD
+            test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"
+            git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"
+
+            if [ "$EVENT_BASE" != "$HISTORICAL_PHASE_B_MERGE_BASE" ]; then
+              mapfile -t BASE_MERGES < <(git rev-list --min-parents=2 "$HISTORICAL_PHASE_B_MERGE_BASE".."$EVENT_BASE")
+              test "${#BASE_MERGES[@]}" = 1
+              test "${BASE_MERGES[0]}" = "$EVENT_BASE"
+              mapfile -t BASE_PARENTS < <(git cat-file -p "$EVENT_BASE" | sed -n 's/^parent //p')
+              test "${#BASE_PARENTS[@]}" = 2
+              test "${BASE_PARENTS[0]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"
+              test -z "$(git rev-list --min-parents=2 "$HISTORICAL_PHASE_B_MERGE_BASE".."${BASE_PARENTS[1]}")"
+              printf '%s\n' "$SELF_PATH" "$INSTALL_TEST" | sort > expected-live-base-paths.txt
+              git diff --name-only "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE" | sort > actual-live-base-paths.txt
+              diff -u expected-live-base-paths.txt actual-live-base-paths.txt
+              git diff --name-only "$HISTORICAL_PHASE_B_MERGE_BASE" "${BASE_PARENTS[1]}" | sort > actual-phase-a4-candidate-paths.txt
+              diff -u expected-live-base-paths.txt actual-phase-a4-candidate-paths.txt
+              test "$(git show -s --format=%T "$EVENT_BASE")" = "$(git show -s --format=%T "${BASE_PARENTS[1]}")"
+            fi
+
             CURRENT="$(git rev-parse HEAD)"
             MERGE=""
             while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do
@@ -110,12 +158,12 @@ jobs:
               test "${#PARENTS[@]}" = 2
               test -z "$MERGE"
               test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"
-              test "${PARENTS[1]}" = "$EVENT_BASE"
+              test "${PARENTS[1]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"
               MERGE="$CURRENT"
               CURRENT="${PARENTS[0]}"
             done
             test -n "$MERGE"
-            EXPECTED_TREE="$(git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE")"
+            EXPECTED_TREE="$(git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$HISTORICAL_PHASE_B_MERGE_BASE")"
             ACTUAL_TREE="$(git show -s --format=%T "$MERGE")"
             test "$ACTUAL_TREE" = "$EXPECTED_TREE"
           else
@@ -132,7 +180,7 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          p=Path(os.environ['SELF_PATH']).read_text()
+          p=Path(os.environ['REVIEWER_PROOF_PATH']).read_text()
           on=p.split('\non:\n',1)[1].split('\npermissions:\n',1)[0]
           if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
           perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
@@ -149,17 +197,42 @@ jobs:
           if 'phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}' not in p: raise SystemExit('complete Phase-B parser test migration is not mandatory')
           if 'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909' not in p: raise SystemExit('preserved Phase-B branch binding missing')
           if 'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0' not in p: raise SystemExit('preserved Phase-B frozen head binding missing')
-          for marker in ('git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD','CURRENT="$(git rev-parse HEAD)"','while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do','test "${#PARENTS[@]}" = 2','test -z "$MERGE"','test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"','test "${PARENTS[1]}" = "$EVENT_BASE"','test -n "$MERGE"','git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE"'):
-              if marker not in p: raise SystemExit('preserved-identity ancestry guard missing: '+marker)
+          if 'HISTORICAL_PHASE_B_MERGE_BASE: 4310e58c0c4ecb8ece305f0f27b47122c1febad6' not in p: raise SystemExit('historical consumed merge base binding missing')
+          for marker in (
+              'Bind reviewer proof bytes to authoritative source',
+              'git show "$EVENT_BASE:$SELF_PATH" > "$REVIEWER_PROOF_PATH"',
+              'git show "$EVENT_BASE:$INSTALL_TEST" > "$INSTALL_TEST_PROOF_PATH"',
+              'REVIEWER_PROOF_PATH="$SELF_PATH"',
+              'INSTALL_TEST_PROOF_PATH="$INSTALL_TEST"',
+              'test "$(git merge-base "$EVENT_BASE" HEAD)" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+              'git merge-base --is-ancestor "$HISTORICAL_PHASE_B_MERGE_BASE" "$EVENT_BASE"',
+              'test "${#BASE_MERGES[@]}" = 1',
+              'test "${BASE_MERGES[0]}" = "$EVENT_BASE"',
+              'test "${BASE_PARENTS[0]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+              'printf \'%s\\n\' "$SELF_PATH" "$INSTALL_TEST" | sort > expected-live-base-paths.txt',
+              'diff -u expected-live-base-paths.txt actual-live-base-paths.txt',
+              'diff -u expected-live-base-paths.txt actual-phase-a4-candidate-paths.txt',
+              'CURRENT="$(git rev-parse HEAD)"',
+              'while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do',
+              'test "${#PARENTS[@]}" = 2',
+              'test -z "$MERGE"',
+              'test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"',
+              'test "${PARENTS[1]}" = "$HISTORICAL_PHASE_B_MERGE_BASE"',
+              'test -n "$MERGE"',
+              'git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$HISTORICAL_PHASE_B_MERGE_BASE"',
+          ):
+              if marker not in p: raise SystemExit('preserved-identity ancestry/self-install guard missing: '+marker)
           if 'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1' not in p: raise SystemExit('independent parser semantic corpus missing')
           if 'PARSER_STATIC_PURITY_GUARD_V1' not in p: raise SystemExit('parser static purity guard missing')
           if 'MUTABLE_TEST_NON_SPOOF_GUARD_V1' not in p: raise SystemExit('mutable-test non-spoof guard missing')
           if 'REVIEWER_OWNED_ISOLATED_IMPORT_FIXTURE_V1' not in p: raise SystemExit('isolated-mode publisher import proof missing')
+          if 'python -m unittest -v "$PARSER_TEST"' not in p or 'python -m unittest -v "$LEGACY_PARSER_TEST"' not in p: raise SystemExit('real unittest mutable-test runner missing')
+          if 'python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring' not in p: raise SystemExit('installed-base installation-test proof runner missing')
           PY
 
       - name: Run installation contract only
         if: env.MODE == 'INSTALLATION'
-        run: python "$INSTALL_TEST"
+        run: python "$INSTALL_TEST_PROOF_PATH"
 
       - name: Statically prove canonical parser is pure before importing it
         if: env.MODE == 'PHASE_B'
@@ -330,7 +403,7 @@ jobs:
           set -euo pipefail
           # REVIEWER_OWNED_ISOLATED_IMPORT_FIXTURE_V1
           # Approved binding: sys.path.insert(0, os.environ['GITHUB_WORKSPACE']) before canonical import; /usr/bin/python3 -I -S forbids PYTHONPATH reliance.
-          python "$INSTALL_TEST" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring
+          python "$INSTALL_TEST_PROOF_PATH" CanonicalParserReviewerInstallationContract.test_phase_b_publisher_isolated_mode_import_wiring
 
       - name: Verify actual executable-chain wiring before mutable tests execute
         if: env.MODE == 'PHASE_B'
@@ -368,8 +441,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python "$PARSER_TEST"
-          python "$LEGACY_PARSER_TEST"
+          PARSER_OUT="$RUNNER_TEMP/avps-canonical-parser-mutable-tests.txt"
+          LEGACY_OUT="$RUNNER_TEMP/avps-legacy-parser-mutable-tests.txt"
+          python -m unittest -v "$PARSER_TEST" 2>&1 | tee "$PARSER_OUT"
+          grep -Eq '^Ran [1-9][0-9]* tests? in ' "$PARSER_OUT"
+          python -m unittest -v "$LEGACY_PARSER_TEST" 2>&1 | tee "$LEGACY_OUT"
+          grep -Eq '^Ran [1-9][0-9]* tests? in ' "$LEGACY_OUT"
 
       - name: Emit non-authorizing summary
         if: always()
@@ -380,11 +457,13 @@ jobs:
             echo "mode=${MODE:-UNBOUND}"
             echo 'read-only / zero-runtime / result-blind'
             echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
+            echo 'reviewer proof bytes and installation-test proof bytes come from the authoritative live base in Phase-B while semantic/runtime candidate bytes remain exact-head workspace bytes'
             echo 'canonical parser is statically proven pure before import; mutable tests are import-whitelisted and forbidden working-tree mutation/runtime before execution'
             echo 'reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test'
+            echo 'mutable parser regressions execute through unittest collection from repository root and each module must collect at least one passing test'
             echo 'publisher isolated Python call sites require explicit GITHUB_WORKSPACE sys.path binding proven under /usr/bin/python3 -I -S; PYTHONPATH is not accepted'
             echo 'science must consume canonical parser at exactly 2 isolated Python call sites; publisher at exactly 3; historical regression at exactly 1'
-            echo 'preserved-identity Phase-B is accepted only when the frozen head is reached on the exact first-parent chain through one deterministic clean merge-forward of EVENT_BASE; all post-merge commits are single-parent; ordinary Phase-B remains direct-child only'
+            echo 'preserved-identity Phase-B is accepted only through the exact historical d591/4310 merge-forward; a later live base is accepted only when it is exactly the separately installed two-path Phase-A4 merge surface with no extra main or Phase-B merge drift; ordinary fresh Phase-B remains direct-child only'
             echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
             echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
           } >> "$GITHUB_STEP_SUMMARY"

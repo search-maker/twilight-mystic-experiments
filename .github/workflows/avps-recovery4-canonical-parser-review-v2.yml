@@ -133,7 +133,6 @@ jobs:
           try: tree=ast.parse(text, filename=path)
           except SyntaxError as e: raise SystemExit(f'canonical parser syntax invalid before execution: {e}')
           allowed_import_roots={'re'}
-          safe_assign_values=(ast.Constant,ast.Tuple,ast.List,ast.Set,ast.Dict)
           for stmt in tree.body:
               if isinstance(stmt,ast.Import):
                   for a in stmt.names:
@@ -142,16 +141,20 @@ jobs:
               elif isinstance(stmt,ast.ImportFrom):
                   root=(stmt.module or '').split('.',1)[0]
                   if root not in allowed_import_roots: raise SystemExit(f'canonical parser imports non-pure module: {stmt.module}')
-              elif isinstance(stmt,(ast.FunctionDef,ast.AsyncFunctionDef)):
-                  if isinstance(stmt,ast.AsyncFunctionDef): raise SystemExit('canonical parser may not define async functions')
+              elif isinstance(stmt,ast.FunctionDef):
                   if stmt.decorator_list: raise SystemExit(f'canonical parser function decorators forbidden: {stmt.name}')
-                  if any(d is not None for d in stmt.args.defaults) or any(d is not None for d in stmt.args.kw_defaults): raise SystemExit(f'canonical parser function default expressions forbidden: {stmt.name}')
-              elif isinstance(stmt,(ast.Assign,ast.AnnAssign)):
-                  value=stmt.value
-                  if value is not None and not isinstance(value,safe_assign_values): raise SystemExit('canonical parser module-level assignment must be literal/container only')
+                  if stmt.returns is not None or any(a.annotation is not None for a in (stmt.args.posonlyargs+stmt.args.args+stmt.args.kwonlyargs)) or (stmt.args.vararg and stmt.args.vararg.annotation is not None) or (stmt.args.kwarg and stmt.args.kwarg.annotation is not None):
+                      raise SystemExit(f'canonical parser annotations are forbidden: {stmt.name}')
+                  if stmt.args.defaults or any(d is not None for d in stmt.args.kw_defaults): raise SystemExit(f'canonical parser function default expressions forbidden: {stmt.name}')
+              elif isinstance(stmt,ast.Assign):
+                  if not all(isinstance(t,ast.Name) for t in stmt.targets): raise SystemExit('canonical parser module-level assignment target must be a simple name')
+                  try: ast.literal_eval(stmt.value)
+                  except Exception: raise SystemExit('canonical parser module-level assignment must be literal/container only')
+              elif isinstance(stmt,ast.AnnAssign):
+                  raise SystemExit('canonical parser annotations are forbidden')
               else:
                   raise SystemExit(f'canonical parser has executable module-level statement: {type(stmt).__name__}')
-          forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint'}
+          forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint','globals','locals','vars','getattr','setattr','delattr'}
           forbidden_attr_roots={'os','subprocess','socket','pathlib','requests','urllib','http','ftplib','paramiko','importlib','shutil','sys'}
           aliases={}
           for node in ast.walk(tree):
@@ -161,6 +164,11 @@ jobs:
               elif isinstance(node,ast.ImportFrom):
                   root=(node.module or '').split('.',1)[0]
                   for a in node.names: aliases[a.asname or a.name]=root
+              elif isinstance(node,ast.Name):
+                  if node.id in forbidden_names or node.id.startswith('__'):
+                      raise SystemExit(f'canonical parser dunder/dynamic namespace access forbidden: {node.id}')
+              elif isinstance(node,ast.Attribute):
+                  if node.attr.startswith('__'): raise SystemExit(f'canonical parser dunder/dynamic namespace access forbidden: {node.attr}')
               elif isinstance(node,ast.Call):
                   if isinstance(node.func,ast.Name) and node.func.id in forbidden_names:
                       raise SystemExit(f'canonical parser uses forbidden dynamic/I-O call: {node.func.id}')

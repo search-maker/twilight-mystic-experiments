@@ -1,9 +1,8 @@
 import re
 
 _WRITE_QUIET_END_RECORDS={}
-_OWNER_PREFIX_RE='(?:[A-Z][A-Z0-9_]*_OWNER::)?'
-_END_FIRST_RE='^'+_OWNER_PREFIX_RE+'WRITE_QUIET_END(?=$|[ \\t|])'
-_BEGIN_FIRST_RE='^'+_OWNER_PREFIX_RE+'WRITE_QUIET_BEGIN(?=$|[ \\t|])'
+_END_FIRST_RE='^(?:[A-Z][A-Z0-9_]*_OWNER::)?WRITE_QUIET_END(?=$|[ \\t|])'
+_BEGIN_FIRST_RE='^(?:[A-Z][A-Z0-9_]*_OWNER::)?WRITE_QUIET_BEGIN(?=$|[ \\t|])'
 _ALIAS_RE='(?:^|[ \\t|])(begin|beginComment|begin_comment)=([^ \\t|]+)'
 _STANDALONE_RE='^(begin|beginComment|begin_comment)[ \\t]*=[ \\t]*([^ \\t|]+)[ \\t]*$'
 

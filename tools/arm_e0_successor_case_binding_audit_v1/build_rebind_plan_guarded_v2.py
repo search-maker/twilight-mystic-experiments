@@ -5,7 +5,8 @@ This wrapper strengthens the existing v1 planner by binding the claimed future
 query-only authorization to the exact ARM-relevant governance set and complete
 Issue #60 ledger hash recorded in the same zero-runtime stress receipt, while
 also requiring compatibility with the exact current query-only stress title
-classifier. It performs no ARM access, credential read, native download/opening,
+classifier and exact authorization-body binding to the dispatch workflow/ref/SHA.
+It performs no ARM access, credential read, native download/opening,
 protected-value read, source rebind, or science execution.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,7 @@ STRESS_SPEC.loader.exec_module(S)
 
 PURPOSE = "ARM_ENA_SWS_V1_E0_SUCCESSOR_RESULT_BLIND_REBIND_PLAN_V2"
 STATUS = "RESULT_BLIND_SUCCESSOR_REBIND_PLAN_GUARDED_READY"
+WORKFLOW_PATH = ".github/workflows/arm-ena-sws-query-only-availability-v1.yml"
 
 ADVERSE_AUTH_TITLE_MARKERS = (
     "NOT_AUTHORIZ",
@@ -93,6 +96,26 @@ def _canonical_issue60_snapshot(snapshot: Any) -> tuple[list[dict[str, Any]], st
 
 def _first_nonempty(body: str) -> str:
     return next((line.strip() for line in str(body or "").splitlines() if line.strip()), "")
+
+
+def _has_binding_line(body: str, pattern: str) -> bool:
+    return re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE) is not None
+
+
+def _require_dispatch_identity_body_binding(body: str, dispatch_sha: str) -> None:
+    bullet = r"\s*(?:[-*]\s*)?"
+    workflow_value = re.escape(WORKFLOW_PATH)
+    main_value = re.escape(dispatch_sha)
+    required = (
+        (rf"^{bullet}workflow\s*:\s*`?{workflow_value}`?\s*$", "exact query-only workflow path"),
+        (rf"^{bullet}event\s*:\s*`?workflow_dispatch`?\s*$", "workflow_dispatch event"),
+        (rf"^{bullet}(?:exact\s+)?main(?:\s+sha)?\s*[:=]\s*`?{main_value}`?\s*$", "exact dispatch main SHA"),
+        (rf"^{bullet}attempt\s*[_-]?\s*1\s+only\s*$", "attempt 1 only"),
+        (rf"^{bullet}one[-_ ]shot\s+only\s*$", "one-shot only semantics"),
+    )
+    for pattern, label in required:
+        if not _has_binding_line(body, pattern):
+            raise GuardedPlanRefusal(f"query authorization body does not bind {label}")
 
 
 def _require_current_stress_classifier_acceptance(title: str) -> None:
@@ -160,7 +183,8 @@ def verify_query_authority_binding(
     row = next((item for item in rows if item["id"] == comment_id), None)
     if row is None:
         raise GuardedPlanRefusal("claimed query authorization comment is absent from exact Issue #60 snapshot")
-    actual_title = _first_nonempty(row["body"])
+    body = row["body"]
+    actual_title = _first_nonempty(body)
     if not isinstance(query_authorization_title, str) or "\n" in query_authorization_title:
         raise GuardedPlanRefusal("query authorization title must be one exact line")
     if actual_title != query_authorization_title:
@@ -175,6 +199,7 @@ def verify_query_authority_binding(
     if not any(marker in upper for marker in POSITIVE_AUTH_TITLE_MARKERS):
         raise GuardedPlanRefusal("query authorization title lacks explicit positive authorization semantics")
     _require_current_stress_classifier_acceptance(actual_title)
+    _require_dispatch_identity_body_binding(body, query_dispatch_sha)
 
     return {
         "schema": 2,
@@ -190,6 +215,12 @@ def verify_query_authority_binding(
         "query_authorization_present_in_stress_ledger": True,
         "query_authorization_title_exactly_bound": True,
         "query_authorization_current_stress_classifier_compatible": True,
+        "query_authorization_body_bound_to_dispatch_identity": True,
+        "query_authorization_bound_workflow_path": WORKFLOW_PATH,
+        "query_authorization_bound_event": "workflow_dispatch",
+        "query_authorization_bound_main_sha": query_dispatch_sha,
+        "query_authorization_bound_run_attempt": 1,
+        "query_authorization_bound_one_shot": True,
         "legacy_authority_reused": False,
         "arm_network_access_performed": False,
         "arm_credentials_read": False,
@@ -225,6 +256,7 @@ def build_guarded_plan(*, issue60_comments_snapshot: Any, **kwargs: Any) -> dict
     out["query_authorization_title_exactly_bound"] = True
     out["query_authorization_current_stress_classifier_compatible"] = True
     out["query_authorization_is_latest_arm_governance"] = True
+    out["query_authorization_body_bound_to_dispatch_identity"] = True
     return out
 
 

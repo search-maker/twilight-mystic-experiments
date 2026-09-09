@@ -67,11 +67,40 @@ def make_query(*, ordinal: int = 3) -> dict:
     }
 
 
-def make_comments(*, auth_title: str = AUTH_TITLE, extra_after: bool = False) -> list[dict]:
+def auth_body(*, title: str = AUTH_TITLE, main_sha: str = DISPATCH_SHA,
+              include_workflow: bool = True, include_event: bool = True,
+              include_main: bool = True, include_attempt: bool = True,
+              include_one_shot: bool = True) -> str:
+    lines = [title, "Exact replacement query-only governance binding:"]
+    if include_workflow:
+        lines.append(f"workflow: `{G.WORKFLOW_PATH}`")
+    if include_event:
+        lines.append("event: `workflow_dispatch`")
+    if include_main:
+        lines.append(f"exact main={main_sha}")
+    if include_one_shot:
+        lines.append("one-shot only")
+    if include_attempt:
+        lines.append("attempt 1 only")
+    return "\n".join(lines)
+
+
+def make_comments(*, auth_title: str = AUTH_TITLE, extra_after: bool = False,
+                  body_main_sha: str = DISPATCH_SHA, include_workflow: bool = True,
+                  include_event: bool = True, include_main: bool = True,
+                  include_attempt: bool = True, include_one_shot: bool = True) -> list[dict]:
     rows = [
         {"id": BASELINE, "body": "COORDINATOR::BASELINE\nsynthetic baseline"},
         {"id": PREP_COMMENT, "body": "ARM_OWNER::SAFE_PREP_READY_FOR_REVIEW\nsynthetic prep"},
-        {"id": AUTH_COMMENT, "body": auth_title + "\nsynthetic positive authority"},
+        {"id": AUTH_COMMENT, "body": auth_body(
+            title=auth_title,
+            main_sha=body_main_sha,
+            include_workflow=include_workflow,
+            include_event=include_event,
+            include_main=include_main,
+            include_attempt=include_attempt,
+            include_one_shot=include_one_shot,
+        )},
     ]
     if extra_after:
         rows.append({"id": AUTH_COMMENT + 1, "body": "ARM_OWNER::LATER_READY_FOR_REVIEW\nsynthetic later ARM control"})
@@ -154,10 +183,14 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
         self.assertTrue(out["query_authorization_title_exactly_bound"])
         self.assertTrue(out["query_authorization_current_stress_classifier_compatible"])
         self.assertTrue(out["query_authorization_is_latest_arm_governance"])
+        self.assertTrue(out["query_authorization_body_bound_to_dispatch_identity"])
         proof = out["query_authority_binding"]
         self.assertEqual(proof["query_authorization_comment"], AUTH_COMMENT)
         self.assertEqual(proof["query_authorization_title"], AUTH_TITLE)
         self.assertTrue(proof["query_authorization_current_stress_classifier_compatible"])
+        self.assertTrue(proof["query_authorization_body_bound_to_dispatch_identity"])
+        self.assertEqual(proof["query_authorization_bound_main_sha"], DISPATCH_SHA)
+        self.assertEqual(proof["query_authorization_bound_workflow_path"], G.WORKFLOW_PATH)
         self.assertFalse(proof["legacy_authority_reused"])
         self.assertFalse(out["plan_is_authorization"])
         self.assertFalse(out["protected_sws_sasze_values_read"])
@@ -167,6 +200,25 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
 
     def test_exact_proposed_authority_title_is_current_stress_compatible(self):
         self.assertEqual(G.S._direct_arm_control_disposition(AUTH_TITLE), "allowed")
+
+    def test_refuses_authorization_body_main_not_matching_dispatch_sha(self):
+        comments = make_comments(body_main_sha="b" * 40)
+        stress = make_stress(comments=comments)
+        with self.assertRaises(G.GuardedPlanRefusal):
+            build(issue60_comments_snapshot=comments, stress_receipt=stress)
+
+    def test_refuses_missing_authorization_dispatch_bindings(self):
+        for kwargs in (
+            {"include_workflow": False},
+            {"include_event": False},
+            {"include_main": False},
+            {"include_attempt": False},
+            {"include_one_shot": False},
+        ):
+            comments = make_comments(**kwargs)
+            stress = make_stress(comments=comments)
+            with self.subTest(kwargs=kwargs), self.assertRaises(G.GuardedPlanRefusal):
+                build(issue60_comments_snapshot=comments, stress_receipt=stress)
 
     def test_refuses_title_positive_here_but_ambiguous_to_current_stress(self):
         title = "COORDINATOR::ARM_REPLACEMENT_QUERY_ONLY_ONE_SHOT_AUTHORIZED"
@@ -254,7 +306,7 @@ class GuardedRebindPlanV2Tests(unittest.TestCase):
     def test_refuses_consumed_legacy_authority_identity(self):
         comments = [
             {"id": 1, "body": "COORDINATOR::BASELINE"},
-            {"id": P.LEGACY_AUTHORITY, "body": AUTH_TITLE},
+            {"id": P.LEGACY_AUTHORITY, "body": auth_body()},
         ]
         stress = make_stress(comments=comments, arm_ids=[P.LEGACY_AUTHORITY])
         stress["baseline_coordinator_comment"] = 1

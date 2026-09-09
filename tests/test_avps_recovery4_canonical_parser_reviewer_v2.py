@@ -52,9 +52,9 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
     def test_both_executables_and_historical_regression_must_consume_canonical_parser(self):
         self.assertIn("publisher=Path(os.environ['PUBLISHER_PATH']).read_text()", self.text)
         self.assertIn("legacy_test=Path(os.environ['LEGACY_PARSER_TEST']).read_text()", self.text)
-        self.assertIn("if import_token not in science:", self.text)
-        self.assertIn("if import_token not in publisher:", self.text)
-        self.assertIn("if import_token not in legacy_test:", self.text)
+        self.assertIn("if science.count(import_token) != 2:", self.text)
+        self.assertIn("if publisher.count(import_token) != 3:", self.text)
+        self.assertIn("if legacy_test.count(import_token) != 1:", self.text)
         self.assertIn("for path_name,text in (('science',science),('publisher',publisher)):", self.text)
         self.assertIn("if 'def write_quiet_end_binding' in science or 'def write_quiet_end_binding' in publisher:", self.text)
         self.assertIn("if 'BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' in legacy_test or 'expected three embedded parser blocks' in legacy_test:", self.text)

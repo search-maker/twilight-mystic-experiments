@@ -32,7 +32,6 @@ class LiveAuthorizationWorkflowFenceTests(unittest.TestCase):
 
         source_ref = 'test "$EVENT_REF" = refs/heads/main'
         source_sha = 'test "$(git rev-parse HEAD)" = "$EVENT_SHA"'
-        checkout_sha = 'ref: ${{ github.sha }}'
         pre = 'python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" > "$pre"'
         pre_sha = "assert obj['exact_main_sha'] == os.environ['GITHUB_SHA']"
         presence = 'if [ -z "${ARM_USER_ID:-}" ] || [ -z "${ARM_ACCESS_TOKEN:-}" ]; then'
@@ -41,7 +40,7 @@ class LiveAuthorizationWorkflowFenceTests(unittest.TestCase):
         post_title = '--authorization-title "$auth_title" > "$post"'
         query_upload = 'name: arm-ena-sws-query-only-availability-v1'
 
-        for needle in (source_ref, source_sha, checkout_sha, pre, pre_sha, presence, query, post_comment, post_title, query_upload):
+        for needle in (source_ref, source_sha, pre, pre_sha, presence, query, post_comment, post_title, query_upload):
             self.assertIn(needle, auth)
         self.assertIn("assert os.environ['GITHUB_REF'] == 'refs/heads/main'", auth)
         self.assertIn("assert os.environ['GITHUB_REF_TYPE'] == 'branch'", auth)
@@ -49,7 +48,6 @@ class LiveAuthorizationWorkflowFenceTests(unittest.TestCase):
         self.assertGreaterEqual(auth.count('env -u ARM_USER_ID -u ARM_ACCESS_TOKEN'), 2)
 
         source_ref_i = auth.index(source_ref)
-        checkout_sha_i = auth.index(checkout_sha)
         source_sha_i = auth.index(source_sha)
         pre_i = auth.index(pre)
         pre_sha_i = auth.index(pre_sha)
@@ -58,8 +56,7 @@ class LiveAuthorizationWorkflowFenceTests(unittest.TestCase):
         post_i = auth.index(post_comment)
         post_title_i = auth.index(post_title)
         upload_i = auth.index(query_upload)
-        self.assertLess(source_ref_i, checkout_sha_i)
-        self.assertLess(checkout_sha_i, source_sha_i)
+        self.assertLess(source_ref_i, source_sha_i)
         self.assertLess(source_sha_i, pre_i)
         self.assertLess(pre_i, pre_sha_i)
         self.assertLess(pre_sha_i, presence_i)

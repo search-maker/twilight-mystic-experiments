@@ -113,11 +113,61 @@ jobs:
           if "self_path not in changed" not in p or "install_test not in changed" not in p: raise SystemExit('reviewer could self-certify Phase-B')
           if 'phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}' not in p: raise SystemExit('complete Phase-B parser test migration is not mandatory')
           if 'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1' not in p: raise SystemExit('independent parser semantic corpus missing')
+          if 'PARSER_STATIC_PURITY_GUARD_V1' not in p: raise SystemExit('parser static purity guard missing')
           PY
 
       - name: Run installation contract only
         if: env.MODE == 'INSTALLATION'
         run: python "$INSTALL_TEST"
+
+      - name: Statically prove canonical parser is pure before importing it
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          # PARSER_STATIC_PURITY_GUARD_V1
+          import ast, os
+          from pathlib import Path
+          path=os.environ['PARSER_PATH']; text=Path(path).read_text()
+          try: tree=ast.parse(text, filename=path)
+          except SyntaxError as e: raise SystemExit(f'canonical parser syntax invalid before execution: {e}')
+          allowed_import_roots={'re'}
+          safe_assign_values=(ast.Constant,ast.Tuple,ast.List,ast.Set,ast.Dict)
+          for stmt in tree.body:
+              if isinstance(stmt,ast.Import):
+                  for a in stmt.names:
+                      root=a.name.split('.',1)[0]
+                      if root not in allowed_import_roots: raise SystemExit(f'canonical parser imports non-pure module: {a.name}')
+              elif isinstance(stmt,ast.ImportFrom):
+                  root=(stmt.module or '').split('.',1)[0]
+                  if root not in allowed_import_roots: raise SystemExit(f'canonical parser imports non-pure module: {stmt.module}')
+              elif isinstance(stmt,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                  if isinstance(stmt,ast.AsyncFunctionDef): raise SystemExit('canonical parser may not define async functions')
+                  if stmt.decorator_list: raise SystemExit(f'canonical parser function decorators forbidden: {stmt.name}')
+                  if any(d is not None for d in stmt.args.defaults) or any(d is not None for d in stmt.args.kw_defaults): raise SystemExit(f'canonical parser function default expressions forbidden: {stmt.name}')
+              elif isinstance(stmt,(ast.Assign,ast.AnnAssign)):
+                  value=stmt.value
+                  if value is not None and not isinstance(value,safe_assign_values): raise SystemExit('canonical parser module-level assignment must be literal/container only')
+              else:
+                  raise SystemExit(f'canonical parser has executable module-level statement: {type(stmt).__name__}')
+          forbidden_names={'open','eval','exec','compile','__import__','input','breakpoint'}
+          forbidden_attr_roots={'os','subprocess','socket','pathlib','requests','urllib','http','ftplib','paramiko','importlib','shutil','sys'}
+          aliases={}
+          for node in ast.walk(tree):
+              if isinstance(node,ast.Import):
+                  for a in node.names:
+                      root=a.name.split('.',1)[0]; aliases[a.asname or root]=root
+              elif isinstance(node,ast.ImportFrom):
+                  root=(node.module or '').split('.',1)[0]
+                  for a in node.names: aliases[a.asname or a.name]=root
+              elif isinstance(node,ast.Call):
+                  if isinstance(node.func,ast.Name) and node.func.id in forbidden_names:
+                      raise SystemExit(f'canonical parser uses forbidden dynamic/I-O call: {node.func.id}')
+                  if isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name):
+                      root=aliases.get(node.func.value.id,node.func.value.id)
+                      if root in forbidden_attr_roots: raise SystemExit(f'canonical parser uses forbidden runtime/I-O call: {root}.{node.func.attr}')
+          PY
 
       - name: Statically refuse hidden runtime in mutable Phase-B parser tests
         if: env.MODE == 'PHASE_B'
@@ -237,8 +287,6 @@ jobs:
           legacy_test=Path(os.environ['LEGACY_PARSER_TEST']).read_text()
           if 'def write_quiet_end_binding' not in parser or 'def record_write_quiet_end' not in parser or 'def is_write_quiet_begin' not in parser or 'def _write_quiet_end_records' not in parser:
               raise SystemExit('canonical parser API/provenance surface missing')
-          for x in ('subprocess','requests','urllib','uvspec','rte_solver','mc_photons'):
-              if x in parser: raise SystemExit('canonical parser contains runtime/network token: '+x)
           import_token='from scripts.avps_write_quiet_parser_v1 import'
           if science.count(import_token) != 2:
               raise SystemExit(f'science preflight must import canonical parser at exactly two isolated Python call sites, got {science.count(import_token)}')
@@ -265,6 +313,7 @@ jobs:
             echo "mode=${MODE:-UNBOUND}"
             echo 'read-only / zero-runtime / result-blind'
             echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
+            echo 'canonical parser is statically proven pure before import; mutable tests are statically refused hidden runtime'
             echo 'reviewer-owned immutable semantic corpus independently tests actual parser semantics before mutable Phase-B regression tests run'
             echo 'science must consume canonical parser at exactly 2 isolated Python call sites; publisher at exactly 3; historical regression at exactly 1'
             echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'

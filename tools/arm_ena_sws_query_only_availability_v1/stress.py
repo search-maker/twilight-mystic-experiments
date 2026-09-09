@@ -81,6 +81,11 @@ def _is_section_heading(line: str) -> bool:
     return s == s.upper() and re.fullmatch(r'[A-Z0-9 _/():.-]+', s) is not None
 
 
+def _is_write_quiet_event(first: str, event: str) -> bool:
+    upper = str(first or '').strip().upper()
+    return re.match(rf'^(?:[A-Z0-9_]+::)?{re.escape(event)}(?:\s|\||$)', upper) is not None
+
+
 def _arm_control_text(body: str) -> str:
     lines = str(body or '').splitlines()
     first = first_nonempty(body)
@@ -143,18 +148,6 @@ _DIRECT_EXACT_ALLOWED_TITLES = frozenset({
 
 
 def _direct_arm_control_disposition(first: str) -> str:
-    """Classify direct ARM owner/Coordinator governance from its structured title.
-
-    A tiny exact-title allowlist handles Coordinator transitions whose title
-    intentionally contains words that are otherwise adverse or ambiguous. The
-    match is whole-title only; nearby variants still flow through the ordinary
-    fail-closed adverse/ambiguous classifier.
-
-    Protected-boundary phrases such as AUTHENTICATED_INVOCATION_*_FALSE or
-    NOT_AUTHORIZED do not themselves make a positive acceptance/repair
-    transition adverse. Explicit revocation/nonadmissibility/refusal titles do.
-    Unknown direct ARM governance remains fail-closed.
-    """
     upper = first.upper()
     if not (upper.startswith('ARM_OWNER::') or upper.startswith('COORDINATOR::ARM')):
         raise StressFailure('direct ARM disposition called for non-direct control')
@@ -225,15 +218,14 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         body = str(row.get('body', ''))
         first = first_nonempty(body)
-        upper = first.upper()
 
-        if 'WRITE_QUIET_BEGIN' in upper:
+        if _is_write_quiet_event(first, 'WRITE_QUIET_BEGIN'):
             if cid in open_begins:
                 raise StressFailure(f'duplicate WRITE_QUIET_BEGIN identity: {cid}')
             open_begins[cid] = _field(first, 'stage')
             begin_ids.append(cid)
 
-        if 'WRITE_QUIET_END' in upper:
+        if _is_write_quiet_event(first, 'WRITE_QUIET_END'):
             raw_begin_comment = _field(first, 'beginComment')
             raw_begin_short = _field(first, 'begin')
             if raw_begin_comment is not None and raw_begin_short is not None and raw_begin_comment != raw_begin_short:

@@ -106,6 +106,7 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         self.assertNotIn("first.startswith('WRITE_QUIET_END')",text)
         self.assertNotIn("elif first.startswith('WRITE_QUIET_BEGIN'):",text)
         self.assertNotIn('def write_quiet_end_binding',text)
-        self.assertEqual(text.count('from scripts.avps_write_quiet_parser_v1 import'),3)
+        canonical_import='from scripts.'+'avps_write_quiet_parser_v1 import'
+        self.assertEqual(text.count(canonical_import),3)
         self.assertIn("end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | beginComment={begin} |",text)
         self.assertNotIn("end_body=f'WRITE_QUIET_END | AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_V1 | begin={begin} |",text)

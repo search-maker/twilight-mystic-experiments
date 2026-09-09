@@ -2,12 +2,13 @@
 """Zero-runtime pre-dispatch governance preflight for a future ARM query-only successor.
 
 This is control-plane/result-blind only. It consumes a COMPLETE Issue #60
-comments snapshot plus separately fresh issue-tail metadata and the planned exact
-main SHA. It proves that the claimed Coordinator query-only authorization is the
-latest ARM governance, is accepted by the exact current query-only stress
-classifier, and explicitly binds the intended workflow_dispatch/main/attempt-1
-identity. It never reads ARM credentials, queries/downloads ARM, opens native
-data, or grants science authority.
+comments snapshot plus separately fresh issue-tail metadata and a separately
+fresh current default-branch main SHA. It proves that the claimed Coordinator
+query-only authorization is the latest ARM governance, is accepted by the exact
+current query-only stress classifier, explicitly binds the intended
+workflow_dispatch/main/attempt-1 identity, and still targets the current main
+rather than a stale formerly-current SHA. It never reads ARM credentials,
+queries/downloads ARM, opens native data, or grants science authority.
 """
 from __future__ import annotations
 
@@ -79,10 +80,14 @@ def preflight(
     authorization_comment: int,
     authorization_title: str,
     exact_main_sha: str,
+    expected_current_main_sha: str,
     expected_issue60_comment_count: int,
     expected_issue60_latest_comment_id: int,
 ) -> dict[str, Any]:
     main_sha = _sha40(exact_main_sha, "exact_main_sha")
+    current_main_sha = _sha40(expected_current_main_sha, "expected_current_main_sha")
+    if current_main_sha != main_sha:
+        raise PreflightRefusal("planned exact main is no longer the fresh current default-branch main")
     rows, ledger_sha = _canonical_rows(comments)
     expected_count = _positive_int(expected_issue60_comment_count, "expected_issue60_comment_count")
     expected_latest = _positive_int(expected_issue60_latest_comment_id, "expected_issue60_latest_comment_id")
@@ -149,6 +154,8 @@ def preflight(
         "authorization_comment": authorization_comment,
         "authorization_title": actual_title,
         "exact_main_sha": main_sha,
+        "fresh_current_main_sha": current_main_sha,
+        "planned_main_matches_fresh_current_main": True,
         "workflow_path": WORKFLOW_PATH,
         "event_name": "workflow_dispatch",
         "run_attempt": 1,
@@ -176,6 +183,7 @@ def main() -> int:
     p.add_argument("--authorization-comment", type=int, required=True)
     p.add_argument("--authorization-title", required=True)
     p.add_argument("--exact-main-sha", required=True)
+    p.add_argument("--expected-current-main-sha", required=True)
     p.add_argument("--expected-issue60-comment-count", type=int, required=True)
     p.add_argument("--expected-issue60-latest-comment-id", type=int, required=True)
     a = p.parse_args()
@@ -186,6 +194,7 @@ def main() -> int:
             authorization_comment=a.authorization_comment,
             authorization_title=a.authorization_title,
             exact_main_sha=a.exact_main_sha,
+            expected_current_main_sha=a.expected_current_main_sha,
             expected_issue60_comment_count=a.expected_issue60_comment_count,
             expected_issue60_latest_comment_id=a.expected_issue60_latest_comment_id,
         )

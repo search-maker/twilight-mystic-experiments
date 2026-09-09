@@ -73,12 +73,14 @@ def comments(*, title: str = AUTH_TITLE, body_main_sha: str = MAIN_SHA, later_ar
 
 def invoke(rows: list[dict], *, authorization_comment: int = AUTH,
            authorization_title: str = AUTH_TITLE, exact_main_sha: str = MAIN_SHA,
+           expected_current_main_sha: str = MAIN_SHA,
            expected_count: int | None = None, expected_latest: int | None = None):
     return M.preflight(
         rows,
         authorization_comment=authorization_comment,
         authorization_title=authorization_title,
         exact_main_sha=exact_main_sha,
+        expected_current_main_sha=expected_current_main_sha,
         expected_issue60_comment_count=len(rows) if expected_count is None else expected_count,
         expected_issue60_latest_comment_id=rows[-1]["id"] if expected_latest is None else expected_latest,
     )
@@ -91,6 +93,8 @@ class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
         self.assertEqual(out["status"], M.STATUS)
         self.assertEqual(out["stress_classifier_disposition"], "allowed")
         self.assertEqual(out["exact_main_sha"], MAIN_SHA)
+        self.assertEqual(out["fresh_current_main_sha"], MAIN_SHA)
+        self.assertTrue(out["planned_main_matches_fresh_current_main"])
         self.assertEqual(out["workflow_path"], M.WORKFLOW_PATH)
         self.assertEqual(out["event_name"], "workflow_dispatch")
         self.assertEqual(out["run_attempt"], 1)
@@ -101,6 +105,11 @@ class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
         self.assertFalse(out["native_file_download_performed"])
         self.assertFalse(out["protected_sws_sasze_values_read"])
         self.assertFalse(out["e0_execution_authorized_by_this_receipt"])
+
+    def test_refuses_stale_planned_main_against_fresh_current_main(self):
+        rows = comments()
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_current_main_sha="b" * 40)
 
     def test_refuses_truncated_snapshot_against_fresh_full_metadata(self):
         full = comments(later_arm=True)
@@ -172,6 +181,8 @@ class QueryOnlySuccessorPredispatchPreflightTests(unittest.TestCase):
         rows = comments()
         with self.assertRaises(M.PreflightRefusal):
             invoke(rows, exact_main_sha="not-a-sha")
+        with self.assertRaises(M.PreflightRefusal):
+            invoke(rows, expected_current_main_sha="not-a-sha")
 
     def test_refuses_invalid_expected_issue_metadata(self):
         rows = comments()

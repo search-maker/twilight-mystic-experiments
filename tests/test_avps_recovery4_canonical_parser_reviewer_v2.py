@@ -59,6 +59,31 @@ class CanonicalParserReviewerInstallationContract(unittest.TestCase):
         self.assertIn("if 'def write_quiet_end_binding' in science or 'def write_quiet_end_binding' in publisher:", self.text)
         self.assertIn("if 'BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' in legacy_test or 'expected three embedded parser blocks' in legacy_test:", self.text)
 
+    def test_reviewer_owns_independent_semantic_corpus(self):
+        for token in (
+            'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1',
+            "WRITE_QUIET_END | begin=999 | stage=legacy\\nbeginComment=123",
+            '5471141095',
+            '5562775627',
+            '5467858336',
+            '5467875147',
+            'shared-evidence mismatch',
+            'wrong-predecessor reference',
+            '_write_quiet_end_records',
+            'ordinary same-BEGIN duplicate',
+        ):
+            self.assertIn(token, self.text)
+        self.assertIn('Run reviewer-owned immutable semantic corpus against actual parser', self.text)
+        self.assertIn('reviewer-owned immutable semantic corpus independently tests actual parser semantics', self.text)
+
+    def test_mutable_phase_b_tests_cannot_hide_runtime(self):
+        self.assertIn('Statically refuse hidden runtime in mutable Phase-B parser tests', self.text)
+        self.assertIn('forbidden_import_roots', self.text)
+        for token in ('subprocess', 'requests', 'urllib', 'socket', 'http', 'ftplib', 'paramiko'):
+            self.assertIn(token, self.text)
+        for token in ("forbidden_calls={'eval','exec','compile','__import__'}", "node.func.attr in {'system','popen','spawnl','spawnlp','spawnv','spawnvp'}"):
+            self.assertIn(token, self.text)
+
     def test_reviewer_contains_no_authorizing_or_science_runtime_surface(self):
         permissions = self.text.split('\npermissions:\n', 1)[1].split('\nconcurrency:\n', 1)[0]
         self.assertNotIn(': write', permissions)

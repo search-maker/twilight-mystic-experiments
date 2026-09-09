@@ -10,6 +10,7 @@ on:
       - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
       - scripts/avps_write_quiet_parser_v1.py
       - tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+      - tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
       - tests/test_avps_recovery4_canonical_parser_reviewer_v2.py
 
 permissions:
@@ -33,6 +34,7 @@ jobs:
       PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
       PARSER_PATH: scripts/avps_write_quiet_parser_v1.py
       PARSER_TEST: tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+      LEGACY_PARSER_TEST: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,9 +67,9 @@ jobs:
           changed=set(Path('changed.txt').read_text().splitlines())
           self_path=os.environ['SELF_PATH']; install_test=os.environ['INSTALL_TEST']
           science=os.environ['SCIENCE_PATH']; publisher=os.environ['PUBLISHER_PATH']
-          parser=os.environ['PARSER_PATH']; parser_test=os.environ['PARSER_TEST']
+          parser=os.environ['PARSER_PATH']; parser_test=os.environ['PARSER_TEST']; legacy_parser_test=os.environ['LEGACY_PARSER_TEST']
           install={self_path,install_test}
-          phase_b_required={science,publisher,parser,parser_test}
+          phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}
           if changed==install:
               mode='INSTALLATION'
           elif self_path not in changed and install_test not in changed and changed==phase_b_required:
@@ -100,7 +102,7 @@ jobs:
           if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
           perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
           if ': write' in perms: raise SystemExit('reviewer gained write permission')
-          required=(os.environ['SCIENCE_PATH'],os.environ['PUBLISHER_PATH'],os.environ['PARSER_PATH'],os.environ['PARSER_TEST'])
+          required=(os.environ['SCIENCE_PATH'],os.environ['PUBLISHER_PATH'],os.environ['PARSER_PATH'],os.environ['PARSER_TEST'],os.environ['LEGACY_PARSER_TEST'])
           for x in required:
               if x not in p: raise SystemExit('reviewer missing future repair surface: '+x)
           forbidden=('gh workflow '+'run','gh api -X '+'POST','workflow_'+'dispatch:', 'command -v '+'uvspec','rte_solver '+'mystic','mc_'+'photons 20000000')
@@ -109,7 +111,7 @@ jobs:
               if x in body: raise SystemExit('reviewer contains forbidden execution token: '+x)
           if "mode='INSTALLATION'" not in p or "mode='PHASE_B'" not in p: raise SystemExit('reviewer mode gate missing')
           if "self_path not in changed" not in p or "install_test not in changed" not in p: raise SystemExit('reviewer could self-certify Phase-B')
-          if 'phase_b_required={science,publisher,parser,parser_test}' not in p: raise SystemExit('publisher is not mandatory in Phase-B scope')
+          if 'phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}' not in p: raise SystemExit('complete Phase-B parser test migration is not mandatory')
           PY
 
       - name: Run installation contract only
@@ -122,13 +124,14 @@ jobs:
         run: |
           set -euo pipefail
           python "$PARSER_TEST"
-          python tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+          python "$LEGACY_PARSER_TEST"
           python - <<'PY'
           import os
           from pathlib import Path
           parser=Path(os.environ['PARSER_PATH']).read_text()
           science=Path(os.environ['SCIENCE_PATH']).read_text()
           publisher=Path(os.environ['PUBLISHER_PATH']).read_text()
+          legacy_test=Path(os.environ['LEGACY_PARSER_TEST']).read_text()
           if 'def write_quiet_end_binding' not in parser or 'def record_write_quiet_end' not in parser or 'def is_write_quiet_begin' not in parser:
               raise SystemExit('canonical parser API missing')
           for x in ('subprocess','requests','urllib','uvspec','rte_solver','mc_photons'):
@@ -138,12 +141,16 @@ jobs:
               raise SystemExit('science preflight does not consume canonical parser')
           if import_token not in publisher:
               raise SystemExit('publisher does not consume canonical parser')
+          if import_token not in legacy_test:
+              raise SystemExit('historical parser regression test was not migrated to canonical parser')
           stale=("first.startswith('WRITE_QUIET_END')", "elif first.startswith('WRITE_QUIET_BEGIN'):")
           for path_name,text in (('science',science),('publisher',publisher)):
               for x in stale:
                   if x in text: raise SystemExit(f'stale first-line-only {path_name} parser remains: {x}')
           if 'def write_quiet_end_binding' in science or 'def write_quiet_end_binding' in publisher:
               raise SystemExit('embedded sibling WRITE_QUIET binding implementation remains')
+          if 'BEGIN_WRITE_QUIET_END_LINE_PARSER_V1' in legacy_test or 'expected three embedded parser blocks' in legacy_test:
+              raise SystemExit('historical regression still depends on removed embedded parser blocks')
           PY
 
       - name: Emit non-authorizing summary
@@ -154,7 +161,7 @@ jobs:
             echo '### AVPS Recovery4 canonical parser review v2'
             echo "mode=${MODE:-UNBOUND}"
             echo 'read-only / zero-runtime / result-blind'
-            echo 'Phase-B requires science + publisher + canonical parser + canonical parser test together'
+            echo 'Phase-B requires science + publisher + canonical parser + canonical parser test + migrated historical parser regression together'
             echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
             echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
           } >> "$GITHUB_STEP_SUMMARY"

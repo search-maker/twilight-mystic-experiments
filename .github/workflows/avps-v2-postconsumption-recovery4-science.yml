@@ -160,6 +160,7 @@ jobs:
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > execution-preflight/pre-scan-issue60-pages.json
           python - <<'PY'
           import json, os
+          from scripts.avps_write_quiet_parser_v1 import record_write_quiet_end, is_write_quiet_begin
           from datetime import datetime, timezone
           from pathlib import Path
           FENCE_PREFIX='AVPS_V2_RECOVERY4_ORDINAL45_SNAPSHOT_'
@@ -173,20 +174,13 @@ jobs:
               return out
           pages=json.load(open('execution-preflight/pre-scan-issue60-pages.json'))
           comments=[c for page in pages for c in page]
-          closed=set(); begins=[]
+          closed=set(); begins=[]; begin_ids=set()
           for c in comments:
               body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
               f=fields(first)
-              if first.startswith('WRITE_QUIET_END'):
-                  end_ids=[]
-                  for key in ('begin','beginComment','begin_comment'):
-                      if key in f:
-                          if not f[key].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END {key}: {f[key]!r}')
-                          end_ids.append(int(f[key]))
-                  distinct=set(end_ids)
-                  if len(distinct)>1: raise SystemExit(f'conflicting WRITE_QUIET_END begin ids: {sorted(distinct)}')
-                  if distinct: closed.add(next(iter(distinct)))
-              if first.startswith('WRITE_QUIET_BEGIN'): begins.append((int(c['id']),f,str(c.get('created_at') or '')))
+              if record_write_quiet_end(body,c['id'],begin_ids,closed): pass
+              elif is_write_quiet_begin(body):
+                  cid=int(c['id']); begins.append((cid,f,str(c.get('created_at') or ''))); begin_ids.add(cid)
           unmatched=[b for b in begins if b[0] not in closed]
           matching=[b for b in unmatched if (
               b[1].get('token','').startswith(FENCE_PREFIX)
@@ -326,6 +320,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Download exact current-run preflight guard and bound pre-scan fence evidence
         shell: bash
         env:
@@ -357,26 +357,24 @@ jobs:
           import json, os, sys
           from datetime import datetime
           from pathlib import Path
+          sys.path.insert(0, os.environ['GITHUB_WORKSPACE'])
+          from scripts.avps_write_quiet_parser_v1 import record_write_quiet_end, is_write_quiet_begin, write_quiet_end_binding
           guard=json.load(open('snapshot-fence-release/preflight/execution-guard.json'))
           pages=json.load(open('snapshot-fence-release/issue60-pages.json'))
           comments=[c for page in pages for c in page]
           begin_id=int(guard['writeQuietBeginCommentId']); token=str(guard['writeQuietFenceToken'])
-          ends=[]
+          ends=[]; closed=set(); begin_ids=set()
           for c in comments:
               body=str(c.get('body') or '').strip(); first=body.splitlines()[0] if body else ''
-              if not first.startswith('WRITE_QUIET_END'): continue
-              fields={}
-              for item in first.replace('|',' ').split():
-                  if '=' in item:
-                      k,v=item.split('=',1); fields[k]=v
-              end_ids=[]
-              for key in ('begin','beginComment','begin_comment'):
-                  if key in fields:
-                      if not fields[key].isdigit(): raise SystemExit(f'non-numeric WRITE_QUIET_END {key}: {fields[key]!r}')
-                      end_ids.append(int(fields[key]))
-              distinct=set(end_ids)
-              if len(distinct)>1: raise SystemExit(f'conflicting WRITE_QUIET_END begin ids: {sorted(distinct)}')
-              if distinct and next(iter(distinct))==begin_id: ends.append((int(c['id']),fields,str(c.get('created_at') or '')))
+              if record_write_quiet_end(body,c['id'],begin_ids,closed):
+                  if write_quiet_end_binding(body) != begin_id: continue
+                  fields={}
+                  for item in first.replace('|',' ').split():
+                      if '=' in item:
+                          k,v=item.split('=',1); fields[k]=v
+                  ends.append((int(c['id']),fields,str(c.get('created_at') or '')))
+              elif is_write_quiet_begin(body):
+                  begin_ids.add(int(c['id']))
           if not ends: sys.exit(2)
           if len(ends)!=1: raise SystemExit(f'exactly one matching END for pre-scan bound BEGIN required, got {len(ends)}')
           end_id,end_fields,created=ends[0]

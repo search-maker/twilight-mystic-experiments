@@ -75,7 +75,3 @@ class CanonicalWriteQuietParserV1Test(unittest.TestCase):
         record_write_quiet_end('WRITE_QUIET_END | beginComment=123',200,{123},generic)
         with self.assertRaises(SystemExit):
             record_write_quiet_end('WRITE_QUIET_END | beginComment=123',201,{123},generic)
-
-
-if __name__ == '__main__':
-    unittest.main()

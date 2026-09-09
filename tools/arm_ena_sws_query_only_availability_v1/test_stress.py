@@ -144,6 +144,30 @@ class StressTests(unittest.TestCase):
         ]
         S.audit_arm_governance(comments)
 
+    def test_exact_temporary_avps_cross_lane_serialization_passes(self):
+        title = (
+            'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__'
+            'ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE'
+        )
+        body = (
+            title + '\n\nSERIALIZATION / OTHER V1 LANES\n'
+            '- ARM PR1016 remains result-blind and clean-looking; do not merge it while moving main would invalidate/restart the exact AVPS control chain. '
+            'Keep branch/prep/CI work parallel. This is a temporary exact-base dependency, not a rejection and not a generic freeze.\n'
+        )
+        S.audit_arm_governance([baseline(), row(5608360629, body)])
+
+    def test_temporary_avps_cross_lane_serialization_nearby_variant_refuses(self):
+        title = (
+            'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__'
+            'ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE__REVOKED'
+        )
+        body = (
+            title + '\n\nARM / AVPS\n'
+            '- ARM PR1016 remains result-blind and clean-looking; do not merge it while moving main would invalidate/restart the exact AVPS control chain.\n'
+        )
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance([baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, body)])
+
     def test_cleared_blocker_title_is_not_adverse(self):
         comments = [baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, 'COORDINATOR::ARM_QUERY_ONLY_BLOCKER_CLEARED')]
         S.audit_arm_governance(comments)

@@ -1,0 +1,433 @@
+name: LOWALT STATE-0003 Gate A 48-case pre-dispatch capture
+run-name: LOWALT STATE-0003 Gate A 48-case pre-dispatch capture ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-gatea48-capture-r11-20260909
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: lowalt-state-0003-gatea48-capture-r11-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-gatea48-capture-r11-20260909
+  BASE_MAIN_SHA: c9f1d3abc3af704f9a54176f32932e87ee084068
+  STARS_MAIN_SHA: 1e74d0522f086dba634a587bb245c32bcd4fac60
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PACKAGE_SPEC: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  GOVERNING_SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+
+jobs:
+  gate-a-capture-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact fresh Gate-A commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify fresh one-file boundary and initialize isolated evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = '.github/workflows/lowalt-state-0003-gatea48-capture-r11-20260909.yml'
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_gatea48_r11_evidence"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR/cases"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "executionIdentity": "lowalt-state-0003-gatea48-capture-r11-20260909",
+            "headSha": "$GITHUB_SHA",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "runAttempt": $GITHUB_RUN_ATTEMPT,
+            "changedPathCount": 1,
+            "gate": "A_CAPTURE_ONLY",
+            "protectedResultOpeningAuthorized": false,
+            "solverContinuationAuthorized": false,
+            "taylorOrJerusalemUsed": false,
+            "protectedGeographyUsed": false,
+            "scienceSeedOrOrdinalUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false
+          }
+          EOF
+
+      - name: Set up exact inherited libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-gatea48-r11
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact package executable, data, and debugger
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          uname -a > "$EVIDENCE_DIR/uname.txt"
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA" > "$EVIDENCE_DIR/uvspec.sha256"
+          test "$ACTUAL_UVSPEC_SHA" = "$UVSPEC_SHA256"
+          micromamba list rubin-libradtran --json > "$EVIDENCE_DIR/micromamba-rubin-libradtran.json"
+          ACTUAL_PACKAGE_SPEC="$(python - "$EVIDENCE_DIR/micromamba-rubin-libradtran.json" <<'PY'
+          import json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          rows=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if x.get('name')=='rubin-libradtran': rows.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(obj)
+          specs=set()
+          for r in rows:
+              version=r.get('version')
+              build=r.get('build_string',r.get('build'))
+              if version and build: specs.add(f'rubin-libradtran={version}={build}')
+          if len(specs)!=1: raise SystemExit(f'exact package identity unresolved: {sorted(specs)!r}')
+          print(next(iter(specs)))
+          PY
+          )"
+          printf '%s\n' "$ACTUAL_PACKAGE_SPEC" > "$EVIDENCE_DIR/package-spec.txt"
+          test "$ACTUAL_PACKAGE_SPEC" = "$PACKAGE_SPEC"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          test -f "$DATA_DIR/atmmod/afglus.dat"
+          if ! command -v gdb >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq gdb
+          fi
+          GDB="$(command -v gdb)"
+          "$GDB" --version > "$EVIDENCE_DIR/gdb-version.txt"
+          printf 'uvspec=%s\nuvspec_sha256=%s\npackage_spec=%s\ndata_dir=%s\ngdb=%s\n' \
+            "$UVSPEC" "$ACTUAL_UVSPEC_SHA" "$ACTUAL_PACKAGE_SPEC" "$DATA_DIR" "$GDB" \
+            > "$EVIDENCE_DIR/runtime-binding.txt"
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+          echo "GDB=$GDB" >> "$GITHUB_ENV"
+
+      - name: Freeze wholly fresh 48-case NONPROTECTED matrix before any preprocessing result opens
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - "$EVIDENCE_DIR" <<'PY'
+          import csv,hashlib,json,sys
+          from pathlib import Path
+          e=Path(sys.argv[1])
+          altitudes=[0.57,1.93,3.37,4.67]
+          wavelengths=[431,579,803]
+          sites=[0.00,1.25]
+          aerosols=['OFF','DEFAULT']
+          audit_ids={2,6,11,15,18,22,27,31,34,39,43,48}
+          rows=[]
+          idx=0
+          for alt in altitudes:
+              for wl in wavelengths:
+                  for site in sites:
+                      for aer in aerosols:
+                          idx+=1
+                          rows.append({
+                              'case_id':f'gatea-{idx:04d}',
+                              'split':'audit' if idx in audit_ids else 'development',
+                              'target_geometric_altitude_deg':f'{alt:.2f}',
+                              'source_zenith_angle_deg':f'{90.0-alt:.8f}',
+                              'wavelength_nm':str(wl),
+                              'observer_elevation_km':f'{site:.2f}',
+                              'aerosol':aer,
+                              'nsza_denstab':'0',
+                          })
+          assert len(rows)==48
+          assert sum(r['split']=='audit' for r in rows)==12
+          p=e/'matrix.csv'
+          fields=list(rows[0])
+          with p.open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=fields,lineterminator='\n')
+              w.writeheader(); w.writerows(rows)
+          digest=hashlib.sha256(p.read_bytes()).hexdigest()
+          freeze={
+              'schemaVersion':1,
+              'classification':'FRESH_NONPROTECTED_GATE_A_MATRIX_FROZEN_BEFORE_RESULTS',
+              'executionIdentity':'lowalt-state-0003-gatea48-capture-r11-20260909',
+              'matrixSha256':digest,
+              'caseCount':48,
+              'developmentCount':36,
+              'auditCount':12,
+              'targetAltitudeBasis':'topocentric-vacuum-geometric',
+              'altitudesDeg':altitudes,
+              'wavelengthsNm':wavelengths,
+              'observerElevationsKm':sites,
+              'aerosolStates':aerosols,
+              'nszaDenstab':0,
+              'protectedGeographyUsed':False,
+              'taylorOrJerusalemUsed':False,
+              'seedOrOrdinalUsed':False,
+              'protectedResidualUsedForSelection':False,
+              'solverContinuationAllowed':False,
+              'solverResultOpeningAllowed':False,
+              'productionChanged':False,
+              'v1FiveDegreeSeamChanged':False,
+          }
+          (e/'matrix-freeze.json').write_text(json.dumps(freeze,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(freeze,sort_keys=True))
+          PY
+
+      - name: Re-fence current main and runner state before 48-case capture
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          git fetch -q origin main
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN_SHA"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" > "$EVIDENCE_DIR/actions-in-progress.json"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?status=queued&per_page=100" > "$EVIDENCE_DIR/actions-queued.json"
+          curl -fsSL -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/search-maker/starsvisibility/branches/main' > "$EVIDENCE_DIR/stars-main.json"
+          python - "$EVIDENCE_DIR" "$GITHUB_RUN_ID" "$STARS_MAIN_SHA" <<'PY'
+          import json,sys
+          from pathlib import Path
+          e=Path(sys.argv[1]); run_id=int(sys.argv[2]); expected_stars=sys.argv[3]
+          ip=json.load(open(e/'actions-in-progress.json',encoding='utf-8'))['workflow_runs']
+          q=json.load(open(e/'actions-queued.json',encoding='utf-8'))['workflow_runs']
+          others_ip=[r['id'] for r in ip if int(r['id'])!=run_id]
+          others_q=[r['id'] for r in q if int(r['id'])!=run_id]
+          if others_ip or others_q:
+              raise SystemExit(f'nonblocking fence failed: other in_progress={others_ip} queued={others_q}')
+          stars=json.load(open(e/'stars-main.json',encoding='utf-8'))
+          if stars['commit']['sha'] != expected_stars:
+              raise SystemExit(f'stars main moved: {stars["commit"]["sha"]}')
+          (e/'pref_capture_fence.json').write_text(json.dumps({
+              'schemaVersion':1,
+              'twilightMainUnchanged':True,
+              'starsMainSha':stars['commit']['sha'],
+              'otherInProgressRuns':others_ip,
+              'otherQueuedRuns':others_q,
+              'v1RunnerStateIdleApartFromThisCaptureOnlyRun':True,
+          },indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          PY
+
+      - name: Resolve exact installed SDISORT entry symbol without execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          nm -an "$UVSPEC" > "$EVIDENCE_DIR/nm-all.txt"
+          readelf -Ws "$UVSPEC" > "$EVIDENCE_DIR/readelf-symbols.txt"
+          SDISORT_SYMBOL="$(python - "$EVIDENCE_DIR/nm-all.txt" "$EVIDENCE_DIR/readelf-symbols.txt" <<'PY'
+          import sys
+          wanted={'sdisort','sdisort_'}
+          found=[]
+          for line in open(sys.argv[1],encoding='utf-8',errors='replace'):
+              p=line.split()
+              if len(p)>=3 and p[-1] in wanted and p[-2] in {'T','t'}: found.append(p[-1])
+          if not found:
+              for line in open(sys.argv[2],encoding='utf-8',errors='replace'):
+                  p=line.split()
+                  if p and p[-1] in wanted: found.append(p[-1])
+          found=sorted(set(found))
+          if len(found)!=1: raise SystemExit(f'expected one SDISORT entry symbol, got {found!r}')
+          print(found[0])
+          PY
+          )"
+          printf '%s\n' "$SDISORT_SYMBOL" > "$EVIDENCE_DIR/resolved-sdisort-symbol.txt"
+          echo "SDISORT_SYMBOL=$SDISORT_SYMBOL" >> "$GITHUB_ENV"
+
+      - name: Execute Gate A sequentially - capture 48 final SDISORT handoffs and kill before solver body
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/lowalt_state0003_gatea_capture.gdb" <<'GDBEOF'
+          set pagination off
+          set confirm off
+          python
+          import gdb, os, struct, hashlib, json
+          from pathlib import Path
+          case_dir=Path(os.environ['CASE_DIR'])
+          case_id=os.environ['CASE_ID']
+          sym_name=os.environ['SDISORT_SYMBOL']
+          inf=gdb.selected_inferior()
+          pc=int(gdb.parse_and_eval('$pc'))
+          rsp=int(gdb.parse_and_eval('$rsp'))
+          rdi=int(gdb.parse_and_eval('$rdi'))
+          rsi=int(gdb.parse_and_eval('$rsi'))
+          rdx=int(gdb.parse_and_eval('$rdx'))
+          entry=int(gdb.parse_and_eval('&'+sym_name))
+          def mem(addr,n): return bytes(inf.read_memory(addr,n))
+          def ptr_at_stack(off): return struct.unpack('<Q',mem(rsp+off,8))[0]
+          def i32(addr): return struct.unpack('<i',mem(addr,4))[0]
+          def f32(addr): return struct.unpack('<f',mem(addr,4))[0]
+          nlyr=i32(rdi)
+          ntau=i32(ptr_at_stack(24))
+          if not (0<nlyr<4096 and 0<ntau<4096): raise RuntimeError((nlyr,ntau))
+          ptrs={
+              'dtauc':rsi,'ssalb':rdx,'utau':ptr_at_stack(32),'umu0':ptr_at_stack(112),
+              'newgeo':ptr_at_stack(128),'zd':ptr_at_stack(136),'spher':ptr_at_stack(144),
+              'radius':ptr_at_stack(152),'nrefrac':ptr_at_stack(392),'ichap':ptr_at_stack(400),
+              'vn':ptr_at_stack(408),'ndenssza':ptr_at_stack(416),'dtauc_mb':ptr_at_stack(448),
+          }
+          blobs={
+              'dtauc_f32le.bin':mem(ptrs['dtauc'],nlyr*4),
+              'ssalb_f32le.bin':mem(ptrs['ssalb'],nlyr*4),
+              'utau_f32le.bin':mem(ptrs['utau'],ntau*4),
+              'zd_f32le.bin':mem(ptrs['zd'],(nlyr+1)*4),
+              'vn_f32le.bin':mem(ptrs['vn'],(nlyr+1)*4),
+              'dtauc_mb_f32le.bin':mem(ptrs['dtauc_mb'],nlyr*4),
+          }
+          hashes={}
+          for name,data in blobs.items():
+              (case_dir/name).write_bytes(data); hashes[name]=hashlib.sha256(data).hexdigest()
+          meta={
+              'schemaVersion':1,'caseId':case_id,'architecture':'x86_64-sysv',
+              'resolvedEntrySymbol':sym_name,'pc':hex(pc),'entryAddress':hex(entry),'pcEqualsEntry':pc==entry,
+              'nlyr':nlyr,'ntau':ntau,'radiusKm':f32(ptrs['radius']),'umu0':f32(ptrs['umu0']),
+              'nrefrac':i32(ptrs['nrefrac']),'ichap':i32(ptrs['ichap']),
+              'newgeoRawI32':i32(ptrs['newgeo']),'spherRawI32':i32(ptrs['spher']),
+              'ndenssza':i32(ptrs['ndenssza']),'rawArraySha256':hashes,
+              'solverBodyInstructionExecutedAfterEntryBreakpoint':False,
+              'solverResultOpened':False,'protectedResultOpened':False,
+          }
+          (case_dir/'capture-metadata.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          print('LOWALT_GATEA_CAPTURE='+json.dumps(meta,sort_keys=True))
+          end
+          kill
+          quit
+          GDBEOF
+
+          tail -n +2 "$EVIDENCE_DIR/matrix.csv" | while IFS=, read -r CASE_ID SPLIT ALT SZA WL SITE AER NSZA; do
+            export CASE_ID
+            CASE_DIR="$EVIDENCE_DIR/cases/$CASE_ID"
+            export CASE_DIR
+            mkdir -p "$CASE_DIR"
+            PROBE_INPUT="$CASE_DIR/input.inp"
+            python - "$LIBRADTRAN_DATA/atmmod/afglus.dat" "$PROBE_INPUT" "$WL" "$SZA" "$SITE" "$AER" <<'PY'
+          from pathlib import Path
+          import sys
+          atm=Path(sys.argv[1]); out=Path(sys.argv[2]); wl=int(sys.argv[3]); sza=float(sys.argv[4]); site=float(sys.argv[5]); aer=sys.argv[6]
+          levels=[]
+          for raw in atm.read_text(encoding='utf-8').splitlines():
+              s=raw.strip()
+              if s and not s.startswith('#'): levels.append(float(s.split()[0]))
+          if len(levels)<2 or any(levels[i] <= levels[i+1] for i in range(len(levels)-1)):
+              raise SystemExit('AFGLUS altitude grid not strictly descending')
+          grid=[site,*sorted(z for z in levels if z>site)]
+          if any(grid[i]>=grid[i+1] for i in range(len(grid)-1)):
+              raise SystemExit('atm_z_grid not strictly ascending')
+          lines=[
+              f'data_files_path {atm.parent.parent}',f'atmosphere_file {atm}','source solar','mol_abs_param crs',
+              f'wavelength {wl} {wl}',f'sza {sza:.8f}','atm_z_grid '+' '.join(f'{z:.6f}' for z in grid),
+              'zout 0.000000','albedo 0.15000000','rte_solver sdisort','sdisort nscat 1',
+              'output_quantity transmittance','output_user lambda edir','quiet',
+          ]
+          if aer=='DEFAULT': lines.insert(4,'aerosol_default')
+          elif aer!='OFF': raise SystemExit(aer)
+          text='\n'.join(lines)+'\n'
+          low=text.lower()
+          for token in ('rte_solver mystic','aerosol_set_tau','nrefrac','refraction','altitude '):
+              if token in low: raise SystemExit(f'forbidden token {token!r}')
+          out.write_text(text,encoding='utf-8')
+          PY
+            printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "$CASE_ID" "$SPLIT" "$ALT" "$SZA" "$WL" "$SITE" "$AER" "$NSZA" > "$CASE_DIR/case-row.csv"
+            sha256sum "$PROBE_INPUT" > "$CASE_DIR/input.sha256"
+            INFERIOR_STDOUT="$CASE_DIR/inferior.stdout"
+            INFERIOR_STDERR="$CASE_DIR/inferior.stderr"
+            set +e
+            "$GDB" -q -batch \
+              -ex "file $UVSPEC" \
+              -ex "break $SDISORT_SYMBOL" \
+              -ex "run < $PROBE_INPUT > $INFERIOR_STDOUT 2> $INFERIOR_STDERR" \
+              -x "$RUNNER_TEMP/lowalt_state0003_gatea_capture.gdb" \
+              > "$CASE_DIR/gdb.txt" 2>&1
+            GDB_RC=$?
+            set -e
+            printf '%s\n' "$GDB_RC" > "$CASE_DIR/gdb-exit-code.txt"
+            test "$GDB_RC" -eq 0
+            test ! -s "$INFERIOR_STDOUT"
+            test ! -s "$INFERIOR_STDERR"
+            python - "$CASE_DIR/capture-metadata.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert m['pcEqualsEntry'] is True
+          assert m['solverBodyInstructionExecutedAfterEntryBreakpoint'] is False
+          assert m['solverResultOpened'] is False and m['protectedResultOpened'] is False
+          assert m['radiusKm'] == 6370.0
+          assert m['nrefrac'] == 0 and m['ichap'] == 1 and m['ndenssza'] == 0
+          assert m['newgeoRawI32'] != 0 and m['spherRawI32'] != 0
+          PY
+          done
+
+      - name: Classify complete Gate A without solver-result opening
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - "$EVIDENCE_DIR" <<'PY'
+          import csv,hashlib,json,sys
+          from pathlib import Path
+          e=Path(sys.argv[1]); rows=list(csv.DictReader(open(e/'matrix.csv',encoding='utf-8')))
+          failures=[]; cases=[]
+          for r in rows:
+              d=e/'cases'/r['case_id']
+              try:
+                  m=json.load(open(d/'capture-metadata.json',encoding='utf-8'))
+                  assert m['caseId']==r['case_id'] and m['pcEqualsEntry'] is True
+                  assert m['solverBodyInstructionExecutedAfterEntryBreakpoint'] is False
+                  assert m['solverResultOpened'] is False and m['protectedResultOpened'] is False
+                  assert m['radiusKm']==6370.0 and m['nrefrac']==0 and m['ichap']==1 and m['ndenssza']==0
+                  assert (d/'inferior.stdout').stat().st_size==0 and (d/'inferior.stderr').stat().st_size==0
+                  cases.append({'caseId':r['case_id'],'split':r['split'],'nlyr':m['nlyr'],'ntau':m['ntau'],'umu0':m['umu0'],'rawArraySha256':m['rawArraySha256']})
+              except Exception as ex:
+                  failures.append({'caseId':r['case_id'],'error':repr(ex)})
+          if len(cases)!=48 or failures: raise SystemExit(json.dumps({'passed':len(cases),'failures':failures},sort_keys=True))
+          summary={
+              'schemaVersion':1,
+              'classification':'STATE_0003_GATE_A_FINAL_SDISORT_HANDOFF_CAPTURE_48_OF_48_PASS',
+              'executionIdentity':'lowalt-state-0003-gatea48-capture-r11-20260909',
+              'matrixSha256':hashlib.sha256((e/'matrix.csv').read_bytes()).hexdigest(),
+              'totalCases':48,'developmentCases':36,'auditCases':12,'passedCases':48,'failedCases':0,
+              'entryInterceptions':48,'solverBodyContinuations':0,'solverResultsOpened':0,'protectedResultsOpened':0,
+              'exactPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+              'governingSourceSha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'capturedArrays':['dtauc','ssalb','utau','zd','vn','dtauc_mb'],
+              'productionChanged':False,'v1FiveDegreeSeamChanged':False,
+              'taylorOrJerusalemUsed':False,'protectedGeographyUsed':False,'seedOrOrdinalUsed':False,
+              'cases':cases,
+          }
+          (e/'gate-a-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          manifest=[]
+          for p in sorted(x for x in e.rglob('*') if x.is_file() and x.name!='evidence-manifest.sha256'):
+              manifest.append(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(e).as_posix()}')
+          (e/'evidence-manifest.sha256').write_text('\n'.join(manifest)+'\n',encoding='utf-8')
+          print(json.dumps({k:v for k,v in summary.items() if k!='cases'},sort_keys=True))
+          PY
+
+      - name: Publish isolated Gate-A evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-gatea48-capture-r11-20260909
+          path: ${{ runner.temp }}/lowalt_state0003_gatea48_r11_evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

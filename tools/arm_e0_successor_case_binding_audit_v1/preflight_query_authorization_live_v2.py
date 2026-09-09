@@ -4,8 +4,11 @@
 This wrapper closes the stale-snapshot gap around preflight_query_authorization_v1.
 It reads only GitHub control-plane state, double-reads the default-branch tip,
 Issue #60 metadata, and the complete Issue #60 {id,body} ledger before delegating
-the exact governance/body binding to v1. It refuses ARM credentials and never
-contacts ARM, downloads native data, opens protected SWS/SASZE values, or grants
+the exact governance/body binding to v1. When an authorization identity is not
+supplied, it derives the latest ARM-relevant claim from that same stable ledger;
+the bound v1 gate then requires that claim itself to be an exact positive direct
+COORDINATOR::ARM transition. It refuses ARM credentials and never contacts ARM,
+downloads native data, opens protected SWS/SASZE values, or grants
 science/execution authority.
 """
 from __future__ import annotations
@@ -111,11 +114,44 @@ def _canonical_snapshot(rows: Any, where: str) -> tuple[list[dict[str, Any]], st
         raise LivePreflightRefusal(f"{where}: {exc}") from None
 
 
-def live_preflight(*, authorization_comment: int, authorization_title: str, token: str) -> dict[str, Any]:
+def _derive_latest_arm_claim(comments: list[dict[str, Any]]) -> tuple[int, str]:
+    """Select no authority; only identify the latest ARM-relevant ledger claim.
+
+    The selected claim is still passed through v1, which requires a direct,
+    positive, classifier-accepted COORDINATOR::ARM authorization with exact body
+    bindings. Therefore a later owner checkpoint, generic Coordinator ARM note,
+    false/revoked statement, or ambiguous title fails closed rather than being
+    skipped in favor of an older positive authorization.
+    """
+    try:
+        gov = V1.S.audit_arm_governance(comments)
+    except V1.S.StressFailure as exc:
+        raise LivePreflightRefusal(f"current exact stress governance audit refuses ledger: {exc}") from None
+    ids = gov.get("arm_relevant_comment_ids_after_baseline")
+    if not isinstance(ids, list) or not ids:
+        raise LivePreflightRefusal("no ARM-relevant governance exists after required baseline")
+    latest = ids[-1]
+    row = next((item for item in comments if item.get("id") == latest), None)
+    if row is None:
+        raise LivePreflightRefusal("latest ARM-relevant governance identity is absent from stable ledger")
+    title = V1._first_nonempty(str(row.get("body", "")))
+    if not title:
+        raise LivePreflightRefusal("latest ARM-relevant governance has empty title")
+    return latest, title
+
+
+def live_preflight(
+    *,
+    authorization_comment: int | None = None,
+    authorization_title: str | None = None,
+    token: str,
+) -> dict[str, Any]:
     if os.environ.get("ARM_USER_ID") or os.environ.get("ARM_ACCESS_TOKEN"):
         raise LivePreflightRefusal("live pre-dispatch gate refuses ARM credentials")
     if not isinstance(token, str) or not token.strip():
         raise LivePreflightRefusal("GITHUB_TOKEN is required for live GitHub control-plane readback")
+    if (authorization_comment is None) != (authorization_title is None):
+        raise LivePreflightRefusal("authorization comment and title must be supplied together or both omitted")
 
     repo_before = _github_json(REPO_URL, token)
     _repo_default_branch(repo_before)
@@ -145,6 +181,11 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
     if not isinstance(latest_id, int) or isinstance(latest_id, bool) or latest_id <= 0:
         raise LivePreflightRefusal("complete Issue #60 snapshot lacks a valid latest comment identity")
 
+    derived_from_live_ledger = authorization_comment is None
+    if derived_from_live_ledger:
+        authorization_comment, authorization_title = _derive_latest_arm_claim(comments)
+    assert authorization_comment is not None and authorization_title is not None
+
     try:
         base = V1.preflight(
             comments,
@@ -169,6 +210,7 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
         "live_issue_ledger_double_read_stable": True,
         "live_issue_ledger_sha256": ledger_after,
         "issue60_updated_at": issue_updated_after,
+        "authorization_identity_derived_from_stable_live_ledger": derived_from_live_ledger,
         "live_default_branch": "main",
         "arm_network_access_performed": False,
         "arm_credentials_read": False,
@@ -185,8 +227,8 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--authorization-comment", type=int, required=True)
-    p.add_argument("--authorization-title", required=True)
+    p.add_argument("--authorization-comment", type=int)
+    p.add_argument("--authorization-title")
     a = p.parse_args()
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     try:

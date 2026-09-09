@@ -1,0 +1,200 @@
+name: Deep twilight SORD tests 37-40 exact capture v47
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/deep-twilight-sord-tests37-40-exact-capture-v47.yml"
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SORD_TESTS_GIT_BLOB: 58147ca8a8c7b208fd54abfc83cc44c4f62d12de
+  SORD_TESTS_URL: https://raw.githubusercontent.com/korkins/SORD_JQSRT_2017/master/TESTS.zip
+
+jobs:
+  exact_public_benchmark_capture:
+    name: Exact public benchmark capture only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: State zero-result contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'DEEP_TWILIGHT_SORD_V47=EXACT_PUBLIC_DATA_CAPTURE_ONLY' \
+            'SOLVER_EXECUTION=false' \
+            'SCIENTIFIC_EXECUTION=false' \
+            'PROTECTED_RESULT_OPENING=false' \
+            'RNG_OR_SEED_USE=false' \
+            'NON_AUTHORIZING=true'
+
+      - name: Capture exact Tests 37-40 members and OOXML text
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v47-artifact
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import os
+          import pathlib
+          import urllib.request
+          import xml.etree.ElementTree as ET
+          import zipfile
+
+          url = os.environ['SORD_TESTS_URL']
+          expected_blob = os.environ['EXPECTED_SORD_TESTS_GIT_BLOB']
+          artifact = pathlib.Path('v47-artifact')
+          exact_root = artifact / 'exact_members'
+          xlsx_root = artifact / 'xlsx_text'
+          exact_root.mkdir(parents=True, exist_ok=True)
+          xlsx_root.mkdir(parents=True, exist_ok=True)
+
+          targets = []
+          for n in range(37, 41):
+              t = f'T{n:03d}'
+              targets.extend([
+                  f'TESTS/{t}/Readme_{n:03d}.txt',
+                  f'TESTS/{t}/SSA_profile.xlsx',
+                  f'TESTS/{t}/{t}.txt',
+                  f'TESTS/{t}/{t}.xlsx',
+              ])
+
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = response.read()
+          git_blob = hashlib.sha1(
+              b'blob ' + str(len(data)).encode('ascii') + b'\0' + data
+          ).hexdigest()
+          zip_sha256 = hashlib.sha256(data).hexdigest()
+          if git_blob != expected_blob:
+              raise SystemExit(
+                  f'FAIL_CLOSED_GIT_BLOB_MISMATCH expected={expected_blob} actual={git_blob}'
+              )
+
+          report = [
+              'DEEP_TWILIGHT_SORD_V47=EXACT_PUBLIC_DATA_CAPTURE_ONLY',
+              'SOLVER_EXECUTION=false',
+              'SCIENTIFIC_EXECUTION=false',
+              'PROTECTED_RESULT_OPENING=false',
+              'RNG_OR_SEED_USE=false',
+              f'SOURCE_URL={url}',
+              f'ZIP_SIZE={len(data)}',
+              f'ZIP_SHA256={zip_sha256}',
+              f'ZIP_GIT_BLOB_SHA1={git_blob}',
+              f'EXPECTED_GIT_BLOB_SHA1={expected_blob}',
+              'GIT_BLOB_VERIFIED=true',
+              '',
+          ]
+          manifest = ['path\tsize\tsha256']
+
+          def xlsx_to_text(raw: bytes, label: str) -> str:
+              lines = [f'XLSX={label}']
+              with zipfile.ZipFile(io.BytesIO(raw)) as book:
+                  names = set(book.namelist())
+                  shared = []
+                  if 'xl/sharedStrings.xml' in names:
+                      root = ET.fromstring(book.read('xl/sharedStrings.xml'))
+                      ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+                      for si in root.findall('m:si', ns):
+                          parts = [node.text or '' for node in si.iter() if node.tag.endswith('}t')]
+                          shared.append(''.join(parts))
+                  for sheet_name in sorted(
+                      n for n in names if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')
+                  ):
+                      lines.append(f'--- {sheet_name} ---')
+                      root = ET.fromstring(book.read(sheet_name))
+                      ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+                      for cell in root.findall('.//m:c', ns):
+                          ref = cell.attrib.get('r', '')
+                          typ = cell.attrib.get('t', '')
+                          formula = cell.find('m:f', ns)
+                          value = cell.find('m:v', ns)
+                          inline = cell.find('m:is', ns)
+                          out = ''
+                          if typ == 's' and value is not None and value.text is not None:
+                              idx = int(value.text)
+                              out = shared[idx] if 0 <= idx < len(shared) else f'<BAD_SHARED_INDEX:{idx}>'
+                          elif typ == 'inlineStr' and inline is not None:
+                              out = ''.join(node.text or '' for node in inline.iter() if node.tag.endswith('}t'))
+                          elif value is not None and value.text is not None:
+                              out = value.text
+                          formula_text = formula.text if formula is not None and formula.text is not None else ''
+                          lines.append(f'{ref}\ttype={typ}\tformula={formula_text}\tvalue={out}')
+                  for meta in ('xl/workbook.xml', 'docProps/core.xml', 'docProps/app.xml'):
+                      if meta in names:
+                          lines.append(f'--- RAW_TEXT {meta} ---')
+                          text = book.read(meta).decode('utf-8', errors='replace')
+                          lines.append(text)
+              return '\n'.join(lines) + '\n'
+
+          with zipfile.ZipFile(io.BytesIO(data)) as zf:
+              names = set(zf.namelist())
+              missing = [name for name in targets if name not in names]
+              if missing:
+                  raise SystemExit('FAIL_CLOSED_MISSING_TARGETS=' + ','.join(missing))
+
+              for name in targets:
+                  raw = zf.read(name)
+                  digest = hashlib.sha256(raw).hexdigest()
+                  manifest.append(f'{name}\t{len(raw)}\t{digest}')
+                  dest = exact_root / pathlib.PurePosixPath(name)
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  dest.write_bytes(raw)
+
+                  report.extend([
+                      f'=== MEMBER {name} ===',
+                      f'SIZE={len(raw)}',
+                      f'SHA256={digest}',
+                  ])
+                  if name.endswith('.txt'):
+                      text = raw.decode('utf-8', errors='replace')
+                      report.append(text.rstrip())
+                  elif name.endswith('.xlsx'):
+                      label = name.replace('/', '_')
+                      parsed = xlsx_to_text(raw, name)
+                      (xlsx_root / f'{label}.txt').write_text(parsed, encoding='utf-8')
+                      report.append(f'OOXML_TEXT=xlsx_text/{label}.txt')
+                  report.append('')
+
+          report.extend([
+              f'EXACT_TARGET_COUNT={len(targets)}',
+              'NO_EXTRACTED_FILE_WAS_EXECUTED=true',
+              'NO_SOLVER_WAS_EXECUTED=true',
+              'NON_AUTHORIZING=true',
+          ])
+          (artifact / 'report.txt').write_text('\n'.join(report) + '\n', encoding='utf-8')
+          (artifact / 'manifest.tsv').write_text('\n'.join(manifest) + '\n', encoding='utf-8')
+          (artifact / 'source_identity.txt').write_text(
+              f'url={url}\nsize={len(data)}\nsha256={zip_sha256}\ngit_blob_sha1={git_blob}\n',
+              encoding='utf-8',
+          )
+          print(f'VERIFIED_GIT_BLOB={git_blob}')
+          print(f'ZIP_SHA256={zip_sha256}')
+          print(f'EXACT_TARGET_COUNT={len(targets)}')
+          PY
+
+      - name: Print exact readmes and contract summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v47-artifact/source_identity.txt
+          for f in v47-artifact/exact_members/TESTS/T0{37,38,39,40}/Readme_0{37,38,39,40}.txt; do
+            if [ -f "$f" ]; then
+              printf '\n=== %s ===\n' "$f"
+              cat "$f"
+            fi
+          done
+          grep -E '^(EXACT_TARGET_COUNT|NO_EXTRACTED_FILE_WAS_EXECUTED|NO_SOLVER_WAS_EXECUTED|NON_AUTHORIZING)=' v47-artifact/report.txt
+
+      - name: Upload exact public benchmark capture
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-sord-tests37-40-exact-capture-v47
+          path: v47-artifact
+          if-no-files-found: error
+          retention-days: 90

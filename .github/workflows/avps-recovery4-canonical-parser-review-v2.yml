@@ -35,6 +35,8 @@ jobs:
       PARSER_PATH: scripts/avps_write_quiet_parser_v1.py
       PARSER_TEST: tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
       LEGACY_PARSER_TEST: tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+      PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909
+      FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,7 +61,6 @@ jobs:
           test "$EVENT_BASE_REF" = main
           test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
           test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
-          test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
           git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
           python - <<'PY'
           import os
@@ -79,16 +80,50 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
           PY
 
-      - name: Bind Phase-B as a wholly fresh direct child
-        if: env.MODE == 'PHASE_B'
+      - name: Bind installation ancestry as merge-free
+        if: env.MODE == 'INSTALLATION'
         shell: bash
         env:
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
-          test "${#PARENTS[@]}" = 1
-          test "${PARENTS[0]}" = "$EVENT_BASE"
+          test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
+
+      - name: Bind Phase-B ancestry with one exact preserved-identity exception
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_HEAD_REF" = "$PRESERVED_PHASE_B_REF" ]; then
+            git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD
+            CURRENT="$(git rev-parse HEAD)"
+            MERGE=""
+            while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do
+              mapfile -t PARENTS < <(git cat-file -p "$CURRENT" | sed -n 's/^parent //p')
+              if [ "${#PARENTS[@]}" = 1 ]; then
+                CURRENT="${PARENTS[0]}"
+                continue
+              fi
+              test "${#PARENTS[@]}" = 2
+              test -z "$MERGE"
+              test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"
+              test "${PARENTS[1]}" = "$EVENT_BASE"
+              MERGE="$CURRENT"
+              CURRENT="${PARENTS[0]}"
+            done
+            test -n "$MERGE"
+            EXPECTED_TREE="$(git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE")"
+            ACTUAL_TREE="$(git show -s --format=%T "$MERGE")"
+            test "$ACTUAL_TREE" = "$EXPECTED_TREE"
+          else
+            test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
+            mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+            test "${#PARENTS[@]}" = 1
+            test "${PARENTS[0]}" = "$EVENT_BASE"
+          fi
 
       - name: Prove reviewer is read-only zero-runtime and non-authorizing
         shell: bash
@@ -112,6 +147,10 @@ jobs:
           if "mode='INSTALLATION'" not in p or "mode='PHASE_B'" not in p: raise SystemExit('reviewer mode gate missing')
           if "self_path not in changed" not in p or "install_test not in changed" not in p: raise SystemExit('reviewer could self-certify Phase-B')
           if 'phase_b_required={science,publisher,parser,parser_test,legacy_parser_test}' not in p: raise SystemExit('complete Phase-B parser test migration is not mandatory')
+          if 'PRESERVED_PHASE_B_REF: repair/avps-recovery4-canonical-write-quiet-parser-v1-20260909' not in p: raise SystemExit('preserved Phase-B branch binding missing')
+          if 'FROZEN_PHASE_B_HEAD: d591a3208b923f1a374b490266292ded4291ace0' not in p: raise SystemExit('preserved Phase-B frozen head binding missing')
+          for marker in ('git merge-base --is-ancestor "$FROZEN_PHASE_B_HEAD" HEAD','CURRENT="$(git rev-parse HEAD)"','while [ "$CURRENT" != "$FROZEN_PHASE_B_HEAD" ]; do','test "${#PARENTS[@]}" = 2','test -z "$MERGE"','test "${PARENTS[0]}" = "$FROZEN_PHASE_B_HEAD"','test "${PARENTS[1]}" = "$EVENT_BASE"','test -n "$MERGE"','git merge-tree --write-tree "$FROZEN_PHASE_B_HEAD" "$EVENT_BASE"'):
+              if marker not in p: raise SystemExit('preserved-identity ancestry guard missing: '+marker)
           if 'REVIEWER_OWNED_CANONICAL_PARSER_SEMANTIC_CORPUS_V1' not in p: raise SystemExit('independent parser semantic corpus missing')
           if 'PARSER_STATIC_PURITY_GUARD_V1' not in p: raise SystemExit('parser static purity guard missing')
           if 'MUTABLE_TEST_NON_SPOOF_GUARD_V1' not in p: raise SystemExit('mutable-test non-spoof guard missing')
@@ -345,6 +384,7 @@ jobs:
             echo 'reviewer-owned immutable semantic corpus and executable wiring checks execute before any mutable Phase-B test'
             echo 'publisher isolated Python call sites require explicit GITHUB_WORKSPACE sys.path binding proven under /usr/bin/python3 -I -S; PYTHONPATH is not accepted'
             echo 'science must consume canonical parser at exactly 2 isolated Python call sites; publisher at exactly 3; historical regression at exactly 1'
+            echo 'preserved-identity Phase-B is accepted only when the frozen head is reached on the exact first-parent chain through one deterministic clean merge-forward of EVENT_BASE; all post-merge commits are single-parent; ordinary Phase-B remains direct-child only'
             echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
             echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
           } >> "$GITHUB_STEP_SUMMARY"

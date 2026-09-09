@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 from scripts.avps_write_quiet_parser_v1 import _write_quiet_end_records, is_write_quiet_begin, record_write_quiet_end, write_quiet_end_binding
@@ -89,7 +90,11 @@ class WriteQuietParserRepairContract(unittest.TestCase):
         record=_write_quiet_end_records(closed)[5467776090]
         self.assertEqual(record['comment_id'],5467875147)
         self.assertEqual(tuple(record['superseded_comment_ids']),(5467858336,))
-        for candidate in (canonical.replace('run=33303099872','run=33303099873'),canonical.replace('`5467858336`','`5467858335`')):
+        candidates=(
+            re.sub('run=33303099872','run=33303099873',canonical,count=1),
+            re.sub(r'`5467858336`','`5467858335`',canonical,count=1),
+        )
+        for candidate in candidates:
             trial=set()
             record_write_quiet_end(predecessor,5467858336,{5467776090},trial)
             with self.assertRaises(SystemExit):

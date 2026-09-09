@@ -2,9 +2,9 @@
 """Live zero-ARM-runtime pre-dispatch gate for a future ARM query-only successor.
 
 This wrapper closes the stale-snapshot gap around preflight_query_authorization_v1.
-It reads only GitHub control-plane state, double-reads the default-branch tip and
-Issue #60 metadata around a complete comments fetch, and then delegates the
-exact governance/body binding to v1. It refuses ARM credentials and never
+It reads only GitHub control-plane state, double-reads the default-branch tip,
+Issue #60 metadata, and the complete Issue #60 {id,body} ledger before delegating
+the exact governance/body binding to v1. It refuses ARM credentials and never
 contacts ARM, downloads native data, opens protected SWS/SASZE values, or grants
 science/execution authority.
 """
@@ -104,6 +104,13 @@ def _issue_meta(obj: Any) -> tuple[int, str]:
     return count, updated_at
 
 
+def _canonical_snapshot(rows: Any, where: str) -> tuple[list[dict[str, Any]], str]:
+    try:
+        return V1._canonical_rows(rows)
+    except V1.PreflightRefusal as exc:
+        raise LivePreflightRefusal(f"{where}: {exc}") from None
+
+
 def live_preflight(*, authorization_comment: int, authorization_title: str, token: str) -> dict[str, Any]:
     if os.environ.get("ARM_USER_ID") or os.environ.get("ARM_ACCESS_TOKEN"):
         raise LivePreflightRefusal("live pre-dispatch gate refuses ARM credentials")
@@ -115,7 +122,10 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
     main_before = _main_sha(_github_json(MAIN_REF_URL, token))
     issue_count_before, issue_updated_before = _issue_meta(_github_json(ISSUE_URL, token))
 
-    comments = _complete_issue_comments(token)
+    comments_before_raw = _complete_issue_comments(token)
+    comments_after_raw = _complete_issue_comments(token)
+    comments_before, ledger_before = _canonical_snapshot(comments_before_raw, "first complete Issue #60 snapshot invalid")
+    comments_after, ledger_after = _canonical_snapshot(comments_after_raw, "second complete Issue #60 snapshot invalid")
 
     issue_count_after, issue_updated_after = _issue_meta(_github_json(ISSUE_URL, token))
     repo_after = _github_json(REPO_URL, token)
@@ -125,7 +135,10 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
     if main_before != main_after:
         raise LivePreflightRefusal("default-branch main moved during live pre-dispatch readback")
     if issue_count_before != issue_count_after or issue_updated_before != issue_updated_after:
-        raise LivePreflightRefusal("Issue #60 changed during live pre-dispatch readback")
+        raise LivePreflightRefusal("Issue #60 metadata changed during live pre-dispatch readback")
+    if ledger_before != ledger_after or comments_before != comments_after:
+        raise LivePreflightRefusal("Issue #60 complete {id,body} ledger changed between live snapshots")
+    comments = comments_after
     if len(comments) != issue_count_after:
         raise LivePreflightRefusal("complete Issue #60 snapshot count disagrees with stable live issue metadata")
     latest_id = comments[-1].get("id")
@@ -152,7 +165,9 @@ def live_preflight(*, authorization_comment: int, authorization_title: str, toke
         "status": STATUS,
         "github_control_plane_read_performed": True,
         "live_main_double_read_stable": True,
-        "live_issue_double_read_stable": True,
+        "live_issue_metadata_double_read_stable": True,
+        "live_issue_ledger_double_read_stable": True,
+        "live_issue_ledger_sha256": ledger_after,
         "issue60_updated_at": issue_updated_after,
         "live_default_branch": "main",
         "arm_network_access_performed": False,

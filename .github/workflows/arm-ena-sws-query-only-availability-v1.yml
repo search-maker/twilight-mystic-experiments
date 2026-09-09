@@ -87,19 +87,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Live latest ARM authorization preflight before credentials
+      - name: Live authorization, credential presence, query, and continuity fence
+        id: query
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          out="$RUNNER_TEMP/arm-query-only-live-preflight-v2/live-preflight-receipt.json"
-          rm -rf "$(dirname "$out")"
-          mkdir -p "$(dirname "$out")"
+          pre_dir="$RUNNER_TEMP/arm-query-only-live-preflight-v2"
+          query_dir="$RUNNER_TEMP/arm-ena-sws-query-only-v1"
+          pre="$pre_dir/pre-query-live-preflight-receipt.json"
+          post="$pre_dir/post-query-live-preflight-receipt.json"
+          rm -rf "$pre_dir" "$query_dir"
+          mkdir -p "$pre_dir" "$query_dir"
+
+          # The governance process receives no ARM credentials. It derives the
+          # latest ARM-relevant claim from two identical complete live ledgers
+          # and requires that claim itself to be the exact positive direct
+          # Coordinator authorization bound to this main/workflow/attempt.
           env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
-            python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" > "$out"
-          test -s "$out"
-          python - "$out" <<'PY'
+            python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" > "$pre"
+          test -s "$pre"
+          python - "$pre" <<'PY'
           import json, pathlib, sys
           obj = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
           assert obj['status'] == 'QUERY_ONLY_SUCCESSOR_LIVE_PREDISPATCH_GOVERNANCE_PASS'
@@ -108,46 +119,26 @@ jobs:
           assert obj['arm_credentials_read'] is False
           assert obj['protected_sws_sasze_values_read'] is False
           assert obj['e0_execution_authorized_by_this_receipt'] is False
-          print('PASS stable live authorization bound before ARM credentials')
+          print('PASS stable live authorization bound immediately before query')
           PY
-      - name: Upload live pre-query governance evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: arm-ena-sws-query-only-live-preflight-v2
-          path: ${{ runner.temp }}/arm-query-only-live-preflight-v2/live-preflight-receipt.json
-          if-no-files-found: error
-          retention-days: 14
-      - name: Refuse query without both ARM credentials
-        env:
-          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
-          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
+
+          # Presence only; values are never printed, written, or passed on a
+          # command line. The immediately preceding governance subprocess had
+          # both variables removed from its environment.
           if [ -z "${ARM_USER_ID:-}" ] || [ -z "${ARM_ACCESS_TOKEN:-}" ]; then
             echo '::error::Authenticated ARM environment unavailable; no query was made.'
             exit 2
           fi
-      - name: Run metadata/query-only ordered availability discovery
-        id: query
-        env:
-          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
-          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/arm-ena-sws-query-only-v1"
-          rm -rf "$out"
-          mkdir -p "$out"
+
           set +e
-          python "$QUERY_TOOL/discover.py" --output "$out/query-only-receipt.json"
+          python "$QUERY_TOOL/discover.py" --output "$query_dir/query-only-receipt.json"
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          test -s "$out/query-only-receipt.json"
-          test "$(find "$out" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
-          test "$(find "$out" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" -eq 0
-          python - "$out/query-only-receipt.json" <<'PY'
+          test -s "$query_dir/query-only-receipt.json"
+          test "$(find "$query_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
+          test "$(find "$query_dir" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" -eq 0
+          python - "$query_dir/query-only-receipt.json" <<'PY'
           import importlib.util, json, pathlib, sys
           root = pathlib.Path('tools/arm_ena_sws_query_only_availability_v1')
           spec = importlib.util.spec_from_file_location('discover_verify', root / 'discover.py')
@@ -157,6 +148,45 @@ jobs:
           mod._validate_receipt(obj, list(manifest['ordered_case_ids']))
           print('PASS sanitized closed-schema query-only receipt')
           PY
+
+          # Re-read the live control plane after the query, explicitly binding
+          # to the same authorization identity used immediately beforehand.
+          # Any intervening ARM-relevant governance or main drift makes this
+          # one-shot terminal/non-admissible before its query receipt is uploaded.
+          auth_comment="$(python - "$pre" <<'PY'
+          import json, pathlib, sys
+          print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))['authorization_comment'])
+          PY
+          )"
+          auth_title="$(python - "$pre" <<'PY'
+          import json, pathlib, sys
+          print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))['authorization_title'])
+          PY
+          )"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" \
+              --authorization-comment "$auth_comment" \
+              --authorization-title "$auth_title" > "$post"
+          test -s "$post"
+          python - "$pre" "$post" <<'PY'
+          import json, pathlib, sys
+          pre = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          post = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8'))
+          for key in ('authorization_comment', 'authorization_title', 'exact_main_sha', 'workflow_path', 'event_name', 'run_attempt', 'one_shot'):
+              assert pre[key] == post[key], key
+          assert post['authorization_identity_derived_from_stable_live_ledger'] is False
+          assert post['arm_network_access_performed'] is False
+          assert post['arm_credentials_read'] is False
+          assert post['protected_sws_sasze_values_read'] is False
+          print('PASS authorization continuity remained exact across query-only request')
+          PY
+      - name: Upload live pre/post-query governance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-ena-sws-query-only-live-preflight-v2
+          path: ${{ runner.temp }}/arm-query-only-live-preflight-v2/*.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload sanitized query-only evidence only
         uses: actions/upload-artifact@v4
         with:

@@ -81,11 +81,36 @@ jobs:
 
   query-only-discovery:
     needs: exact-executable-stress
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Bind workflow_dispatch source to authorized default branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_TYPE: ${{ github.ref_type }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = workflow_dispatch
+          test "$EVENT_DEFAULT_BRANCH" = main
+          test "$EVENT_REF_TYPE" = branch
+          test "$EVENT_REF" = refs/heads/main
+          test "${#EVENT_SHA}" = 40
+          case "$EVENT_SHA" in (*[!0-9a-f]*) exit 1;; esac
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify checked-out dispatch source SHA
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EVENT_SHA"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -113,15 +138,19 @@ jobs:
             python "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py" > "$pre"
           test -s "$pre"
           python - "$pre" <<'PY'
-          import json, pathlib, sys
+          import json, os, pathlib, sys
           obj = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
           assert obj['status'] == 'QUERY_ONLY_SUCCESSOR_LIVE_PREDISPATCH_GOVERNANCE_PASS'
           assert obj['authorization_identity_derived_from_stable_live_ledger'] is True
+          assert obj['live_default_branch'] == 'main'
+          assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+          assert os.environ['GITHUB_REF_TYPE'] == 'branch'
+          assert obj['exact_main_sha'] == os.environ['GITHUB_SHA']
           assert obj['arm_network_access_performed'] is False
           assert obj['arm_credentials_read'] is False
           assert obj['protected_sws_sasze_values_read'] is False
           assert obj['e0_execution_authorized_by_this_receipt'] is False
-          print('PASS stable live authorization bound immediately before query')
+          print('PASS stable live authorization bound to actual current-main dispatch source immediately before query')
           PY
 
           # Presence only; values are never printed, written, or passed on a

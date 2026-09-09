@@ -1,0 +1,334 @@
+name: LowAlt STATE-0003 R15 exact dpmisc provenance reproduction
+
+on:
+  push:
+    branches:
+      - research/lowalt-state0003-dpmisc-repro-r15-20260909
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce-dpmisc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+      EXPECTED_SOURCE_ENTITY_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_GOVERNING_DPMISC_SHA256: 8ec028a406ac0fea7456d039f144b0edc8e91752d0a0fe9912e0a0fff06fdb1b
+      RUBIN_PACKAGE_URL: https://conda.anaconda.org/conda-forge/linux-64/rubin-libradtran-2.0.6-py312pl5321he9373c2_1.conda
+      BRANCH_ID: research/lowalt-state0003-dpmisc-repro-r15-20260909
+    steps:
+      - name: Checkout frozen branch
+        uses: actions/checkout@v4
+
+      - name: Exact source package compiler and governing-object reproduction
+        id: repro
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u -o pipefail
+          ROOT="$RUNNER_TEMP/lowalt-state0003-r15"
+          OUT="$ROOT/evidence"
+          WORK="$ROOT/work"
+          ENV_PREFIX="$ROOT/compiler-env"
+          mkdir -p "$OUT" "$WORK"
+          printf 'NOT_PASS\n' > "$OUT/classification.txt"
+          printf '%s\n' "$GITHUB_SHA" > "$OUT/execution-head.txt"
+          printf '%s\n' "$BRANCH_ID" > "$OUT/execution-branch.txt"
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd binutils file bzip2 curl unzip jq make autoconf automake gawk flex perl > "$OUT/apt-install.log" 2>&1
+
+          # Bind the literal HTTP route twice: raw transfer representation and content-decoded entity.
+          set +e
+          curl -fsS -L --max-redirs 10 --raw -H 'Accept-Encoding: gzip' \
+            -D "$OUT/http-wire-headers.txt" -o "$WORK/source-wire.bin" \
+            -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' \
+            "$SOURCE_URL" > "$OUT/http-wire-route.txt" 2> "$OUT/http-wire-curl.stderr"
+          WIRE_RC=$?
+          set -e
+          printf '%s\n' "$WIRE_RC" > "$OUT/http-wire-curl.rc"
+          if [[ -f "$WORK/source-wire.bin" ]]; then
+            sha256sum "$WORK/source-wire.bin" | tee "$OUT/http-wire-sha256.txt"
+            wc -c "$WORK/source-wire.bin" | tee "$OUT/http-wire-bytes.txt"
+            file "$WORK/source-wire.bin" | tee "$OUT/http-wire-file.txt"
+          fi
+
+          set +e
+          curl -fsS -L --max-redirs 10 --compressed \
+            -D "$OUT/http-entity-headers.txt" -o "$WORK/source-entity.bin" \
+            -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' \
+            "$SOURCE_URL" > "$OUT/http-entity-route.txt" 2> "$OUT/http-entity-curl.stderr"
+          ENTITY_RC=$?
+          set -e
+          printf '%s\n' "$ENTITY_RC" > "$OUT/http-entity-curl.rc"
+          if [[ "$ENTITY_RC" -ne 0 || ! -s "$WORK/source-entity.bin" ]]; then
+            echo 'BARRIER_HTTP_ENTITY_UNOBTAINABLE' > "$OUT/classification.txt"
+            exit 11
+          fi
+          ENTITY_SHA=$(sha256sum "$WORK/source-entity.bin" | awk '{print $1}')
+          ENTITY_BYTES=$(wc -c < "$WORK/source-entity.bin")
+          printf '%s  source-entity.bin\n' "$ENTITY_SHA" | tee "$OUT/http-entity-sha256.txt"
+          printf '%s\n' "$ENTITY_BYTES" | tee "$OUT/http-entity-bytes.txt"
+          file "$WORK/source-entity.bin" | tee "$OUT/http-entity-file.txt"
+          if [[ "$ENTITY_SHA" != "$EXPECTED_SOURCE_ENTITY_SHA256" ]]; then
+            echo 'BARRIER_LITERAL_HTTP_ENTITY_SHA_MISMATCH' > "$OUT/classification.txt"
+            exit 12
+          fi
+
+          # Bind the exact inherited package and independently extract its governing binary evidence.
+          curl -fsSL "$RUBIN_PACKAGE_URL" -o "$WORK/rubin.conda"
+          sha256sum "$WORK/rubin.conda" | tee "$OUT/rubin-package-sha256.txt"
+          wc -c "$WORK/rubin.conda" | tee "$OUT/rubin-package-bytes.txt"
+          mkdir -p "$WORK/rubin-unpacked"
+          python3 - "$WORK/rubin.conda" "$WORK/rubin-unpacked" <<'PY'
+          import sys, zipfile
+          src, dst = sys.argv[1:]
+          with zipfile.ZipFile(src) as z:
+              z.extractall(dst)
+              print('\n'.join(z.namelist()))
+          PY
+          for z in "$WORK"/rubin-unpacked/*.tar.zst; do
+            tar --zstd -xf "$z" -C "$WORK/rubin-unpacked"
+          done
+          find "$WORK/rubin-unpacked/info" -maxdepth 3 -type f -print | sort > "$OUT/rubin-info-files.txt"
+          cp -a "$WORK/rubin-unpacked/info/index.json" "$OUT/rubin-index.json" || true
+          cp -a "$WORK/rubin-unpacked/info/hash_input.json" "$OUT/rubin-hash_input.json" || true
+          mkdir -p "$OUT/rubin-recipe"
+          cp -a "$WORK/rubin-unpacked/info/recipe/." "$OUT/rubin-recipe/" 2>/dev/null || true
+
+          UVSPEC_SHA=$(sha256sum "$WORK/rubin-unpacked/bin/uvspec" | awk '{print $1}')
+          printf '%s  uvspec\n' "$UVSPEC_SHA" | tee "$OUT/uvspec-sha256.txt"
+          if [[ "$UVSPEC_SHA" != "$EXPECTED_UVSPEC_SHA256" ]]; then
+            echo 'BARRIER_PINNED_UVSPEC_SHA_MISMATCH' > "$OUT/classification.txt"
+            exit 13
+          fi
+
+          mkdir -p "$WORK/governing-ar"
+          (cd "$WORK/governing-ar" && ar x "$WORK/rubin-unpacked/lib/libRadtran_f.a")
+          GOVERNING_OBJ="$WORK/governing-ar/dpmisc.o"
+          if [[ ! -s "$GOVERNING_OBJ" ]]; then
+            ar t "$WORK/rubin-unpacked/lib/libRadtran_f.a" > "$OUT/libRadtran_f-members.txt"
+            echo 'BARRIER_DPMISC_OBJECT_NOT_FOUND' > "$OUT/classification.txt"
+            exit 14
+          fi
+          GOVERNING_SHA=$(sha256sum "$GOVERNING_OBJ" | awk '{print $1}')
+          printf '%s  governing-dpmisc.o\n' "$GOVERNING_SHA" | tee "$OUT/governing-dpmisc-sha256.txt"
+          readelf -p .comment "$GOVERNING_OBJ" > "$OUT/governing-dpmisc-comment.txt" 2>&1 || true
+          readelf -SW "$GOVERNING_OBJ" > "$OUT/governing-dpmisc-sections.txt"
+          nm -S --defined-only "$GOVERNING_OBJ" > "$OUT/governing-dpmisc-nm.txt"
+          objdump -drwC "$GOVERNING_OBJ" > "$OUT/governing-dpmisc-disassembly.txt"
+          if [[ "$GOVERNING_SHA" != "$EXPECTED_GOVERNING_DPMISC_SHA256" ]]; then
+            echo 'BARRIER_GOVERNING_DPMISC_SHA_MISMATCH' > "$OUT/classification.txt"
+            exit 15
+          fi
+
+          # Extract the checksum-governing source entity.  The exact HTTP entity may be an uncompressed tar
+          # despite the historical .tar.gz route because HTTP Content-Encoding is decoded by the client.
+          mkdir -p "$WORK/source-tree"
+          if tar -tf "$WORK/source-entity.bin" >/dev/null 2>&1; then
+            tar -xf "$WORK/source-entity.bin" -C "$WORK/source-tree"
+          elif gzip -t "$WORK/source-entity.bin" >/dev/null 2>&1; then
+            tar -xzf "$WORK/source-entity.bin" -C "$WORK/source-tree"
+          else
+            echo 'BARRIER_SOURCE_ENTITY_NOT_EXTRACTABLE' > "$OUT/classification.txt"
+            exit 16
+          fi
+          SRC_ROOT=$(find "$WORK/source-tree" -type f -path '*/libsrc_f/dpmisc.f' -printf '%h/..\n' | head -n1)
+          SRC_ROOT=$(readlink -f "$SRC_ROOT")
+          if [[ -z "$SRC_ROOT" || ! -f "$SRC_ROOT/libsrc_f/dpmisc.f" ]]; then
+            echo 'BARRIER_DPMISC_SOURCE_NOT_FOUND' > "$OUT/classification.txt"
+            exit 17
+          fi
+          sha256sum "$SRC_ROOT/libsrc_f/dpmisc.f" | tee "$OUT/dpmisc-source-sha256.txt"
+          grep -RniE 'dpmisc|FFLAGS|FC[[:space:]]*=|ffixed-line-length|fPIC' \
+            "$SRC_ROOT/Makeconf.in" "$SRC_ROOT/libsrc_f/Makefile.in" "$SRC_ROOT/configure" \
+            > "$OUT/source-build-rule-evidence.txt" 2>&1 || true
+
+          # Exact compiler packages identified by the pinned package build provenance.
+          mkdir -p "$ROOT/mm/bin"
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C "$ROOT/mm" bin/micromamba
+          MM="$ROOT/mm/bin/micromamba"
+          export MAMBA_ROOT_PREFIX="$ROOT/mamba-root"
+          "$MM" create -y -p "$ENV_PREFIX" -c conda-forge \
+            'gfortran_impl_linux-64=13.4.0=hb485fb8_18' \
+            'gfortran_linux-64=13.4.0=hce61b40_21' \
+            'gcc_impl_linux-64=13.4.0=he2fa53e_18' \
+            'python=3.12' make autoconf automake gnuconfig flex gawk perl libnetcdf netcdf4 gsl libblas libcblas \
+            > "$OUT/micromamba-create.log" 2>&1
+          "$MM" list -p "$ENV_PREFIX" --json > "$OUT/compiler-env-packages.json"
+          "$MM" run -p "$ENV_PREFIX" bash -lc 'env | sort' > "$OUT/compiler-activated-env.txt"
+          "$MM" run -p "$ENV_PREFIX" bash -lc 'printf "FC=%s\nFFLAGS=%s\nF77=%s\nF90=%s\n" "$FC" "$FFLAGS" "$F77" "$F90"; "$FC" --version' \
+            > "$OUT/compiler-identity.txt" 2>&1
+
+          # Re-run the feedstock build mechanics only through configure and the single dpmisc.o target.
+          REPRO="$WORK/repro-source"
+          cp -a "$SRC_ROOT" "$REPRO"
+          rm -f "$REPRO/src/.depend" "$REPRO/libsrc_c/.depend"
+          if [[ -d "$ENV_PREFIX/share/gnuconfig" ]]; then
+            cp "$ENV_PREFIX"/share/gnuconfig/config.* "$REPRO/" || true
+          fi
+
+          set +e
+          "$MM" run -p "$ENV_PREFIX" bash -lc \
+            "export PREFIX='$ENV_PREFIX'; cd '$REPRO'; ./configure --prefix=\"\$PREFIX\" --with-netcdf4=\"\$PREFIX\"" \
+            > "$OUT/configure.log" 2>&1
+          CONFIG_RC=$?
+          set -e
+          printf '%s\n' "$CONFIG_RC" > "$OUT/configure.rc"
+
+          REBUILT_OBJ=''
+          if [[ "$CONFIG_RC" -eq 0 ]]; then
+            set +e
+            "$MM" run -p "$ENV_PREFIX" bash -lc \
+              "export PREFIX='$ENV_PREFIX'; cd '$REPRO'; make -n -C libsrc_f dpmisc.o" \
+              > "$OUT/make-dpmisc-dry-run.txt" 2>&1
+            DRY_RC=$?
+            "$MM" run -p "$ENV_PREFIX" bash -lc \
+              "export PREFIX='$ENV_PREFIX'; cd '$REPRO'; make -C libsrc_f dpmisc.o" \
+              > "$OUT/make-dpmisc.log" 2>&1
+            MAKE_RC=$?
+            set -e
+            printf '%s\n' "$DRY_RC" > "$OUT/make-dpmisc-dry-run.rc"
+            printf '%s\n' "$MAKE_RC" > "$OUT/make-dpmisc.rc"
+            if [[ "$MAKE_RC" -eq 0 && -s "$REPRO/libsrc_f/dpmisc.o" ]]; then
+              REBUILT_OBJ="$REPRO/libsrc_f/dpmisc.o"
+            fi
+          fi
+
+          # Result-blind deterministic fallback, used only if the configure/make route is mechanically unavailable.
+          # Its flags are fixed by the conda activation plus libRadtran's fixed-form source requirement, not by any
+          # scientific residual or output comparison.
+          if [[ -z "$REBUILT_OBJ" ]]; then
+            FALLBACK_OBJ="$WORK/dpmisc-fallback.o"
+            set +e
+            "$MM" run -p "$ENV_PREFIX" bash -lc \
+              "cd '$SRC_ROOT/libsrc_f'; \"\$FC\" \$FFLAGS -fPIC -ffixed-line-length-none -c dpmisc.f -o '$FALLBACK_OBJ'" \
+              > "$OUT/fallback-compile.log" 2>&1
+            FALLBACK_RC=$?
+            set -e
+            printf '%s\n' "$FALLBACK_RC" > "$OUT/fallback-compile.rc"
+            if [[ "$FALLBACK_RC" -eq 0 && -s "$FALLBACK_OBJ" ]]; then
+              REBUILT_OBJ="$FALLBACK_OBJ"
+              echo 'FALLBACK_ACTIVATION_PLUS_SOURCE_FIXED_FORM' > "$OUT/rebuild-route.txt"
+            else
+              echo 'BARRIER_EXACT_TOOLCHAIN_REBUILD_UNAVAILABLE' > "$OUT/classification.txt"
+              exit 18
+            fi
+          else
+            echo 'FEEDSTOCK_CONFIGURE_SINGLE_MAKE_TARGET' > "$OUT/rebuild-route.txt"
+          fi
+
+          cp "$REBUILT_OBJ" "$OUT/rebuilt-dpmisc.o"
+          cp "$GOVERNING_OBJ" "$OUT/governing-dpmisc.o"
+          REBUILT_SHA=$(sha256sum "$REBUILT_OBJ" | awk '{print $1}')
+          printf '%s  rebuilt-dpmisc.o\n' "$REBUILT_SHA" | tee "$OUT/rebuilt-dpmisc-sha256.txt"
+          readelf -p .comment "$REBUILT_OBJ" > "$OUT/rebuilt-dpmisc-comment.txt" 2>&1 || true
+          readelf -SW "$REBUILT_OBJ" > "$OUT/rebuilt-dpmisc-sections.txt"
+          nm -S --defined-only "$REBUILT_OBJ" > "$OUT/rebuilt-dpmisc-nm.txt"
+          objdump -drwC "$REBUILT_OBJ" > "$OUT/rebuilt-dpmisc-disassembly.txt"
+
+          if cmp -s "$GOVERNING_OBJ" "$REBUILT_OBJ"; then
+            WHOLE=true
+          else
+            WHOLE=false
+          fi
+          printf '%s\n' "$WHOLE" > "$OUT/whole-object-byte-identical.txt"
+
+          # Remove producer-note sections for a secondary object comparison; function-byte comparison below is governing.
+          cp "$GOVERNING_OBJ" "$WORK/governing-stripped.o"
+          cp "$REBUILT_OBJ" "$WORK/rebuilt-stripped.o"
+          objcopy --remove-section=.comment --remove-section=.note.GNU-stack "$WORK/governing-stripped.o" 2>/dev/null || true
+          objcopy --remove-section=.comment --remove-section=.note.GNU-stack "$WORK/rebuilt-stripped.o" 2>/dev/null || true
+          sha256sum "$WORK/governing-stripped.o" "$WORK/rebuilt-stripped.o" > "$OUT/stripped-object-sha256.txt"
+          if cmp -s "$WORK/governing-stripped.o" "$WORK/rebuilt-stripped.o"; then STRIPPED=true; else STRIPPED=false; fi
+          printf '%s\n' "$STRIPPED" > "$OUT/stripped-object-byte-identical.txt"
+
+          python3 - "$GOVERNING_OBJ" "$REBUILT_OBJ" "$OUT/routine-byte-equivalence.json" <<'PY'
+          import hashlib, json, re, subprocess, sys
+          gov, reb, out = sys.argv[1:]
+          wanted = ['optical_path_fast', 'points_of_incidence_fast', 'opathfast', 'geofast', 'chpman2']
+          def symbols(obj):
+              txt = subprocess.check_output(['nm','--defined-only',obj], text=True, errors='replace')
+              names=[]
+              for line in txt.splitlines():
+                  p=line.split()
+                  if p: names.append(p[-1])
+              return names
+          def choose(obj, base):
+              names=symbols(obj)
+              c=[n for n in names if n.lower().rstrip('_') == base.lower()]
+              if not c:
+                  c=[n for n in names if base.lower() in n.lower()]
+              return sorted(c, key=len)[0] if c else None
+          def codebytes(obj, sym):
+              txt=subprocess.check_output(['objdump','-d','--disassemble='+sym,obj], text=True, errors='replace')
+              b=bytearray()
+              for line in txt.splitlines():
+                  m=re.match(r'^\s*[0-9a-fA-F]+:\s+((?:[0-9a-fA-F]{2}(?:\s+|$))+)', line)
+                  if m:
+                      for x in re.findall(r'[0-9a-fA-F]{2}', m.group(1)):
+                          b.append(int(x,16))
+              return bytes(b), txt
+          rows=[]
+          all_equal=True
+          for base in wanted:
+              gs=choose(gov,base); rs=choose(reb,base)
+              row={'routine':base,'governing_symbol':gs,'rebuilt_symbol':rs}
+              if gs and rs:
+                  gb,_=codebytes(gov,gs); rb,_=codebytes(reb,rs)
+                  row.update(governing_bytes=len(gb), rebuilt_bytes=len(rb),
+                             governing_sha256=hashlib.sha256(gb).hexdigest(),
+                             rebuilt_sha256=hashlib.sha256(rb).hexdigest(),
+                             byte_identical=(gb==rb))
+                  all_equal = all_equal and (gb==rb) and bool(gb)
+              else:
+                  row['byte_identical']=False; all_equal=False
+              rows.append(row)
+          json.dump({'all_five_routines_byte_identical':all_equal,'routines':rows},open(out,'w'),indent=2,sort_keys=True)
+          print(json.dumps({'all_five_routines_byte_identical':all_equal,'routines':rows},indent=2,sort_keys=True))
+          PY
+
+          ROUTINES=$(jq -r '.all_five_routines_byte_identical' "$OUT/routine-byte-equivalence.json")
+          python3 - "$OUT" "$ENTITY_SHA" "$UVSPEC_SHA" "$GOVERNING_SHA" "$REBUILT_SHA" "$WHOLE" "$STRIPPED" "$ROUTINES" <<'PY'
+          import json, pathlib, sys
+          out, src, uv, gov, reb, whole, stripped, routines = sys.argv[1:]
+          d={
+            'state':'STATE-0003','gate':'R15','scope':'NONPROTECTED_PROVENANCE_ONLY',
+            'source_entity_sha256':src,'uvspec_sha256':uv,
+            'governing_dpmisc_sha256':gov,'rebuilt_dpmisc_sha256':reb,
+            'whole_object_byte_identical':whole=='true',
+            'metadata_stripped_object_byte_identical':stripped=='true',
+            'all_five_state0003_routines_byte_identical':routines=='true',
+            'solver_executed':False,'protected_result_opened':False,
+            'production_mutated':False,'science_identity_allocated':False,
+          }
+          pathlib.Path(out,'summary.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+          if [[ "$ROUTINES" == 'true' ]]; then
+            echo 'STATE_0003_R15_EXACT_TOOLCHAIN_GOVERNING_ROUTINE_CODE_EQUIVALENCE_PASS' > "$OUT/classification.txt"
+            exit 0
+          fi
+          echo 'STATE_0003_R15_EXACT_TOOLCHAIN_GOVERNING_ROUTINE_CODE_EQUIVALENCE_NOT_PASS' > "$OUT/classification.txt"
+          exit 19
+
+      - name: Upload immutable R15 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-state0003-r15-exact-dpmisc-provenance
+          path: ${{ runner.temp }}/lowalt-state0003-r15/evidence
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce R15 named equivalence
+        if: always()
+        shell: bash
+        run: |
+          CLASS_FILE="$RUNNER_TEMP/lowalt-state0003-r15/evidence/classification.txt"
+          test -f "$CLASS_FILE"
+          cat "$CLASS_FILE"
+          test "$(cat "$CLASS_FILE")" = 'STATE_0003_R15_EXACT_TOOLCHAIN_GOVERNING_ROUTINE_CODE_EQUIVALENCE_PASS'

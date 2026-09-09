@@ -1,0 +1,388 @@
+name: LOWALT STATE-0003 pre-dispatch GDB capture v2
+run-name: LOWALT STATE-0003 pre-dispatch GDB capture v2 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state-0003-predispatch-gdb-probe-v2-20260909
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lowalt-state-0003-predispatch-gdb-probe-v2-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state-0003-predispatch-gdb-probe-v2-20260909
+  BASE_MAIN_SHA: c9f1d3abc3af704f9a54176f32932e87ee084068
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PACKAGE_SPEC: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  GOVERNING_SOURCE_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+
+jobs:
+  capture-before-solver-entry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact fresh probe commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-file fresh nonprotected boundary and initialize isolated evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$BASE_MAIN_SHA"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = '.github/workflows/lowalt-state-0003-predispatch-gdb-probe-v2-20260909.yml'
+          EVIDENCE_DIR="$RUNNER_TEMP/lowalt_state0003_gdb_v2_evidence"
+          rm -rf "$EVIDENCE_DIR"
+          mkdir -p "$EVIDENCE_DIR"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE_DIR/boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "executionIdentity": "lowalt-state-0003-predispatch-gdb-probe-v2-20260909",
+            "headSha": "$GITHUB_SHA",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "runAttempt": $GITHUB_RUN_ATTEMPT,
+            "changedPathCount": 1,
+            "protectedResultOpeningAuthorized": false,
+            "solverContinuationAuthorized": false,
+            "taylorOrJerusalemUsed": false,
+            "scienceSeedOrOrdinalUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false
+          }
+          EOF
+
+      - name: Set up exact inherited libRadtran runtime
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state-0003-predispatch-gdb-probe-v2
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Bind exact package executable data and debugger
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uname -a > "$EVIDENCE_DIR/uname.txt"
+          test "$(uname -m)" = x86_64
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          ACTUAL_UVSPEC_SHA="$(sha256sum "$UVSPEC" | awk '{print $1}')"
+          printf '%s\n' "$ACTUAL_UVSPEC_SHA" > "$EVIDENCE_DIR/uvspec.sha256"
+          test "$ACTUAL_UVSPEC_SHA" = "$UVSPEC_SHA256"
+          micromamba list rubin-libradtran --json > "$EVIDENCE_DIR/micromamba-rubin-libradtran.json"
+          ACTUAL_PACKAGE_SPEC="$(python - "$EVIDENCE_DIR/micromamba-rubin-libradtran.json" <<'PY'
+          import json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          rows=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if x.get('name')=='rubin-libradtran': rows.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(obj)
+          specs=set()
+          for r in rows:
+              version=r.get('version')
+              build=r.get('build_string',r.get('build'))
+              if version and build: specs.add(f'rubin-libradtran={version}={build}')
+          if len(specs)!=1: raise SystemExit(f'exact package identity unresolved: {sorted(specs)!r}')
+          print(next(iter(specs)))
+          PY
+          )"
+          printf '%s\n' "$ACTUAL_PACKAGE_SPEC" > "$EVIDENCE_DIR/package-spec.txt"
+          test "$ACTUAL_PACKAGE_SPEC" = "$PACKAGE_SPEC"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          test -d "$DATA_DIR"
+          test -f "$DATA_DIR/atmmod/afglus.dat"
+          if ! command -v gdb >/dev/null 2>&1; then
+            printf '%s\n' 'gdb_absent_before_install=true' > "$EVIDENCE_DIR/gdb-install-status.txt"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq gdb
+          else
+            printf '%s\n' 'gdb_absent_before_install=false' > "$EVIDENCE_DIR/gdb-install-status.txt"
+          fi
+          GDB="$(command -v gdb)"
+          test -n "$GDB"
+          "$GDB" --version > "$EVIDENCE_DIR/gdb-version.txt"
+          printf 'uvspec=%s\nuvspec_sha256=%s\npackage_spec=%s\ndata_dir=%s\ngdb=%s\n' \
+            "$UVSPEC" "$ACTUAL_UVSPEC_SHA" "$ACTUAL_PACKAGE_SPEC" "$DATA_DIR" "$GDB" \
+            > "$EVIDENCE_DIR/runtime-binding.txt"
+          echo "UVSPEC=$UVSPEC" >> "$GITHUB_ENV"
+          echo "LIBRADTRAN_DATA=$DATA_DIR" >> "$GITHUB_ENV"
+          echo "GDB=$GDB" >> "$GITHUB_ENV"
+
+      - name: Freeze exact matrix-member probe input before preprocessing opens
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          PROBE_INPUT="$RUNNER_TEMP/lowalt_state0003_gdb_v2_probe.inp"
+          python - "$LIBRADTRAN_DATA/atmmod/afglus.dat" "$PROBE_INPUT" <<'PY'
+          from pathlib import Path
+          import sys
+          atm=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          levels=[]
+          for raw in atm.read_text(encoding='utf-8').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#'): continue
+              levels.append(float(s.split()[0]))
+          if len(levels)<2 or any(levels[i] <= levels[i+1] for i in range(len(levels)-1)):
+              raise SystemExit('AFGLUS altitude grid not strictly descending')
+          site=0.0
+          grid=[site,*sorted(z for z in levels if z>site)]
+          if any(grid[i]>=grid[i+1] for i in range(len(grid)-1)):
+              raise SystemExit('atm_z_grid not strictly ascending')
+          lines=[
+              f'data_files_path {Path(sys.argv[1]).parent.parent}',
+              f'atmosphere_file {atm}',
+              'source solar',
+              'mol_abs_param crs',
+              'wavelength 452 452',
+              'sza 89.59000000',
+              'atm_z_grid '+' '.join(f'{z:.6f}' for z in grid),
+              'zout 0.000000',
+              'albedo 0.15000000',
+              'rte_solver sdisort',
+              'sdisort nscat 1',
+              'output_quantity transmittance',
+              'output_user lambda edir',
+              'quiet',
+          ]
+          text='\n'.join(lines)+'\n'
+          forbidden=('rte_solver mystic','aerosol_default','aerosol_set_tau','nrefrac','refraction','altitude ')
+          low=text.lower()
+          for token in forbidden:
+              if token in low: raise SystemExit(f'forbidden token {token!r}')
+          out.write_text(text,encoding='utf-8')
+          PY
+          cat > "$EVIDENCE_DIR/probe-contract.json" <<'EOF'
+          {
+            "schemaVersion": 1,
+            "governingSourceSha256": "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85",
+            "frozenMatrixSha256": "c84a8d11c27b838ed0341ee47a940a5a9949d891bf4e516e4ba9cdf879a36f76",
+            "targetGeometricAltitudeDeg": 0.41,
+            "sourceZenithAngleDeg": 89.59,
+            "wavelengthNm": 452,
+            "observerElevationKm": 0.0,
+            "aerosol": "OFF",
+            "rteSolver": "sdisort",
+            "sdisortNscat": 1,
+            "targetAltitudeBasis": "topocentric-vacuum-geometric",
+            "protectedGeographyUsed": false,
+            "taylorOrJerusalemUsed": false,
+            "seedOrOrdinalUsed": false,
+            "solverContinuationAllowed": false,
+            "solverResultOpeningAllowed": false,
+            "epsilonSubstitutionAllowed": false
+          }
+          EOF
+          sha256sum "$PROBE_INPUT" > "$EVIDENCE_DIR/probe-input.sha256"
+          cp "$PROBE_INPUT" "$EVIDENCE_DIR/probe.inp"
+          echo "PROBE_INPUT=$PROBE_INPUT" >> "$GITHUB_ENV"
+
+      - name: Resolve exact installed SDISORT entry symbol without execution
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          nm -an "$UVSPEC" > "$EVIDENCE_DIR/nm-all.txt"
+          readelf -Ws "$UVSPEC" > "$EVIDENCE_DIR/readelf-symbols.txt"
+          readelf -S "$UVSPEC" > "$EVIDENCE_DIR/readelf-sections.txt"
+          SDISORT_SYMBOL="$(python - "$EVIDENCE_DIR/nm-all.txt" "$EVIDENCE_DIR/readelf-symbols.txt" <<'PY'
+          import re,sys
+          wanted={'sdisort','sdisort_'}
+          found=[]
+          for line in open(sys.argv[1],encoding='utf-8',errors='replace'):
+              p=line.split()
+              if len(p)>=3 and p[-1] in wanted and p[-2] in {'T','t'}: found.append(p[-1])
+          if not found:
+              for line in open(sys.argv[2],encoding='utf-8',errors='replace'):
+                  p=line.split()
+                  if p and p[-1] in wanted: found.append(p[-1])
+          found=sorted(set(found))
+          if len(found)!=1: raise SystemExit(f'expected exactly one sdisort entry symbol, got {found!r}')
+          print(found[0])
+          PY
+          )"
+          printf '%s\n' "$SDISORT_SYMBOL" > "$EVIDENCE_DIR/resolved-sdisort-symbol.txt"
+          "$GDB" -q -batch -ex "file $UVSPEC" -ex "info address $SDISORT_SYMBOL" > "$EVIDENCE_DIR/gdb-static-symbol.txt" 2>&1
+          echo "SDISORT_SYMBOL=$SDISORT_SYMBOL" >> "$GITHUB_ENV"
+
+      - name: Intercept exact SDISORT entry and capture final handoff bytes without executing solver body
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          INFERIOR_STDOUT="$RUNNER_TEMP/lowalt_state0003_gdb_v2_inferior.stdout"
+          INFERIOR_STDERR="$RUNNER_TEMP/lowalt_state0003_gdb_v2_inferior.stderr"
+          cat > "$RUNNER_TEMP/lowalt_state0003_capture.gdb" <<'GDBEOF'
+          set pagination off
+          set confirm off
+          printf "LOWALT_PREDISPATCH_BREAKPOINT_HIT=1\n"
+          python
+          import gdb, os, struct, hashlib, json
+          from pathlib import Path
+          evidence=Path(os.environ['EVIDENCE_DIR'])
+          sym_name=os.environ['SDISORT_SYMBOL']
+          inf=gdb.selected_inferior()
+          pc=int(gdb.parse_and_eval('$pc'))
+          rsp=int(gdb.parse_and_eval('$rsp'))
+          rdi=int(gdb.parse_and_eval('$rdi'))
+          rsi=int(gdb.parse_and_eval('$rsi'))
+          rdx=int(gdb.parse_and_eval('$rdx'))
+          entry=int(gdb.parse_and_eval('&'+sym_name))
+          def mem(addr,n): return bytes(inf.read_memory(addr,n))
+          def ptr_at_stack(off): return struct.unpack('<Q',mem(rsp+off,8))[0]
+          def i32(addr): return struct.unpack('<i',mem(addr,4))[0]
+          def f32(addr): return struct.unpack('<f',mem(addr,4))[0]
+          nlyr=i32(rdi)
+          ntau_ptr=ptr_at_stack(24)
+          ntau=i32(ntau_ptr)
+          if not (0 < nlyr < 4096): raise RuntimeError(f'implausible nlyr={nlyr}')
+          if not (0 < ntau < 4096): raise RuntimeError(f'implausible ntau={ntau}')
+          ptrs={
+              'dtauc':rsi,
+              'ssalb':rdx,
+              'utau':ptr_at_stack(32),
+              'umu0':ptr_at_stack(112),
+              'newgeo':ptr_at_stack(128),
+              'zd':ptr_at_stack(136),
+              'spher':ptr_at_stack(144),
+              'radius':ptr_at_stack(152),
+              'nrefrac':ptr_at_stack(392),
+              'ichap':ptr_at_stack(400),
+              'vn':ptr_at_stack(408),
+              'ndenssza':ptr_at_stack(416),
+              'dtauc_mb':ptr_at_stack(448),
+          }
+          blobs={
+              'dtauc_f32le.bin':mem(ptrs['dtauc'],nlyr*4),
+              'ssalb_f32le.bin':mem(ptrs['ssalb'],nlyr*4),
+              'utau_f32le.bin':mem(ptrs['utau'],ntau*4),
+              'zd_f32le.bin':mem(ptrs['zd'],(nlyr+1)*4),
+              'vn_f32le.bin':mem(ptrs['vn'],(nlyr+1)*4),
+              'dtauc_mb_f32le.bin':mem(ptrs['dtauc_mb'],nlyr*4),
+          }
+          hashes={}
+          for name,data in blobs.items():
+              (evidence/name).write_bytes(data)
+              hashes[name]=hashlib.sha256(data).hexdigest()
+          meta={
+              'schemaVersion':1,
+              'architecture':'x86_64-sysv',
+              'resolvedEntrySymbol':sym_name,
+              'pc':hex(pc),
+              'entryAddress':hex(entry),
+              'pcEqualsEntry':pc==entry,
+              'nlyr':nlyr,
+              'ntau':ntau,
+              'radiusKm':f32(ptrs['radius']),
+              'umu0':f32(ptrs['umu0']),
+              'nrefrac':i32(ptrs['nrefrac']),
+              'ichap':i32(ptrs['ichap']),
+              'newgeoRawI32':i32(ptrs['newgeo']),
+              'spherRawI32':i32(ptrs['spher']),
+              'ndenssza':i32(ptrs['ndenssza']),
+              'rawArraySha256':hashes,
+              'solverBodyInstructionExecutedAfterEntryBreakpoint':False,
+              'solverResultOpened':False,
+              'protectedResultOpened':False,
+          }
+          (evidence/'capture-metadata.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          print('LOWALT_CAPTURE_METADATA='+json.dumps(meta,sort_keys=True))
+          end
+          bt 5
+          kill
+          quit
+          GDBEOF
+          set +e
+          "$GDB" -q -batch \
+            -ex "file $UVSPEC" \
+            -ex "break $SDISORT_SYMBOL" \
+            -ex "run < $PROBE_INPUT > $INFERIOR_STDOUT 2> $INFERIOR_STDERR" \
+            -x "$RUNNER_TEMP/lowalt_state0003_capture.gdb" \
+            > "$EVIDENCE_DIR/gdb-runtime-capture.txt" 2>&1
+          GDB_RC=$?
+          set -e
+          printf '%s\n' "$GDB_RC" > "$EVIDENCE_DIR/gdb-exit-code.txt"
+          sha256sum "$INFERIOR_STDOUT" "$INFERIOR_STDERR" > "$EVIDENCE_DIR/inferior-stream-sha256.txt"
+          wc -c "$INFERIOR_STDOUT" "$INFERIOR_STDERR" > "$EVIDENCE_DIR/inferior-stream-byte-counts.txt"
+          test "$GDB_RC" -eq 0
+          grep -q 'LOWALT_PREDISPATCH_BREAKPOINT_HIT=1' "$EVIDENCE_DIR/gdb-runtime-capture.txt"
+          test -s "$EVIDENCE_DIR/capture-metadata.json"
+          python - "$EVIDENCE_DIR/capture-metadata.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert m['pcEqualsEntry'] is True
+          assert m['solverBodyInstructionExecutedAfterEntryBreakpoint'] is False
+          assert m['solverResultOpened'] is False
+          assert m['protectedResultOpened'] is False
+          assert m['radiusKm'] == 6370.0
+          assert m['nrefrac'] == 0
+          assert m['ichap'] == 1
+          assert m['newgeoRawI32'] != 0
+          assert m['spherRawI32'] != 0
+          assert m['ndenssza'] == 0
+          PY
+
+      - name: Emit immutable result-blind interception receipt
+        if: success()
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - "$EVIDENCE_DIR" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          e=Path(sys.argv[1])
+          capture=json.load(open(e/'capture-metadata.json',encoding='utf-8'))
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          receipt={
+              'schemaVersion':1,
+              'classification':'PINNED_UVSPEC_SDISORT_ENTRY_GDB_INTERCEPTION_PASS',
+              'executionIdentity':'lowalt-state-0003-predispatch-gdb-probe-v2-20260909',
+              'governingSourceSha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'exactPackage':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+              'resolvedEntrySymbol':capture['resolvedEntrySymbol'],
+              'pcEqualsEntry':capture['pcEqualsEntry'],
+              'capturedFinalHandoffArrays':['dtauc','ssalb','utau','zd','vn','dtauc_mb'],
+              'capturedFinalHandoffScalars':['radius','umu0','nrefrac','ichap','newgeo','spher','ndenssza','nlyr','ntau'],
+              'solverBodyContinued':False,
+              'solverResultOpened':False,
+              'scientificSolverExecutionCompleted':False,
+              'protectedResultOpened':False,
+              'taylorOrJerusalemUsed':False,
+              'seedOrOrdinalUsed':False,
+              'epsilonSubstitutionUsed':False,
+              'productionChanged':False,
+              'v1FiveDegreeSeamChanged':False,
+          }
+          receipt['evidenceSha256']={p.name:sha(p) for p in sorted(e.iterdir()) if p.is_file() and p.name!='receipt.json'}
+          (e/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+
+      - name: Publish isolated result-blind interception evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state-0003-predispatch-gdb-probe-v2
+          path: ${{ runner.temp }}/lowalt_state0003_gdb_v2_evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

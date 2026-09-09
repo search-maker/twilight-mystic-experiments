@@ -55,3 +55,13 @@ There must be no fallback to `2017-06-16_dusk`, no reuse of historical authority
 A successful audit emits `ARM_E0_SUCCESSOR_REBIND_SURFACE_FROZEN` with explicit false flags for network access, credential reading, native download/opening, protected-value reading, held-out opening, Stage B, MYSTIC/science, and production.
 
 A success receipt is preparation evidence only. It does not authorize authenticated ARM activity or any scientific execution.
+
+## Result-blind successor rebind plan
+
+`build_rebind_plan_v1.py` preregisters the next boundary without applying any source change. It consumes only the sanitized query-only receipt, the zero-runtime exact-executable stress receipt, the exact frozen 25-case manifest, and externally verified GitHub provenance supplied as explicit arguments. It contains no default current-main SHA and no default future authorization comment.
+
+The planner is fail-closed. It requires the exact manifest digest `8a0756be59dac59cd8ad4fab77e499ec19069e24d2d2a636fa4352713b550def`, exact closed receipt schemas, `workflow_dispatch` on an explicitly supplied `refs/heads/main` SHA, fresh attempt 1, artifact IDs/digests, and a single-line exact Coordinator authorization title. It accepts only `FIRST_NATIVE_FILENAME_RESOLVED`, verifies that every earlier ordered case has zero matches, verifies that the final checked case is the first positive case, and verifies filename/date consistency. Exhaustion, query failure, schema widening, earlier positives, wrong-date filenames, forbidden activity flags, non-main query dispatch, or a non-fresh attempt are refusals.
+
+A successful plan preserves the frozen science source `review/arm-ena-sws-v1-stage0@b8671665a2bf8fe9972b8cb48492abcfa6765140`, the frozen 906-event universe and protocol, and enumerates the same seven rebind surfaces above. It deliberately does **not** populate a future E0 execution authorization/ref/head: those remain required future bindings from a later explicit Coordinator transition. It does not edit the wrapper or any verifier, does not download/open ARM data, and does not grant held-out opening, Stage B, MYSTIC/science, or production authority.
+
+The planner output is therefore a deterministic result-blind plan only, not a dispatch instruction and not an authorization. A later successor package must be separately reviewed and must prove that all seven bindings were applied consistently before any future authenticated E0 can be treated as consumable.

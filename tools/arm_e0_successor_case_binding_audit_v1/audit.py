@@ -23,7 +23,7 @@ FROZEN_SOURCE_HEAD = "b8671665a2bf8fe9972b8cb48492abcfa6765140"
 FROZEN_UNIVERSE_SHA256 = "87933189ff56322ce2b5d2821a1c2ab8094d0a472ef6c690cfbd90cd0451fa41"
 FROZEN_PROTOCOL = "ARM_ENA_SWS_V1_STAGE0_E0_RESULT_BLIND_V2"
 
-# These are deliberately source-level requirements.  A future successor may be
+# These are deliberately source-level requirements. A future successor may be
 # implemented separately, but it must not silently reuse any of these old
 # bindings for a different query-selected case or authorization identity.
 SURFACES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -44,6 +44,22 @@ SURFACES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "authorized_run_envelope": (
         "tools/arm_ena_sws_e0_postartifact_v1/verify_authorized_run_envelope_v1.py",
+        (
+            "AUTHORITY_COMMENT = 5575796491",
+            'FROZEN_BRANCH = "review/arm-ena-sws-v1-stage0"',
+            'FROZEN_HEAD = "b8671665a2bf8fe9972b8cb48492abcfa6765140"',
+        ),
+    ),
+    "downloaded_zip_digest_gate": (
+        "tools/arm_ena_sws_e0_postartifact_v1/verify_downloaded_artifact_zip_v1.py",
+        (
+            "AUTHORITY_COMMENT = 5575796491",
+            'FROZEN_BRANCH = "review/arm-ena-sws-v1-stage0"',
+            'FROZEN_HEAD = "b8671665a2bf8fe9972b8cb48492abcfa6765140"',
+        ),
+    ),
+    "safe_extraction_gate": (
+        "tools/arm_ena_sws_e0_postartifact_v1/extract_sanitized_artifact_zip_v1.py",
         (
             "AUTHORITY_COMMENT = 5575796491",
             'FROZEN_BRANCH = "review/arm-ena-sws-v1-stage0"',
@@ -131,6 +147,7 @@ def audit_source_tree(root: Path) -> dict[str, Any]:
         "successor_requirements": [
             "bind the query-selected case mechanically from an accepted freeze receipt before execution",
             "bind the exact future E0 authorization/run envelope separately from legacy authority 5575796491",
+            "make artifact-digest and safe-extraction receipts use that same future run envelope",
             "make strict postartifact verification use that same selected case without legacy-case fallback",
             "make sanitized ingest cross-bind the same selected case and future run envelope",
             "preserve frozen E0 science source/head/universe/protocol unless separately authorized",

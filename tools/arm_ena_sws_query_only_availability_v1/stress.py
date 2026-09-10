@@ -116,6 +116,24 @@ def _arm_control_text(body: str) -> str:
     return '\n'.join(captured)
 
 
+def _arm_relevant_control(body: str) -> bool:
+    """Conservatively identify governance that can supersede ARM authority.
+
+    Direct ARM controls are always relevant. A generic Coordinator transition
+    is also relevant whenever its body contains a standalone ARM token, even
+    when that mention lives in Markdown/cross-lane prose that the targeted
+    adverse-section parser does not capture. This prevents a later generic
+    Coordinator ARM statement from being skipped so an older positive direct
+    authorization can never become current again by backward scan.
+    """
+    first = first_nonempty(body).upper()
+    if first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM'):
+        return True
+    if not first.startswith('COORDINATOR::'):
+        return False
+    return re.search(r'(?<![A-Z0-9_])ARM(?![A-Z0-9_])', str(body or '').upper()) is not None
+
+
 _DIRECT_ADVERSE_TITLE_MARKERS = (
     'REVOKED', 'DO_NOT_USE', 'NOT_ADMISSIBLE', 'NONADMISSIBLE', 'QUARANTINE',
     'CANCELLED', 'CANCELED', 'WITHDRAWN', 'DO NOT MERGE', 'DO_NOT_MERGE',
@@ -255,7 +273,7 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             del open_begins[begin_id]
             end_ids.append(cid)
 
-        if _arm_control_text(body):
+        if _arm_relevant_control(body):
             arm_relevant.append(cid)
             if _adverse_arm_control(body):
                 adverse.append(cid)

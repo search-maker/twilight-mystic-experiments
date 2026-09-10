@@ -263,7 +263,7 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
                 raise StressFailure(f'WRITE_QUIET_END has conflicting begin bindings: {cid}')
             line_begin = raw_begin_comment or raw_begin_short
             body_begins = re.findall(
-                r'(?im)^\s*Exact matching closure for BEGIN\s+`?(\d+)`?\s+only\.\s*$',
+                r'(?im)^\s*Exact matching closure for BEGIN\s+`?(\d+)`?\s+only\.(?=\s|$)',
                 body,
             )
             if len(body_begins) > 1:

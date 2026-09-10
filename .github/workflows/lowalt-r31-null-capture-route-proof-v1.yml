@@ -1,0 +1,226 @@
+name: LowAlt R31 NULL predispatch capture-route proof
+
+on:
+  push:
+    branches:
+      - review/lowalt-r31-null-capture-route-proof-v1-20260910
+    paths:
+      - .github/workflows/lowalt-r31-null-capture-route-proof-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  exact-source-runtime-route-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-r31-null-route-proof-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Install debugger only
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb >/dev/null
+      - name: Bind exact runtime and exact governing source
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/source evidence/runtime evidence/gdb
+          UVSPEC="$(command -v uvspec)"
+          test -n "$UVSPEC"
+          printf '%s  %s\n' '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' "$UVSPEC" | sha256sum -c - | tee evidence/runtime/uvspec-sha-check.txt
+          micromamba list rubin-libradtran | tee evidence/runtime/micromamba-package.txt
+          grep -F 'rubin-libradtran' evidence/runtime/micromamba-package.txt | grep -F '2.0.6' | grep -F 'py312pl5321he9373c2_1'
+          nm -an "$UVSPEC" > evidence/runtime/nm-all.txt
+          grep -E ' (optical_properties|setup_and_call_solver|call_solver|setout_|sdisort_)$' evidence/runtime/nm-all.txt > evidence/runtime/route-symbols.txt
+          grep -q ' setup_and_call_solver$' evidence/runtime/route-symbols.txt
+          grep -q ' optical_properties$' evidence/runtime/route-symbols.txt
+          grep -q ' call_solver$' evidence/runtime/route-symbols.txt
+          grep -q ' setout_$' evidence/runtime/route-symbols.txt
+          grep -q ' sdisort_$' evidence/runtime/route-symbols.txt
+
+          curl --fail --silent --show-error --location --compressed \
+            'http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz' \
+            -o evidence/source/libRadtran-2.0.6.tar.gz
+          printf '%s  %s\n' '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85' evidence/source/libRadtran-2.0.6.tar.gz | sha256sum -c - | tee evidence/source/source-sha-check.txt
+          tar -xzf evidence/source/libRadtran-2.0.6.tar.gz -C evidence/source
+          SRC="$(find evidence/source -type f -path '*/src/solve_rte.c' -print -quit)"
+          test -n "$SRC"
+          sha256sum "$SRC" > evidence/source/solve-rte-sha256.txt
+          python - "$SRC" <<'PY'
+          import json, pathlib, re, sys
+          p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines()
+          def hits(s): return [i+1 for i,x in enumerate(lines) if s in x]
+          setup=hits('static int setup_and_call_solver')
+          optical=hits('status = optical_properties (input, output')
+          setout=hits('F77_FUNC  (setout, SETOUT)')
+          nullcase=hits('case SOLVER_NULL:')
+          calls=hits('status = call_solver (input, output, rte_solver')
+          if not setup or not optical or not setout or not nullcase or not calls:
+              raise SystemExit('required exact source anchors absent')
+          # Select the setup-and-call-solver implementation region, not prototypes/other helpers.
+          setup_impl=max(setup)
+          optical_after=[x for x in optical if x>setup_impl]
+          setout_after=[x for x in setout if x>setup_impl]
+          null_after=[x for x in nullcase if x>setup_impl]
+          calls_after=[x for x in calls if x>setup_impl]
+          if not all((optical_after,setout_after,null_after,calls_after)):
+              raise SystemExit('required anchors absent after setup_and_call_solver implementation')
+          o=optical_after[0]; s=setout_after[0]; n=null_after[0]; c=calls_after[0]
+          if not (setup_impl < o < s < c and setup_impl < o < n < c):
+              raise SystemExit(f'unexpected source order setup={setup_impl} optical={o} setout={s} null={n} call={c}')
+          lo=max(1,o-35); hi=min(len(lines),c+20)
+          pathlib.Path('evidence/source/setup-and-call-solver-route.txt').write_text(
+              ''.join(f'{i:06d}: {lines[i-1]}\n' for i in range(lo,hi+1)))
+          report={
+            'schemaVersion':1,
+            'classification':'EXACT_SOURCE_COMMON_POST_OPTICAL_PRE_SOLVER_MUTATION_POINT_EXISTS',
+            'setupAndCallSolverLine':setup_impl,
+            'ordinaryOpticalPropertiesReturnCallLine':o,
+            'sdisortSetoutMutationLine':s,
+            'nullCaseLine':n,
+            'callSolverLine':c,
+            'sourceOrderProven': True,
+            'scientificExecution': False,
+            'protectedDataOpened': False,
+          }
+          pathlib.Path('evidence/source/source-route.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Prove identical runtime breakpoint route for NULL and SDISORT without solver entry
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          BASE=evidence/gdb/fresh-synthetic-base.inp
+          cat > "$BASE" <<EOF
+          data_files_path $DATA_DIR
+          atmosphere_file $DATA_DIR/atmmod/afglus.dat
+          source solar
+          mol_abs_param crs
+          aerosol_default
+          wavelength 553 553
+          sza 87.32100000
+          zout 0.000000
+          albedo 0.17300000
+          output_quantity transmittance
+          output_user lambda edir
+          quiet
+          EOF
+          cat "$BASE" > evidence/gdb/null.inp
+          echo 'rte_solver null' >> evidence/gdb/null.inp
+          cat "$BASE" > evidence/gdb/sdisort.inp
+          cat >> evidence/gdb/sdisort.inp <<'EOF'
+          rte_solver sdisort
+          sdisort nscat 1
+          EOF
+          sha256sum evidence/gdb/null.inp evidence/gdb/sdisort.inp > evidence/gdb/input-sha256.txt
+
+          run_probe () {
+            role="$1"; inp="$2"; script="evidence/gdb/${role}.gdb"; log="evidence/gdb/${role}.log"
+            cat > "$script" <<EOF
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set disable-randomization on
+          set logging file $log
+          set logging overwrite on
+          set logging enabled on
+          break setup_and_call_solver
+          run < $inp
+          printf "MARK_HIT_SETUP_AND_CALL_SOLVER\\n"
+          break optical_properties
+          break setout_
+          break call_solver
+          break sdisort_
+          continue
+          printf "MARK_HIT_ORDINARY_OPTICAL_PROPERTIES\\n"
+          finish
+          printf "MARK_POST_OPTICAL_RETURN_PRE_MUTATION\\n"
+          printf "ROUTE_OFFSET_FROM_SETUP=%ld\\n", (long)\$pc-(long)&setup_and_call_solver
+          info breakpoints
+          kill
+          quit
+          EOF
+            gdb -q -batch -x "$script" "$UVSPEC" > "evidence/gdb/${role}.stdout" 2> "evidence/gdb/${role}.stderr"
+          }
+          run_probe null evidence/gdb/null.inp
+          run_probe sdisort evidence/gdb/sdisort.inp
+
+          python - <<'PY'
+          import json, pathlib, re
+          root=pathlib.Path('evidence/gdb')
+          rows={}
+          for role in ('null','sdisort'):
+              text=(root/f'{role}.log').read_text(errors='replace')
+              for marker in ('MARK_HIT_SETUP_AND_CALL_SOLVER','MARK_HIT_ORDINARY_OPTICAL_PROPERTIES','MARK_POST_OPTICAL_RETURN_PRE_MUTATION'):
+                  if marker not in text: raise SystemExit(f'{role}: missing {marker}')
+              m=re.search(r'ROUTE_OFFSET_FROM_SETUP=(-?\d+)',text)
+              if not m: raise SystemExit(f'{role}: missing route offset')
+              # At kill point only setup_and_call_solver and optical_properties may have hit.
+              # The exact breakpoint-table rows are retained for independent audit.
+              rows[role]={'routeOffsetFromSetup':int(m.group(1)),'log':f'{role}.log'}
+          if rows['null']['routeOffsetFromSetup'] != rows['sdisort']['routeOffsetFromSetup']:
+              raise SystemExit(f'NULL/SDISORT post-optical PC offset mismatch: {rows}')
+          report={
+            'schemaVersion':1,
+            'classification':'EXACT_RUNTIME_COMMON_POST_OPTICAL_RETURN_PC_PROVEN_NO_SOLVER_BODY_EXECUTED',
+            'roles':rows,
+            'sameRuntimeBinary':True,
+            'samePostOpticalPcOffset':True,
+            'inferiorsKilledAtCommonPoint':True,
+            'setoutExecuted':False,
+            'callSolverExecuted':False,
+            'sdisortEntryExecuted':False,
+            'scientificExecution':False,
+            'protectedDataOpened':False,
+            'boundary':'route/ABI observation proof only; no NULL-vs-SDISORT value equivalence claim yet'
+          }
+          (root/'runtime-route.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Build result-blind proof receipt
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('evidence')
+          src=json.loads((root/'source/source-route.json').read_text())
+          rt=json.loads((root/'gdb/runtime-route.json').read_text())
+          files=[]
+          for p in sorted(root.rglob('*')):
+              if p.is_file() and p.name != 'manifest.sha256':
+                  files.append({'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size})
+          receipt={
+            'schemaVersion':1,
+            'stageId':'LOWALT_STATE_0003_R31_NULL_CAPTURE_ROUTE_PREREQUISITE_PROOF_V1',
+            'classification':'NULL_AND_SDISORT_SHARE_EXACT_POST_OPTICAL_PRE_SOLVER_MUTATION_RUNTIME_POINT',
+            'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'package':'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+            'sourceProof':src,
+            'runtimeProof':rt,
+            'scientificExecution':False,
+            'solverBodyExecution':False,
+            'protectedDataOpened':False,
+            'productionBoundaryChanged':False,
+            'claimBoundary':'proves a common result-blind observation point after ordinary optical_properties and before solver-specific setout/call_solver; does not prove UTAU/VN equality or general NULL-vs-SDISORT preprocessing equivalence',
+            'files':files,
+          }
+          (root/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+          (cd evidence && find . -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lowalt-r31-null-capture-route-proof-v1
+          path: evidence
+          if-no-files-found: error
+          retention-days: 90

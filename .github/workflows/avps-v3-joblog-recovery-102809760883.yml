@@ -1,4 +1,4 @@
-name: AVPS V3 immutable job-log recovery 102809760883
+name: AVPS V3 immutable WQ failure enumeration 102809760883
 
 on:
   push:
@@ -6,94 +6,128 @@ on:
       - diagnostic/avps-v3-joblog-recovery-102809760883-20260910
 
 permissions:
-  actions: read
-  checks: read
   contents: read
+  issues: read
 
 jobs:
-  immutable-evidence-recovery:
+  enumerate-complete-write-quiet-defects:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Recover immutable spent V3 job evidence only
+      - name: Checkout exact frozen subject parser bytes
+        uses: actions/checkout@v4
+        with:
+          ref: 5028cb7c7cd585d720749f0d572aa15e2f614bf9
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Enumerate all COMPLETE Issue 60 WQ parser defects without protected execution
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          SPENT_RUN: '34458286544'
-          SPENT_JOB: '102809760883'
+          EXPECTED_PARSER_BLOB: 7628651c9ddf740669d1fedf8fb18887d7155fe6
         shell: bash
         run: |
           set -euo pipefail
-          out="$RUNNER_TEMP/avps-v3-joblog-recovery"
+          test "$(git rev-parse HEAD)" = "5028cb7c7cd585d720749f0d572aa15e2f614bf9"
+          test "$(git rev-parse HEAD:scripts/avps_write_quiet_parser_v1.py)" = "$EXPECTED_PARSER_BLOB"
+          out="$RUNNER_TEMP/avps-v3-wq-enumeration"
           mkdir -p "$out"
-          api="https://api.github.com/repos/$REPO"
-          hdr=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN python - "$out" <<'PY'
+          import hashlib, importlib.util, json, os, pathlib, urllib.parse, urllib.request, urllib.error, sys
+          out = pathlib.Path(sys.argv[1])
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['REPO']
+          parser_path = pathlib.Path('scripts/avps_write_quiet_parser_v1.py').resolve()
+          spec = importlib.util.spec_from_file_location('frozen_subject_wq', parser_path)
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
-          curl -fsSL "${hdr[@]}" "$api/actions/runs/$SPENT_RUN" > "$out/run.json"
-          curl -fsSL "${hdr[@]}" "$api/actions/runs/$SPENT_RUN/jobs?per_page=100" > "$out/jobs.json"
-          curl -fsSL "${hdr[@]}" "$api/check-runs/$SPENT_JOB" > "$out/check-run.json"
+          def get(url):
+              req = urllib.request.Request(url, headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'avps-v3-wq-diagnostic',
+              })
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
 
-          set +e
-          curl -fsSL -L "${hdr[@]}" "$api/actions/jobs/$SPENT_JOB/logs" > "$out/job.log" 2> "$out/log-fetch.stderr"
-          log_rc=$?
-          set -e
-          printf '%s\n' "$log_rc" > "$out/log-fetch.exit-code"
+          rows=[]; page=1
+          base=f'https://api.github.com/repos/{repo}/issues/60/comments'
+          while True:
+              batch=get(f'{base}?per_page=100&page={page}')
+              if not isinstance(batch,list): raise SystemExit('comments response not list')
+              rows.extend(batch)
+              if len(batch)<100: break
+              page += 1
+              if page>100: raise SystemExit('pagination runaway')
 
-          python - "$out" <<'PY'
-          import hashlib, json, pathlib, re, sys
-          d = pathlib.Path(sys.argv[1])
-          run = json.loads((d/'run.json').read_text())
-          jobs = json.loads((d/'jobs.json').read_text())
-          check = json.loads((d/'check-run.json').read_text())
-          target = [j for j in jobs.get('jobs', []) if int(j.get('id', 0)) == 102809760883]
-          if len(target) != 1:
-              raise SystemExit(f'expected one spent job, got {len(target)}')
-          j = target[0]
-          log_rc = int((d/'log-fetch.exit-code').read_text().strip())
-          log = (d/'job.log').read_bytes() if (d/'job.log').exists() else b''
-          text = log.decode('utf-8-sig', errors='replace')
-          candidates = []
-          pats = (
-              r'##\[error\].*', r'Traceback \(most recent call last\):',
-              r'AssertionError.*', r'RuntimeError.*', r'ValueError.*',
-              r'KeyError.*', r'SystemExit.*', r'FAILED.*', r'FAIL.*',
-              r'refuse:.*', r'expected .*failure.*', r'raise .*',
-          )
-          for i, line in enumerate(text.splitlines(), 1):
-              if any(re.search(p, line, re.I) for p in pats):
-                  candidates.append({'line': i, 'text': line[-1000:]})
-          summary = {
-              'schema': 1,
-              'status': 'IMMUTABLE_SPENT_JOB_EVIDENCE_RECOVERED' if log_rc == 0 and log else 'IMMUTABLE_JOB_LOG_UNAVAILABLE',
-              'runId': int(run.get('id', 0)),
-              'runAttempt': int(run.get('run_attempt', 0)),
-              'runStatus': run.get('status'),
-              'runConclusion': run.get('conclusion'),
-              'runHeadSha': run.get('head_sha'),
-              'jobId': int(j.get('id', 0)),
-              'jobName': j.get('name'),
-              'jobStatus': j.get('status'),
-              'jobConclusion': j.get('conclusion'),
-              'jobStartedAt': j.get('started_at'),
-              'jobCompletedAt': j.get('completed_at'),
-              'checkRunConclusion': check.get('conclusion'),
-              'checkRunOutputTitle': (check.get('output') or {}).get('title'),
-              'checkRunOutputSummary': (check.get('output') or {}).get('summary'),
-              'logFetchExitCode': log_rc,
-              'logByteCount': len(log),
-              'logSha256': hashlib.sha256(log).hexdigest() if log else None,
-              'candidateFailureLines': candidates,
-              'armNetworkAccessPerformed': False,
-              'scientificRuntimePerformedByRecovery': False,
-              'protectedResultOpenedByRecovery': False,
+          begin_ids=[]; end_rows=[]; binding_errors=[]
+          for row in rows:
+              cid=int(row['id']); body=str(row.get('body') or '')
+              if mod.is_write_quiet_begin(body):
+                  begin_ids.append(cid)
+              try:
+                  binding=mod.write_quiet_end_binding(body)
+              except SystemExit as exc:
+                  first=(body.splitlines() or [''])[0].strip()
+                  binding_errors.append({
+                      'commentId':cid,
+                      'firstLine':first,
+                      'error':str(exc),
+                      'bodySha256':hashlib.sha256(body.encode()).hexdigest(),
+                      'firstEightLines':body.splitlines()[:8],
+                  })
+              else:
+                  if binding is not None:
+                      end_rows.append({'commentId':cid,'binding':binding,'firstLine':(body.splitlines() or [''])[0].strip()})
+
+          # Sequential replay, but keep going after every parser/semantic failure so all safely knowable defects are collected.
+          seen=set(); closed=set(); replay_errors=[]; accepted_ends=[]
+          for row in rows:
+              cid=int(row['id']); body=str(row.get('body') or '')
+              try:
+                  was_end=mod.record_write_quiet_end(body,cid,seen,closed)
+              except SystemExit as exc:
+                  first=(body.splitlines() or [''])[0].strip()
+                  replay_errors.append({'commentId':cid,'firstLine':first,'error':str(exc)})
+                  was_end=first.startswith('WRITE_QUIET_END') or '::WRITE_QUIET_END' in first
+              if was_end:
+                  if not any(x['commentId']==cid for x in replay_errors):
+                      accepted_ends.append(cid)
+                  continue
+              if mod.is_write_quiet_begin(body):
+                  seen.add(cid)
+
+          report={
+              'schema':1,
+              'status':'NONAUTHORIZING_COMPLETE_WQ_DEFECT_ENUMERATION',
+              'subjectHead':'5028cb7c7cd585d720749f0d572aa15e2f614bf9',
+              'parserBlob':os.environ['EXPECTED_PARSER_BLOB'],
+              'issue60CommentCount':len(rows),
+              'issue60LatestCommentId':max(int(r['id']) for r in rows),
+              'beginCount':len(begin_ids),
+              'endBindingCount':len(end_rows),
+              'bindingErrorCount':len(binding_errors),
+              'bindingErrors':binding_errors,
+              'sequentialReplayErrorCount':len(replay_errors),
+              'sequentialReplayErrors':replay_errors,
+              'acceptedEndCount':len(accepted_ends),
+              'seenBeginCountAfterReplay':len(seen),
+              'closedBeginCountAfterReplay':len(closed),
+              'unmatchedBeginIdsAfterSkippingMalformedEnds':sorted(seen-closed),
+              'scientificRuntimePerformed':False,
+              'protectedResultOpened':False,
+              'seedOrOrdinalMutationPerformed':False,
           }
-          (d/'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True)+'\n')
-          print(json.dumps(summary, sort_keys=True))
+          (out/'complete-wq-defect-enumeration.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,sort_keys=True))
           PY
-      - name: Upload immutable recovery evidence
+      - name: Upload non-authorizing WQ enumeration
         uses: actions/upload-artifact@v4
         with:
-          name: avps-v3-immutable-joblog-recovery-102809760883
-          path: ${{ runner.temp }}/avps-v3-joblog-recovery/
+          name: avps-v3-complete-wq-defect-enumeration-102809760883
+          path: ${{ runner.temp }}/avps-v3-wq-enumeration/
           if-no-files-found: error
           retention-days: 14

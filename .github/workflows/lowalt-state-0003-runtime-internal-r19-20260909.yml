@@ -1,0 +1,170 @@
+name: LOWALT STATE-0003 R19 runtime-internal development capture
+run-name: LOWALT STATE-0003 R19 runtime-internal dev ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state0003-r19-runtime-internal-dev-20260909
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: lowalt-state0003-r19-runtime-internal-dev-20260909
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state0003-r19-runtime-internal-dev-20260909
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  DRIVER: experiments/lowalt-state0003/runtime_internal_r19_20260909.py
+  SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+  SOURCE_ENTITY_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  R16_MATRIX_SHA256: 8cc873592650dadb2f3ed0f33fc41903c69e5788750a7cf29fd9921beb7edb9a
+  R16_CONTRACT_SHA256: d7ef6a8e68c436728f71eba6e616126deb9f2d485af4926da4b2a294384475ca
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  runtime-internal-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact R19 execution head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind additive execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base "$BASE_MAIN_SHA" HEAD)" = "$BASE_MAIN_SHA"
+          test -f "$DRIVER"
+          ROOT="$RUNNER_TEMP/lowalt-state0003-r19"
+          EVIDENCE="$ROOT/evidence"
+          mkdir -p "$EVIDENCE"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EVIDENCE_DIR=$EVIDENCE" >> "$GITHUB_ENV"
+          cat > "$EVIDENCE/execution-boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "classification": "STATE_0003_R19_FRESH_NONPROTECTED_RUNTIME_INTERNAL_DEVELOPMENT_EXECUTION_BOUNDARY",
+            "branch": "$GITHUB_REF_NAME",
+            "headSha": "$GITHUB_SHA",
+            "baseMainSha": "$BASE_MAIN_SHA",
+            "auditExecutionAuthorized": false,
+            "protectedResultOpeningAuthorized": false,
+            "taylorOrJerusalemUsed": false,
+            "productionMutationAuthorized": false,
+            "fiveDegreeSeamMutationAuthorized": false,
+            "consumedR12IdentityReuseAuthorized": false
+          }
+          EOF
+
+      - name: Set up exact inherited runtime and compiler provenance
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state0003-r19
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+            gfortran_impl_linux-64=13.4.0=hb485fb8_18
+            gfortran_linux-64=13.4.0=hce61b40_21
+            gcc_impl_linux-64=13.4.0=he2fa53e_18
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Ensure read-only debugger tooling
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb binutils curl file > "$EVIDENCE_DIR/apt-install.log" 2>&1
+          command -v gdb
+          command -v nm
+          test -n "${FC:-}"
+          test -n "${FFLAGS:-}"
+          printf 'FC=%s\nFFLAGS=%s\n' "$FC" "$FFLAGS" > "$EVIDENCE_DIR/compiler-activation.txt"
+          "$FC" --version > "$EVIDENCE_DIR/compiler-version.txt" 2>&1
+          sha256sum "$(command -v uvspec)" > "$EVIDENCE_DIR/uvspec-sha256.txt"
+          test "$(sha256sum "$(command -v uvspec)" | awk '{print $1}')" = "$UVSPEC_SHA256"
+
+      - name: Recover literal HTTP governing source entity and freeze R16 contract
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/source"
+          curl -fsS -L --max-redirs 10 --compressed \
+            -D "$EVIDENCE_DIR/http-source-headers.txt" \
+            -o "$ROOT/source-entity.bin" \
+            -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' \
+            "$SOURCE_URL" > "$EVIDENCE_DIR/http-source-route.txt" \
+            2> "$EVIDENCE_DIR/http-source-curl.stderr"
+          sha256sum "$ROOT/source-entity.bin" > "$EVIDENCE_DIR/http-source-entity-sha256.txt"
+          wc -c "$ROOT/source-entity.bin" > "$EVIDENCE_DIR/http-source-entity-bytes.txt"
+          file "$ROOT/source-entity.bin" > "$EVIDENCE_DIR/http-source-entity-file.txt"
+          test "$(sha256sum "$ROOT/source-entity.bin" | awk '{print $1}')" = "$SOURCE_ENTITY_SHA256"
+          tar -xf "$ROOT/source-entity.bin" -C "$ROOT/source"
+          DPMISC="$(find "$ROOT/source" -type f -path '*/libsrc_f/dpmisc.f' -print -quit)"
+          test -n "$DPMISC"
+          SRC_ROOT="$(dirname "$(dirname "$DPMISC")")"
+          test -f "$SRC_ROOT/libsrc_f/DISORT.MXD"
+          echo "SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+
+          cat > "$ROOT/r16-frozen-contract.json" <<'EOF'
+          {
+            "state": "STATE-0003",
+            "gate": "R16-FRESH-SOURCE-EQUIVALENCE-TRAINING-FREEZE",
+            "scope": "WHOLLY_FRESH_NONPROTECTED",
+            "production_floor_deg": 5.0,
+            "production_below_floor": "FAIL_CLOSED_UNCHANGED",
+            "development_rows": 8,
+            "audit_rows": 2,
+            "audit_open_rule": "DO_NOT_OPEN_UNTIL_ALL_8_DEVELOPMENT_ROWS_PASS_THE_FROZEN_CONTRACT",
+            "reference": "exact pinned libRadtran governing direct-path implementation/source and final pre-dispatch handoff",
+            "integer_structural_fields": "EXACT",
+            "fac_fac2_chp2_ch_abs_or_rel_tolerance": 1e-10,
+            "direct_float64_abs_or_rel_tolerance": 1e-12,
+            "exact_zero_preserved": true,
+            "nan_or_inf": "FAIL",
+            "post_result_retuning": "FORBIDDEN",
+            "protected_residual_selection": "FORBIDDEN",
+            "Taylor_Jerusalem_selection_or_fit": "FORBIDDEN",
+            "consumed_R12_0001_0002": "FORBIDDEN_TO_RERUN_OR_REUSE",
+            "R12_audit_0007_0008": "SEALED",
+            "solver_executed_by_this_freeze": false,
+            "science_seed_or_ordinal_allocated": false
+          }
+          EOF
+          test "$(sha256sum "$ROOT/r16-frozen-contract.json" | awk '{print $1}')" = "$R16_CONTRACT_SHA256"
+          echo "R16_CONTRACT_PATH=$ROOT/r16-frozen-contract.json" >> "$GITHUB_ENV"
+
+      - name: Execute fresh R16 development-only runtime-internal gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          python -m py_compile "$DRIVER"
+          python "$DRIVER"
+
+      - name: Publish isolated R19 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state0003-r19-runtime-internal-dev-20260909
+          path: ${{ runner.temp }}/lowalt-state0003-r19/evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

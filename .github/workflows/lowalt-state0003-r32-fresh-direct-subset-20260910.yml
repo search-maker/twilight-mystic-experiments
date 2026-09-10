@@ -1,0 +1,207 @@
+name: LOWALT STATE-0003 R32 fresh direct-subset gate
+run-name: LOWALT R32 fresh direct-subset ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state0003-r32-fresh-direct-subset-20260910
+    paths:
+      - .github/workflows/lowalt-state0003-r32-fresh-direct-subset-20260910.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: lowalt-state0003-r32-fresh-direct-subset-20260910
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state0003-r32-fresh-direct-subset-20260910
+  RUNNER: experiments/lowalt-state0003/r32/run_r32.py
+  MATRIX: experiments/lowalt-state0003/r32/r32-matrix.csv
+  CONTRACT: experiments/lowalt-state0003/r32/r32-contract.json
+  CAPTURE: experiments/lowalt-state0003/r32/r32_capture.gdb
+  R19_BASE_COMMIT: bc76a859cd93a9a1b2d249f28f9975a6faf7a666
+  R19_BASE_BLOB: 5c226860e73df8dcd87799b94d8628735b3e259d
+  R19_BASE_PATH: experiments/lowalt-state0003/runtime_internal_r19_20260909.py
+  R16_ARTIFACT_ID: '10125206020'
+  R16_ARTIFACT_SHA256: f9c014239fe7b9be99ee8727dbcaafe3b7b38e699e0b068e3a32d9d47ea3d481
+  R16_MATRIX_SHA256: 8cc873592650dadb2f3ed0f33fc41903c69e5788750a7cf29fd9921beb7edb9a
+  R16_CONTRACT_SHA256: d7ef6a8e68c436728f71eba6e616126deb9f2d485af4926da4b2a294384475ca
+  SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+  SOURCE_ENTITY_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+  PACKAGE_SPEC: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+  PACKAGE_SHA256: 9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  exact-preflight-development-and-sealed-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact R32 execution head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Freeze exact committed bytes before any result
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          for p in "$RUNNER" "$MATRIX" "$CONTRACT" "$CAPTURE" ".github/workflows/lowalt-state0003-r32-fresh-direct-subset-20260910.yml"; do test -f "$p"; done
+          ROOT="$RUNNER_TEMP/lowalt-state0003-r32"
+          EVIDENCE="$ROOT/evidence"
+          mkdir -p "$ROOT" "$EVIDENCE"
+          echo "R32_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "R32_EVIDENCE_DIR=$EVIDENCE" >> "$GITHUB_ENV"
+          sha256sum "$MATRIX" "$CONTRACT" "$CAPTURE" "$RUNNER" ".github/workflows/lowalt-state0003-r32-fresh-direct-subset-20260910.yml" | tee "$EVIDENCE/pre-result-committed-file-sha256.txt"
+          git rev-parse "HEAD:$MATRIX" "HEAD:$CONTRACT" "HEAD:$CAPTURE" "HEAD:$RUNNER" "HEAD:.github/workflows/lowalt-state0003-r32-fresh-direct-subset-20260910.yml" | tee "$EVIDENCE/pre-result-git-blob-ids.txt"
+          cat > "$EVIDENCE/pre-result-boundary.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "classification": "LOWALT_R32_COMMITTED_BYTES_FROZEN_BEFORE_RESULT",
+            "branch": "$GITHUB_REF_NAME",
+            "headSha": "$GITHUB_SHA",
+            "runId": "$GITHUB_RUN_ID",
+            "runAttempt": "$GITHUB_RUN_ATTEMPT",
+            "developmentRows": 8,
+            "sealedAuditRows": 2,
+            "auditOpened": false,
+            "scientificResultOpened": false,
+            "productionBelow5Deg": "FAIL_CLOSED_UNCHANGED"
+          }
+          EOF
+          git fetch --no-tags origin "$R19_BASE_COMMIT"
+          git show "$R19_BASE_COMMIT:$R19_BASE_PATH" > "$ROOT/r19-base-driver.py"
+          test "$(git hash-object "$ROOT/r19-base-driver.py")" = "$R19_BASE_BLOB"
+          echo "R19_BASE_DRIVER_PATH=$ROOT/r19-base-driver.py" >> "$GITHUB_ENV"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-r32-frozen
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+            gfortran_impl_linux-64=13.4.0=hb485fb8_18
+            gfortran_linux-64=13.4.0=hce61b40_21
+            gcc_impl_linux-64=13.4.0=he2fa53e_18
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Install debugger and archive tooling
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb binutils curl unzip file > "$R32_EVIDENCE_DIR/apt-install.log" 2>&1
+          command -v gdb
+          command -v nm
+          command -v curl
+          command -v unzip
+
+      - name: Bind exact runtime package archive and governing source
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' "$UVSPEC_SHA256" "$UVSPEC" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/uvspec-sha-check.txt"
+          micromamba list rubin-libradtran --json > "$R32_EVIDENCE_DIR/micromamba-package.json"
+          python - "$R32_EVIDENCE_DIR/micromamba-package.json" "$PACKAGE_SPEC" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1]))
+          rows=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if x.get('name')=='rubin-libradtran': rows.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(data)
+          specs={f"rubin-libradtran={r.get('version')}={r.get('build_string',r.get('build'))}" for r in rows}
+          if specs != {sys.argv[2]}: raise SystemExit(('package-spec-drift',specs))
+          PY
+          META="$(find "$CONDA_PREFIX/conda-meta" -maxdepth 1 -type f -name 'rubin-libradtran-2.0.6-py312pl5321he9373c2_1.json' -print -quit)"
+          test -n "$META"
+          cp "$META" "$R32_EVIDENCE_DIR/rubin-libradtran-conda-meta.json"
+          PKG_URL="$(python - "$META" <<'PY'
+          import json,sys
+          j=json.load(open(sys.argv[1])); print(j.get('url',''))
+          PY
+          )"
+          test -n "$PKG_URL"
+          curl -fsSL "$PKG_URL" -o "$R32_ROOT/rubin-libradtran.conda"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "$R32_ROOT/rubin-libradtran.conda" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/package-archive-sha-check.txt"
+          printf 'url=%s\nbytes=%s\n' "$PKG_URL" "$(wc -c < "$R32_ROOT/rubin-libradtran.conda")" > "$R32_EVIDENCE_DIR/package-archive-route.txt"
+
+          mkdir -p "$R32_ROOT/source"
+          curl -fsS -L --max-redirs 10 --compressed \
+            -D "$R32_EVIDENCE_DIR/http-source-headers.txt" \
+            -o "$R32_ROOT/source-entity.tar" \
+            -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' \
+            "$SOURCE_URL" > "$R32_EVIDENCE_DIR/http-source-route.txt" \
+            2> "$R32_EVIDENCE_DIR/http-source-curl.stderr"
+          printf '%s  %s\n' "$SOURCE_ENTITY_SHA256" "$R32_ROOT/source-entity.tar" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/source-entity-sha-check.txt"
+          tar -xf "$R32_ROOT/source-entity.tar" -C "$R32_ROOT/source"
+          DPMISC="$(find "$R32_ROOT/source" -type f -path '*/libsrc_f/dpmisc.f' -print -quit)"
+          test -n "$DPMISC"
+          SRC_ROOT="$(dirname "$(dirname "$DPMISC")")"
+          test -f "$SRC_ROOT/src/solve_rte.c"
+          test -f "$SRC_ROOT/libsrc_f/dpsdisort.f"
+          test -f "$SRC_ROOT/libsrc_f/DISORT.MXD"
+          echo "SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+
+      - name: Recover immutable R16 artifact and bind exact matrix contract
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$R16_ARTIFACT_ID/zip" \
+            -o "$R32_ROOT/r16.zip"
+          printf '%s  %s\n' "$R16_ARTIFACT_SHA256" "$R32_ROOT/r16.zip" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/r16-artifact-sha-check.txt"
+          mkdir -p "$R32_ROOT/r16"
+          unzip -q "$R32_ROOT/r16.zip" -d "$R32_ROOT/r16"
+          R16_MATRIX_PATH="$(find "$R32_ROOT/r16" -type f -name 'fresh-nonprotected-matrix.csv' -print -quit)"
+          R16_CONTRACT_PATH="$(find "$R32_ROOT/r16" -type f -name 'frozen-contract.json' -print -quit)"
+          test -n "$R16_MATRIX_PATH"
+          test -n "$R16_CONTRACT_PATH"
+          printf '%s  %s\n' "$R16_MATRIX_SHA256" "$R16_MATRIX_PATH" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/r16-matrix-sha-check.txt"
+          printf '%s  %s\n' "$R16_CONTRACT_SHA256" "$R16_CONTRACT_PATH" | sha256sum -c - | tee "$R32_EVIDENCE_DIR/r16-contract-sha-check.txt"
+          echo "R16_ARTIFACT_ZIP=$R32_ROOT/r16.zip" >> "$GITHUB_ENV"
+          echo "R16_MATRIX_PATH=$R16_MATRIX_PATH" >> "$GITHUB_ENV"
+          echo "R16_CONTRACT_PATH=$R16_CONTRACT_PATH" >> "$GITHUB_ENV"
+
+      - name: Execute exact pre-run stress then frozen 8 development and conditional sealed audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ github.token }}
+          SOURCE_ENTITY_SHA256: ${{ env.SOURCE_ENTITY_SHA256 }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python -m py_compile "$RUNNER" "$R19_BASE_DRIVER_PATH"
+          python "$RUNNER"
+
+      - name: Persist isolated R32 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state0003-r32-fresh-direct-subset-20260910
+          path: ${{ runner.temp }}/lowalt-state0003-r32/evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

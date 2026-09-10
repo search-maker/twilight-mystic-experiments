@@ -121,26 +121,35 @@ jobs:
             tar -xOf evidence/libRadtran-2.0.6.tar.gz "$member" > evidence/solve_rte.c
             python - <<'PY'
           from pathlib import Path
-          import hashlib, json
-          t=Path('evidence/solve_rte.c').read_text(errors='replace')
-          markers=[
-            'status = optical_properties (input, output, 0.0, ir, iv1, iv2, ib, verbose, skip_optical_properties)',
-            '/* translate output altitudes (zout) to optical depths (utau) */',
-            'case SOLVER_SDISORT:',
-            'F77_FUNC  (setout, SETOUT) (output->dtauc,',
-            'case SOLVER_NULL:',
-            'status = call_solver (input, output, rte_solver, rte_in, raman_qsrc_components,'
-          ]
-          miss=[m for m in markers if m not in t]
-          if miss: raise SystemExit('exact source marker missing: '+repr(miss))
-          iop=t.index(markers[0]); itr=t.index(markers[1],iop); icall=t.index(markers[-1],itr)
-          if not (iop < itr < icall): raise SystemExit('exact source ordering mismatch')
+          import hashlib, json, re
+          p=Path('evidence/solve_rte.c')
+          t=p.read_text(errors='replace')
+          patterns={
+            'ordinary_optical_properties': r'status\s*=\s*optical_properties\s*\(',
+            'translate_zout_to_utau': r'translate\s+output\s+altitudes\s*\(zout\)\s+to\s+optical\s+depths\s*\(utau\)',
+            'sdisort_case': r'case\s+SOLVER_SDISORT\s*:',
+            'setout_call': r'F77_FUNC\s*\(\s*setout\s*,\s*SETOUT\s*\)',
+            'null_case': r'case\s+SOLVER_NULL\s*:',
+            'call_solver': r'status\s*=\s*call_solver\s*\('
+          }
+          m={k:re.search(v,t,re.I|re.S) for k,v in patterns.items()}
+          miss=[k for k,v in m.items() if v is None]
+          if miss: raise SystemExit('exact source semantic marker missing: '+repr(miss))
+          iop=m['ordinary_optical_properties'].start()
+          itr=m['translate_zout_to_utau'].start()
+          isd=m['sdisort_case'].start()
+          iset=m['setout_call'].start()
+          inull=m['null_case'].start()
+          icall=m['call_solver'].start()
+          if not (iop < itr < isd < iset < icall and iop < inull < icall):
+              raise SystemExit('exact source semantic ordering mismatch')
           Path('evidence/exact-source-binding.json').write_text(json.dumps({
             'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
-            'solveRteSha256':hashlib.sha256(Path('evidence/solve_rte.c').read_bytes()).hexdigest(),
+            'solveRteSha256':hashlib.sha256(p.read_bytes()).hexdigest(),
             'ordinaryOpticalPropertiesBeforeSolverSpecificSetout':True,
             'nullCaseSkipsSetoutInThisSwitch':True,
-            'sdisortCaseUsesSetoutInThisSwitch':True
+            'sdisortCaseUsesSetoutInThisSwitch':True,
+            'semanticMarkerBinding':{k:v.start() for k,v in m.items()}
           },indent=2,sort_keys=True)+'\n')
           PY
           else

@@ -97,18 +97,24 @@ def _arm_control_text(body: str) -> str:
 
     captured: list[str] = []
     active = False
+    bullet_mode = False
     for raw in lines[1:]:
         s = raw.strip()
         up = s.upper()
+        arm_bullet = re.match(r'^-\s*ARM\b', up) is not None
         arm_header = bool(
             re.fullmatch(r'ARM(?:\s*/\s*[A-Z0-9 _-]+)+', up)
             or re.match(r'^ARM\s*[:|]', up)
-            or re.match(r'^-\s*ARM\b', up)
+            or arm_bullet
         )
         if arm_header:
-            active = True
+            if not active:
+                active = True
+                bullet_mode = arm_bullet
             captured.append(s)
             continue
+        if active and bullet_mode and re.match(r'^-\s+\S', s):
+            break
         if active and _is_section_heading(s) and not up.startswith('ARM'):
             break
         if active:

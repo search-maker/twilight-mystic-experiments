@@ -1,0 +1,209 @@
+name: ARM query-only predispatch diagnostic 5619584643 v4
+
+on:
+  push:
+    branches:
+      - diagnostic/arm-query-only-live-preflight-5619584643-20260910-v4
+
+permissions:
+  contents: read
+  issues: read
+
+env:
+  EXPECTED_MAIN: f5ebc646aba96ad13753d55baf2b0c55cff64ccb
+  EXPECTED_AUTH_COMMENT: '5619584643'
+  EXPECTED_AUTH_TITLE: COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_SUCCESSOR_AUTHORIZED__ONE_SHOT_ATTEMPT1__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED
+  QUERY_TOOL: tools/arm_ena_sws_query_only_availability_v1
+  PREFLIGHT_TOOL: tools/arm_e0_successor_case_binding_audit_v1
+
+jobs:
+  non-authorizing-live-gate-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact installed main bytes
+        uses: actions/checkout@v4
+        with:
+          ref: f5ebc646aba96ad13753d55baf2b0c55cff64ccb
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prove exact installed identity and deterministic refusal suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          python -m py_compile \
+            "$QUERY_TOOL/discover.py" \
+            "$QUERY_TOOL/stress.py" \
+            "$PREFLIGHT_TOOL/preflight_query_authorization_v1.py" \
+            "$PREFLIGHT_TOOL/preflight_query_authorization_live_v2.py"
+          python "$QUERY_TOOL/test_discover.py"
+          python "$QUERY_TOOL/test_stress.py"
+          python "$QUERY_TOOL/test_workflow_live_authorization_fence.py"
+          python tests/test_arm_e0_successor_query_authorization_preflight_v1.py
+          python tests/test_arm_e0_successor_query_authorization_live_preflight_v2.py
+      - name: ACTUAL complete-ledger exact-executable stress without ARM credentials
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/arm-predispatch-5619584643-v4/stress-receipt.json"
+          rm -rf "$(dirname "$out")"
+          mkdir -p "$(dirname "$out")"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python "$QUERY_TOOL/stress.py" \
+              --workflow .github/workflows/arm-ena-sws-query-only-availability-v1.yml \
+              --executable "$QUERY_TOOL/discover.py" \
+              --manifest "$QUERY_TOOL/ordered_25_cases.json" \
+              --output "$out"
+          test -s "$out"
+      - name: Stable complete double-read, live v1-v2 gate, and all safely knowable defects
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arm-predispatch-5619584643-v4"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN python - <<'PY'
+          import hashlib, importlib.util, json, os, pathlib
+          root = pathlib.Path('.')
+          sp = root / 'tools/arm_ena_sws_query_only_availability_v1/stress.py'
+          vp = root / 'tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_v1.py'
+          lp = root / 'tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_live_v2.py'
+          ss = importlib.util.spec_from_file_location('s_diag4', sp); s = importlib.util.module_from_spec(ss); ss.loader.exec_module(s)
+          vs = importlib.util.spec_from_file_location('v1_diag4', vp); v1 = importlib.util.module_from_spec(vs); vs.loader.exec_module(v1)
+          ls = importlib.util.spec_from_file_location('l_diag4', lp); l = importlib.util.module_from_spec(ls); ls.loader.exec_module(l)
+          token = os.environ['GITHUB_TOKEN']
+          assert not os.environ.get('ARM_USER_ID') and not os.environ.get('ARM_ACCESS_TOKEN')
+
+          repo1 = l._github_json(l.REPO_URL, token); l._repo_default_branch(repo1)
+          main1 = l._main_sha(l._github_json(l.MAIN_REF_URL, token))
+          meta1 = l._issue_meta(l._github_json(l.ISSUE_URL, token))
+          raw1 = l._complete_issue_comments(token)
+          raw2 = l._complete_issue_comments(token)
+          meta2 = l._issue_meta(l._github_json(l.ISSUE_URL, token))
+          repo2 = l._github_json(l.REPO_URL, token); l._repo_default_branch(repo2)
+          main2 = l._main_sha(l._github_json(l.MAIN_REF_URL, token))
+
+          def atomic_rows(raw):
+              out = []
+              prev = None
+              for row in raw:
+                  cid = row.get('id')
+                  created = row.get('created_at')
+                  body = str(row.get('body', ''))
+                  if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0:
+                      raise SystemExit('invalid comment id in atomic ledger')
+                  if not isinstance(created, str) or not created:
+                      raise SystemExit(f'missing created_at for comment {cid}')
+                  key = (created, cid, body)
+                  if prev is not None and key <= prev:
+                      raise SystemExit(f'atomic ledger ordering violation at comment {cid}')
+                  prev = key
+                  out.append({'created_at': created, 'id': cid, 'body': body})
+              encoded = json.dumps(out, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+              return out, hashlib.sha256(encoded).hexdigest()
+
+          atom1, atom_sha1 = atomic_rows(raw1)
+          atom2, atom_sha2 = atomic_rows(raw2)
+          if not (main1 == main2 == os.environ['EXPECTED_MAIN']): raise SystemExit('main drift')
+          if meta1 != meta2 or atom1 != atom2 or atom_sha1 != atom_sha2: raise SystemExit('atomic complete ledger not stable across double-read')
+          if len(atom2) != meta2[0]: raise SystemExit('comment count mismatch')
+
+          rows2, installed_sha = v1._canonical_rows(raw2)
+          synthetic_out_of_time_order = [
+              {'id': 1, 'created_at': '2026-09-10T00:00:02Z', 'body': 'a'},
+              {'id': 2, 'created_at': '2026-09-10T00:00:01Z', 'body': 'b'},
+          ]
+          installed_accepts_reversed_created_at = False
+          try:
+              v1._canonical_rows(synthetic_out_of_time_order)
+              installed_accepts_reversed_created_at = True
+          except Exception:
+              installed_accepts_reversed_created_at = False
+
+          gov = s.audit_arm_governance(rows2)
+          arm_ids = gov['arm_relevant_comment_ids_after_baseline']
+          latest_id = int(arm_ids[-1])
+          latest = next(r for r in rows2 if int(r['id']) == latest_id)
+          latest_title = s.first_nonempty(latest['body'])
+          auth_id = int(os.environ['EXPECTED_AUTH_COMMENT'])
+          auth_title = os.environ['EXPECTED_AUTH_TITLE']
+          auth = next(r for r in rows2 if int(r['id']) == auth_id)
+          if s.first_nonempty(auth['body']) != auth_title: raise SystemExit('authorization title drift')
+          auth_disp = s._direct_arm_control_disposition(auth_title)
+
+          direct_ambiguous = []
+          for row in rows2:
+              cid = int(row.get('id', 0)); title = s.first_nonempty(str(row.get('body',''))); up = title.upper()
+              if cid <= s.BASELINE_COORDINATOR_COMMENT or not (up.startswith('ARM_OWNER::') or up.startswith('COORDINATOR::ARM')): continue
+              try: s._direct_arm_control_disposition(title)
+              except s.StressFailure as exc: direct_ambiguous.append({'id':cid,'title':title,'error':str(exc)})
+
+          def attempt(kind, fn):
+              try:
+                  obj = fn()
+                  return {'kind': kind, 'result': 'PASS', 'receipt': obj}
+              except Exception as exc:
+                  return {'kind': kind, 'result': 'REFUSAL', 'error': f'{type(exc).__name__}: {exc}'}
+
+          derived = attempt('live_v2_derived_latest', lambda: l.live_preflight(token=token))
+          bound = attempt('live_v2_bound_expected_auth', lambda: l.live_preflight(authorization_comment=auth_id, authorization_title=auth_title, token=token))
+
+          defects = []
+          if latest_id != auth_id:
+              defects.append({'code':'AUTHORIZATION_NOT_LATEST_ARM_RELEVANT','latest_id':latest_id,'latest_title':latest_title})
+          if installed_accepts_reversed_created_at:
+              defects.append({'code':'INSTALLED_PREFLIGHT_OMITS_CREATED_AT_FROM_ATOMIC_ORDERING','detail':'v1 _canonical_rows accepts reversed created_at when numeric ids increase; live-v2 delegates to v1 canonicalizer'})
+          if direct_ambiguous:
+              defects.append({'code':'AMBIGUOUS_DIRECT_ARM_TITLES','count':len(direct_ambiguous)})
+          if derived['result'] != 'PASS':
+              defects.append({'code':'DERIVED_LIVE_V2_REFUSAL','detail':derived.get('error','')})
+          if bound['result'] != 'PASS':
+              defects.append({'code':'BOUND_AUTH_LIVE_V2_REFUSAL','detail':bound.get('error','')})
+
+          out = {
+            'schema': 4,
+            'status': 'NON_AUTHORIZING_PREDISPATCH_DIAGNOSTIC_COMPLETE',
+            'gateTerminalClean': len(defects) == 0,
+            'installedMain': main2,
+            'issue60CommentCount': len(rows2),
+            'issue60LatestCommentId': int(rows2[-1]['id']),
+            'atomicCreatedAtNumericIdBodySha256': atom_sha2,
+            'stableAtomicCompleteDoubleRead': True,
+            'installedIdBodyCanonicalSha256': installed_sha,
+            'installedAtomicOrderingEnforced': not installed_accepts_reversed_created_at,
+            'expectedAuthorizationComment': auth_id,
+            'expectedAuthorizationTitle': auth_title,
+            'expectedAuthorizationDirectDisposition': auth_disp,
+            'latestArmRelevantCommentId': latest_id,
+            'latestArmRelevantTitle': latest_title,
+            'authorizationIsLatestArmRelevant': latest_id == auth_id,
+            'directAmbiguousCount': len(direct_ambiguous),
+            'directAmbiguous': direct_ambiguous,
+            'derivedLiveV2': derived,
+            'boundLiveV2': bound,
+            'defectCount': len(defects),
+            'defects': defects,
+            'armNetworkAccessPerformed': False,
+            'armCredentialsRead': False,
+            'protectedValuesRead': False,
+            'nativeDataOpened': False,
+            'queryExecuted': False,
+            'scienceExecuted': False,
+          }
+          p = pathlib.Path(os.environ['RUNNER_TEMP'])/'arm-predispatch-5619584643-v4'/'diagnostic.json'
+          p.write_text(json.dumps(out, indent=2, sort_keys=True)+'\n', encoding='utf-8')
+          print(json.dumps({k:out[k] for k in ('gateTerminalClean','issue60CommentCount','issue60LatestCommentId','atomicCreatedAtNumericIdBodySha256','latestArmRelevantCommentId','latestArmRelevantTitle','authorizationIsLatestArmRelevant','installedAtomicOrderingEnforced','directAmbiguousCount','defectCount')}, sort_keys=True))
+          print(json.dumps({'derivedLiveV2':derived['result'],'boundLiveV2':bound['result']}, sort_keys=True))
+          PY
+      - name: Upload non-authorizing diagnostic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-query-only-predispatch-diagnostic-5619584643-v4
+          path: ${{ runner.temp }}/arm-predispatch-5619584643-v4/
+          if-no-files-found: error
+          retention-days: 14

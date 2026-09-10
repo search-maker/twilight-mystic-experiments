@@ -1,0 +1,180 @@
+name: Low-alt R31 NULL predispatch proof v2
+
+on:
+  push:
+    branches: [review/lowalt-r31-null-predispatch-proof-v1]
+    paths: [".github/workflows/lowalt-r31-null-predispatch-proof-v2.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-r31-proof-v2
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Install debugger
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb binutils
+      - name: Bind pinned runtime and exact source
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          UVSPEC="$(command -v uvspec)"
+          test "$(sha256sum "$UVSPEC" | awk '{print $1}')" = 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+          objdump -d -w -C -Mintel "$UVSPEC" > evidence/disassembly.txt
+          python - <<'PY'
+          from pathlib import Path
+          import re,json,hashlib
+          t=Path('evidence/disassembly.txt').read_text(errors='replace')
+          pats={
+            'setup':r'^00000000000b2460 <setup_and_call_solver>:$',
+            'optical':r'^\s*b2684:.*call\s+1ee20 <optical_properties>$',
+            'switch':r'^\s*b26b7:.*cmp\s+r14d,0x1a$',
+            'setout':r'^\s*b2f32:.*call\s+1b9360 <setout_>$',
+            'callSolver':r'^\s*b27cb:.*call\s+a9e30 <call_solver>$',
+            'outReg':r'^\s*b2462:.*mov\s+r15,rdi$',
+            'rteSave':r'^\s*b2487:.*mov\s+QWORD PTR \[rsp\+0x38\],rsi$',
+            'selector':r'^\s*b24e2:.*mov\s+r14d,DWORD PTR \[rsp\+0x298\]$',
+            'utauOff':r'^\s*b2f2b:.*mov\s+rcx,QWORD PTR \[rax\+0xa8\]$'
+          }
+          got={k:bool(re.search(v,t,re.M)) for k,v in pats.items()}
+          if not all(got.values()): raise SystemExit('binary binding failed '+json.dumps(got,sort_keys=True))
+          Path('evidence/binary-binding.json').write_text(json.dumps({'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3','breakpoint':'setup_and_call_solver+0x257','bindings':got,'disassemblySha256':hashlib.sha256(Path('evidence/disassembly.txt').read_bytes()).hexdigest()},indent=2,sort_keys=True)+'\n')
+          PY
+          curl --compressed -fL --max-time 120 http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz -o evidence/source.tar.gz 2>evidence/source-fetch.stderr
+          test "$(sha256sum evidence/source.tar.gz | awk '{print $1}')" = 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+          member="$(tar -tf evidence/source.tar.gz | grep -E '/src/solve_rte\.c$' | head -1)"
+          tar -xOf evidence/source.tar.gz "$member" > evidence/solve_rte.c
+          python - <<'PY'
+          from pathlib import Path
+          import re,json,hashlib
+          p=Path('evidence/solve_rte.c'); t=p.read_text(errors='replace')
+          mop=re.search(r'status\s*=\s*optical_properties\s*\(',t)
+          if not mop: raise SystemExit('optical_properties marker missing')
+          iop=mop.start()
+          fs=t.rfind('setup_and_call_solver',0,iop)
+          if fs<0: raise SystemExit('function anchor missing')
+          mcall=re.search(r'status\s*=\s*call_solver\s*\(',t[iop:])
+          if not mcall: raise SystemExit('call_solver marker missing')
+          icall=iop+mcall.start(); seg=t[fs:icall+mcall.end()-mcall.start()]
+          mtr=re.search(r'translate\s+output\s+altitudes\s*\(zout\)\s+to\s+optical\s+depths\s*\(utau\)',seg,re.I)
+          if not mtr: raise SystemExit('translation marker missing')
+          itr=mtr.start()
+          msd=re.search(r'case\s+SOLVER_SDISORT\s*:',seg[itr:]); mn=re.search(r'case\s+SOLVER_NULL\s*:',seg[itr:])
+          if not msd or not mn: raise SystemExit('solver cases missing')
+          isd=itr+msd.start(); inn=itr+mn.start()
+          mset=re.search(r'(?:c_setout|F77_FUNC\s*\(\s*setout\s*,\s*SETOUT\s*\))\s*\(',seg[isd:])
+          if not mset: raise SystemExit('SDISORT setout missing')
+          iset=isd+mset.start()
+          mt=re.search(r'if\s*\(\s*input\.test_optical_properties\s*\)',seg[max(iset,inn):])
+          if not mt: raise SystemExit('late test_optical_properties switch missing')
+          itest=max(iset,inn)+mt.start()
+          if not (0<itr<min(isd,inn) and isd<iset<itest): raise SystemExit('source ordering mismatch')
+          # Bound NULL case locally to the next case/default label.
+          tail=seg[inn:itest]
+          labels=list(re.finditer(r'\n\s*(?:case\s+[^:]+|default)\s*:',tail))
+          end=labels[1].start() if len(labels)>1 else len(tail)
+          nullcase=tail[:end]
+          if re.search(r'c_setout|F77_FUNC\s*\(\s*setout',nullcase): raise SystemExit('plain NULL unexpectedly calls setout')
+          out={'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85','solveRteSha256':hashlib.sha256(p.read_bytes()).hexdigest(),'ordinaryOpticalPropertiesBeforeSolverSwitch':True,'plainNullSkipsSetout':True,'sdisortUsesSetout':True,'lateTestOpticalPropertiesNullSwitchAfterSetoutSwitch':True}
+          Path('evidence/source-binding.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Build fresh synthetic pair
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          D="$CONDA_PREFIX/share/libRadtran/data"
+          cat > evidence/base.inp <<EOF
+          data_files_path $D
+          atmosphere_file $D/atmmod/afglus.dat
+          source solar
+          mol_abs_param crs
+          aerosol_default
+          wavelength 613 613
+          sza 87.37
+          atm_z_grid 1.37 2.37 3.37 4.37 5.37 6.37 7.37 8.37 9.37 10.37 12.37 14.37 16.37 18.37 20.37 23.37 26.37 30.37 35.37 40.37 45.37 50.37 55.37 60.37 65.37 70.37 75.37 80.37 85.37 90.37 95.37 100.37 105.37 110.37 115.37 120
+          zout 0
+          albedo 0.314159
+          __SOLVER__
+          sdisort nscat 1
+          output_quantity transmittance
+          output_user lambda edir
+          quiet
+          EOF
+          sed 's/__SOLVER__/rte_solver null/' evidence/base.inp > evidence/null.inp
+          sed 's/__SOLVER__/rte_solver sdisort/' evidence/base.inp > evidence/sdisort.inp
+      - name: Capture common pre-setout ABI state
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          for solver in null sdisort; do
+            mkdir -p evidence/$solver
+            cat > evidence/$solver/cap.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          break *setup_and_call_solver+0x257
+          commands
+            silent
+            python
+          import gdb,os,struct,hashlib,json
+          from pathlib import Path
+          d=Path(os.environ['CAPTURE_DIR']); inf=gdb.selected_inferior()
+          mem=lambda a,n:bytes(inf.read_memory(a,n)); reg=lambda n:int(gdb.parse_and_eval('$'+n))
+          u64=lambda a:struct.unpack('<Q',mem(a,8))[0]; i32=lambda a:struct.unpack('<i',mem(a,4))[0]
+          out=reg('r15'); rsp=reg('rsp'); rte=u64(rsp+0x38); sel=reg('r14d')
+          n=i32(out+0x664); z=i32(out+0x690)
+          if not(0<n<=256 and 0<z<=256): raise RuntimeError(('shape',n,z))
+          ptr={'DTAUC':u64(out+0x60),'SSALB':u64(out+0x88),'ZD':u64(out+0x658),'UTAU_PRE_SETOUT':u64(rte+0xa8)}
+          size={'DTAUC':4*n,'SSALB':4*n,'ZD':4*(n+1),'UTAU_PRE_SETOUT':4*z}
+          sha={}
+          for k in ptr:
+            b=mem(ptr[k],size[k]); (d/(k+'.bin')).write_bytes(b); sha[k]=hashlib.sha256(b).hexdigest()
+          (d/'meta.json').write_text(json.dumps({'selector':sel,'nlyr':n,'nzout':z,'sha256':sha,'killedBeforeSolverSwitchInstruction':True},indent=2,sort_keys=True)+'\n')
+            end
+            kill
+            quit
+          end
+          run
+          GDB
+            CAPTURE_DIR="$PWD/evidence/$solver" gdb -q -batch -x evidence/$solver/cap.gdb --args "$UVSPEC" < evidence/$solver.inp > evidence/$solver/gdb.stdout 2> evidence/$solver/gdb.stderr
+          done
+      - name: Classify
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib
+          r=Path('evidence'); n=json.loads((r/'null/meta.json').read_text()); s=json.loads((r/'sdisort/meta.json').read_text())
+          assert n['selector']==16 and s['selector']==2
+          assert (n['nlyr'],n['nzout'])==(s['nlyr'],s['nzout'])
+          assert n['sha256']==s['sha256']
+          src=json.loads((r/'source-binding.json').read_text())
+          dec={'classification':'R31_NULL_PREDISPATCH_COMMON_OBSERVATION_POINT_PROVEN','sourceEntitySha256':src['sourceEntitySha256'],'pinnedUvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3','commonSubsetBitExact':True,'fields':['DTAUC','SSALB','ZD','UTAU_PRE_SETOUT'],'plainNullSkipsSetout':True,'sdisortUsesSetout':True,'callSolverBodyExecuted':False,'sdisortBodyExecuted':False,'protectedResultOpened':False,'scientificIdentityConsumed':False,'claimBoundary':'Exact common post-optical_properties/pre-setout ABI observation is proven. This does not claim post-setout UTAU or general NULL-vs-SDISORT equivalence.'}
+          (r/'decision.json').write_text(json.dumps(dec,indent=2,sort_keys=True)+'\n')
+          man={str(p.relative_to(r)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(r.rglob('*')) if p.is_file() and p.name!='manifest.json'}
+          (r/'manifest.json').write_text(json.dumps(man,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(dec,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-r31-null-predispatch-proof-v2
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90

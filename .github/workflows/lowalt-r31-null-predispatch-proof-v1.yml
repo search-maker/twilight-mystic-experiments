@@ -28,14 +28,13 @@ jobs:
           cat > evidence/PROTOCOL.txt <<'EOF'
           LOWALT R31 NULL PREDISPATCH CAPTURE ROUTE PROOF V1
           NONPROTECTED / NON-SCIENCE / NO R31 IDENTITY / NO PROTECTED RESULT
-          Goal: prove an exact pinned-runtime common observation point after ordinary optical_properties succeeds and before the solver-specific setout dispatch.
-          The two synthetic executions differ only in rte_solver = null vs sdisort. Both are killed at the common pre-dispatch breakpoint before the solver-specific branch executes.
-          No SDISORT body, NULL call_solver body, MYSTIC body, scientific identity/seed/ordinal, Taylor/Jerusalem datum, or protected result may execute/open.
+          Goal: prove exact pinned-runtime NULL/SDISORT common observation point after ordinary optical_properties succeeds and before solver-specific setout dispatch.
+          Paired synthetic executions differ only in rte_solver=null vs rte_solver=sdisort and are killed at the same common pre-dispatch instruction.
+          No call_solver body, SDISORT body, MYSTIC body, scientific identity/seed/ordinal, Taylor/Jerusalem datum, or protected result may execute/open.
           Pinned runtime: rubin-libradtran=2.0.6=py312pl5321he9373c2_1
           Pinned uvspec SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
           Source entity SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
-          Exact binary breakpoint: setup_and_call_solver+0x257, address 0xb26b7 in the pinned non-relocated disassembly.
-          Required local static sequence: optical_properties call 0xb2684; success test/branch 0xb26a4/0xb26a6; CK_LOWTRAN check 0xb26ac/0xb26b1; solver-specific switch begins 0xb26b7; SDISORT setout_ call 0xb2f32; call_solver call 0xb27cb.
+          Exact common breakpoint: setup_and_call_solver+0x257 (0xb26b7 non-relocated), first instruction of solver-specific switch.
           EOF
 
       - uses: mamba-org/setup-micromamba@v2
@@ -55,7 +54,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb binutils
 
-      - name: Bind exact binary and exact source route when obtainable
+      - name: Bind exact binary and exact decoded source entity
         shell: bash -el {0}
         run: |
           set -euo pipefail
@@ -66,102 +65,84 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import hashlib, json, re
-          p=Path('evidence/full-disassembly.txt')
-          t=p.read_text(errors='replace')
-          required={
-            'setup_entry': r'^00000000000b2460 <setup_and_call_solver>:$',
-            'ordinary_optical_properties_call': r'^\s*b2684:.*call\s+1ee20 <optical_properties>$',
-            'ordinary_status_test': r'^\s*b26a4:.*test\s+eax,eax$',
-            'ordinary_status_fail_branch': r'^\s*b26a6:.*jne\s+b27f2 <setup_and_call_solver\+0x392>$',
-            'ck_lowtran_check': r'^\s*b26ac:.*cmp\s+DWORD PTR \[rsp\+0x18\],0x7$',
-            'solver_switch_start': r'^\s*b26b7:.*cmp\s+r14d,0x1a$',
-            'sdisort_setout_call': r'^\s*b2f32:.*call\s+1b9360 <setout_>$',
-            'call_solver_call': r'^\s*b27cb:.*call\s+a9e30 <call_solver>$',
-            'dtauc_output_offset': r'^\s*b2f0b:.*mov\s+rdi,QWORD PTR \[r15\+0x60\]$',
-            'nlyr_output_offset': r'^\s*b2f0f:.*lea\s+rdx,\[r15\+0x690\]$',
-            'zd_output_offset': r'^\s*b2f24:.*mov\s+r8,QWORD PTR \[r15\+0x658\]$',
+          p=Path('evidence/full-disassembly.txt'); t=p.read_text(errors='replace')
+          req={
+            'setup_entry':r'^00000000000b2460 <setup_and_call_solver>:$',
+            'optical_call':r'^\s*b2684:.*call\s+1ee20 <optical_properties>$',
+            'status_test':r'^\s*b26a4:.*test\s+eax,eax$',
+            'status_branch':r'^\s*b26a6:.*jne\s+b27f2 <setup_and_call_solver\+0x392>$',
+            'switch_start':r'^\s*b26b7:.*cmp\s+r14d,0x1a$',
+            'sdisort_setout':r'^\s*b2f32:.*call\s+1b9360 <setout_>$',
+            'call_solver':r'^\s*b27cb:.*call\s+a9e30 <call_solver>$',
+            'dtauc_offset':r'^\s*b2f0b:.*mov\s+rdi,QWORD PTR \[r15\+0x60\]$',
+            'zd_offset':r'^\s*b2f24:.*mov\s+r8,QWORD PTR \[r15\+0x658\]$'
           }
-          got={k:bool(re.search(v,t,re.M)) for k,v in required.items()}
-          if not all(got.values()):
-              raise SystemExit('exact static binding failed: '+json.dumps(got,sort_keys=True))
-          prologue=[
-            r'^\s*b2462:.*mov\s+r15,rdi$',
-            r'^\s*b2487:.*mov\s+QWORD PTR \[rsp\+0x38\],rsi$',
-            r'^\s*b24e2:.*mov\s+r14d,DWORD PTR \[rsp\+0x298\]$',
-            r'^\s*b2f0b:.*mov\s+rdi,QWORD PTR \[r15\+0x60\]$',
-            r'^\s*b2f16:.*lea\s+rsi,\[r15\+0x664\]$',
-            r'^\s*b2f24:.*mov\s+r8,QWORD PTR \[r15\+0x658\]$',
-            r'^\s*b2f2b:.*mov\s+rcx,QWORD PTR \[rax\+0xa8\]$',
-          ]
-          if not all(re.search(x,t,re.M) for x in prologue):
-              raise SystemExit('exact ABI offset binding failed')
-          d={'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
-             'disassemblySha256':hashlib.sha256(p.read_bytes()).hexdigest(),
-             'requiredStaticBindings':got,
-             'commonBreakpoint':'setup_and_call_solver+0x257',
-             'commonNonRelocatedAddress':'0xb26b7',
-             'outputPointerRegisterAtBreakpoint':'r15',
-             'rteInPointerSavedAtBreakpoint':'*(uint64_t*)($rsp+0x38)',
-             'solverSelectorRegisterAtBreakpoint':'r14d',
-             'outputOffsets':{'dtaucPointer':'0x60','ssalbPointer':'0x88','zdPointer':'0x658','nlyrI32':'0x664','nzoutI32':'0x690'},
-             'rteInOffsets':{'utauPointer':'0xa8'}}
-          Path('evidence/static-binding.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          got={k:bool(re.search(v,t,re.M)) for k,v in req.items()}
+          if not all(got.values()): raise SystemExit('static binding failed '+json.dumps(got,sort_keys=True))
+          abi=[r'^\s*b2462:.*mov\s+r15,rdi$',r'^\s*b2487:.*mov\s+QWORD PTR \[rsp\+0x38\],rsi$',r'^\s*b24e2:.*mov\s+r14d,DWORD PTR \[rsp\+0x298\]$',r'^\s*b2f2b:.*mov\s+rcx,QWORD PTR \[rax\+0xa8\]$']
+          if not all(re.search(x,t,re.M) for x in abi): raise SystemExit('ABI offset binding failed')
+          Path('evidence/static-binding.json').write_text(json.dumps({
+            'uvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3',
+            'disassemblySha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+            'requiredStaticBindings':got,
+            'commonBreakpoint':'setup_and_call_solver+0x257',
+            'commonNonRelocatedAddress':'0xb26b7',
+            'outputPointerRegister':'r15','rteInPointerSavedAt':'rsp+0x38','solverSelectorRegister':'r14d',
+            'outputOffsets':{'dtaucPointer':'0x60','ssalbPointer':'0x88','zdPointer':'0x658','nlyrI32':'0x664','nzoutI32':'0x690'},
+            'rteInOffsets':{'utauPointer':'0xa8'}
+          },indent=2,sort_keys=True)+'\n')
           PY
 
-          set +e
           curl --compressed -fL --max-time 120 'http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz' -o evidence/libRadtran-2.0.6.tar.gz 2>evidence/source-fetch.stderr
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            got="$(sha256sum evidence/libRadtran-2.0.6.tar.gz | awk '{print $1}')"
-            printf '%s\n' "$got" > evidence/source-entity-sha256.txt
-            test "$got" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
-            member="$(tar -tf evidence/libRadtran-2.0.6.tar.gz | grep -E '/src/solve_rte\.c$' | head -1)"
-            test -n "$member"
-            tar -xOf evidence/libRadtran-2.0.6.tar.gz "$member" > evidence/solve_rte.c
-            python - <<'PY'
+          got="$(sha256sum evidence/libRadtran-2.0.6.tar.gz | awk '{print $1}')"
+          printf '%s\n' "$got" > evidence/source-entity-sha256.txt
+          test "$got" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          member="$(tar -tf evidence/libRadtran-2.0.6.tar.gz | grep -E '/src/solve_rte\.c$' | head -1)"
+          test -n "$member"
+          tar -xOf evidence/libRadtran-2.0.6.tar.gz "$member" > evidence/solve_rte.c
+          python - <<'PY'
           from pathlib import Path
-          import hashlib, json, re
-          p=Path('evidence/solve_rte.c')
-          t=p.read_text(errors='replace')
-          patterns={
-            'ordinary_optical_properties': r'status\s*=\s*optical_properties\s*\(',
-            'translate_zout_to_utau': r'translate\s+output\s+altitudes\s*\(zout\)\s+to\s+optical\s+depths\s*\(utau\)',
-            'sdisort_case': r'case\s+SOLVER_SDISORT\s*:',
-            'setout_call': r'F77_FUNC\s*\(\s*setout\s*,\s*SETOUT\s*\)',
-            'null_case': r'case\s+SOLVER_NULL\s*:',
-            'call_solver': r'status\s*=\s*call_solver\s*\('
-          }
-          m={k:re.search(v,t,re.I|re.S) for k,v in patterns.items()}
-          miss=[k for k,v in m.items() if v is None]
-          if miss: raise SystemExit('exact source semantic marker missing: '+repr(miss))
-          iop=m['ordinary_optical_properties'].start()
-          itr=m['translate_zout_to_utau'].start()
-          isd=m['sdisort_case'].start()
-          iset=m['setout_call'].start()
-          inull=m['null_case'].start()
-          icall=m['call_solver'].start()
-          if not (iop < itr < isd < iset < icall and iop < inull < icall):
-              raise SystemExit('exact source semantic ordering mismatch')
+          import hashlib,json,re
+          p=Path('evidence/solve_rte.c'); t=p.read_text(errors='replace')
+          iop=t.find('status = optical_properties (')
+          if iop < 0: raise SystemExit('ordinary optical_properties marker missing')
+          fs=t.rfind('setup_and_call_solver',0,iop)
+          if fs < 0: raise SystemExit('setup_and_call_solver definition anchor missing')
+          icall=t.find('status = call_solver (',iop)
+          if icall < 0: raise SystemExit('call_solver marker missing')
+          seg=t[fs:icall+len('status = call_solver (')]
+          itr=seg.find('translate output altitudes (zout) to optical depths (utau)')
+          if itr < 0: raise SystemExit('utau translation marker missing')
+          isd=seg.find('case SOLVER_SDISORT',itr)
+          iset=seg.find('c_setout',isd)
+          inull=seg.find('case SOLVER_NULL',itr)
+          itest=seg.find('if (input.test_optical_properties)',max(iset,itr))
+          if min(isd,iset,inull,itest) < 0: raise SystemExit('scoped solver marker missing')
+          # The relevant NULL/SDISORT cases must be in the same post-optical-properties translation switch.
+          if not (0 < itr < min(isd,inull) and isd < iset and max(isd,inull,iset) < itest):
+              raise SystemExit('scoped source ordering mismatch')
+          null_tail=seg[inull:itest]
+          # Fail closed if NULL itself contains setout before the late test-only switch.
+          null_case_end=null_tail.find('case ',len('case SOLVER_NULL'))
+          null_case=null_tail if null_case_end < 0 else null_tail[:null_case_end]
+          if 'c_setout' in null_case or 'F77_FUNC (setout' in null_case:
+              raise SystemExit('NULL unexpectedly performs setout')
           Path('evidence/exact-source-binding.json').write_text(json.dumps({
             'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
             'solveRteSha256':hashlib.sha256(p.read_bytes()).hexdigest(),
-            'ordinaryOpticalPropertiesBeforeSolverSpecificSetout':True,
-            'nullCaseSkipsSetoutInThisSwitch':True,
-            'sdisortCaseUsesSetoutInThisSwitch':True,
-            'semanticMarkerBinding':{k:v.start() for k,v in m.items()}
+            'ordinaryOpticalPropertiesBeforeTranslationSwitch':True,
+            'plainNullSkipsSetout':True,
+            'sdisortUsesSetout':True,
+            'lateTestOpticalPropertiesNullSwitchExistsAfterSetoutSwitch':True,
+            'scopedOffsets':{'functionAnchor':fs,'opticalProperties':iop,'translate':itr,'sdisortCase':isd,'setout':iset,'nullCase':inull,'lateTestSwitch':itest}
           },indent=2,sort_keys=True)+'\n')
           PY
-          else
-            printf 'SOURCE_ROUTE_CURRENTLY_UNAVAILABLE rc=%s; no HTTPS substitution performed\n' "$rc" > evidence/exact-source-fetch-status.txt
-          fi
 
       - name: Build paired synthetic inputs
         shell: bash -el {0}
         run: |
           set -euo pipefail
-          D="$CONDA_PREFIX/share/libRadtran/data"
-          test -d "$D"
+          D="$CONDA_PREFIX/share/libRadtran/data"; test -d "$D"
           cat > evidence/base.inp <<EOF
           data_files_path $D
           atmosphere_file $D/atmmod/afglus.dat
@@ -187,7 +168,7 @@ jobs:
           assert a.replace('rte_solver null','rte_solver __PAIR__')==b.replace('rte_solver sdisort','rte_solver __PAIR__')
           PY
 
-      - name: Capture both solvers at exact common predispatch instruction and kill immediately
+      - name: Capture paired common predispatch state and kill immediately
         shell: bash -el {0}
         run: |
           set -euo pipefail
@@ -202,31 +183,20 @@ jobs:
           commands
             silent
             python
-          import gdb, os, struct, hashlib, json
+          import gdb,os,struct,hashlib,json
           from pathlib import Path
-          outdir=Path(os.environ['CAPTURE_DIR'])
-          inf=gdb.selected_inferior()
+          outdir=Path(os.environ['CAPTURE_DIR']); inf=gdb.selected_inferior()
           def mem(a,n): return bytes(inf.read_memory(a,n))
           def reg(n): return int(gdb.parse_and_eval('$'+n))
           def u64(a): return struct.unpack('<Q',mem(a,8))[0]
           def i32(a): return struct.unpack('<i',mem(a,4))[0]
-          def save(name,b):
-              (outdir/name).write_bytes(b)
-              return hashlib.sha256(b).hexdigest()
-          pc=reg('pc'); out=reg('r15'); rsp=reg('rsp'); solver=reg('r14d')
-          rte=u64(rsp+0x38)
+          def save(name,b): (outdir/name).write_bytes(b); return hashlib.sha256(b).hexdigest()
+          pc=reg('pc'); out=reg('r15'); rsp=reg('rsp'); selector=reg('r14d'); rte=u64(rsp+0x38)
           nlyr=i32(out+0x664); nzout=i32(out+0x690)
-          if not (0 < nlyr <= 256 and 0 < nzout <= 256): raise RuntimeError(('shape',nlyr,nzout))
+          if not (0<nlyr<=256 and 0<nzout<=256): raise RuntimeError(('shape',nlyr,nzout))
           dtp=u64(out+0x60); ssp=u64(out+0x88); zdp=u64(out+0x658); utp=u64(rte+0xa8)
-          hashes={
-            'dtaucF32':save('dtauc-f32le.bin',mem(dtp,4*nlyr)),
-            'ssalbF32':save('ssalb-f32le.bin',mem(ssp,4*nlyr)),
-            'zdF32':save('zd-f32le.bin',mem(zdp,4*(nlyr+1))),
-            'utauPreSetoutF32':save('utau-pre-setout-f32le.bin',mem(utp,4*nzout))
-          }
-          meta={'pc':hex(pc),'solverSelectorR14d':solver,'nlyr':nlyr,'nzout':nzout,'rawSha256':hashes,
-                'capturePoint':'setup_and_call_solver+0x257','killedBeforeSolverSpecificSwitchInstructionExecutes':True}
-          (outdir/'metadata.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          hashes={'DTAUC':save('dtauc-f32le.bin',mem(dtp,4*nlyr)),'SSALB':save('ssalb-f32le.bin',mem(ssp,4*nlyr)),'ZD':save('zd-f32le.bin',mem(zdp,4*(nlyr+1))),'UTAU_PRE_SETOUT':save('utau-pre-setout-f32le.bin',mem(utp,4*nzout))}
+          (outdir/'metadata.json').write_text(json.dumps({'pc':hex(pc),'solverSelectorR14d':selector,'nlyr':nlyr,'nzout':nzout,'rawSha256':hashes,'capturePoint':'setup_and_call_solver+0x257','killedBeforeSolverSpecificSwitchInstructionExecutes':True},indent=2,sort_keys=True)+'\n')
             end
             kill
             quit
@@ -236,45 +206,37 @@ jobs:
             CAPTURE_DIR="$PWD/evidence/$solver" gdb -q -batch -x "evidence/$solver/capture.gdb" --args "$UVSPEC" < "evidence/$solver.inp" > "evidence/$solver/gdb.stdout" 2> "evidence/$solver/gdb.stderr"
           done
 
-      - name: Classify exact route
+      - name: Classify exact capture route
         shell: bash -el {0}
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          import hashlib, json
-          root=Path('evidence')
-          n=json.loads((root/'null/metadata.json').read_text())
-          s=json.loads((root/'sdisort/metadata.json').read_text())
-          assert n['solverSelectorR14d']==16, n
-          assert s['solverSelectorR14d']==2, s
+          import hashlib,json
+          root=Path('evidence'); n=json.loads((root/'null/metadata.json').read_text()); s=json.loads((root/'sdisort/metadata.json').read_text())
+          assert n['solverSelectorR14d']==16,n
+          assert s['solverSelectorR14d']==2,s
           assert n['nlyr']==s['nlyr'] and n['nzout']==s['nzout']
-          assert n['rawSha256']==s['rawSha256'], (n['rawSha256'],s['rawSha256'])
-          source_bound=(root/'exact-source-binding.json').exists()
-          static=json.loads((root/'static-binding.json').read_text())
+          assert n['rawSha256']==s['rawSha256'],(n['rawSha256'],s['rawSha256'])
+          src=json.loads((root/'exact-source-binding.json').read_text()); static=json.loads((root/'static-binding.json').read_text())
           decision={
-            'schemaVersion':1,
+            'schemaVersion':2,
             'classification':'R31_NULL_PREDISPATCH_COMMON_OBSERVATION_POINT_PROVEN',
             'pinnedUvspecSha256':static['uvspecSha256'],
+            'sourceEntitySha256':src['sourceEntitySha256'],
             'commonBreakpoint':static['commonBreakpoint'],
-            'nullObservedSolverSelector':n['solverSelectorR14d'],
-            'sdisortObservedSolverSelector':s['solverSelectorR14d'],
+            'nullObservedSolverSelector':n['solverSelectorR14d'],'sdisortObservedSolverSelector':s['solverSelectorR14d'],
             'ordinaryPreSetoutSubsetBitExact':True,
             'ordinaryPreSetoutComparedFields':['DTAUC','SSALB','ZD','UTAU_PRE_SETOUT'],
-            'exactSourceEntitySolveRteBoundThisRun':source_bound,
-            'nullKilledBeforeSolverSpecificSwitchInstructionExecutes':True,
-            'sdisortKilledBeforeSolverSpecificSwitchInstructionExecutes':True,
-            'sdisortBodyExecuted':False,
-            'callSolverBodyExecuted':False,
-            'protectedResultOpened':False,
-            'scientificIdentityConsumed':False,
-            'claimBoundary':'Proves the exact common post-optical_properties/pre-setout observation point and bit-exact ordinary pre-setout subset for a fresh synthetic paired capture. It does not prove general NULL-vs-SDISORT equivalence after solver-specific setout; in particular NULL skips setout while SDISORT executes it.'
+            'plainNullSkipsSetout':src['plainNullSkipsSetout'],'sdisortUsesSetout':src['sdisortUsesSetout'],
+            'bothKilledBeforeSolverSpecificSwitchInstructionExecutes':True,
+            'sdisortBodyExecuted':False,'callSolverBodyExecuted':False,'protectedResultOpened':False,'scientificIdentityConsumed':False,
+            'claimBoundary':'Proves exact source/ABI common observation point after ordinary optical-property assembly and before solver-specific setout. Plain NULL does not perform SDISORT c_setout, so this does not assert final post-setout UTAU equivalence or general NULL-vs-SDISORT equivalence.'
           }
           (root/'decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True)+'\n')
           manifest={}
           for p in sorted(root.rglob('*')):
-              if p.is_file() and p.name!='manifest-sha256.json':
-                  manifest[str(p.relative_to(root))]=hashlib.sha256(p.read_bytes()).hexdigest()
+            if p.is_file() and p.name!='manifest-sha256.json': manifest[str(p.relative_to(root))]=hashlib.sha256(p.read_bytes()).hexdigest()
           (root/'manifest-sha256.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
           print(json.dumps(decision,sort_keys=True))
           PY

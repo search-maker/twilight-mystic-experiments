@@ -1,0 +1,171 @@
+name: LowAlt R32 prefreeze NULL-origin transform scout
+
+on:
+  push:
+    branches:
+      - review/lowalt-r32-prefreeze-abi-layout-v1-20260910
+    paths:
+      - .github/workflows/lowalt-r32-prefreeze-null-origin-transform-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prefreeze-null-origin-transform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-r32-prefreeze-transform-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Install debugger tools only
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb >/dev/null
+      - name: Bind exact runtime and build synthetic pair
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' "$UVSPEC" | sha256sum -c - | tee evidence/uvspec-sha-check.txt
+          micromamba list rubin-libradtran | tee evidence/package.txt
+          grep -F 'rubin-libradtran' evidence/package.txt | grep -F '2.0.6' | grep -F 'py312pl5321he9373c2_1'
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          cat > evidence/base.inp <<EOF2
+          data_files_path $DATA_DIR
+          atmosphere_file $DATA_DIR/atmmod/afglus.dat
+          source solar
+          mol_abs_param crs
+          aerosol_default
+          wavelength 563 563
+          sza 87.65432100
+          atm_z_grid 0.417000 1.000000 2.000000 3.000000 4.000000 5.000000 7.000000 10.000000 15.000000 20.000000 25.000000 30.000000 35.000000 40.000000 45.000000 50.000000 70.000000 100.000000 120.000000
+          zout 0.000000
+          albedo 0.13700000
+          output_quantity transmittance
+          output_user lambda edir
+          quiet
+          sdisort nscat 1
+          EOF2
+          cp evidence/base.inp evidence/null-origin.inp
+          printf '%s\n' 'rte_solver null' >> evidence/null-origin.inp
+          cp evidence/base.inp evidence/native-sdisort.inp
+          printf '%s\n' 'rte_solver sdisort' >> evidence/native-sdisort.inp
+          sha256sum evidence/base.inp evidence/null-origin.inp evidence/native-sdisort.inp > evidence/input-sha256.txt
+      - name: Capture NULL-origin transformed final handoff
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          cat > evidence/null-origin.gdb <<'EOF2'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set logging file evidence/null-origin.log
+          set logging overwrite on
+          set logging enabled on
+          break setup_and_call_solver
+          run < evidence/null-origin.inp
+          break optical_properties
+          continue
+          finish
+          printf "MARK_NULL_COMMON_POST_OPTICAL\n"
+          printf "COMMON_OFFSET_FROM_SETUP=%ld\n", (long)$pc-(long)&setup_and_call_solver
+          python
+          import gdb,struct,json,pathlib
+          inf=gdb.selected_inferior(); reg=lambda n:int(gdb.parse_and_eval('$'+n)); mem=lambda a,n:bytes(inf.read_memory(a,n))
+          outp=reg('r15'); rsp=reg('rsp'); rtein=struct.unpack('<Q',mem(rsp+0x38,8))[0]
+          n=struct.unpack('<i',mem(outp+0x664,4))[0]; nz=struct.unpack('<i',mem(outp+0x690,4))[0]
+          if not (0<n<=256 and 0<nz<=32): raise RuntimeError(('bad dimensions',n,nz))
+          dt=struct.unpack('<Q',mem(outp+0x60,8))[0]; ss=struct.unpack('<Q',mem(outp+0x88,8))[0]; zd=struct.unpack('<Q',mem(outp+0x658,8))[0]; zs=struct.unpack('<Q',mem(outp+0x668,8))[0]; ut=struct.unpack('<Q',mem(rtein+0xa8,8))[0]
+          raw={'output':outp,'rteIn':rtein,'nlyr':n,'nzout':nz,'dtaucHex':mem(dt,4*n).hex(),'ssalbHex':mem(ss,4*n).hex(),'zdHex':mem(zd,4*(n+1)).hex(),'utauPreHex':mem(ut,4*nz).hex(),'fbeam':struct.unpack('<f',mem(rtein+0x84,4))[0],'umu0':struct.unpack('<f',mem(rtein+0xb0,4))[0],'newgeo':struct.unpack('<i',mem(rtein+0x2a0,4))[0],'spher':struct.unpack('<i',mem(rtein+0x2a4,4))[0]}
+          pathlib.Path('evidence/null-origin-common.json').write_text(json.dumps(raw,indent=2,sort_keys=True)+'\n')
+          gdb.set_convenience_variable('outp',gdb.Value(outp)); gdb.set_convenience_variable('rtein',gdb.Value(rtein)); gdb.set_convenience_variable('dtp',gdb.Value(dt)); gdb.set_convenience_variable('zdp',gdb.Value(zd)); gdb.set_convenience_variable('zsp',gdb.Value(zs)); gdb.set_convenience_variable('utp',gdb.Value(ut))
+          end
+          call ((void(*)(void*,void*,void*,void*,void*,void*))setout_)($dtp,$outp+0x664,$outp+0x690,$utp,$zdp,$zsp)
+          printf "MARK_NULL_EXACT_SETOUT_APPLIED\n"
+          break call_solver
+          continue
+          printf "MARK_CALL_SOLVER_ENTRY\n"
+          printf "ORIGINAL_RTE_SOLVER=%ld\n", (long)$rsi
+          if $rsi != 16
+            printf "ERROR_EXPECTED_SOLVER_NULL_16\n"
+            quit 91
+          end
+          set $rsi = 2
+          printf "FORCED_RTE_SOLVER=%ld\n", (long)$rsi
+          break sdisort_
+          continue
+          printf "MARK_NULL_ORIGIN_SDISORT_ENTRY\n"
+          python
+          import gdb,json,struct,pathlib
+          inf=gdb.selected_inferior(); reg=lambda n:int(gdb.parse_and_eval('$'+n)); mem=lambda a,n:bytes(inf.read_memory(a,n)); rsp=reg('rsp')
+          def ptr(off): return struct.unpack('<Q',mem(rsp+off,8))[0]
+          n=struct.unpack('<i',mem(reg('rdi'),4))[0]; nt=struct.unpack('<i',mem(ptr(24),4))[0]
+          if not (0<n<=256 and nt==1): raise RuntimeError(('bad final dimensions',n,nt))
+          pp={'utau':ptr(32),'fbeam':ptr(88),'umu0':ptr(112),'newgeo':ptr(128),'zd':ptr(136),'spher':ptr(144),'radius':ptr(152),'planck':ptr(208),'nrefrac':ptr(392),'ichap':ptr(400),'vn':ptr(408),'ndenssza':ptr(416)}
+          f32=lambda a:struct.unpack('<f',mem(a,4))[0]; i32=lambda a:struct.unpack('<i',mem(a,4))[0]
+          out={'pcEqualsEntry':reg('pc')==int(gdb.parse_and_eval('&sdisort_')),'nlyr':n,'ntau':nt,'dtaucHex':mem(reg('rsi'),4*n).hex(),'ssalbHex':mem(reg('rdx'),4*n).hex(),'utauHex':mem(pp['utau'],4*nt).hex(),'zdHex':mem(pp['zd'],4*(n+1)).hex(),'vnHex':mem(pp['vn'],4*(n+1)).hex(),'fbeam':f32(pp['fbeam']),'umu0':f32(pp['umu0']),'radius':f32(pp['radius']),'newgeo':i32(pp['newgeo']),'spher':i32(pp['spher']),'planck':i32(pp['planck']),'nrefrac':i32(pp['nrefrac']),'ichap':i32(pp['ichap']),'ndenssza':i32(pp['ndenssza'])}
+          pathlib.Path('evidence/null-origin-final.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          end
+          kill
+          quit
+          EOF2
+          gdb -q -batch -x evidence/null-origin.gdb "$UVSPEC" > evidence/null-origin.stdout 2> evidence/null-origin.stderr
+      - name: Capture native SDISORT final handoff without solver body
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          cat > evidence/native-sdisort.gdb <<'EOF2'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          break sdisort_
+          run < evidence/native-sdisort.inp
+          printf "MARK_NATIVE_SDISORT_ENTRY\n"
+          python
+          import gdb,json,struct,pathlib
+          inf=gdb.selected_inferior(); reg=lambda n:int(gdb.parse_and_eval('$'+n)); mem=lambda a,n:bytes(inf.read_memory(a,n)); rsp=reg('rsp')
+          def ptr(off): return struct.unpack('<Q',mem(rsp+off,8))[0]
+          n=struct.unpack('<i',mem(reg('rdi'),4))[0]; nt=struct.unpack('<i',mem(ptr(24),4))[0]
+          if not (0<n<=256 and nt==1): raise RuntimeError(('bad final dimensions',n,nt))
+          pp={'utau':ptr(32),'fbeam':ptr(88),'umu0':ptr(112),'newgeo':ptr(128),'zd':ptr(136),'spher':ptr(144),'radius':ptr(152),'planck':ptr(208),'nrefrac':ptr(392),'ichap':ptr(400),'vn':ptr(408),'ndenssza':ptr(416)}
+          f32=lambda a:struct.unpack('<f',mem(a,4))[0]; i32=lambda a:struct.unpack('<i',mem(a,4))[0]
+          out={'pcEqualsEntry':reg('pc')==int(gdb.parse_and_eval('&sdisort_')),'nlyr':n,'ntau':nt,'dtaucHex':mem(reg('rsi'),4*n).hex(),'ssalbHex':mem(reg('rdx'),4*n).hex(),'utauHex':mem(pp['utau'],4*nt).hex(),'zdHex':mem(pp['zd'],4*(n+1)).hex(),'vnHex':mem(pp['vn'],4*(n+1)).hex(),'fbeam':f32(pp['fbeam']),'umu0':f32(pp['umu0']),'radius':f32(pp['radius']),'newgeo':i32(pp['newgeo']),'spher':i32(pp['spher']),'planck':i32(pp['planck']),'nrefrac':i32(pp['nrefrac']),'ichap':i32(pp['ichap']),'ndenssza':i32(pp['ndenssza'])}
+          pathlib.Path('evidence/native-sdisort-final.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          end
+          kill
+          quit
+          EOF2
+          gdb -q -batch -x evidence/native-sdisort.gdb "$UVSPEC" > evidence/native-sdisort.stdout 2> evidence/native-sdisort.stderr
+      - name: Compare transformed NULL-origin and native final handoffs exactly
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('evidence'); a=json.loads((root/'null-origin-final.json').read_text()); b=json.loads((root/'native-sdisort-final.json').read_text())
+          fields=['nlyr','ntau','dtaucHex','ssalbHex','utauHex','zdHex','vnHex','fbeam','umu0','radius','newgeo','spher','planck','nrefrac','ichap','ndenssza']
+          diffs={k:{'nullOrigin':a[k],'native':b[k]} for k in fields if a[k]!=b[k]}
+          result={'schemaVersion':1,'stageId':'LOWALT_R32_PREFREEZE_NULL_ORIGIN_TRANSFORM_SCOUT_V1','classification':'PASS' if not diffs and a['pcEqualsEntry'] and b['pcEqualsEntry'] else 'FAIL','comparedFields':fields,'byteExact':not diffs,'differences':diffs,'nullOriginPcEqualsSdisortEntry':a['pcEqualsEntry'],'nativePcEqualsSdisortEntry':b['pcEqualsEntry'],'scientificIdentityAllocated':False,'r32MatrixFrozen':False,'scientificResultOpened':False,'sdisortBodyExecuted':False,'protectedDataOpened':False,'taylorJerusalemUsed':False,'productionBoundaryChanged':False}
+          (root/'comparison.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          with (root/'manifest.sha256').open('w') as f:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file() and p.name!='manifest.sha256': f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n")
+          if result['classification']!='PASS': raise SystemExit(json.dumps(diffs,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lowalt-r32-prefreeze-null-origin-transform-v1
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30

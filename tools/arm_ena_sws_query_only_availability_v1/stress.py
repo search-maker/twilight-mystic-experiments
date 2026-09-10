@@ -261,7 +261,17 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             raw_begin_short = _field(first, 'begin')
             if raw_begin_comment is not None and raw_begin_short is not None and raw_begin_comment != raw_begin_short:
                 raise StressFailure(f'WRITE_QUIET_END has conflicting begin bindings: {cid}')
-            raw_begin = raw_begin_comment or raw_begin_short
+            line_begin = raw_begin_comment or raw_begin_short
+            body_begins = re.findall(
+                r'(?im)^\s*Exact matching closure for BEGIN\s+`?(\d+)`?\s+only\.\s*$',
+                body,
+            )
+            if len(body_begins) > 1:
+                raise StressFailure(f'WRITE_QUIET_END has duplicate body begin bindings: {cid}')
+            body_begin = body_begins[0] if body_begins else None
+            if line_begin is not None and body_begin is not None and line_begin != body_begin:
+                raise StressFailure(f'WRITE_QUIET_END has conflicting line/body begin bindings: {cid}')
+            raw_begin = line_begin or body_begin
             if raw_begin is None or not raw_begin.isdigit():
                 raise StressFailure(f'WRITE_QUIET_END lacks exact begin binding: {cid}')
             begin_id = int(raw_begin)

@@ -11,6 +11,13 @@ SPEC = importlib.util.spec_from_file_location('arm_query_stress', ROOT / 'stress
 assert SPEC and SPEC.loader
 S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
+PREFLIGHT_SPEC = importlib.util.spec_from_file_location(
+    'arm_query_preflight_v1',
+    REPO_ROOT / 'tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_v1.py',
+)
+assert PREFLIGHT_SPEC and PREFLIGHT_SPEC.loader
+P = importlib.util.module_from_spec(PREFLIGHT_SPEC)
+PREFLIGHT_SPEC.loader.exec_module(P)
 
 
 def row(cid: int, body: str) -> dict:
@@ -25,6 +32,33 @@ def baseline() -> dict:
         'ARM / AVPS\n'
         '- ARM may resume only its already-authorized post-V5R1 fence-clear safe/query-only fresh-successor preparation from current clean main, but PR1001 remains governance-NONADMISSIBLE and must not merge; authenticated invocation remains separately unauthorized.\n'
     )
+
+
+def exact_historical_wq_correction_rows() -> list[dict]:
+    stage = 'AVPS_V2_POSTCONSUMPTION_SUCCESSOR_ORDINAL46_AUTHORIZATION_REVIEW_GLOBAL_SCAN_REPLACEMENT_V2'
+    common = (
+        'branch=review/avps-v2-postconsumption-successor-ordinal46-authorization-review-global-scan-replacement-v2-20260910 | '
+        'head=2acc4d73c08f741ba76643057535d73b7ffc66bc | '
+        'base=5028cb7c7cd585d720749f0d572aa15e2f614bf9 | '
+        'subject_pr=1026 | subject_head=5028cb7c7cd585d720749f0d572aa15e2f614bf9 | '
+        'run=34443355962 | attempt=1 | job=102762814211 | terminal=FAILURE | artifact=NONE'
+    )
+    return [
+        row(
+            S._HISTORICAL_WQ_CORRECTION_BEGIN,
+            f'WRITE_QUIET_BEGIN | {stage} | branch=review/avps-v2-postconsumption-successor-ordinal46-authorization-review-global-scan-replacement-v2-20260910',
+        ),
+        row(
+            S._HISTORICAL_WQ_PROSE_END,
+            f'WRITE_QUIET_END | {stage} | {common}\n\n'
+            f'Exact matching closure for BEGIN `{S._HISTORICAL_WQ_CORRECTION_BEGIN}` only. Historical prose-bound closure.',
+        ),
+        row(
+            S._HISTORICAL_WQ_CANONICAL_END,
+            f'WRITE_QUIET_END | {stage} | begin={S._HISTORICAL_WQ_CORRECTION_BEGIN} | {common}\n\n'
+            'CORRECTED MACHINE-READABLE FENCE RELEASE ONLY.',
+        ),
+    ]
 
 
 class StressTests(unittest.TestCase):
@@ -60,6 +94,35 @@ class StressTests(unittest.TestCase):
         out = S.audit_arm_governance(comments)
         self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [begin_id])
         self.assertEqual(out['write_quiet_end_ids_after_baseline'], [begin_id + 1])
+
+    def test_exact_historical_wq_canonical_correction_pair_passes(self):
+        comments = [baseline(), *exact_historical_wq_correction_rows()]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [S._HISTORICAL_WQ_CORRECTION_BEGIN])
+        self.assertEqual(
+            out['write_quiet_end_ids_after_baseline'],
+            [S._HISTORICAL_WQ_PROSE_END, S._HISTORICAL_WQ_CANONICAL_END],
+        )
+
+    def test_historical_wq_correction_mismatched_binding_refuses(self):
+        rows = exact_historical_wq_correction_rows()
+        rows[-1] = row(
+            S._HISTORICAL_WQ_CANONICAL_END,
+            rows[-1]['body'].replace('head=2acc4d73c08f741ba76643057535d73b7ffc66bc', 'head=0' * 20, 1),
+        )
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance([baseline(), *rows])
+
+    def test_unrelated_duplicate_write_quiet_end_still_refuses(self):
+        begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
+        comments = [
+            baseline(),
+            row(begin_id, 'AVPS_OWNER::WRITE_QUIET_BEGIN | stage=x'),
+            row(begin_id + 1, f'AVPS_OWNER::WRITE_QUIET_END | stage=x | begin={begin_id}'),
+            row(begin_id + 2, f'AVPS_OWNER::WRITE_QUIET_END | stage=x | begin={begin_id}'),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
 
     def test_write_quiet_end_conflicting_begin_aliases_refuse(self):
         begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
@@ -310,6 +373,48 @@ class StressTests(unittest.TestCase):
         ]
         with self.assertRaises(S.StressFailure):
             S.audit_arm_governance(comments)
+
+    def test_exact_pr1016_postmerge_benign_title_is_ledger_allowed(self):
+        title = 'ARM_OWNER::PR1016_POSTMERGE_STABLE__RESULT_BLIND_INSTALLATION_COMPLETE__AUTH_FALSE'
+        self.assertEqual(S._direct_arm_control_disposition(title), 'allowed')
+        out = S.audit_arm_governance([baseline(), row(5617483200, title)])
+        self.assertIn(5617483200, out['arm_relevant_comment_ids_after_baseline'])
+
+    def test_pr1016_postmerge_benign_title_unknown_variant_still_refuses(self):
+        title = 'ARM_OWNER::PR1016_POSTMERGE_STABLE__RESULT_BLIND_INSTALLATION_COMPLETE__AUTH_FALSE__UNCLASSIFIED'
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance([baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, title)])
+
+    def test_pr1016_postmerge_benign_title_revoked_variant_still_refuses(self):
+        title = 'ARM_OWNER::PR1016_POSTMERGE_STABLE__RESULT_BLIND_INSTALLATION_COMPLETE__AUTH_FALSE__REVOKED'
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance([baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, title)])
+
+    def test_future_positive_authorization_shape_is_allowed_and_v1_preflight_compatible(self):
+        cid = S.BASELINE_COORDINATOR_COMMENT + 10
+        main_sha = 'a' * 40
+        title = 'COORDINATOR::ARM_QUERY_ONLY_SUCCESSOR_AUTHORIZED__ONE_SHOT__ATTEMPT1'
+        body = (
+            title + '\n\n'
+            f'workflow: `{P.WORKFLOW_PATH}`\n'
+            'event: `workflow_dispatch`\n'
+            f'main: `{main_sha}`\n'
+            'attempt_1 only\n'
+            'one-shot only\n'
+        )
+        comments = [baseline(), row(cid, body)]
+        self.assertEqual(S._direct_arm_control_disposition(title), 'allowed')
+        receipt = P.preflight(
+            comments,
+            authorization_comment=cid,
+            authorization_title=title,
+            exact_main_sha=main_sha,
+            expected_current_main_sha=main_sha,
+            expected_issue60_comment_count=len(comments),
+            expected_issue60_latest_comment_id=cid,
+        )
+        self.assertEqual(receipt['status'], P.STATUS)
+        self.assertEqual(receipt['stress_classifier_disposition'], 'allowed')
 
     def test_current_predispatch_authorization_request_nearby_revoked_refuses(self):
         comments = [

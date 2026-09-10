@@ -1,0 +1,99 @@
+name: AVPS V3 immutable job-log recovery 102809760883
+
+on:
+  push:
+    branches:
+      - diagnostic/avps-v3-joblog-recovery-102809760883-20260910
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+jobs:
+  immutable-evidence-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Recover immutable spent V3 job evidence only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SPENT_RUN: '34458286544'
+          SPENT_JOB: '102809760883'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/avps-v3-joblog-recovery"
+          mkdir -p "$out"
+          api="https://api.github.com/repos/$REPO"
+          hdr=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+
+          curl -fsSL "${hdr[@]}" "$api/actions/runs/$SPENT_RUN" > "$out/run.json"
+          curl -fsSL "${hdr[@]}" "$api/actions/runs/$SPENT_RUN/jobs?per_page=100" > "$out/jobs.json"
+          curl -fsSL "${hdr[@]}" "$api/check-runs/$SPENT_JOB" > "$out/check-run.json"
+
+          set +e
+          curl -fsSL -L "${hdr[@]}" "$api/actions/jobs/$SPENT_JOB/logs" > "$out/job.log" 2> "$out/log-fetch.stderr"
+          log_rc=$?
+          set -e
+          printf '%s\n' "$log_rc" > "$out/log-fetch.exit-code"
+
+          python - "$out" <<'PY'
+          import hashlib, json, pathlib, re, sys
+          d = pathlib.Path(sys.argv[1])
+          run = json.loads((d/'run.json').read_text())
+          jobs = json.loads((d/'jobs.json').read_text())
+          check = json.loads((d/'check-run.json').read_text())
+          target = [j for j in jobs.get('jobs', []) if int(j.get('id', 0)) == 102809760883]
+          if len(target) != 1:
+              raise SystemExit(f'expected one spent job, got {len(target)}')
+          j = target[0]
+          log_rc = int((d/'log-fetch.exit-code').read_text().strip())
+          log = (d/'job.log').read_bytes() if (d/'job.log').exists() else b''
+          text = log.decode('utf-8-sig', errors='replace')
+          candidates = []
+          pats = (
+              r'##\[error\].*', r'Traceback \(most recent call last\):',
+              r'AssertionError.*', r'RuntimeError.*', r'ValueError.*',
+              r'KeyError.*', r'SystemExit.*', r'FAILED.*', r'FAIL.*',
+              r'refuse:.*', r'expected .*failure.*', r'raise .*',
+          )
+          for i, line in enumerate(text.splitlines(), 1):
+              if any(re.search(p, line, re.I) for p in pats):
+                  candidates.append({'line': i, 'text': line[-1000:]})
+          summary = {
+              'schema': 1,
+              'status': 'IMMUTABLE_SPENT_JOB_EVIDENCE_RECOVERED' if log_rc == 0 and log else 'IMMUTABLE_JOB_LOG_UNAVAILABLE',
+              'runId': int(run.get('id', 0)),
+              'runAttempt': int(run.get('run_attempt', 0)),
+              'runStatus': run.get('status'),
+              'runConclusion': run.get('conclusion'),
+              'runHeadSha': run.get('head_sha'),
+              'jobId': int(j.get('id', 0)),
+              'jobName': j.get('name'),
+              'jobStatus': j.get('status'),
+              'jobConclusion': j.get('conclusion'),
+              'jobStartedAt': j.get('started_at'),
+              'jobCompletedAt': j.get('completed_at'),
+              'checkRunConclusion': check.get('conclusion'),
+              'checkRunOutputTitle': (check.get('output') or {}).get('title'),
+              'checkRunOutputSummary': (check.get('output') or {}).get('summary'),
+              'logFetchExitCode': log_rc,
+              'logByteCount': len(log),
+              'logSha256': hashlib.sha256(log).hexdigest() if log else None,
+              'candidateFailureLines': candidates,
+              'armNetworkAccessPerformed': False,
+              'scientificRuntimePerformedByRecovery': False,
+              'protectedResultOpenedByRecovery': False,
+          }
+          (d/'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True)+'\n')
+          print(json.dumps(summary, sort_keys=True))
+          PY
+      - name: Upload immutable recovery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: avps-v3-immutable-joblog-recovery-102809760883
+          path: ${{ runner.temp }}/avps-v3-joblog-recovery/
+          if-no-files-found: error
+          retention-days: 14

@@ -2,53 +2,96 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RUNNER = HERE / "run_r32.py"
-STARS_URL = "https://api.github.com/repos/search-maker/starsvisibility/branches/main"
 
 spec = importlib.util.spec_from_file_location("lowalt_r32_core", RUNNER)
 if spec is None or spec.loader is None:
     raise RuntimeError("cannot-load-r32-runner")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-_original_api_get = mod.api_get
+
+BOUND_STARS_MAIN = os.environ.get("R32_EXTERNAL_STARS_MAIN_SHA", "")
+if BOUND_STARS_MAIN != mod.STARS_MAIN_SHA:
+    raise RuntimeError(("external-stars-main-binding-drift", BOUND_STARS_MAIN, mod.STARS_MAIN_SHA))
 
 
-def _public_get(url: str):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "lowalt-state0003-r32-public-stars-fence",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=90) as response:
-        return json.load(response)
+def _fresh_control_fence(evidence: Path) -> dict:
+    gh = os.environ["GH_TOKEN"]
+    repo = os.environ["GITHUB_REPOSITORY"]
+    runid = int(os.environ["GITHUB_RUN_ID"])
+    issue = mod.api_get(f"https://api.github.com/repos/{repo}/issues/60", gh)
+    count = int(issue["comments"])
+    page = (count - 1) // 100 + 1
+    tail = mod.api_get(f"https://api.github.com/repos/{repo}/issues/60/comments?per_page=100&page={page}", gh)
+    lowalt = [
+        r for r in tail
+        if int(r["id"]) >= mod.AUTHORITY_COMMENT
+        and ("LOWALT" in r.get("body", "").upper() or "LOW-ALTITUDE" in r.get("body", "").upper())
+    ]
+    forbidden_new = []
+    for row in lowalt:
+        cid = int(row["id"])
+        if cid in (mod.AUTHORITY_COMMENT, mod.OWNER_CLASSIFICATION_COMMENT):
+            continue
+        first = (row.get("body") or "").splitlines()[0].upper()
+        if first.startswith("COORDINATOR::LOWALT") or "WRITE_QUIET_BEGIN" in first:
+            forbidden_new.append({"id": cid, "first": first})
+
+    main = mod.api_get(f"https://api.github.com/repos/{repo}/branches/main", gh)["commit"]["sha"]
+    other = {}
+    for status in ("in_progress", "queued"):
+        runs = mod.api_get(
+            f"https://api.github.com/repos/{repo}/actions/runs?status={status}&per_page=100", gh
+        )["workflow_runs"]
+        other[status] = [
+            {
+                "id": int(r["id"]),
+                "name": r.get("name"),
+                "head_branch": r.get("head_branch"),
+                "head_sha": r.get("head_sha"),
+            }
+            for r in runs
+            if int(r["id"]) != runid
+        ]
+
+    out = {
+        "schemaVersion": 1,
+        "issue60CommentCount": count,
+        "latestIssue60CommentId": int(tail[-1]["id"]) if tail else None,
+        "newerLowAltCoordinatorRestrictions": forbidden_new,
+        "twilightMain": main,
+        "starsMain": BOUND_STARS_MAIN,
+        "starsMainReadMode": "FRESH_EXTERNAL_CONNECTOR_PRETRIGGER_BINDING_PRIVATE_REPOSITORY",
+        "starsMainRuntimeCrossRepoRequestPerformed": False,
+        "starsMainBindingExpectedByFrozenRunner": mod.STARS_MAIN_SHA,
+        "otherMutableActions": other,
+        "activeActionAloneIsNotBlocker": True,
+        "productionBelow5Deg": "FAIL_CLOSED_UNCHANGED",
+    }
+    mod.write_json(evidence / "fresh-pre-development-fence.json", out)
+    if forbidden_new:
+        raise RuntimeError(("newer-lowalt-authority", forbidden_new))
+    if BOUND_STARS_MAIN != mod.STARS_MAIN_SHA:
+        raise RuntimeError(("stars-main-drift", BOUND_STARS_MAIN, mod.STARS_MAIN_SHA))
+    return out
 
 
-def _api_get(url: str, token: str):
-    if url == STARS_URL:
-        return _public_get(url)
-    return _original_api_get(url, token)
-
-
-mod.api_get = _api_get
+mod.fresh_control_fence = _fresh_control_fence
 
 pre = Path(os.environ.get("R32_PRE_DIR", "/tmp"))
 pre.mkdir(parents=True, exist_ok=True)
 mod.write_json(
-    pre / "public-stars-fence-adapter.json",
+    pre / "private-stars-fence-adapter.json",
     {
         "schemaVersion": 1,
-        "classification": "LOWALT_R32_MECHANICAL_PUBLIC_STARSVISIBILITY_FENCE_ADAPTER",
-        "starsUrl": STARS_URL,
-        "authorizationHeaderForStarsRequest": False,
+        "classification": "LOWALT_R32_MECHANICAL_PRIVATE_STARSVISIBILITY_PRETRIGGER_BINDING_ADAPTER",
+        "starsRepositoryVisibility": "private",
+        "boundStarsMainSha": BOUND_STARS_MAIN,
+        "runtimeCrossRepoGithubTokenUsed": False,
         "sameRepoGithubApiRemainsAuthenticated": True,
         "scientificMatrixModified": False,
         "scientificContractModified": False,

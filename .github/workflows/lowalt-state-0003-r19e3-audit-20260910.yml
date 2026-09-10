@@ -1,0 +1,295 @@
+name: LOWALT STATE-0003 R19E3 nonprotected audit transport recovery
+run-name: LOWALT STATE-0003 R19E3 audit ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - execution/lowalt-state0003-r19e3-audit-20260910
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+env:
+  EXPECTED_BRANCH: execution/lowalt-state0003-r19e3-audit-20260910
+  BASE_MAIN_SHA: 8cd85cf393e2d86a1b6d7325654747460a13e697
+  R19_BASE_BLOB: 5c226860e73df8dcd87799b94d8628735b3e259d
+  R19C_BLOB: 52ac3df3cca8303d243883db1752545a9636d159
+  R19D_BLOB: 46294e11c75116190e1d3b1f70e5048ee949a33a
+  R19E_BLOB: 883f231f4cfd996dba5dd7454f72baaef48d8cc8
+  R19D_RUN_ID: '34434955020'
+  R19D_HEAD: 792b8eca78a490f9fee8a20616ca97967d89d6db
+  R19D_ARTIFACT_ID: '10135837963'
+  R19D_ARTIFACT_DIGEST: sha256:61985e2b28aebe5f2ed56e0d9111aea2fe3cb7d3f91dbf1cc7e5015107e41002
+  R19D_DEVELOPMENT_SUMMARY_SHA256: bb8ce5bba128c00e72cd789ea1dd3fb7ee184446b1b69aaa3b56871ca719ad48
+  R19E_FAILED_RUN_ID: '34435187914'
+  R19E_FAILED_JOB_ID: '102738660765'
+  R19E2_FAILED_RUN_ID: '34435357255'
+  R19E2_FAILED_JOB_ID: '102739171002'
+  SOURCE_URL: http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz
+  SOURCE_ENTITY_SHA256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
+  UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  R16_CONTRACT_SHA256: d7ef6a8e68c436728f71eba6e616126deb9f2d485af4926da4b2a294384475ca
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  audit-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact fresh recovery head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind immutable drivers by Git blob identity and prior pre-exposure barriers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          ROOT="$RUNNER_TEMP/lowalt-state0003-r19e3"
+          EVIDENCE="$ROOT/evidence"
+          mkdir -p "$EVIDENCE"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EVIDENCE_DIR=$EVIDENCE" >> "$GITHUB_ENV"
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          hdr=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+
+          # This recovery deliberately does not fetch historical commits. The exact
+          # governing driver bytes are bound directly by immutable Git blob SHA.
+          python - <<'PY'
+          import base64,hashlib,json,os,subprocess,urllib.request
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
+          specs=[
+            ('R19_BASE_BLOB','r19-base-driver.py'),
+            ('R19C_BLOB','r19c-driver.py'),
+            ('R19D_BLOB','r19d-driver.py'),
+            ('R19E_BLOB','r19e-driver.py'),
+          ]
+          rec=[]
+          for envname,outname in specs:
+            expected=os.environ[envname]
+            url=f'https://api.github.com/repos/{repo}/git/blobs/{expected}'
+            req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'lowalt-r19e3'})
+            with urllib.request.urlopen(req,timeout=90) as r: x=json.load(r)
+            assert x['sha']==expected and x['encoding']=='base64',(envname,x.get('sha'),x.get('encoding'))
+            data=base64.b64decode(x['content'],validate=False)
+            p=root/outname; p.write_bytes(data)
+            got=subprocess.check_output(['git','hash-object',str(p)],text=True).strip()
+            assert got==expected,(envname,got,expected)
+            rec.append({'role':envname,'blobSha':expected,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'apiUrl':url})
+          (Path(os.environ['EVIDENCE_DIR'])/'driver-blob-binding.json').write_text(json.dumps({'schemaVersion':1,'classification':'STATE_0003_R19E3_IMMUTABLE_DRIVER_BLOB_BINDING_PASS','drivers':rec},sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          echo "R19_BASE_DRIVER_PATH=$ROOT/r19-base-driver.py" >> "$GITHUB_ENV"
+          echo "R19C_DRIVER_PATH=$ROOT/r19c-driver.py" >> "$GITHUB_ENV"
+          echo "R19D_DRIVER_PATH=$ROOT/r19d-driver.py" >> "$GITHUB_ENV"
+          echo "DRIVER=$ROOT/r19e-driver.py" >> "$GITHUB_ENV"
+
+          curl -fsS "${hdr[@]}" "$api/actions/runs/$R19E_FAILED_RUN_ID" > "$ROOT/r19e-failed-run.json"
+          curl -fsS "${hdr[@]}" "$api/actions/jobs/$R19E_FAILED_JOB_ID" > "$ROOT/r19e-failed-job.json"
+          curl -fsS "${hdr[@]}" "$api/actions/runs/$R19E2_FAILED_RUN_ID" > "$ROOT/r19e2-failed-run.json"
+          curl -fsS "${hdr[@]}" "$api/actions/jobs/$R19E2_FAILED_JOB_ID" > "$ROOT/r19e2-failed-job.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); e=Path(os.environ['EVIDENCE_DIR'])
+          r1=json.loads((root/'r19e-failed-run.json').read_text()); j1=json.loads((root/'r19e-failed-job.json').read_text())
+          r2=json.loads((root/'r19e2-failed-run.json').read_text()); j2=json.loads((root/'r19e2-failed-job.json').read_text())
+          assert r1['id']==int(os.environ['R19E_FAILED_RUN_ID']) and r1['status']=='completed' and r1['conclusion']=='failure' and r1['run_attempt']==1
+          assert r2['id']==int(os.environ['R19E2_FAILED_RUN_ID']) and r2['status']=='completed' and r2['conclusion']=='failure' and r2['run_attempt']==1
+          s1={s['name']:s['conclusion'] for s in j1['steps']}; s2={s['name']:s['conclusion'] for s in j2['steps']}
+          assert s1['Rebind exact successful R19D development artifact before audit exposure']=='failure'
+          assert s1['Set up exact inherited runtime and compiler provenance']=='skipped'
+          assert s1['Execute two preallocated fresh NONPROTECTED audits under frozen contract']=='skipped'
+          assert s2['Bind additive recovery boundary and immutable driver chain']=='failure'
+          assert s2['Set up exact inherited runtime and compiler provenance']=='skipped'
+          assert s2['Execute two preallocated fresh NONPROTECTED audits under frozen contract']=='skipped'
+          out={'schemaVersion':1,'classification':'STATE_0003_R19E3_PRIOR_ATTEMPTS_PROVEN_PREEXPOSURE','r19e':{'runId':r1['id'],'jobId':j1['id'],'failedStep':'R19D artifact rebind','auditExecutionSkipped':True},'r19e2':{'runId':r2['id'],'jobId':j2['id'],'failedStep':'immutable driver chain transport bind','auditExecutionSkipped':True},'auditIdentitiesRemainUnopened':['r16-srcaud-0009','r16-srcaud-0010']}
+          (e/'prior-preexposure-barriers.json').write_text(json.dumps(out,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          cat > "$EVIDENCE/execution-boundary.json" <<EOF2
+          {"schemaVersion":1,"classification":"STATE_0003_R19E3_PREALLOCATED_NONPROTECTED_AUDIT_TRANSPORT_RECOVERY_BOUNDARY","branch":"$GITHUB_REF_NAME","headSha":"$GITHUB_SHA","baseMainSha":"$BASE_MAIN_SHA","r19eDriverBlob":"$R19E_BLOB","auditIdentities":["r16-srcaud-0009","r16-srcaud-0010"],"auditIdentityReplacement":false,"protectedResultOpeningAuthorized":false,"taylorOrJerusalemUsed":false,"productionMutationAuthorized":false,"fiveDegreeSeamMutationAuthorized":false,"r12IdentityReuseAuthorized":false}
+          EOF2
+
+      - name: Rebind exact successful R19D artifact with explicit cross-origin auth stripping
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          hdr=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${hdr[@]}" "$api/actions/runs/$R19D_RUN_ID" > "$ROOT/r19d-run.json"
+          curl -fsS "${hdr[@]}" "$api/actions/runs/$R19D_RUN_ID/artifacts?per_page=100" > "$ROOT/r19d-artifacts.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); run=json.loads((root/'r19d-run.json').read_text()); arts=json.loads((root/'r19d-artifacts.json').read_text())
+          rid=int(os.environ['R19D_RUN_ID']); aid=int(os.environ['R19D_ARTIFACT_ID']); head=os.environ['R19D_HEAD']; dig=os.environ['R19D_ARTIFACT_DIGEST']
+          assert run['id']==rid and run['head_sha']==head and run['run_attempt']==1 and run['status']=='completed' and run['conclusion']=='success'
+          got=[a for a in arts['artifacts'] if int(a['id'])==aid]; assert len(got)==1 and got[0]['digest']==dig and not got[0]['expired']
+          meta={'runId':rid,'headSha':head,'runAttempt':1,'conclusion':'success','artifactId':aid,'artifactDigest':dig}
+          (root/'r19d-api-binding.json').write_text(json.dumps(meta,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+
+          # Request the GitHub API redirect WITH auth, but follow the cross-origin
+          # signed Location WITHOUT auth. This avoids dependence on curl redirect
+          # header behavior while keeping exact ZIP digest verification.
+          code="$(curl -sS -o /dev/null -D "$ROOT/r19d-redirect.headers" -w '%{http_code}' "${hdr[@]}" "$api/actions/artifacts/$R19D_ARTIFACT_ID/zip")"
+          test "$code" = 302
+          location="$(awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/^[^:]*:[[:space:]]*/,""); sub(/\r$/,""); print; exit}' "$ROOT/r19d-redirect.headers")"
+          test -n "$location"
+          LOCATION="$location" python - <<'PY'
+          import os,urllib.parse
+          u=urllib.parse.urlparse(os.environ['LOCATION'])
+          assert u.scheme=='https' and u.netloc and u.netloc.lower()!='api.github.com',(u.scheme,u.netloc)
+          PY
+          curl -fsS --proto '=https' "$location" -o "$ROOT/r19d-artifact.zip"
+          test "$(sha256sum "$ROOT/r19d-artifact.zip" | awk '{print $1}')" = "${R19D_ARTIFACT_DIGEST#sha256:}"
+          mkdir -p "$ROOT/r19d-artifact"
+          unzip -q "$ROOT/r19d-artifact.zip" -d "$ROOT/r19d-artifact"
+          test -f "$ROOT/r19d-artifact/development-summary.json"
+          test "$(sha256sum "$ROOT/r19d-artifact/development-summary.json" | awk '{print $1}')" = "$R19D_DEVELOPMENT_SUMMARY_SHA256"
+          echo "R19D_DEVELOPMENT_SUMMARY_PATH=$ROOT/r19d-artifact/development-summary.json" >> "$GITHUB_ENV"
+          echo "R19D_API_BINDING_PATH=$ROOT/r19d-api-binding.json" >> "$GITHUB_ENV"
+          cp "$ROOT/r19d-api-binding.json" "$EVIDENCE_DIR/r19d-api-binding.json"
+          cp "$ROOT/r19d-artifact/development-summary.json" "$EVIDENCE_DIR/r19d-development-summary.json"
+          cp "$ROOT/r19d-redirect.headers" "$EVIDENCE_DIR/r19d-artifact-api-redirect.headers"
+          printf '%s\n' "$location" | sed -E 's/([?&](sig|se|sp|sv|sr|scid|skoid|sktid|skt|ske|sks|skv))=[^&]*/\1=REDACTED/g' > "$EVIDENCE_DIR/r19d-artifact-cross-origin-route-redacted.txt"
+          sha256sum "$ROOT/r19d-artifact.zip" > "$EVIDENCE_DIR/r19d-artifact-zip-sha256.txt"
+
+      - name: Set up exact inherited runtime and compiler provenance
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-state0003-r19e3
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+            gfortran_impl_linux-64=13.4.0=hb485fb8_18
+            gfortran_linux-64=13.4.0=hce61b40_21
+            gcc_impl_linux-64=13.4.0=he2fa53e_18
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Ensure read-only debugger tooling
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb binutils curl file > "$EVIDENCE_DIR/apt-install.log" 2>&1
+          test -n "${FC:-}"
+          sha256sum "$(command -v uvspec)" > "$EVIDENCE_DIR/uvspec-sha256.txt"
+          test "$(sha256sum "$(command -v uvspec)" | awk '{print $1}')" = "$UVSPEC_SHA256"
+
+      - name: Recover literal HTTP governing source entity and unchanged R16 contract
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/source"
+          curl -fsS -L --max-redirs 10 --compressed -D "$EVIDENCE_DIR/http-source-headers.txt" -o "$ROOT/source-entity.bin" -w 'initial=%{url}\nfinal=%{url_effective}\nhttp_code=%{http_code}\nredirects=%{num_redirects}\nsize_download=%{size_download}\n' "$SOURCE_URL" > "$EVIDENCE_DIR/http-source-route.txt" 2> "$EVIDENCE_DIR/http-source-curl.stderr"
+          sha256sum "$ROOT/source-entity.bin" > "$EVIDENCE_DIR/http-source-entity-sha256.txt"
+          wc -c "$ROOT/source-entity.bin" > "$EVIDENCE_DIR/http-source-entity-bytes.txt"
+          test "$(sha256sum "$ROOT/source-entity.bin" | awk '{print $1}')" = "$SOURCE_ENTITY_SHA256"
+          tar -xf "$ROOT/source-entity.bin" -C "$ROOT/source"
+          DPMISC="$(find "$ROOT/source" -type f -path '*/libsrc_f/dpmisc.f' -print -quit)"; test -n "$DPMISC"
+          SRC_ROOT="$(dirname "$(dirname "$DPMISC")")"; test -f "$SRC_ROOT/libsrc_f/DISORT.MXD"; test -f "$SRC_ROOT/libsrc_f/dpsdisort.f"
+          echo "SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+          cat > "$ROOT/r16-frozen-contract.json" <<'EOF2'
+          {
+            "state": "STATE-0003",
+            "gate": "R16-FRESH-SOURCE-EQUIVALENCE-TRAINING-FREEZE",
+            "scope": "WHOLLY_FRESH_NONPROTECTED",
+            "production_floor_deg": 5.0,
+            "production_below_floor": "FAIL_CLOSED_UNCHANGED",
+            "development_rows": 8,
+            "audit_rows": 2,
+            "audit_open_rule": "DO_NOT_OPEN_UNTIL_ALL_8_DEVELOPMENT_ROWS_PASS_THE_FROZEN_CONTRACT",
+            "reference": "exact pinned libRadtran governing direct-path implementation/source and final pre-dispatch handoff",
+            "integer_structural_fields": "EXACT",
+            "fac_fac2_chp2_ch_abs_or_rel_tolerance": 1e-10,
+            "direct_float64_abs_or_rel_tolerance": 1e-12,
+            "exact_zero_preserved": true,
+            "nan_or_inf": "FAIL",
+            "post_result_retuning": "FORBIDDEN",
+            "protected_residual_selection": "FORBIDDEN",
+            "Taylor_Jerusalem_selection_or_fit": "FORBIDDEN",
+            "consumed_R12_0001_0002": "FORBIDDEN_TO_RERUN_OR_REUSE",
+            "R12_audit_0007_0008": "SEALED",
+            "solver_executed_by_this_freeze": false,
+            "science_seed_or_ordinal_allocated": false
+          }
+          EOF2
+          test "$(sha256sum "$ROOT/r16-frozen-contract.json" | awk '{print $1}')" = "$R16_CONTRACT_SHA256"
+          echo "R16_CONTRACT_PATH=$ROOT/r16-frozen-contract.json" >> "$GITHUB_ENV"
+
+      - name: Fresh-read authoritative governance and current lanes before audit exposure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"; hdr=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${hdr[@]}" "$api/issues/60" > "$EVIDENCE_DIR/fresh-issue60.json"
+          curl -fsS "${hdr[@]}" "$api/branches/main" > "$EVIDENCE_DIR/fresh-twilight-main.json"
+          curl -fsS "${hdr[@]}" "$api/pulls/1026" > "$EVIDENCE_DIR/fresh-avps-pr1026.json"
+          curl -fsS "${hdr[@]}" "$api/actions/runs?status=in_progress&per_page=100" > "$EVIDENCE_DIR/fresh-actions-in-progress.json"
+          curl -fsS "${hdr[@]}" "$api/actions/runs?status=queued&per_page=100" > "$EVIDENCE_DIR/fresh-actions-queued.json"
+          curl -fsS -H "Authorization: Bearer $STARSVISIBILITY_READ_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/search-maker/starsvisibility/branches/main > "$EVIDENCE_DIR/fresh-stars-main.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          e=Path(os.environ['EVIDENCE_DIR'])
+          tm=json.loads((e/'fresh-twilight-main.json').read_text()); sm=json.loads((e/'fresh-stars-main.json').read_text()); av=json.loads((e/'fresh-avps-pr1026.json').read_text()); ip=json.loads((e/'fresh-actions-in-progress.json').read_text()); q=json.loads((e/'fresh-actions-queued.json').read_text())
+          assert tm['commit']['sha']==os.environ['BASE_MAIN_SHA']
+          assert sm['commit']['sha']=='1e74d0522f086dba634a587bb245c32bcd4fac60'
+          assert av['state']=='open' and av['draft'] is True and av['head']['sha']=='5028cb7c7cd585d720749f0d572aa15e2f614bf9'
+          self_id=int(os.environ['GITHUB_RUN_ID']); critical=('exec005','v5r6','total-sky','avps','arm','v1')
+          queued=[r for r in q.get('workflow_runs',[]) if int(r['id'])!=self_id and any(k in ((r.get('name') or '')+' '+(r.get('display_title') or '')).lower() for k in critical)]
+          if queued: raise SystemExit('V1_CRITICAL_QUEUE_CONTENTION:'+','.join(str(r['id']) for r in queued))
+          out={'schemaVersion':1,'classification':'STATE_0003_R19E3_FRESH_PREAUDIT_FENCE','issue60Comments':json.loads((e/'fresh-issue60.json').read_text())['comments'],'twilightMain':tm['commit']['sha'],'starsMain':sm['commit']['sha'],'avpsHead':av['head']['sha'],'inProgressCount':ip.get('total_count'),'queuedCount':q.get('total_count'),'criticalQueuedNonself':[]}
+          (e/'fresh-preaudit-fence-summary.json').write_text(json.dumps(out,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+
+      - name: Freeze exact immutable audit implementation before any audit result opens
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python -m py_compile "$R19_BASE_DRIVER_PATH" "$R19C_DRIVER_PATH" "$R19D_DRIVER_PATH" "$DRIVER"
+          grep -n -i 'CALL geofast' "$SOURCE_ROOT/libsrc_f/dpsdisort.f" > "$EVIDENCE_DIR/dpssetdis-geofast-call-hits.txt"
+          grep -n -i 'rearth=rearth\*1.D-5' "$SOURCE_ROOT/libsrc_f/dpsdisort.f" > "$EVIDENCE_DIR/dpssetdis-rearth-restore-hit.txt"
+          test "$(wc -l < "$EVIDENCE_DIR/dpssetdis-geofast-call-hits.txt")" -ge 2
+          test -s "$EVIDENCE_DIR/dpssetdis-rearth-restore-hit.txt"
+          sha256sum "$R19_BASE_DRIVER_PATH" "$R19C_DRIVER_PATH" "$R19D_DRIVER_PATH" "$DRIVER" > "$EVIDENCE_DIR/immutable-driver-sha256.txt"
+
+      - name: Execute two preallocated fresh NONPROTECTED audits under unchanged frozen contract
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+          python "$DRIVER"
+
+      - name: Publish isolated R19E3 audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lowalt-state0003-r19e3-nonprotected-audit-20260910
+          path: ${{ runner.temp }}/lowalt-state0003-r19e3/evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

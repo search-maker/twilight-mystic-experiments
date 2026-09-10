@@ -169,6 +169,7 @@ _DIRECT_EXACT_ALLOWED_TITLES = frozenset({
     'ARM_OWNER::FINAL_MAIN_PREDISPATCH_REALITY_CHECK_CLEAN__REPLACEMENT_QUERY_ONLY_AUTHORIZATION_REQUEST',
     'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE',
     'ARM_OWNER::PR1016_LIVE_AUTHORIZATION_LATEST_CLAIM_RELEVANCE_DEFECT__SAME_IDENTITY_NARROW_REPAIR_REQUIRED__RESULT_BLIND__AUTH_FALSE',
+    'ARM_OWNER::PR1016_POSTMERGE_STABLE__RESULT_BLIND_INSTALLATION_COMPLETE__AUTH_FALSE',
 })
 
 # Exact cross-lane Coordinator transition whose ARM paragraph imposed only a
@@ -179,6 +180,10 @@ _DIRECT_EXACT_ALLOWED_TITLES = frozenset({
 _CROSS_LANE_EXACT_ALLOWED_TITLES = frozenset({
     'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE',
 })
+
+_HISTORICAL_WQ_CORRECTION_BEGIN = 5613910902
+_HISTORICAL_WQ_PROSE_END = 5614235428
+_HISTORICAL_WQ_CANONICAL_END = 5618881442
 
 
 def _direct_arm_control_disposition(first: str) -> str:
@@ -227,6 +232,43 @@ def _adverse_arm_control(body: str) -> bool:
     return False
 
 
+def _exact_historical_wq_correction_matches(
+    *,
+    cid: int,
+    begin_id: int,
+    first: str,
+    closed_begins: dict[int, tuple[int, str, str]],
+) -> bool:
+    """Accept only the one immutable canonical correction of an already parsed prose END.
+
+    ARM's installed parser already recognizes the body binding on END 5614235428,
+    while later comment 5618881442 was added for another parser that required a
+    first-line begin= field. Treating that later row as a second unrelated END
+    would create a false open/closed contradiction. The exception is deliberately
+    exact: immutable IDs, exact begin identity, exact prior body binding, and
+    byte-identical first-line control fields after removing only begin=.
+    """
+    if cid != _HISTORICAL_WQ_CANONICAL_END or begin_id != _HISTORICAL_WQ_CORRECTION_BEGIN:
+        return False
+    prior = closed_begins.get(begin_id)
+    if prior is None or prior[0] != _HISTORICAL_WQ_PROSE_END:
+        return False
+    prior_first, prior_body = prior[1], prior[2]
+    expected_binding = re.compile(
+        rf'(?im)^\s*Exact matching closure for BEGIN\s+`?{begin_id}`?\s+only\.(?=\s|$)'
+    )
+    if expected_binding.search(prior_body) is None:
+        return False
+    corrected_without_begin = re.sub(
+        rf'\s*\|\s*begin={begin_id}(?=\s*\|)',
+        '',
+        first,
+        count=1,
+        flags=re.I,
+    )
+    return corrected_without_begin == prior_first
+
+
 def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
     ids = [int(row.get('id', 0)) for row in comments]
     baseline = next((row for row in comments if int(row.get('id', 0)) == BASELINE_COORDINATOR_COMMENT), None)
@@ -244,6 +286,7 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             raise StressFailure(f'Coordinator fence-clear baseline semantic drift: {needle}')
 
     open_begins: dict[int, str | None] = {}
+    closed_begins: dict[int, tuple[int, str, str]] = {}
     begin_ids: list[int] = []
     end_ids: list[int] = []
     arm_relevant: list[int] = []
@@ -282,12 +325,21 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
                 raise StressFailure(f'WRITE_QUIET_END lacks exact begin binding: {cid}')
             begin_id = int(raw_begin)
             if begin_id not in open_begins:
+                if _exact_historical_wq_correction_matches(
+                    cid=cid,
+                    begin_id=begin_id,
+                    first=first,
+                    closed_begins=closed_begins,
+                ):
+                    end_ids.append(cid)
+                    continue
                 raise StressFailure(f'WRITE_QUIET_END references no open post-baseline BEGIN: {cid}->{begin_id}')
             begin_stage = open_begins[begin_id]
             end_stage = _field(first, 'stage')
             if begin_stage and end_stage and begin_stage != end_stage:
                 raise StressFailure(f'WRITE_QUIET stage mismatch: {begin_id}->{cid}')
             del open_begins[begin_id]
+            closed_begins[begin_id] = (cid, first, body)
             end_ids.append(cid)
 
         if _arm_relevant_control(body):

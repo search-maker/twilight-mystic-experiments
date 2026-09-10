@@ -45,7 +45,7 @@ jobs:
             'setup':r'^00000000000b2460 <setup_and_call_solver>:$',
             'optical':r'^\s*b2684:.*call\s+1ee20 <optical_properties>$',
             'switch':r'^\s*b26b7:.*cmp\s+r14d,0x1a$',
-            'setout':r'^\s*b2f32:.*call\s+1b9360 <setout_>$',
+            'sdisortSetout':r'^\s*b2f32:.*call\s+1b9360 <setout_>$',
             'callSolver':r'^\s*b27cb:.*call\s+a9e30 <call_solver>$',
             'outReg':r'^\s*b2462:.*mov\s+r15,rdi$',
             'rteSave':r'^\s*b2487:.*mov\s+QWORD PTR \[rsp\+0x38\],rsi$',
@@ -59,39 +59,37 @@ jobs:
           curl --compressed -fL --max-time 120 http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz -o evidence/source.tar.gz 2>evidence/source-fetch.stderr
           test "$(sha256sum evidence/source.tar.gz | awk '{print $1}')" = 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85
           member="$(tar -tf evidence/source.tar.gz | grep -E '/src/solve_rte\.c$' | head -1)"
+          test -n "$member"
           tar -xOf evidence/source.tar.gz "$member" > evidence/solve_rte.c
           python - <<'PY'
           from pathlib import Path
           import re,json,hashlib
           p=Path('evidence/solve_rte.c'); t=p.read_text(errors='replace')
-          mop=re.search(r'status\s*=\s*optical_properties\s*\(',t)
-          if not mop: raise SystemExit('optical_properties marker missing')
-          iop=mop.start()
-          fs=t.rfind('setup_and_call_solver',0,iop)
-          if fs<0: raise SystemExit('function anchor missing')
-          mcall=re.search(r'status\s*=\s*call_solver\s*\(',t[iop:])
-          if not mcall: raise SystemExit('call_solver marker missing')
-          icall=iop+mcall.start(); seg=t[fs:icall+mcall.end()-mcall.start()]
-          mtr=re.search(r'translate\s+output\s+altitudes\s*\(zout\)\s+to\s+optical\s+depths\s*\(utau\)',seg,re.I)
-          if not mtr: raise SystemExit('translation marker missing')
-          itr=mtr.start()
-          msd=re.search(r'case\s+SOLVER_SDISORT\s*:',seg[itr:]); mn=re.search(r'case\s+SOLVER_NULL\s*:',seg[itr:])
-          if not msd or not mn: raise SystemExit('solver cases missing')
-          isd=itr+msd.start(); inn=itr+mn.start()
-          mset=re.search(r'(?:c_setout|F77_FUNC\s*\(\s*setout\s*,\s*SETOUT\s*\))\s*\(',seg[isd:])
-          if not mset: raise SystemExit('SDISORT setout missing')
-          iset=isd+mset.start()
-          mt=re.search(r'if\s*\(\s*input\.test_optical_properties\s*\)',seg[max(iset,inn):])
-          if not mt: raise SystemExit('late test_optical_properties switch missing')
-          itest=max(iset,inn)+mt.start()
-          if not (0<itr<min(isd,inn) and isd<iset<itest): raise SystemExit('source ordering mismatch')
-          # Bound NULL case locally to the next case/default label.
-          tail=seg[inn:itest]
-          labels=list(re.finditer(r'\n\s*(?:case\s+[^:]+|default)\s*:',tail))
-          end=labels[1].start() if len(labels)>1 else len(tail)
-          nullcase=tail[:end]
-          if re.search(r'c_setout|F77_FUNC\s*\(\s*setout',nullcase): raise SystemExit('plain NULL unexpectedly calls setout')
-          out={'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85','solveRteSha256':hashlib.sha256(p.read_bytes()).hexdigest(),'ordinaryOpticalPropertiesBeforeSolverSwitch':True,'plainNullSkipsSetout':True,'sdisortUsesSetout':True,'lateTestOpticalPropertiesNullSwitchAfterSetoutSwitch':True}
+          mf=re.search(r'static\s+int\s+setup_and_call_solver\s*\(',t)
+          if not mf: raise SystemExit('setup_and_call_solver source anchor missing')
+          fs=mf.start()
+          mop=re.search(r'status\s*=\s*optical_properties\s*\(',t[fs:])
+          if not mop: raise SystemExit('ordinary optical_properties marker missing')
+          iop=fs+mop.start()
+          mtr=re.search(r'translate\s+output\s+altitudes\s*\(zout\)\s+to\s+optical\s+depths\s*\(utau\)',t[iop:],re.I)
+          if not mtr: raise SystemExit('post-optical translation marker missing')
+          itr=iop+mtr.start()
+          msw=re.search(r'switch\s*\(\s*input\.rte\.solver\s*\)\s*\{',t[itr:])
+          if not msw: raise SystemExit('solver setout switch missing')
+          isw=itr+msw.start()
+          mrev=re.search(r'/\*\s*reverse profiles, if required\s*\*/',t[isw:],re.I)
+          if not mrev: raise SystemExit('post-switch reverse marker missing')
+          irev=isw+mrev.start(); sec=t[isw:irev]
+          msd=re.search(r'case\s+SOLVER_SDISORT\s*:',sec)
+          mset=re.search(r'F77_FUNC\s*\(\s*setout\s*,\s*SETOUT\s*\)\s*\(',sec)
+          mn=re.search(r'case\s+SOLVER_NULL\s*:',sec)
+          md=re.search(r'\n\s*default\s*:',sec[mn.start():] if mn else '')
+          if not (msd and mset and mn and md): raise SystemExit('required solver switch members missing')
+          isd=msd.start(); iset=mset.start(); inn=mn.start(); idef=inn+md.start()
+          if not (isd < iset < inn < idef): raise SystemExit(('source solver ordering mismatch',isd,iset,inn,idef))
+          nullcase=sec[inn:idef]
+          if re.search(r'(?:c_setout|F77_FUNC\s*\(\s*setout)',nullcase): raise SystemExit('plain NULL unexpectedly invokes setout')
+          out={'sourceEntitySha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85','solveRteSha256':hashlib.sha256(p.read_bytes()).hexdigest(),'ordinaryOpticalPropertiesBeforeSolverSetoutSwitch':True,'sdisortUsesFortranSetout':True,'plainNullSkipsSetout':True,'sourceOrdering':{'function':fs,'ordinaryOpticalProperties':iop,'translation':itr,'solverSwitch':isw,'sdisortCase':isw+isd,'fortranSetout':isw+iset,'nullCase':isw+inn,'reverseProfiles':irev}}
           Path('evidence/source-binding.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
           PY
       - name: Build fresh synthetic pair
@@ -118,6 +116,11 @@ jobs:
           EOF
           sed 's/__SOLVER__/rte_solver null/' evidence/base.inp > evidence/null.inp
           sed 's/__SOLVER__/rte_solver sdisort/' evidence/base.inp > evidence/sdisort.inp
+          python - <<'PY'
+          from pathlib import Path
+          a=Path('evidence/null.inp').read_text(); b=Path('evidence/sdisort.inp').read_text()
+          assert a.replace('rte_solver null','rte_solver __PAIR__')==b.replace('rte_solver sdisort','rte_solver __PAIR__')
+          PY
       - name: Capture common pre-setout ABI state
         shell: bash -el {0}
         run: |
@@ -145,7 +148,7 @@ jobs:
           sha={}
           for k in ptr:
             b=mem(ptr[k],size[k]); (d/(k+'.bin')).write_bytes(b); sha[k]=hashlib.sha256(b).hexdigest()
-          (d/'meta.json').write_text(json.dumps({'selector':sel,'nlyr':n,'nzout':z,'sha256':sha,'killedBeforeSolverSwitchInstruction':True},indent=2,sort_keys=True)+'\n')
+          (d/'meta.json').write_text(json.dumps({'selector':sel,'nlyr':n,'nzout':z,'sha256':sha,'capturePoint':'setup_and_call_solver+0x257','killedBeforeSolverSetoutSwitchInstruction':True},indent=2,sort_keys=True)+'\n')
             end
             kill
             quit
@@ -162,11 +165,11 @@ jobs:
           from pathlib import Path
           import json,hashlib
           r=Path('evidence'); n=json.loads((r/'null/meta.json').read_text()); s=json.loads((r/'sdisort/meta.json').read_text())
-          assert n['selector']==16 and s['selector']==2
+          assert n['selector']==16 and s['selector']==2,(n['selector'],s['selector'])
           assert (n['nlyr'],n['nzout'])==(s['nlyr'],s['nzout'])
-          assert n['sha256']==s['sha256']
+          assert n['sha256']==s['sha256'],(n['sha256'],s['sha256'])
           src=json.loads((r/'source-binding.json').read_text())
-          dec={'classification':'R31_NULL_PREDISPATCH_COMMON_OBSERVATION_POINT_PROVEN','sourceEntitySha256':src['sourceEntitySha256'],'pinnedUvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3','commonSubsetBitExact':True,'fields':['DTAUC','SSALB','ZD','UTAU_PRE_SETOUT'],'plainNullSkipsSetout':True,'sdisortUsesSetout':True,'callSolverBodyExecuted':False,'sdisortBodyExecuted':False,'protectedResultOpened':False,'scientificIdentityConsumed':False,'claimBoundary':'Exact common post-optical_properties/pre-setout ABI observation is proven. This does not claim post-setout UTAU or general NULL-vs-SDISORT equivalence.'}
+          dec={'classification':'R31_NULL_PREDISPATCH_COMMON_OBSERVATION_POINT_PROVEN','sourceEntitySha256':src['sourceEntitySha256'],'pinnedUvspecSha256':'2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3','commonSubsetBitExact':True,'fields':['DTAUC','SSALB','ZD','UTAU_PRE_SETOUT'],'plainNullSkipsSetout':True,'sdisortUsesFortranSetout':True,'bothKilledBeforeSolverSetoutSwitchInstruction':True,'callSolverBodyExecuted':False,'sdisortBodyExecuted':False,'protectedResultOpened':False,'scientificIdentityConsumed':False,'claimBoundary':'Exact common post-optical_properties/pre-setout source+ABI observation is proven for the compared ordinary subset. This does not claim post-setout UTAU equivalence or general NULL-vs-SDISORT equivalence.'}
           (r/'decision.json').write_text(json.dumps(dec,indent=2,sort_keys=True)+'\n')
           man={str(p.relative_to(r)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(r.rglob('*')) if p.is_file() and p.name!='manifest.json'}
           (r/'manifest.json').write_text(json.dumps(man,indent=2,sort_keys=True)+'\n')

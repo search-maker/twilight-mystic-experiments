@@ -1,0 +1,91 @@
+name: ARM query-only predispatch diagnostic 5618177922
+
+on:
+  push:
+    branches:
+      - diagnostic/arm-query-only-auth-live-preflight-5618177922-20260910
+
+permissions:
+  contents: read
+  issues: read
+
+env:
+  EXPECTED_MAIN: 3d87305043403fba9636bff2b6a2b624a905a343
+  EXPECTED_AUTH_COMMENT: '5618177922'
+  EXPECTED_AUTH_TITLE: COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_SUCCESSOR_AUTHORIZED__ONE_SHOT_ATTEMPT1__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED
+
+jobs:
+  exact-current-ledger-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact installed main bytes
+        uses: actions/checkout@v4
+        with:
+          ref: 3d87305043403fba9636bff2b6a2b624a905a343
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prove exact installed source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          python -m py_compile \
+            tools/arm_ena_sws_query_only_availability_v1/stress.py \
+            tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_v1.py \
+            tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_live_v2.py
+      - name: NON_AUTHORIZING exact executable stress against complete live Issue 60
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arm-predispatch-diagnostic"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python tools/arm_ena_sws_query_only_availability_v1/stress.py \
+              --workflow .github/workflows/arm-ena-sws-query-only-availability-v1.yml \
+              --executable tools/arm_ena_sws_query_only_availability_v1/discover.py \
+              --manifest tools/arm_ena_sws_query_only_availability_v1/ordered_25_cases.json \
+              --output "$RUNNER_TEMP/arm-predispatch-diagnostic/stress-receipt.json"
+          test -s "$RUNNER_TEMP/arm-predispatch-diagnostic/stress-receipt.json"
+      - name: NON_AUTHORIZING live authorization preflight on corrected claim
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python tools/arm_e0_successor_case_binding_audit_v1/preflight_query_authorization_live_v2.py \
+              --authorization-comment "$EXPECTED_AUTH_COMMENT" \
+              --authorization-title "$EXPECTED_AUTH_TITLE" \
+              > "$RUNNER_TEMP/arm-predispatch-diagnostic/live-preflight-receipt.json"
+          python - "$RUNNER_TEMP/arm-predispatch-diagnostic/stress-receipt.json" "$RUNNER_TEMP/arm-predispatch-diagnostic/live-preflight-receipt.json" <<'PY'
+          import json, os, pathlib, sys
+          stress = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          pre = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8'))
+          assert stress['status'] == 'EXACT_EXECUTABLE_STRESS_PASS'
+          assert pre['status'] == 'QUERY_ONLY_SUCCESSOR_LIVE_PREDISPATCH_GOVERNANCE_PASS'
+          assert pre['authorization_comment'] == int(os.environ['EXPECTED_AUTH_COMMENT'])
+          assert pre['authorization_title'] == os.environ['EXPECTED_AUTH_TITLE']
+          assert pre['latest_arm_relevant_comment_id'] == int(os.environ['EXPECTED_AUTH_COMMENT'])
+          assert pre['exact_main_sha'] == os.environ['EXPECTED_MAIN']
+          assert pre['fresh_current_main_sha'] == os.environ['EXPECTED_MAIN']
+          assert pre['workflow_path'] == '.github/workflows/arm-ena-sws-query-only-availability-v1.yml'
+          assert pre['event_name'] == 'workflow_dispatch'
+          assert pre['run_attempt'] == 1
+          assert pre['one_shot'] is True
+          assert pre['stress_classifier_disposition'] == 'allowed'
+          assert pre['arm_network_access_performed'] is False
+          assert pre['arm_credentials_read'] is False
+          assert pre['protected_sws_sasze_values_read'] is False
+          print('PASS corrected ARM authorization is executable by exact installed live gate')
+          PY
+      - name: Upload non-authorizing diagnostic receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-query-only-predispatch-diagnostic-5618177922
+          path: ${{ runner.temp }}/arm-predispatch-diagnostic/*.json
+          if-no-files-found: error
+          retention-days: 14

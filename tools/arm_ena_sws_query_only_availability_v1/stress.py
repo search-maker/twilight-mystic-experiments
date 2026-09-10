@@ -81,6 +81,11 @@ def _is_section_heading(line: str) -> bool:
     return s == s.upper() and re.fullmatch(r'[A-Z0-9 _/():.-]+', s) is not None
 
 
+def _is_write_quiet_event(first: str, event: str) -> bool:
+    upper = str(first or '').strip().upper()
+    return re.match(rf'^(?:[A-Z0-9_]+::)?{re.escape(event)}(?:\s|\||$)', upper) is not None
+
+
 def _arm_control_text(body: str) -> str:
     lines = str(body or '').splitlines()
     first = first_nonempty(body)
@@ -92,23 +97,47 @@ def _arm_control_text(body: str) -> str:
 
     captured: list[str] = []
     active = False
+    bullet_mode = False
     for raw in lines[1:]:
         s = raw.strip()
         up = s.upper()
+        arm_bullet = re.match(r'^-\s*ARM\b', up) is not None
         arm_header = bool(
             re.fullmatch(r'ARM(?:\s*/\s*[A-Z0-9 _-]+)+', up)
             or re.match(r'^ARM\s*[:|]', up)
-            or re.match(r'^-\s*ARM\b', up)
+            or arm_bullet
         )
         if arm_header:
-            active = True
+            if not active:
+                active = True
+                bullet_mode = arm_bullet
             captured.append(s)
             continue
+        if active and bullet_mode and re.match(r'^-\s+\S', s):
+            break
         if active and _is_section_heading(s) and not up.startswith('ARM'):
             break
         if active:
             captured.append(s)
     return '\n'.join(captured)
+
+
+def _arm_relevant_control(body: str) -> bool:
+    """Conservatively identify governance that can supersede ARM authority.
+
+    Direct ARM controls are always relevant. A generic Coordinator transition
+    is also relevant whenever its body contains a standalone ARM token, even
+    when that mention lives in Markdown/cross-lane prose that the targeted
+    adverse-section parser does not capture. This prevents a later generic
+    Coordinator ARM statement from being skipped so an older positive direct
+    authorization can never become current again by backward scan.
+    """
+    first = first_nonempty(body).upper()
+    if first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM'):
+        return True
+    if not first.startswith('COORDINATOR::'):
+        return False
+    return re.search(r'(?<![A-Z0-9_])ARM(?![A-Z0-9_])', str(body or '').upper()) is not None
 
 
 _DIRECT_ADVERSE_TITLE_MARKERS = (
@@ -138,22 +167,21 @@ _DIRECT_EXACT_ALLOWED_TITLES = frozenset({
     'COORDINATOR::ARM_QUERY_ONLY_AUTHENTICATED_DISCOVERY_ONE_SHOT_AUTHORIZED__HUMAN_WORKFLOW_DISPATCH_IF_NEEDED',
     'COORDINATOR::ARM_QUERY_ONLY_ATTEMPT1_CONSUMED_PREQUERY_STRESS_REFUSAL__ONE_FRESH_NARROW_NONSCIENCE_REPAIR_ALLOWED',
     'ARM_OWNER::FINAL_MAIN_PREDISPATCH_REALITY_CHECK_CLEAN__REPLACEMENT_QUERY_ONLY_AUTHORIZATION_REQUEST',
+    'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE',
+    'ARM_OWNER::PR1016_LIVE_AUTHORIZATION_LATEST_CLAIM_RELEVANCE_DEFECT__SAME_IDENTITY_NARROW_REPAIR_REQUIRED__RESULT_BLIND__AUTH_FALSE',
+})
+
+# Exact cross-lane Coordinator transition whose ARM paragraph imposed only a
+# temporary AVPS exact-base serialization. The body explicitly says this was
+# not a rejection or generic freeze and allowed ARM branch/prep/CI work in
+# parallel. This allowlist affects stress preparation only; it grants no merge
+# or authenticated-query authority, which remain separately live-gated.
+_CROSS_LANE_EXACT_ALLOWED_TITLES = frozenset({
+    'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE',
 })
 
 
 def _direct_arm_control_disposition(first: str) -> str:
-    """Classify direct ARM owner/Coordinator governance from its structured title.
-
-    A tiny exact-title allowlist handles Coordinator transitions whose title
-    intentionally contains words that are otherwise adverse or ambiguous. The
-    match is whole-title only; nearby variants still flow through the ordinary
-    fail-closed adverse/ambiguous classifier.
-
-    Protected-boundary phrases such as AUTHENTICATED_INVOCATION_*_FALSE or
-    NOT_AUTHORIZED do not themselves make a positive acceptance/repair
-    transition adverse. Explicit revocation/nonadmissibility/refusal titles do.
-    Unknown direct ARM governance remains fail-closed.
-    """
     upper = first.upper()
     if not (upper.startswith('ARM_OWNER::') or upper.startswith('COORDINATOR::ARM')):
         raise StressFailure('direct ARM disposition called for non-direct control')
@@ -182,6 +210,9 @@ def _adverse_arm_control(body: str) -> bool:
 
     if first.startswith('ARM_OWNER::') or first.startswith('COORDINATOR::ARM'):
         return _direct_arm_control_disposition(first_raw) == 'adverse'
+
+    if first in _CROSS_LANE_EXACT_ALLOWED_TITLES:
+        return False
 
     upper = text.upper()
     fatal = (
@@ -224,18 +255,31 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         body = str(row.get('body', ''))
         first = first_nonempty(body)
-        upper = first.upper()
 
-        if 'WRITE_QUIET_BEGIN' in upper:
+        if _is_write_quiet_event(first, 'WRITE_QUIET_BEGIN'):
             if cid in open_begins:
                 raise StressFailure(f'duplicate WRITE_QUIET_BEGIN identity: {cid}')
             open_begins[cid] = _field(first, 'stage')
             begin_ids.append(cid)
 
-        if 'WRITE_QUIET_END' in upper:
-            raw_begin = _field(first, 'beginComment')
+        if _is_write_quiet_event(first, 'WRITE_QUIET_END'):
+            raw_begin_comment = _field(first, 'beginComment')
+            raw_begin_short = _field(first, 'begin')
+            if raw_begin_comment is not None and raw_begin_short is not None and raw_begin_comment != raw_begin_short:
+                raise StressFailure(f'WRITE_QUIET_END has conflicting begin bindings: {cid}')
+            line_begin = raw_begin_comment or raw_begin_short
+            body_begins = re.findall(
+                r'(?im)^\s*Exact matching closure for BEGIN\s+`?(\d+)`?\s+only\.(?=\s|$)',
+                body,
+            )
+            if len(body_begins) > 1:
+                raise StressFailure(f'WRITE_QUIET_END has duplicate body begin bindings: {cid}')
+            body_begin = body_begins[0] if body_begins else None
+            if line_begin is not None and body_begin is not None and line_begin != body_begin:
+                raise StressFailure(f'WRITE_QUIET_END has conflicting line/body begin bindings: {cid}')
+            raw_begin = line_begin or body_begin
             if raw_begin is None or not raw_begin.isdigit():
-                raise StressFailure(f'WRITE_QUIET_END lacks exact beginComment binding: {cid}')
+                raise StressFailure(f'WRITE_QUIET_END lacks exact begin binding: {cid}')
             begin_id = int(raw_begin)
             if begin_id not in open_begins:
                 raise StressFailure(f'WRITE_QUIET_END references no open post-baseline BEGIN: {cid}->{begin_id}')
@@ -246,7 +290,7 @@ def audit_arm_governance(comments: list[dict[str, Any]]) -> dict[str, Any]:
             del open_begins[begin_id]
             end_ids.append(cid)
 
-        if _arm_control_text(body):
+        if _arm_relevant_control(body):
             arm_relevant.append(cid)
             if _adverse_arm_control(body):
                 adverse.append(cid)

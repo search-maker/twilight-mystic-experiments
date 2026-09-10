@@ -50,6 +50,54 @@ class StressTests(unittest.TestCase):
         self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [begin_id])
         self.assertEqual(out['write_quiet_end_ids_after_baseline'], [begin_id + 1])
 
+    def test_cross_lane_exact_short_begin_write_quiet_passes(self):
+        begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
+        comments = [
+            baseline(),
+            row(begin_id, 'AVPS_OWNER::WRITE_QUIET_BEGIN | stage=x'),
+            row(begin_id + 1, f'AVPS_OWNER::WRITE_QUIET_END | stage=x | begin={begin_id}'),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [begin_id])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [begin_id + 1])
+
+    def test_write_quiet_end_conflicting_begin_aliases_refuse(self):
+        begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
+        comments = [
+            baseline(),
+            row(begin_id, 'AVPS_OWNER::WRITE_QUIET_BEGIN | stage=x'),
+            row(
+                begin_id + 1,
+                f'AVPS_OWNER::WRITE_QUIET_END | stage=x | beginComment={begin_id} | begin={begin_id + 1}',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
+
+    def test_write_quiet_reference_field_is_not_an_end_event(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ATMOSPHERE_OWNER::AVPS_CONTROL_FAILURE | write_quiet_end=5608708381 | artifact_count=0',
+            ),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [])
+
+    def test_write_quiet_reference_field_is_not_a_begin_event(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ATMOSPHERE_OWNER::AVPS_CONTROL_PREP | write_quiet_begin=5608671968 | science=false',
+            ),
+        ]
+        out = S.audit_arm_governance(comments)
+        self.assertEqual(out['write_quiet_begin_ids_after_baseline'], [])
+        self.assertEqual(out['write_quiet_end_ids_after_baseline'], [])
+
     def test_write_quiet_end_must_bind_exact_begin(self):
         begin_id = S.BASELINE_COORDINATOR_COMMENT + 10
         comments = [
@@ -95,6 +143,30 @@ class StressTests(unittest.TestCase):
             ),
         ]
         S.audit_arm_governance(comments)
+
+    def test_exact_temporary_avps_cross_lane_serialization_passes(self):
+        title = (
+            'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__'
+            'ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE'
+        )
+        body = (
+            title + '\n\nSERIALIZATION / OTHER V1 LANES\n'
+            '- ARM PR1016 remains result-blind and clean-looking; do not merge it while moving main would invalidate/restart the exact AVPS control chain. '
+            'Keep branch/prep/CI work parallel. This is a temporary exact-base dependency, not a rejection and not a generic freeze.\n'
+        )
+        S.audit_arm_governance([baseline(), row(5608360629, body)])
+
+    def test_temporary_avps_cross_lane_serialization_nearby_variant_refuses(self):
+        title = (
+            'COORDINATOR::AVPS_SUCCESSOR_PREAUTH_RECEIPT_ACCEPTED_TRANSITION_ELIGIBLE_NOT_ALLOCATED__'
+            'ONE_FRESH_ORDINAL46_AUTHORIZATION_CONTROL_BOUNDARY_AUTHORIZED__TOTAL_SKY_YIELDS_NEXT_LIVE_SLOT__SCIENCE_FALSE__REVOKED'
+        )
+        body = (
+            title + '\n\nARM / AVPS\n'
+            '- ARM PR1016 remains result-blind and clean-looking; do not merge it while moving main would invalidate/restart the exact AVPS control chain.\n'
+        )
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance([baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, body)])
 
     def test_cleared_blocker_title_is_not_adverse(self):
         comments = [baseline(), row(S.BASELINE_COORDINATOR_COMMENT + 10, 'COORDINATOR::ARM_QUERY_ONLY_BLOCKER_CLEARED')]
@@ -216,6 +288,28 @@ class StressTests(unittest.TestCase):
             ),
         ]
         S.audit_arm_governance(comments)
+
+    def test_exact_pr1016_current_main_refresh_merge_classification_title_passes(self):
+        comments = [
+            baseline(),
+            row(
+                5607859393,
+                'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE\n\n'
+                'RESULT_BLIND / NON_SCIENCE / NON_AUTHORIZING exact ordinary merge-classification request.',
+            ),
+        ]
+        S.audit_arm_governance(comments)
+
+    def test_pr1016_current_main_refresh_merge_classification_nearby_variant_refuses(self):
+        comments = [
+            baseline(),
+            row(
+                S.BASELINE_COORDINATOR_COMMENT + 10,
+                'ARM_OWNER::PR1016_CURRENT_MAIN_REFRESH_TERMINAL_CLEAN__REQUEST_EXACT_MERGE_CLASSIFICATION__RESULT_BLIND__AUTH_FALSE__SECOND_ATTEMPT',
+            ),
+        ]
+        with self.assertRaises(S.StressFailure):
+            S.audit_arm_governance(comments)
 
     def test_current_predispatch_authorization_request_nearby_revoked_refuses(self):
         comments = [

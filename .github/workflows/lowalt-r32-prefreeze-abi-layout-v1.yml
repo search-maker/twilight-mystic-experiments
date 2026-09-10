@@ -1,0 +1,210 @@
+name: LowAlt R32 prefreeze ABI layout scout
+
+on:
+  push:
+    branches:
+      - review/lowalt-r32-prefreeze-abi-layout-v1-20260910
+    paths:
+      - .github/workflows/lowalt-r32-prefreeze-abi-layout-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prefreeze-abi-layout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: lowalt-r32-prefreeze-abi-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Install debugger tools only
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb binutils >/dev/null
+      - name: Bind runtime and dump exact symbol/disassembly layout
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          UVSPEC="$(command -v uvspec)"
+          printf '%s  %s\n' '2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3' "$UVSPEC" | sha256sum -c - | tee evidence/uvspec-sha-check.txt
+          micromamba list rubin-libradtran | tee evidence/package.txt
+          grep -F 'rubin-libradtran' evidence/package.txt | grep -F '2.0.6' | grep -F 'py312pl5321he9373c2_1'
+          nm -an "$UVSPEC" > evidence/nm-all.txt
+          grep -E ' (setup_and_call_solver|optical_properties|setout_|sdisort_)$' evidence/nm-all.txt > evidence/route-symbols.txt
+          for sym in setup_and_call_solver optical_properties setout_ sdisort_; do grep -q " $sym$" evidence/route-symbols.txt; done
+          objdump -d --no-show-raw-insn --disassemble=setup_and_call_solver "$UVSPEC" > evidence/setup-and-call-solver.disasm.txt
+          objdump -d --no-show-raw-insn --disassemble=optical_properties "$UVSPEC" > evidence/optical-properties.disasm.txt
+          objdump -d --no-show-raw-insn --disassemble=setout_ "$UVSPEC" > evidence/setout.disasm.txt
+      - name: Build fresh synthetic NULL and SDISORT probe inputs
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          cat > evidence/base.inp <<EOF2
+          data_files_path $DATA_DIR
+          atmosphere_file $DATA_DIR/atmmod/afglus.dat
+          source solar
+          mol_abs_param crs
+          aerosol_default
+          wavelength 563 563
+          sza 87.65432100
+          atm_z_grid 0.417000 1.000000 2.000000 3.000000 4.000000 5.000000 7.000000 10.000000 15.000000 20.000000 25.000000 30.000000 35.000000 40.000000 45.000000 50.000000 70.000000 100.000000 120.000000
+          zout 0.000000
+          albedo 0.13700000
+          output_quantity transmittance
+          output_user lambda edir
+          quiet
+          EOF2
+          cp evidence/base.inp evidence/null.inp
+          printf '%s\n' 'rte_solver null' >> evidence/null.inp
+          cp evidence/base.inp evidence/sdisort.inp
+          printf '%s\n' 'rte_solver sdisort' 'sdisort nscat 1' >> evidence/sdisort.inp
+          sha256sum evidence/base.inp evidence/null.inp evidence/sdisort.inp > evidence/input-sha256.txt
+      - name: Capture NULL common-point raw ABI state
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          cat > evidence/null.gdb <<'EOF2'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set logging file evidence/null.log
+          set logging overwrite on
+          set logging enabled on
+          break setup_and_call_solver
+          run < evidence/null.inp
+          break optical_properties
+          continue
+          printf "MARK_OPTICAL_ENTRY\n"
+          python
+          import gdb,json,pathlib
+          inf=gdb.selected_inferior()
+          regs={r:int(gdb.parse_and_eval('$'+r)) for r in ('rdi','rsi','rdx','rcx','r8','r9','rsp','rbp','pc')}
+          def probe(a,n=128):
+              try: return bytes(inf.read_memory(a,n)).hex()
+              except Exception: return None
+          out={'regs':regs,'memory128':{k:probe(v) for k,v in regs.items() if k!='pc'}}
+          pathlib.Path('evidence/null-optical-entry.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          end
+          finish
+          printf "MARK_COMMON_POST_OPTICAL\n"
+          printf "ROUTE_OFFSET_FROM_SETUP=%ld\n", (long)$pc-(long)&setup_and_call_solver
+          python
+          import gdb,json,pathlib
+          inf=gdb.selected_inferior()
+          regs={r:int(gdb.parse_and_eval('$'+r)) for r in ('rdi','rsi','rdx','rcx','r8','r9','rsp','rbp','pc')}
+          sp=regs['rsp']
+          def probe(a,n=2048):
+              try: return bytes(inf.read_memory(a,n)).hex()
+              except Exception: return None
+          pathlib.Path('evidence/null-common.json').write_text(json.dumps({'regs':regs,'stack2048':probe(sp)},indent=2,sort_keys=True)+'\n')
+          end
+          kill
+          quit
+          EOF2
+          gdb -q -batch -x evidence/null.gdb "$UVSPEC" > evidence/null.stdout 2> evidence/null.stderr
+      - name: Capture SDISORT common point, setout ABI, and entry ABI without solver body
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          cat > evidence/sdisort.gdb <<'EOF2'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set logging file evidence/sdisort.log
+          set logging overwrite on
+          set logging enabled on
+          break setup_and_call_solver
+          run < evidence/sdisort.inp
+          break optical_properties
+          continue
+          printf "MARK_OPTICAL_ENTRY\n"
+          python
+          import gdb,json,pathlib
+          inf=gdb.selected_inferior(); regs={r:int(gdb.parse_and_eval('$'+r)) for r in ('rdi','rsi','rdx','rcx','r8','r9','rsp','rbp','pc')}
+          def probe(a,n=128):
+              try:return bytes(inf.read_memory(a,n)).hex()
+              except Exception:return None
+          pathlib.Path('evidence/sdisort-optical-entry.json').write_text(json.dumps({'regs':regs,'memory128':{k:probe(v) for k,v in regs.items() if k!='pc'}},indent=2,sort_keys=True)+'\n')
+          end
+          finish
+          printf "MARK_COMMON_POST_OPTICAL\n"
+          printf "ROUTE_OFFSET_FROM_SETUP=%ld\n", (long)$pc-(long)&setup_and_call_solver
+          python
+          import gdb,json,pathlib
+          inf=gdb.selected_inferior(); regs={r:int(gdb.parse_and_eval('$'+r)) for r in ('rdi','rsi','rdx','rcx','r8','r9','rsp','rbp','pc')}; sp=regs['rsp']
+          def probe(a,n=2048):
+              try:return bytes(inf.read_memory(a,n)).hex()
+              except Exception:return None
+          pathlib.Path('evidence/sdisort-common.json').write_text(json.dumps({'regs':regs,'stack2048':probe(sp)},indent=2,sort_keys=True)+'\n')
+          end
+          break setout_
+          break sdisort_
+          continue
+          printf "MARK_SETOUT_ENTRY\n"
+          python
+          import gdb,json,struct,pathlib
+          inf=gdb.selected_inferior(); reg=lambda n:int(gdb.parse_and_eval('$'+n)); mem=lambda a,n:bytes(inf.read_memory(a,n))
+          p={k:reg(k) for k in ('rdi','rsi','rdx','rcx','r8','r9')}; n=struct.unpack('<i',mem(p['rsi'],4))[0]; nz=struct.unpack('<i',mem(p['rdx'],4))[0]
+          if not (0<n<=256 and 0<nz<=32): raise RuntimeError((n,nz))
+          out={'args':p,'nlyr':n,'nzout':nz,'dtaucHex':mem(p['rdi'],4*n).hex(),'utauPreHex':mem(p['rcx'],4*nz).hex(),'zdHex':mem(p['r8'],4*(n+1)).hex(),'zoutSurHex':mem(p['r9'],4*nz).hex()}
+          pathlib.Path('evidence/sdisort-setout-entry.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          gdb.set_convenience_variable('saved_utau',gdb.Value(p['rcx']))
+          gdb.set_convenience_variable('saved_nz',gdb.Value(nz))
+          end
+          finish
+          printf "MARK_SETOUT_RETURN\n"
+          python
+          import gdb,json,struct,pathlib
+          inf=gdb.selected_inferior(); a=int(gdb.parse_and_eval('$saved_utau')); nz=int(gdb.parse_and_eval('$saved_nz')); b=bytes(inf.read_memory(a,4*nz))
+          pathlib.Path('evidence/sdisort-setout-return.json').write_text(json.dumps({'utauPostHex':b.hex(),'utauPost':[x[0] for x in struct.iter_unpack('<f',b)]},indent=2,sort_keys=True)+'\n')
+          end
+          continue
+          printf "MARK_SDISORT_ENTRY\n"
+          python
+          import gdb,json,struct,pathlib
+          inf=gdb.selected_inferior(); reg=lambda n:int(gdb.parse_and_eval('$'+n)); mem=lambda a,n:bytes(inf.read_memory(a,n)); rsp=reg('rsp')
+          def ptr(off):return struct.unpack('<Q',mem(rsp+off,8))[0]
+          n=struct.unpack('<i',mem(reg('rdi'),4))[0]; nt=struct.unpack('<i',mem(ptr(24),4))[0]
+          if not (0<n<=256 and nt==1): raise RuntimeError((n,nt))
+          pp={'utau':ptr(32),'fbeam':ptr(88),'umu0':ptr(112),'newgeo':ptr(128),'zd':ptr(136),'spher':ptr(144),'radius':ptr(152),'planck':ptr(208),'rfldir':ptr(304),'nrefrac':ptr(392),'ichap':ptr(400),'vn':ptr(408),'ndenssza':ptr(416)}
+          f32=lambda a:struct.unpack('<f',mem(a,4))[0]; i32=lambda a:struct.unpack('<i',mem(a,4))[0]
+          out={'pcEqualsEntry':reg('pc')==int(gdb.parse_and_eval('&sdisort_')),'nlyr':n,'ntau':nt,'dtaucHex':mem(reg('rsi'),4*n).hex(),'ssalbHex':mem(reg('rdx'),4*n).hex(),'utauHex':mem(pp['utau'],4*nt).hex(),'zdHex':mem(pp['zd'],4*(n+1)).hex(),'vnHex':mem(pp['vn'],4*(n+1)).hex(),'fbeam':f32(pp['fbeam']),'umu0':f32(pp['umu0']),'radius':f32(pp['radius']),'newgeo':i32(pp['newgeo']),'spher':i32(pp['spher']),'planck':i32(pp['planck']),'nrefrac':i32(pp['nrefrac']),'ichap':i32(pp['ichap']),'ndenssza':i32(pp['ndenssza'])}
+          pathlib.Path('evidence/sdisort-entry.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          end
+          kill
+          quit
+          EOF2
+          gdb -q -batch -x evidence/sdisort.gdb "$UVSPEC" > evidence/sdisort.stdout 2> evidence/sdisort.stderr
+      - name: Build result-blind prefreeze receipt
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('evidence')
+          null=json.loads((root/'null-common.json').read_text()); sd=json.loads((root/'sdisort-common.json').read_text()); se=json.loads((root/'sdisort-entry.json').read_text())
+          if se['pcEqualsEntry'] is not True: raise SystemExit('not at exact sdisort entry')
+          receipt={'schemaVersion':1,'stageId':'LOWALT_R32_PREFREEZE_ABI_LAYOUT_SCOUT_V1','classification':'RESULT_BLIND_ABI_LAYOUT_EVIDENCE_ONLY','sameCommonPc':null['regs']['pc']==sd['regs']['pc'],'sdisortEntryCapturedBeforeBody':True,'scientificIdentityAllocated':False,'r32MatrixFrozen':False,'scientificResultOpened':False,'solverBodyExecuted':False,'protectedDataOpened':False,'taylorJerusalemUsed':False,'productionBoundaryChanged':False}
+          (root/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          with (root/'manifest.sha256').open('w') as f:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file() and p.name!='manifest.sha256': f.write(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lowalt-r32-prefreeze-abi-layout-v1
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30

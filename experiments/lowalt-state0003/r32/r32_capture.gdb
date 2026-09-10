@@ -3,7 +3,7 @@ set confirm off
 set breakpoint pending on
 set debuginfod enabled off
 python
-import gdb, json, os, struct, hashlib
+import gdb, json, os, struct
 from pathlib import Path
 
 role=os.environ['R32_CAPTURE_ROLE']
@@ -12,13 +12,13 @@ case_dir.mkdir(parents=True, exist_ok=True)
 setup_sym=os.environ['R32_SETUP_SYMBOL']
 opt_sym=os.environ['R32_OPTICAL_SYMBOL']
 sdis_sym=os.environ['R32_SDISORT_SYMBOL']
+setout_sym=os.environ['R32_SETOUT_SYMBOL']
 inf=gdb.selected_inferior()
 
 def reg(name): return int(gdb.parse_and_eval('$'+name))
 def mem(addr,n): return bytes(inf.read_memory(addr,n))
 def qword(addr): return struct.unpack('<Q',mem(addr,8))[0]
 def i32(addr): return struct.unpack('<i',mem(addr,4))[0]
-def f32(addr): return struct.unpack('<f',mem(addr,4))[0]
 def save(name,obj):
     (case_dir/name).write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n',encoding='utf-8')
 def hexmem(addr,n): return mem(addr,n).hex()
@@ -50,7 +50,7 @@ def indirect_offsets(base,target,limit=65536,max_index=32):
 setup_entry=int(gdb.parse_and_eval('&'+setup_sym))
 if reg('pc') != setup_entry:
     raise RuntimeError(('not-at-setup-entry',hex(reg('pc')),hex(setup_entry)))
-# Exact SysV AMD64 consequence for this signature is stress-checked below:
+# Exact SysV AMD64 consequence for this signature was proved by the R31 route gate:
 # large input_struct is memory-class, then output* and rte_input* occupy RDI/RSI.
 out_base=reg('rdi')
 rte_base=reg('rsi')
@@ -82,7 +82,26 @@ common={
 save('common-route.json',common)
 
 if role=='sdisort':
+    setbp=gdb.Breakpoint(setout_sym,internal=True)
     sbp=gdb.Breakpoint(sdis_sym,internal=True)
+    gdb.execute('continue')
+    setout_entry=int(gdb.parse_and_eval('&'+setout_sym))
+    if reg('pc') != setout_entry:
+        raise RuntimeError(('did-not-hit-setout-entry',hex(reg('pc')),hex(setout_entry)))
+    set_dtauc=reg('rdi'); set_nlyr_addr=reg('rsi'); set_nzout_addr=reg('rdx')
+    set_utau=reg('rcx'); set_zd=reg('r8'); set_zout=reg('r9')
+    set_nlyr=i32(set_nlyr_addr); set_nzout=i32(set_nzout_addr)
+    if not (0<set_nlyr<=256 and set_nzout==1):
+        raise RuntimeError(('setout-shape',set_nlyr,set_nzout))
+    save('setout-entry.json',{
+      'pcEqualsSetoutEntry':True,
+      'nlyr':set_nlyr,'nzout':set_nzout,
+      'dtaucHex':hexmem(set_dtauc,4*set_nlyr),
+      'utauPreHex':hexmem(set_utau,4*set_nzout),
+      'zdHex':hexmem(set_zd,4*(set_nlyr+1)),
+      'zoutHex':hexmem(set_zout,4*set_nzout)
+    })
+    setbp.delete()
     gdb.execute('continue')
     sdis_entry=int(gdb.parse_and_eval('&'+sdis_sym))
     if reg('pc') != sdis_entry:
@@ -93,6 +112,8 @@ if role=='sdisort':
     ntau_addr=outer_ptr(24); ntau=i32(ntau_addr)
     if not (0<nlyr<=256 and ntau==1):
         raise RuntimeError(('shape',nlyr,ntau))
+    if nlyr != set_nlyr or ntau != set_nzout:
+        raise RuntimeError(('setout-sdisort-shape-drift',set_nlyr,set_nzout,nlyr,ntau))
     p={
       'utau':outer_ptr(32),
       'fbeam':outer_ptr(88),
@@ -117,9 +138,10 @@ if role=='sdisort':
     dt_offsets=direct_offsets(out_base,dtauc_ptr)
     ss_offsets=direct_offsets(out_base,ssalb_ptr)
     zd_offsets=direct_offsets(out_base,p['zd'])
+    utau_offsets=direct_offsets(rte_base,p['utau'],limit=8192)
     vn_indirect=indirect_offsets(out_base,p['vn'])
-    if not dt_offsets or not ss_offsets or not zd_offsets or not vn_indirect:
-        raise RuntimeError(('unresolved-output-layout',dt_offsets,ss_offsets,zd_offsets,vn_indirect))
+    if not dt_offsets or not ss_offsets or not zd_offsets or not utau_offsets or not vn_indirect:
+        raise RuntimeError(('unresolved-layout',dt_offsets,ss_offsets,zd_offsets,utau_offsets,vn_indirect))
     final={
       'role':'sdisort','pcEqualsSdisortEntry':True,
       'nlyr':nlyr,'ntau':ntau,
@@ -133,6 +155,7 @@ if role=='sdisort':
       'radiusHex':hexmem(p['radius'],4),
       'newgeo':i32(p['newgeo']),'spher':i32(p['spher']),'planck':i32(p['planck']),
       'nrefrac':i32(p['nrefrac']),'ichap':i32(p['ichap']),'ndenssza':i32(p['ndenssza']),
+      'setoutEntryCapturedBeforeSdisort':True,
       'bodyInstructionExecutedAfterEntryCapture':False
     }
     mapping={
@@ -140,9 +163,11 @@ if role=='sdisort':
       'dtaucFieldOffsets':dt_offsets,
       'ssalbFieldOffsets':ss_offsets,
       'zdFieldOffsets':zd_offsets,
+      'utauFieldOffsets':utau_offsets,
       'refindIndirectCandidates':vn_indirect,
       'rteFieldOffsets':rte_offsets,
       'outputScanLimitBytes':65536,
+      'rteScanLimitBytes':8192,
       'refindMaxIndex':32
     }
     save('sdisort-entry.json',final)
@@ -163,6 +188,15 @@ elif role=='null':
             except gdb.MemoryError:
                 out.append({'fieldOffset':int(off),'error':'MemoryError'})
         return out
+    def capture_rte_pointer(offsets,count):
+        out=[]
+        for off in offsets:
+            try:
+                ptr=qword(rte_base+int(off)); raw=hexmem(ptr,count)
+                out.append({'fieldOffset':int(off),'pointer':ptr,'rawHex':raw})
+            except gdb.MemoryError:
+                out.append({'fieldOffset':int(off),'error':'MemoryError'})
+        return out
     ref=[]
     for c in mapping['refindIndirectCandidates']:
         off=int(c['fieldOffset']); idx=int(c['index'])
@@ -177,6 +211,7 @@ elif role=='null':
       'dtaucCandidates':capture_direct(mapping['dtaucFieldOffsets'],4*nlyr),
       'ssalbCandidates':capture_direct(mapping['ssalbFieldOffsets'],4*nlyr),
       'zdCandidates':capture_direct(mapping['zdFieldOffsets'],4*(nlyr+1)),
+      'utauCandidates':capture_rte_pointer(mapping['utauFieldOffsets'],4*nzout),
       'refindCandidates':ref,
       'fbeamHex':hexmem(rte_base+int(ro['fbeam']),4),
       'umu0Hex':hexmem(rte_base+int(ro['umu0']),4),

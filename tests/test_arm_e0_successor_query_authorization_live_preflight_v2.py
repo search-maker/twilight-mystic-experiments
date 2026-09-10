@@ -142,6 +142,47 @@ class QueryOnlySuccessorLivePredispatchTests(unittest.TestCase):
         with self.assertRaises(M.LivePreflightRefusal):
             self.invoke_auto(rows)
 
+    def test_auto_refuses_later_cross_lane_markdown_arm_false_note(self):
+        rows = comments()
+        later = AUTH + 101
+        rows.append({
+            "id": later,
+            "body": "\n".join([
+                "COORDINATOR::CLOSURE_SPRINT_OTHER_LANES__SCIENCE_FALSE",
+                "",
+                "## Cross-lane critical path / serialization",
+                "Other exact-base work may proceed in its frozen order.",
+                "ARM PR1016/main movement remains deferred through that boundary; Authenticated ARM query authority stays FALSE.",
+            ]),
+        })
+        with self.assertRaises(M.LivePreflightRefusal):
+            self.invoke_auto(rows)
+
+    def test_markdown_arm_headings_are_freshness_relevant(self):
+        bodies = (
+            "COORDINATOR::OTHER_LANE\n\n## ARM / ORDERING\nAuthenticated query authority remains FALSE.",
+            "COORDINATOR::OTHER_LANE\n\n## C. ARM — exact-base ordering\nAuthenticated query authority remains FALSE.",
+        )
+        for offset, body in enumerate(bodies, start=1):
+            with self.subTest(body=body):
+                cid = BASELINE + 1000 + offset
+                out = M.V1.S.audit_arm_governance([
+                    {"id": BASELINE, "body": baseline_body()},
+                    {"id": cid, "body": body},
+                ])
+                self.assertEqual(out["arm_relevant_comment_ids_after_baseline"], [cid])
+
+    def test_unrelated_non_arm_coordinator_failure_is_not_freshness_relevant(self):
+        cid = BASELINE + 2000
+        out = M.V1.S.audit_arm_governance([
+            {"id": BASELINE, "body": baseline_body()},
+            {
+                "id": cid,
+                "body": "COORDINATOR::TOTAL_SKY_REJECTED\n\n## Total-Sky\nREJECTED / FAIL_CLOSED / DO NOT MERGE.",
+            },
+        ])
+        self.assertEqual(out["arm_relevant_comment_ids_after_baseline"], [])
+
     def test_refuses_half_explicit_authorization_identity(self):
         rows = comments()
         fake_json = fake_control_plane(rows)

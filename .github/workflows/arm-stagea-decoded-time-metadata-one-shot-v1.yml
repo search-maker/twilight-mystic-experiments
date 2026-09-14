@@ -1,0 +1,212 @@
+name: ARM Stage-A decoded-time metadata one-shot v1
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/arm-stagea-decoded-time-metadata-one-shot-v1.yml
+      - tools/arm_stagea_decoded_time_metadata_one_shot_v1/**
+      - tests/test_arm_stagea_decoded_time_metadata_one_shot_v1.py
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/arm-stagea-decoded-time-metadata-one-shot-v1.yml
+      - tools/arm_stagea_decoded_time_metadata_one_shot_v1/**
+      - tests/test_arm_stagea_decoded_time_metadata_one_shot_v1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  structural-non-science:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen identities and non-science structural suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum tools/arm_stagea_decoded_time_metadata_one_shot_v1/request_contract.json | awk '{print $1}')" = "5ec3fb6b052d886091a77704bf425abcb0d04ea4279727c3a37b4f5ab6e63318"
+          test "$(wc -c < tools/arm_stagea_decoded_time_metadata_one_shot_v1/request_contract.json | tr -d ' ')" = "4273"
+          test "$(sha256sum tools/arm_stagea_decoded_time_metadata_one_shot_v1/ARM_SGP_C1_stageA_priority20.csv | awk '{print $1}')" = "345d7023bb4e29e0cc7bb47f1eaaef33636e0bd1719d05e796e3d30cba310ae0"
+          test "$(($(wc -l < tools/arm_stagea_decoded_time_metadata_one_shot_v1/ARM_SGP_C1_stageA_priority20.csv)-1))" = "20"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN python -m py_compile \
+            tools/arm_stagea_decoded_time_metadata_one_shot_v1/extract.py \
+            tools/arm_stagea_decoded_time_metadata_one_shot_v1/preflight.py \
+            tests/test_arm_stagea_decoded_time_metadata_one_shot_v1.py
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN python -m unittest \
+            tests/test_arm_stagea_decoded_time_metadata_one_shot_v1.py -v
+      - name: Prove structural job has no protected runtime surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${ARM_USER_ID:-}"
+          test -z "${ARM_ACCESS_TOKEN:-}"
+          python - <<'PY'
+          from pathlib import Path
+          wf = Path('.github/workflows/arm-stagea-decoded-time-metadata-one-shot-v1.yml').read_text()
+          head, protected = wf.split('\n  protected-decoded-time-metadata:', 1)
+          assert ('secrets.' + 'ARM_USER_ID') not in head
+          assert ('secrets.' + 'ARM_ACCESS_TOKEN') not in head
+          assert 'workflow_dispatch:' in wf
+          assert "github.run_attempt == 1" in protected
+          assert 'uvspec' not in protected
+          assert 'libRadtran' not in protected
+          assert 'MYSTIC' not in protected
+          print('PASS non-science structural firewall')
+          PY
+
+  protected-decoded-time-metadata:
+    needs: structural-non-science
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Bind workflow_dispatch source to exact default branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_TYPE: ${{ github.ref_type }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = workflow_dispatch
+          test "$EVENT_DEFAULT_BRANCH" = main
+          test "$EVENT_REF_TYPE" = branch
+          test "$EVENT_REF" = refs/heads/main
+          test "$EVENT_ATTEMPT" = 1
+          test "${#EVENT_SHA}" = 40
+          case "$EVENT_SHA" in (*[!0-9a-f]*) exit 1;; esac
+      - uses: actions/checkout@v4
+      - name: Verify checked-out dispatch source SHA
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EVENT_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Live preflight without ARM credentials
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arm-stagea-governance-v1" "$RUNNER_TEMP/arm-stagea-output-v1"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python tools/arm_stagea_decoded_time_metadata_one_shot_v1/preflight.py \
+              --mode pre \
+              --output "$RUNNER_TEMP/arm-stagea-governance-v1/pre.json"
+          test -s "$RUNNER_TEMP/arm-stagea-governance-v1/pre.json"
+      - name: Install exact native metadata decoder dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-input 'netCDF4==1.7.4'
+      - name: Extract decoded-time metadata only
+        id: extract
+        env:
+          ARM_USER_ID: ${{ secrets.ARM_USER_ID }}
+          ARM_ACCESS_TOKEN: ${{ secrets.ARM_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          python tools/arm_stagea_decoded_time_metadata_one_shot_v1/extract.py \
+            --binding "$RUNNER_TEMP/arm-stagea-governance-v1/pre.json" \
+            --output-dir "$RUNNER_TEMP/arm-stagea-output-v1"
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          test -s "$RUNNER_TEMP/arm-stagea-output-v1/stageA_decoded_time_metadata_receipt_v1.json"
+          exit 0
+      - name: Verify successful timing package against merged frozen chain
+        id: package
+        if: steps.extract.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          python tools/arm_stagea_package_chain_v1/verify.py \
+            --input-lock-json tools/arm_stagea_input_lock_v1/input_lock.json \
+            --priority-csv tools/arm_stagea_decoded_time_metadata_one_shot_v1/ARM_SGP_C1_stageA_priority20.csv \
+            --continuity-csv "$RUNNER_TEMP/arm-stagea-output-v1/stageA_actual_time_continuity_v2.csv" \
+            --continuity-json "$RUNNER_TEMP/arm-stagea-output-v1/stageA_actual_time_continuity_v2.json" \
+            --receipt-json "$RUNNER_TEMP/arm-stagea-output-v1/stageA_package_chain_receipt_v1.json" >/dev/null
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Live postflight without ARM credentials
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['RUNNER_TEMP'])/'arm-stagea-governance-v1'/'pre.json'
+          print(json.loads(p.read_text())['authorization_comment_id'])
+          PY
+          )"
+          env -u ARM_USER_ID -u ARM_ACCESS_TOKEN \
+            python tools/arm_stagea_decoded_time_metadata_one_shot_v1/preflight.py \
+              --mode post \
+              --authorization-comment "$auth" \
+              --output "$RUNNER_TEMP/arm-stagea-governance-v1/post.json"
+      - name: Upload sanitized governance receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-stagea-decoded-time-metadata-governance-v1
+          path: ${{ runner.temp }}/arm-stagea-governance-v1/*.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload sanitized decoded-time metadata outputs only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-stagea-decoded-time-metadata-one-shot-v1
+          path: |
+            ${{ runner.temp }}/arm-stagea-output-v1/stageA_decoded_time_metadata_receipt_v1.json
+            ${{ runner.temp }}/arm-stagea-output-v1/stageA_actual_time_continuity_v2.csv
+            ${{ runner.temp }}/arm-stagea-output-v1/stageA_actual_time_continuity_v2.json
+            ${{ runner.temp }}/arm-stagea-output-v1/stageA_package_chain_receipt_v1.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve any extraction/package refusal as terminal attempt-1 failure
+        if: always()
+        env:
+          EXTRACT_RC: ${{ steps.extract.outputs.rc }}
+          PACKAGE_RC: ${{ steps.package.outputs.rc }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$EXTRACT_RC" = 0
+          test "$PACKAGE_RC" = 0

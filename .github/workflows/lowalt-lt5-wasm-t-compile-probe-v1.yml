@@ -1,0 +1,160 @@
+name: LowAlt LT5 WASM Exact T Compile Probe V1
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-wasm-t-compile-probe-v1-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-wasm-t-compile-probe-v1.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  compile-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    env:
+      SOURCE_ARTIFACT_ID: "8894652347"
+      SOURCE_ZIP_SHA256: "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+      SOURCE_MEMBER_SHA256: "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+      SOURCE_TAR_SHA256: "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+      DPMISC_SHA256: "e0d8975408ead1d6fe0c9630c0b2e5a858868334ba6af179d9f94c063955324e"
+      DPSDISORT_SHA256: "54448cc9358d32c5be30b5c860006ff0ed05484a58cf3417f05fbc4b6a5efd66"
+      SETOUT_SHA256: "4c1672daa8586c5fd9f38c4bcde64b2f684b1e25401ba4fccc53fcaf52d0d344"
+      DISORT_MXD_SHA256: "9cf3f04bac9703b302a13b29eb1df11ea3200a992bc50ab3fa947d1d83c71f69"
+      FLANG_SHA256: "70e9de59304303f1a242a3f9a37e89636cad27b645c41cf0ce9b1c2c6f9b604b"
+      FORTRAN_RUNTIME_SHA256: "a01af58d67c5792512b4eb483a245b6c7dddc75d75f2e07bd4680c1a4078f66f"
+    steps:
+      - name: Download and verify exact authoritative source bytes
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p probe/source probe/out probe/logs
+
+          python3 - <<'PY'
+          import os, urllib.request
+          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{os.environ['SOURCE_ARTIFACT_ID']}/zip"
+          req = urllib.request.Request(url, headers={
+              "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "lowalt-lt5-wasm-t-compile-probe-v1",
+          })
+          with urllib.request.urlopen(req) as r, open("probe/source/source-audit.zip", "wb") as f:
+              f.write(r.read())
+          PY
+
+          echo "$SOURCE_ZIP_SHA256  probe/source/source-audit.zip" | sha256sum -c -
+
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("probe/source/source-audit.zip") as z:
+              names = z.namelist()
+              if "libRadtran-2.0.6.tar.gz" not in names:
+                  raise SystemExit(f"missing libRadtran-2.0.6.tar.gz; names={names}")
+              with z.open("libRadtran-2.0.6.tar.gz") as src, open("probe/source/libRadtran-2.0.6.tar.gz", "wb") as dst:
+                  dst.write(src.read())
+          PY
+
+          echo "$SOURCE_MEMBER_SHA256  probe/source/libRadtran-2.0.6.tar.gz" | sha256sum -c -
+          gzip -dc probe/source/libRadtran-2.0.6.tar.gz > probe/source/libRadtran-2.0.6.tar
+          echo "$SOURCE_TAR_SHA256  probe/source/libRadtran-2.0.6.tar" | sha256sum -c -
+          mkdir -p probe/source/tree
+          tar -xf probe/source/libRadtran-2.0.6.tar -C probe/source/tree --strip-components=1
+
+          cd probe/source/tree/libsrc_f
+          echo "$DPMISC_SHA256  dpmisc.f" | sha256sum -c -
+          echo "$DPSDISORT_SHA256  dpsdisort.f" | sha256sum -c -
+          echo "$SETOUT_SHA256  setout.f" | sha256sum -c -
+          echo "$DISORT_MXD_SHA256  DISORT.MXD" | sha256sum -c -
+
+      - name: Compile exact authoritative T source files to WASM objects only
+        shell: bash
+        run: |
+          set -uo pipefail
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+
+          FLANG=/opt/flang/host/bin/flang
+          FRT=/opt/flang/wasm/lib/libFortranRuntime.a
+          SRC="$GITHUB_WORKSPACE/probe/source/tree/libsrc_f"
+          OUT="$GITHUB_WORKSPACE/probe/out"
+          LOG="$GITHUB_WORKSPACE/probe/logs"
+
+          echo "$FLANG_SHA256  $FLANG" | sha256sum -c -
+          echo "$FORTRAN_RUNTIME_SHA256  $FRT" | sha256sum -c -
+
+          cp "$SRC/DISORT.MXD" "$OUT/DISORT.MXD"
+
+          compile_one() {
+            local src="$1"
+            local obj="$2"
+            local log="$3"
+            set +e
+            "$FLANG" --target=wasm32-unknown-emscripten -ffixed-line-length-none -I"$SRC" -c "$SRC/$src" -o "$OUT/$obj" >"$LOG/$log.stdout" 2>"$LOG/$log.stderr"
+            local rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$LOG/$log.exit"
+            return "$rc"
+          }
+
+          set +e
+          compile_one setout.f setout.o setout; rc_setout=$?
+          compile_one dpmisc.f dpmisc.o dpmisc; rc_dpmisc=$?
+          compile_one dpsdisort.f dpsdisort.o dpsdisort; rc_dpsdisort=$?
+          set -e
+
+          {
+            echo 'schema=1'
+            echo 'classification=PRE_RESULT_EXACT_AUTHORITATIVE_T_SOURCE_COMPILE_ONLY_NO_LINK_NO_EXECUTION_NO_LT5_NO_C_NO_D'
+            echo 'bSelected=false'
+            echo 'bResolved=false'
+            echo 'container_image=ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5'
+            echo 'target=wasm32-unknown-emscripten'
+            echo "source_artifact_id=$SOURCE_ARTIFACT_ID"
+            echo "source_zip_sha256=$SOURCE_ZIP_SHA256"
+            echo "source_tar_sha256=$SOURCE_TAR_SHA256"
+            echo "flang_sha256=$FLANG_SHA256"
+            echo "fortran_runtime_sha256=$FORTRAN_RUNTIME_SHA256"
+            echo 'compile_flags=--target=wasm32-unknown-emscripten -ffixed-line-length-none -I<authoritative-libsrc_f> -c'
+            echo "setout_exit=$rc_setout"
+            echo "dpmisc_exit=$rc_dpmisc"
+            echo "dpsdisort_exit=$rc_dpsdisort"
+            echo '--- authoritative-source-sha256 ---'
+            sha256sum "$SRC/setout.f" "$SRC/dpmisc.f" "$SRC/dpsdisort.f" "$SRC/DISORT.MXD"
+            echo '--- produced-object-sha256 ---'
+            for f in "$OUT/setout.o" "$OUT/dpmisc.o" "$OUT/dpsdisort.o"; do
+              if test -f "$f"; then sha256sum "$f"; else echo "MISSING $f"; fi
+            done
+            echo '--- flang-version ---'
+            "$FLANG" --version
+          } > "$OUT/t-compile-probe-receipt.txt"
+
+          sha256sum "$OUT/t-compile-probe-receipt.txt" > "$OUT/t-compile-probe-receipt.sha256"
+          cat "$OUT/t-compile-probe-receipt.txt"
+          for f in "$LOG"/*.stdout "$LOG"/*.stderr; do
+            echo "--- $f ---"
+            cat "$f"
+          done
+
+          if [ "$rc_setout" -ne 0 ] || [ "$rc_dpmisc" -ne 0 ] || [ "$rc_dpsdisort" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Publish compile-only evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lowalt-lt5-wasm-exact-t-compile-probe-v1
+          path: |
+            probe/out/
+            probe/logs/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 90

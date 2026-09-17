@@ -1,0 +1,238 @@
+name: LowAlt LT5 P Runtime Provider Closure V16
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-runtime-provider-closure-v16-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-runtime-provider-closure-v16.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  static-closure-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze exact native-source universe and toolchain providers without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/v15 work/r31 work/source work/evidence-v16
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\np_numeric_evaluation=false\nt_called=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > work/evidence-v16/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          NM=/opt/emsdk/upstream/bin/llvm-nm
+          WASMLD="$(command -v wasm-ld)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+          test "$(sha256sum "$WASMLD" | awk '{print $1}')" = "7ad9a0e8fe6d0e79b71172d731e33872c0274e49fceb7b516d774876d5a58ade"
+          sha256sum "$EMCC" "$NM" "$WASMLD" /opt/flang/host/bin/flang /opt/flang/wasm/lib/libFortranRuntime.a > work/evidence-v16/toolchain-binary-sha256.txt
+          "$EMCC" --version > work/evidence-v16/emcc-version.txt 2>&1
+          "$WASMLD" --version > work/evidence-v16/wasm-ld-version.txt 2>&1
+
+          fetch_artifact() {
+            id="$1"; out="$2"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${id}/zip" \
+              -o "$out"
+          }
+
+          STAGE=v15-bind
+          fetch_artifact 10513222933 work/v15.zip
+          test "sha256:$(sha256sum work/v15.zip | awk '{print $1}')" = "sha256:e24041295059d9568c48e98dde9ab6b01a41deb665a4419258bf3217d36694ad"
+          unzip -q work/v15.zip -d work/v15
+          test "$(jq -r .v14_unique_unresolved_symbols work/v15/work/evidence-v15/provider-census-summary.json)" = 437
+          test "$(jq -r .hard_orphan_count work/v15/work/evidence-v15/provider-census-summary.json)" = 5
+          cat > work/evidence-v16/expected-hard-orphans.txt <<'EOF'
+          __assert_fail
+          __extendsftf2
+          __fpclassifyl
+          __indirect_function_table
+          __stack_pointer
+          EOF
+          cmp work/evidence-v16/expected-hard-orphans.txt work/v15/work/evidence-v15/hard-orphans.txt
+
+          STAGE=r31-bind
+          fetch_artifact 10166620940 work/r31.zip
+          test "sha256:$(sha256sum work/r31.zip | awk '{print $1}')" = "sha256:d02da812d260024e358cc92b62d5cbdcae6d6f7455eb4767b44242cf186d7115"
+          unzip -p work/r31.zip runtime/nm-all.txt > work/r31/nm-all.txt
+
+          STAGE=source-bind
+          fetch_artifact 8894652347 work/source-audit.zip
+          test "$(sha256sum work/source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p work/source-audit.zip libRadtran-2.0.6.tar.gz > work/libRadtran-2.0.6.tar.gz
+          test "$(sha256sum work/libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc work/libRadtran-2.0.6.tar.gz > work/source.tar
+          test "$(sha256sum work/source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf work/source.tar -C work/source
+
+          STAGE=native-source-universe
+          python3 - <<'PY'
+          import json, pathlib, re
+          nm = pathlib.Path('work/r31/nm-all.txt').read_text(errors='replace').splitlines()
+          root = pathlib.Path('work/source/libRadtran-2.0.6')
+          pat = re.compile(r'^\s*[0-9a-fA-F]+\s+a\s+(\S+\.(?:c|f|F|f77|f90|F90))\s*$')
+          markers=[]
+          for line in nm:
+              m=pat.match(line)
+              if m: markers.append(m.group(1))
+          uniq=sorted(set(markers))
+          mapping=[]; unmatched=[]; ambiguous=[]
+          for name in uniq:
+              hits=sorted(str(p.relative_to(root)) for p in root.rglob(name) if p.is_file())
+              if len(hits)==1: mapping.append((name,hits[0]))
+              elif len(hits)==0: unmatched.append(name)
+              else: ambiguous.append((name,hits))
+          if len(markers) != 139: raise SystemExit(f'expected 139 native source markers, got {len(markers)}')
+          if len(uniq) != 136: raise SystemExit(f'expected 136 unique native source basenames, got {len(uniq)}')
+          if len(mapping) != 134: raise SystemExit(f'expected 134 unique authoritative source mappings, got {len(mapping)}')
+          if unmatched != ['crtstuff.c','libgcc2.c']: raise SystemExit(f'unexpected unmatched native sources: {unmatched}')
+          if ambiguous: raise SystemExit(f'ambiguous authoritative source basenames: {ambiguous}')
+          out=pathlib.Path('work/evidence-v16/native-r31-source-map.tsv')
+          out.write_text('basename\tauthoritative_path\n'+''.join(f'{a}\t{b}\n' for a,b in mapping))
+          pathlib.Path('work/evidence-v16/native-r31-toolchain-source-markers.txt').write_text('\n'.join(unmatched)+'\n')
+          summary={
+            'native_source_marker_count':len(markers),
+            'native_unique_source_basename_count':len(uniq),
+            'authoritative_unique_source_mapping_count':len(mapping),
+            'toolchain_runtime_marker_count':len(unmatched),
+            'toolchain_runtime_markers':unmatched,
+            'ambiguous_source_mapping_count':len(ambiguous),
+          }
+          pathlib.Path('work/evidence-v16/native-source-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+
+          STAGE=sysroot-provider-scan
+          find /opt/emsdk/upstream/emscripten/cache /opt/flang/wasm/lib -type f \( -name '*.a' -o -name '*.o' \) -print 2>/dev/null | LC_ALL=C sort -u > work/evidence-v16/toolchain-static-files.txt
+          : > work/evidence-v16/toolchain-hard-orphan-providers.tsv
+          while IFS= read -r f; do
+            "$NM" --defined-only "$f" 2>/dev/null | awk -v file="$f" '
+              $NF=="__assert_fail" || $NF=="__extendsftf2" || $NF=="__fpclassifyl" {print $NF "\t" file}
+            ' >> work/evidence-v16/toolchain-hard-orphan-providers.tsv || true
+          done < work/evidence-v16/toolchain-static-files.txt
+          LC_ALL=C sort -u -o work/evidence-v16/toolchain-hard-orphan-providers.tsv work/evidence-v16/toolchain-hard-orphan-providers.tsv
+
+          STAGE=linker-special-symbol-probe
+          cat > work/runtime-probe.c <<'EOF'
+          #include <stddef.h>
+          extern void __assert_fail(const char*, const char*, unsigned int, const char*);
+          extern int __fpclassifyl(long double);
+          extern long double __extendsftf2(float);
+          static int plus_one(int x) { volatile int y=x; return y+1; }
+          typedef int (*probe_fn)(int);
+          volatile probe_fn lowalt_probe_fn = plus_one;
+          __attribute__((used,noinline)) long double lowalt_runtime_probe(float x) {
+            volatile unsigned char local[33];
+            local[0]=1;
+            if (x == -9999.0f) __assert_fail("x", "runtime-probe.c", 1u, "lowalt_runtime_probe");
+            return __extendsftf2(x) + (long double)__fpclassifyl((long double)x) + (long double)lowalt_probe_fn(local[0]);
+          }
+          EOF
+          "$EMCC" -O0 -fno-builtin -c work/runtime-probe.c -o work/runtime-probe.o
+          "$NM" work/runtime-probe.o > work/evidence-v16/runtime-probe-object-nm.txt
+          "$EMCC" work/runtime-probe.o --no-entry -O0 \
+            -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=worker \
+            -sALLOW_MEMORY_GROWTH=0 -sINITIAL_MEMORY=16777216 \
+            -sERROR_ON_UNDEFINED_SYMBOLS=1 \
+            -sEXPORTED_FUNCTIONS='["_lowalt_runtime_probe"]' \
+            -sEXPORTED_RUNTIME_METHODS='[]' \
+            -o work/runtime-probe.mjs
+          test -s work/runtime-probe.wasm
+          test -s work/runtime-probe.mjs
+          sha256sum work/runtime-probe.c work/runtime-probe.o work/runtime-probe.mjs work/runtime-probe.wasm > work/evidence-v16/runtime-probe-sha256.txt
+
+          python3 - <<'PY'
+          import json, pathlib, re, subprocess
+          hard=pathlib.Path('work/evidence-v16/expected-hard-orphans.txt').read_text().split()
+          providers={x:[] for x in hard}
+          p=pathlib.Path('work/evidence-v16/toolchain-hard-orphan-providers.tsv')
+          for line in p.read_text(errors='replace').splitlines():
+              if '\t' in line:
+                  s,f=line.split('\t',1); providers.setdefault(s,[]).append(f)
+          nm=pathlib.Path('work/evidence-v16/runtime-probe-object-nm.txt').read_text(errors='replace')
+          object_special={s:(s in nm) for s in ('__indirect_function_table','__stack_pointer')}
+          data=pathlib.Path('work/runtime-probe.wasm').read_bytes()
+          if data[:8] != b'\x00asm\x01\x00\x00\x00': raise SystemExit('bad wasm header')
+          def uleb(pos):
+              v=0; sh=0
+              while True:
+                  b=data[pos]; pos+=1; v|=(b&127)<<sh
+                  if not b&128:return v,pos
+                  sh+=7
+          def name(pos):
+              n,pos=uleb(pos); return data[pos:pos+n].decode(),pos+n
+          imports=[]; pos=8
+          while pos<len(data):
+              sid=data[pos]; pos+=1; size,pos=uleb(pos); end=pos+size
+              if sid==2:
+                  n,pos=uleb(pos)
+                  for _ in range(n):
+                      mod,pos=name(pos); nm_,pos=name(pos); kind=data[pos]; pos+=1
+                      if kind==0: _,pos=uleb(pos)
+                      elif kind==1:
+                          pos+=1; flags,pos=uleb(pos); _,pos=uleb(pos)
+                          if flags&1: _,pos=uleb(pos)
+                      elif kind==2:
+                          flags,pos=uleb(pos); _,pos=uleb(pos)
+                          if flags&1: _,pos=uleb(pos)
+                      elif kind==3: pos+=2
+                      elif kind==4: pos+=1; _,pos=uleb(pos)
+                      else: raise SystemExit('unknown import kind')
+                      imports.append((mod,nm_,kind))
+              pos=end
+          imported_names={x[1] for x in imports}
+          pathlib.Path('work/evidence-v16/runtime-probe-final-imports.tsv').write_text(''.join(f'{a}\t{b}\t{c}\n' for a,b,c in imports))
+          funcs=('__assert_fail','__extendsftf2','__fpclassifyl')
+          function_provider_complete=all(providers.get(s) for s in funcs)
+          special_seen=all(object_special.values())
+          none_imported=all(s not in imported_names for s in hard)
+          classification='P_RUNTIME_PROVIDER_CLOSURE_COMPLETE' if function_provider_complete and special_seen and none_imported else 'P_RUNTIME_PROVIDER_CLOSURE_PARTIAL'
+          summary={
+            'schema':1,
+            'purpose':'LOWALT_LT5_P_PRE_RESULT_RUNTIME_PROVIDER_CLOSURE_V16',
+            'v15_hard_orphans':hard,
+            'toolchain_static_provider_counts':{s:len(set(providers.get(s,[]))) for s in funcs},
+            'probe_object_special_symbols':object_special,
+            'hard_orphans_imported_by_final_probe_wasm':sorted(s for s in hard if s in imported_names),
+            'classification':classification,
+            'wasm_linked':True,
+            'wasm_instantiated':False,
+            'runtime_executed':False,
+            'p_numeric_evaluation':False,
+            't_called':False,
+            'lt5_result':False,
+            'c_executed':False,
+            'd_executed':False,
+            'b_selected':False,
+            'b_resolved':False,
+            'production_changed':False,
+          }
+          pathlib.Path('work/evidence-v16/runtime-provider-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+
+          STAGE=receipt
+          sha256sum work/evidence-v16/* > work/evidence-v16/evidence-sha256.txt
+          cat work/evidence-v16/runtime-provider-summary.json
+          cat work/evidence-v16/native-source-summary.json
+
+      - name: Upload immutable pre-result runtime provider closure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-runtime-provider-closure-v16
+          path: work/evidence-v16
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,154 @@
+name: LowAlt LT5 P NetCDF Surface V8
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-surface-v8-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-surface-v8.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  netcdf-surface-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze immutable NetCDF4 compile/dependency surface without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/evidence
+          cd work
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > evidence/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+          "$EMCC" --version > evidence/emcc-version.txt 2>&1
+
+          STAGE=source
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/8894652347/zip" \
+            -o source-audit.zip
+          test "$(sha256sum source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p source-audit.zip libRadtran-2.0.6.tar.gz > libRadtran-2.0.6.tar.gz
+          unzip -p source-audit.zip feedstock-meta.yaml > feedstock-meta.yaml
+          test "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc libRadtran-2.0.6.tar.gz > source.tar
+          test "$(sha256sum source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf source.tar
+          ROOT=libRadtran-2.0.6
+
+          STAGE=authoritative-netcdf-contract
+          grep -q 'AX_LIB_NETCDF4(\[serial\])' "$ROOT/configure.in"
+          grep -q 'AC_DEFINE(HAVE_NETCDF4)' "$ROOT/m4/ax_lib_netcdf4.m4"
+          grep -q '@NETCDF4_CFLAGS@' "$ROOT/Makeconf.in"
+          grep -q '@NETCDF4_LIBS@' "$ROOT/Makeconf.in"
+          grep -q '#include <netcdf.h>' "$ROOT/src/ancillary.c"
+          grep -q '#include "netCDF_functions.h"' "$ROOT/src/ancillary.c"
+          grep -q 'NC_MAX_NAME' "$ROOT/src/ancillary.c"
+          grep -q 'libnetcdf' feedstock-meta.yaml
+          grep -q 'netcdf4' feedstock-meta.yaml
+          sha256sum \
+            feedstock-meta.yaml \
+            "$ROOT/configure.in" \
+            "$ROOT/Makeconf.in" \
+            "$ROOT/m4/ax_lib_netcdf4.m4" \
+            "$ROOT/src/ancillary.c" \
+            "$ROOT/libsrc_c/netCDF_functions.c" \
+            "$ROOT/libsrc_c/netCDF_functions.h" \
+            > evidence/authoritative-netcdf-source-sha256.txt
+          sed -n '620,640p' "$ROOT/configure.in" > evidence/configure-netcdf-call.txt
+          sed -n '130,160p' "$ROOT/Makeconf.in" > evidence/makeconf-netcdf-cflags.txt
+          sed -n '215,240p' "$ROOT/Makeconf.in" > evidence/makeconf-netcdf-link.txt
+          sed -n '35,52p' "$ROOT/src/ancillary.c" > evidence/ancillary-netcdf-includes.txt
+          sed -n '4560,4620p' "$ROOT/src/ancillary.c" > evidence/ancillary-unguarded-helper.txt
+          sed -n '6210,6430p' "$ROOT/src/ancillary.c" > evidence/optical-properties-netcdf-branch.txt
+          cp feedstock-meta.yaml evidence/feedstock-meta.yaml
+
+          STAGE=toolchain-surface
+          {
+            printf 'PATH=%s\n' "$PATH"
+            printf 'EMCC=%s\n' "$EMCC"
+            printf 'NC_CONFIG=%s\n' "$(command -v nc-config || true)"
+            printf 'NF_CONFIG=%s\n' "$(command -v nf-config || true)"
+            printf 'PKG_CONFIG=%s\n' "$(command -v pkg-config || true)"
+            printf 'EMAR=%s\n' "$(command -v emar || true)"
+            printf 'EMRANLIB=%s\n' "$(command -v emranlib || true)"
+          } > evidence/toolchain-paths.txt
+          (emcc --show-ports || true) > evidence/emcc-show-ports.txt 2>&1
+          (find /opt/emsdk/upstream/emscripten/cache/sysroot /opt /usr/local -type f \( -name 'netcdf.h' -o -name 'libnetcdf*.a' -o -name 'libnetcdf*.so*' -o -name 'nc-config' \) -print 2>/dev/null || true) | sort -u > evidence/netcdf-paths.txt
+          (grep -Ril --exclude-dir=.git --include='*.py' --include='*.json' --include='*.txt' --include='*.cmake' 'netcdf' /opt/emsdk/upstream/emscripten/tools /opt/emsdk/upstream/emscripten/cache/sysroot 2>/dev/null || true) | sort -u > evidence/emscripten-netcdf-registry-hits.txt
+
+          : > evidence/netcdf-path-sha256.txt
+          while IFS= read -r p; do
+            if [ -f "$p" ]; then sha256sum "$p" >> evidence/netcdf-path-sha256.txt; fi
+          done < evidence/netcdf-paths.txt
+
+          SYSROOT=/opt/emsdk/upstream/emscripten/cache/sysroot
+          HEADER="$SYSROOT/include/netcdf.h"
+          HAVE_SYSROOT_HEADER=false
+          HAVE_SYSROOT_ARCHIVE=false
+          if [ -f "$HEADER" ]; then HAVE_SYSROOT_HEADER=true; fi
+          if find "$SYSROOT/lib" -type f -name 'libnetcdf*.a' -print -quit 2>/dev/null | grep -q .; then HAVE_SYSROOT_ARCHIVE=true; fi
+
+          STAGE=compile-header-probe
+          ANCILLARY_COMPILE=NOT_ATTEMPTED_NO_WASM_HEADER
+          if [ "$HAVE_SYSROOT_HEADER" = true ]; then
+            cat > p-generated-abi.h <<'EOF'
+          #ifndef LOWALT_P_GENERATED_ABI_H
+          #define LOWALT_P_GENERATED_ABI_H 1
+          #define F77_FUNC(name,NAME) name ## _
+          #define F77_FUNC_(name,NAME) name ## _
+          #define HAVE_TIPA 0
+          #define HAVE_MYSTIC 1
+          #define HAVE_SOS 1
+          #define HAVE_BRDF 1
+          #define HAVE_NETCDF4 1
+          #endif
+          EOF
+            set +e
+            "$EMCC" -O0 -std=gnu11 -include "$(pwd)/p-generated-abi.h" -c "$ROOT/src/ancillary.c" \
+              -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$SYSROOT/include" \
+              -o ancillary.o > evidence/ancillary.stdout.txt 2> evidence/ancillary.stderr.txt
+            RC=$?
+            set -e
+            ANCILLARY_COMPILE="RC_${RC}"
+            if [ -s ancillary.o ]; then
+              sha256sum ancillary.o > evidence/ancillary-object-sha256.txt
+              wc -c ancillary.o > evidence/ancillary-object-size.txt
+            fi
+          fi
+
+          STAGE=receipt
+          if [ "$HAVE_SYSROOT_HEADER" = true ] && [ "$HAVE_SYSROOT_ARCHIVE" = true ]; then
+            CLASS=NETCDF4_WASM_SURFACE_PRESENT_IN_PINNED_TOOLCHAIN
+          elif [ "$HAVE_SYSROOT_HEADER" = true ]; then
+            CLASS=NETCDF4_WASM_HEADER_ONLY_IN_PINNED_TOOLCHAIN
+          else
+            CLASS=NETCDF4_WASM_SURFACE_ABSENT_NEEDS_FROZEN_EXTERNAL_BUILD
+          fi
+          printf 'status=PASS\nclassification=%s\nsource_decoded_tar_sha256=999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85\nHAVE_NETCDF4_required_by_unmodified_ancillary_compile=true\nwasm_sysroot_netcdf_header=%s\nwasm_sysroot_netcdf_archive=%s\nancillary_compile=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n' \
+            "$CLASS" "$HAVE_SYSROOT_HEADER" "$HAVE_SYSROOT_ARCHIVE" "$ANCILLARY_COMPILE" > evidence/receipt.txt
+
+      - name: Upload immutable pre-result NetCDF4 surface evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-surface-v8
+          path: work/evidence
+          if-no-files-found: error
+          retention-days: 90

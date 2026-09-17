@@ -1,0 +1,133 @@
+name: LowAlt LT5 P NetCDF No-MMAP V10
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-nommap-v10-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-nommap-v10.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Rebuild exact V9 closure with NetCDF mmap disabled; no execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_WORKFLOW_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+          V9_RUN=35232470002
+          V9_ARTIFACT=10502173391
+          V9_DIGEST=sha256:b25d471f03d68cd2d1f675606d5c7815f05aef1617b2d1438be9b2e9337e31a2
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-build-v9.yml?ref=${V9_HEAD}" \
+            -o bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_WORKFLOW_BLOB"
+          sha256sum bootstrap/v9.yml > bootstrap/v9-workflow-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result NetCDF4 build closure evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v9.yml > bootstrap/v9-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v9-run.sh)" = 1
+          test "$(grep -c -- '-DENABLE_NETCDF_4=ON \\' bootstrap/v9-run.sh)" = 1
+          test "$(grep -c -- '-DENABLE_MMAP=OFF' bootstrap/v9-run.sh || true)" = 0
+
+          awk '{
+            print
+            if ($0 ~ /-DENABLE_NETCDF_4=ON \\$/) print "  -DENABLE_MMAP=OFF \\" 
+          }' bootstrap/v9-run.sh > bootstrap/v10-run.sh
+          test "$(grep -c -- '-DENABLE_NETCDF_4=ON \\' bootstrap/v10-run.sh)" = 1
+          test "$(grep -c -- '-DENABLE_MMAP=OFF \\' bootstrap/v10-run.sh)" = 1
+          sha256sum bootstrap/v9-run.sh bootstrap/v10-run.sh > bootstrap/run-script-sha256.txt
+          diff -u bootstrap/v9-run.sh bootstrap/v10-run.sh > bootstrap/v9-to-v10.diff || test "$?" = 1
+          test "$(grep -c '^+  -DENABLE_MMAP=OFF \\' bootstrap/v9-to-v10.diff)" = 1
+          test "$(grep -c '^+' bootstrap/v9-to-v10.diff)" = 2
+          test "$(grep -c '^-' bootstrap/v9-to-v10.diff)" = 1
+
+          # Execute only the exact V9 build/compile/link script plus the single pre-result
+          # configuration delta above. The inherited V9 script itself records fail-closed
+          # no-runtime/no-result receipts and never instantiates the generated WASM.
+          bash bootstrap/v10-run.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -qx 'ENABLE_MMAP:BOOL=OFF' work/build/netcdf/CMakeCache.txt
+          grep '^ENABLE_MMAP:BOOL=OFF$' work/build/netcdf/CMakeCache.txt > work/evidence/netcdf-mmap-cmake-cache.txt
+          sha256sum work/build/netcdf/CMakeCache.txt > work/evidence/netcdf-CMakeCache-sha256.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          emar t work/install/lib/libnetcdf.a > work/evidence/libnetcdf-archive-members.txt
+          if grep -i 'mmapio' work/evidence/libnetcdf-archive-members.txt; then
+            echo 'FAIL: mmapio member remains despite ENABLE_MMAP=OFF' >&2
+            exit 91
+          fi
+          if grep -F 'function signature mismatch: mremap' work/evidence/netcdf-link.stderr.txt; then
+            echo 'FAIL: mremap ABI warning remains' >&2
+            exit 92
+          fi
+          if grep -F 'mremap' work/evidence/netcdf-link.stderr.txt; then
+            echo 'FAIL: unexpected mremap diagnostic remains' >&2
+            exit 93
+          fi
+
+          cp bootstrap/v9-workflow-sha256.txt work/evidence/
+          cp bootstrap/run-script-sha256.txt work/evidence/
+          cp bootstrap/v9-to-v10.diff work/evidence/
+          sha256sum work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm > work/evidence/v10-key-output-sha256.txt
+          wc -c work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm > work/evidence/v10-key-output-size.txt
+
+          cat > work/evidence/v10-receipt.txt <<EOF
+          status=PASS
+          classification=NETCDF4_WASM_NOMMAP_WARNING_FREE_P_COMPILE_CLOSURE_PASS
+          predecessor_v9_head=${V9_HEAD}
+          predecessor_v9_workflow_blob=${V9_WORKFLOW_BLOB}
+          predecessor_v9_run=${V9_RUN}
+          predecessor_v9_artifact=${V9_ARTIFACT}
+          predecessor_v9_digest=${V9_DIGEST}
+          exact_delta=ENABLE_MMAP:BOOL=OFF
+          libnetcdf_contains_mmapio=false
+          mremap_warning=false
+          ancillary_compile=PASS
+          netCDF_functions_compile=PASS
+          netcdf_static_link=PASS
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result NetCDF4 no-MMAP closure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-nommap-v10
+          path: |
+            work/evidence
+            bootstrap/v9-workflow-sha256.txt
+            bootstrap/run-script-sha256.txt
+            bootstrap/v9-to-v10.diff
+          if-no-files-found: error
+          retention-days: 90

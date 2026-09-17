@@ -1,0 +1,171 @@
+name: LowAlt LT5 P NetCDF Exact410 V40 YAML-safe NC_VERSION_MAJOR Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v40-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v40.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V38 and patch only MAJOR postcondition
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V38_HEAD=cf857395e51b4fe0ee2034dcfc07c2f9176acabf
+          V38_BLOB=9fc91a4d81663ea3f1b9e67a3241493494dd165f
+          V38_RUN=35286522931
+          V38_JOB=105419965001
+          V38_ARTIFACT=10524373056
+          V38_ARTIFACT_DIGEST=7e93e42d439ab9ba7cc5d2848a527b37c3bfd0e6a3c4ea61b8626f13a7270687
+          V39_HEAD=737137d092cb19e5e9ec90dd54e5eaacc1612944
+          V39_RUN=35287549247
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v38.yml?ref=${V38_HEAD}" \
+            -o bootstrap/v38.yml
+          test "$(git hash-object bootstrap/v38.yml)" = "$V38_BLOB"
+          sha256sum bootstrap/v38.yml > evidence/v40-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V38 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v38.yml > bootstrap/v38-top-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v38-top-run.sh)" = 1
+          bash -n bootstrap/v38-top-run.sh
+          cp bootstrap/v38-top-run.sh evidence/v40-v38-top-run-before.sh
+
+          python3 - <<'PY_V40_PATCH'
+          from pathlib import Path
+          from difflib import unified_diff
+
+          p = Path('bootstrap/v38-top-run.sh')
+          before = p.read_text()
+          anchor = "lines[lines.index(old)] = new\nafter = ''.join(lines)\n"
+          assert before.count(anchor) == 1
+          replacement = (
+              "lines[lines.index(old)] = new\n"
+              "old_major = \"grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h\\\\n\"\n"
+              "new_major = \"grep -Fxq '#define NC_VERSION_MAJOR 4 /*!< netcdf-c major version. */' work/install/include/netcdf_meta.h\\\\n\"\n"
+              "assert lines.count(old_major) == 1, old_major\n"
+              "assert lines.count(new_major) == 0, new_major\n"
+              "lines[lines.index(old_major)] = new_major\n"
+              "after = ''.join(lines)\n"
+              "assert after.splitlines(keepends=True).count(old_major) == 0\n"
+              "assert after.splitlines(keepends=True).count(new_major) == 1\n"
+          )
+          after = before.replace(anchor, replacement, 1)
+
+          minus_old = "assert sum(1 for line in dl if line.startswith('-') and not line.startswith('---')) == 1\n"
+          plus_old = "assert sum(1 for line in dl if line.startswith('+') and not line.startswith('+++')) == 1\n"
+          assert after.count(minus_old) == 1
+          assert after.count(plus_old) == 1
+          after = after.replace(minus_old, minus_old.replace('== 1', '== 2'), 1)
+          after = after.replace(plus_old, plus_old.replace('== 1', '== 2'), 1)
+
+          old_label = r"'repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY\n'"
+          new_label = r"'repair=EXACT_V19_HDF5_DIR_AND_NC_VERSION_MAJOR_POSTCONDITIONS\n'"
+          assert after.count(old_label) == 1
+          after = after.replace(old_label, new_label, 1)
+
+          old_count = r"'changed_postconditions=1\n'"
+          new_count = r"'changed_postconditions=2\n'"
+          assert after.count(old_count) == 1
+          after = after.replace(old_count, new_count, 1)
+
+          old_names = "fromfile='v19-suffix-before-hdf5dir-cache-type', tofile='v19-suffix-after-hdf5dir-cache-type'"
+          new_names = "fromfile='v19-suffix-before-v40-major-postcondition', tofile='v19-suffix-after-v40-major-postcondition'"
+          assert after.count(old_names) == 1
+          after = after.replace(old_names, new_names, 1)
+
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v38-top-run', tofile='v40-top-run'))
+          assert d
+          Path('evidence/v40-v38-top-run-major-postcondition.diff').write_text(d)
+          Path('bootstrap/v40-top-run.sh').write_text(after)
+          PY_V40_PATCH
+
+          bash -n bootstrap/v40-top-run.sh
+          cp bootstrap/v40-top-run.sh evidence/v40-top-run-before-execution.sh
+          sha256sum evidence/v40-v38-top-run-before.sh evidence/v40-top-run-before-execution.sh evidence/v40-v38-top-run-major-postcondition.diff >> evidence/v40-sha256.txt
+
+          cat > evidence/v40-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V40_YAML_SAFE_MAJOR_POSTCONDITION_REPAIR_FROZEN
+          predecessor_v38_head=${V38_HEAD}
+          predecessor_v38_blob=${V38_BLOB}
+          predecessor_v38_run=${V38_RUN}
+          predecessor_v38_job=${V38_JOB}
+          predecessor_v38_artifact=${V38_ARTIFACT}
+          predecessor_v38_artifact_digest=sha256:${V38_ARTIFACT_DIGEST}
+          spent_v39_head=${V39_HEAD}
+          spent_v39_run=${V39_RUN}
+          spent_v39_failure=WORKFLOW_PARSE_NO_JOBS_UNINDENTED_NESTED_LITERAL
+          preserved_repair=EXACT_V19_HDF5_DIR_UNINITIALIZED_POSTCONDITION
+          added_repair=EXACT_NC_VERSION_MAJOR_SOURCE_DERIVED_LINE_ONLY
+          nc_version_minor_touched=false
+          nc_version_patch_touched=false
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v40-preexecution-receipt.txt >> evidence/v40-sha256.txt
+
+          bash bootstrap/v40-top-run.sh
+
+          mkdir -p work/evidence
+          cp evidence/v40-* work/evidence/
+          cat > work/evidence/v40-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_P_COMPILE_CLOSURE_PASS_AFTER_V40_MAJOR_POSTCONDITION_REPAIR
+          predecessor_v38_run=${V38_RUN}
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable V40 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v40
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

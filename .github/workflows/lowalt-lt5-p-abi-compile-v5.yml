@@ -1,0 +1,167 @@
+name: LowAlt LT5 P ABI Compile V5
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-abi-compile-v5-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-abi-compile-v5.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compile-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Derive exact Fortran symbol ABI and probe P C units without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/evidence work/objects
+          cd work
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > evidence/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          FLANG="$(command -v flang-new || command -v flang)"
+          LLVM_NM="$(command -v llvm-nm || true)"
+          if [ -z "$LLVM_NM" ]; then LLVM_NM=/opt/emsdk/upstream/bin/llvm-nm; fi
+          test -x "$LLVM_NM"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+
+          STAGE=source
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/8894652347/zip" \
+            -o source-audit.zip
+          test "$(sha256sum source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p source-audit.zip libRadtran-2.0.6.tar.gz > libRadtran-2.0.6.tar.gz
+          test "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc libRadtran-2.0.6.tar.gz > source.tar
+          test "$(sha256sum source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf source.tar
+
+          STAGE=fortran-abi
+          cat > probe_name.f <<'EOF'
+                subroutine probe_name()
+                return
+                end
+          EOF
+          "$FLANG" --target=wasm32-unknown-emscripten -c probe_name.f -o objects/probe_name.o
+          "$LLVM_NM" objects/probe_name.o > evidence/probe_name.nm.txt
+          grep -Eq '(^|[[:space:]])probe_name_($|[[:space:]])' evidence/probe_name.nm.txt
+          cat > p-fortran-abi.h <<'EOF'
+          #ifndef LOWALT_P_FORTRAN_ABI_H
+          #define LOWALT_P_FORTRAN_ABI_H 1
+          #define F77_FUNC(name,NAME) name ## _
+          #define F77_FUNC_(name,NAME) name ## _
+          #define HAVE_TIPA 0
+          #endif
+          EOF
+          cp p-fortran-abi.h evidence/p-fortran-abi.h
+          test ! -f libRadtran-2.0.6/src/tipa.c
+          test ! -f libRadtran-2.0.6/src/tipa.h
+
+          STAGE=compile-probe
+          : > evidence/compile-status.tsv
+          INDEX=0
+          for UNIT in src/solve_rte.c src/ancillary.c; do
+            INDEX=$((INDEX+1))
+            STEM="$(basename "$UNIT" .c)"
+            OBJ="objects/${INDEX}-${STEM}.o"
+            OUT="evidence/${INDEX}-${STEM}.stdout.txt"
+            ERR="evidence/${INDEX}-${STEM}.stderr.txt"
+            set +e
+            "$EMCC" -O0 -std=gnu11 -include "$(pwd)/p-fortran-abi.h" -c "libRadtran-2.0.6/$UNIT" \
+              -IlibRadtran-2.0.6 -IlibRadtran-2.0.6/src -IlibRadtran-2.0.6/src_c \
+              -IlibRadtran-2.0.6/libsrc_c -IlibRadtran-2.0.6/libsrc_f \
+              -o "$OBJ" >"$OUT" 2>"$ERR"
+            RC=$?
+            set -e
+            if [ -s "$OBJ" ]; then
+              cp "$OBJ" "evidence/${INDEX}-${STEM}.o"
+              printf '%s\tRC_%s\t%s\t%s\n' "$UNIT" "$RC" "$(sha256sum "$OBJ" | awk '{print $1}')" "$(wc -c < "$OBJ" | tr -d ' ')" >> evidence/compile-status.tsv
+            else
+              rm -f "$OBJ"
+              printf '%s\tRC_%s\t-\t-\n' "$UNIT" "$RC" >> evidence/compile-status.tsv
+            fi
+          done
+
+          STAGE=static-provenance
+          python3 - <<'PY'
+          import hashlib, json, pathlib, re
+          root=pathlib.Path('libRadtran-2.0.6')
+          def h(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          records={}
+          for rel in ['configure.in','configure','Makeconf.in','src/Makefile.in','src/solve_rte.c','src/ancillary.c','libsrc_f/solver.h']:
+              p=root/rel
+              records[rel]={'sha256':h(p),'size':p.stat().st_size}
+          cin=(root/'configure.in').read_text(errors='replace').splitlines()
+          cfg=(root/'configure').read_text(errors='replace').splitlines()
+          mcf=(root/'Makeconf.in').read_text(errors='replace').splitlines()
+          def hits(lines, pats):
+              out=[]
+              for i,line in enumerate(lines,1):
+                  if any(re.search(p,line) for p in pats): out.append({'line':i,'text':line[:500]})
+              return out
+          out={
+            'schema':5,
+            'classification':'PRE_RESULT_P_BUILD_ABI_COMPILE_FEASIBILITY_ONLY',
+            'sourceDecodedTarSha256':'999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+            'authoritativeFiles':records,
+            'configureInFortranWrapperEvidence':hits(cin,[r'AC_PROG_F77',r'AC_F77_LIBRARY_LDFLAGS',r'AC_F77_DUMMY_MAIN',r'AC_F77_WRAPPERS']),
+            'configureInTipaEvidence':hits(cin,[r'HAVE_TIPA',r'tipa\\.c',r'tipa\\.h']),
+            'configureGeneratedF77FuncEvidence':hits(cfg,[r'#define F77_FUNC\\(',r'#define F77_FUNC_\\(']),
+            'makeconfCompileFlagEvidence':hits(mcf,[r'^DEFS = @DEFS@',r'^ALL_CFLAGS',r'\\$\\(DEFS\\)',r'\\$\\(HAVE_TIPA\\)']),
+            'toolchainDerivedFortranSymbol':'probe_name_',
+            'derivedCInteropMacros':{'F77_FUNC(name,NAME)':'name##_','F77_FUNC_(name,NAME)':'name##_','HAVE_TIPA':'0'},
+            'tipaSourcePresent':False,
+            'wasmInstantiated':False,'runtimeExecuted':False,'lt5Result':False,'cExecuted':False,'dExecuted':False,
+            'bSelected':False,'bResolved':False,'productionChanged':False,
+          }
+          pathlib.Path('evidence/p-build-abi-provenance.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+          STAGE=receipt
+          {
+            echo 'schema=5'
+            echo 'classification=PRE_RESULT_P_BUILD_ABI_COMPILE_FEASIBILITY_ONLY'
+            echo 'predecessor_v4_run=35226417668'
+            echo 'predecessor_v4_artifact=10499136447'
+            echo 'predecessor_v4_artifact_digest=sha256:1f0a86a4b25b15fe2820230c309825eeb7ce23c2121a89d26d9cd4f6554ab9ef'
+            echo 'bSelected=false'; echo 'bResolved=false'; echo 'wasmInstantiated=false'; echo 'runtimeExecuted=false'; echo 'lt5Result=false'; echo 'cExecuted=false'; echo 'dExecuted=false'; echo 'productionChanged=false'
+            echo 'source_artifact_id=8894652347'
+            echo 'source_decoded_tar_sha256=999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+            echo 'container_image=ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5'
+            echo "emcc_sha256=$(sha256sum "$EMCC" | awk '{print $1}')"
+            echo "flang_sha256=$(sha256sum "$FLANG" | awk '{print $1}')"
+            echo "llvm_nm_sha256=$(sha256sum "$LLVM_NM" | awk '{print $1}')"
+            echo "abi_header_sha256=$(sha256sum evidence/p-fortran-abi.h | awk '{print $1}')"
+            echo "abi_provenance_sha256=$(sha256sum evidence/p-build-abi-provenance.json | awk '{print $1}')"
+            echo '--- fortran-symbol-probe ---'; cat evidence/probe_name.nm.txt
+            echo '--- compile-status ---'; cat evidence/compile-status.tsv
+            echo '--- first diagnostics ---'
+            for LOG in evidence/*stderr.txt; do echo "### $LOG"; sed -n '1,100p' "$LOG"; done
+          } > evidence/completion-receipt.txt
+          find evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence/manifest.sha256
+
+      - name: Upload immutable pre-result P ABI compile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-abi-compile-v5
+          path: work/evidence/
+          if-no-files-found: error
+          retention-days: 90

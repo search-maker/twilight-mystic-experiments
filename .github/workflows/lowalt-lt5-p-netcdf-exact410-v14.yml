@@ -1,0 +1,128 @@
+name: LowAlt LT5 P NetCDF Exact410 V14
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v14-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v14.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Execute V13 candidate with only the proven unique-selector repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+          V13_HEAD=a4c5aaa6be54b63658d9fd765c4786eb77cc7c21
+          V13_WORKFLOW_BLOB=f9eb21d03961867f83e99cc0883105eec65b9c31
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v13.yml?ref=${V13_HEAD}" \
+            -o bootstrap/v13.yml
+          test "$(git hash-object bootstrap/v13.yml)" = "$V13_WORKFLOW_BLOB"
+          sha256sum bootstrap/v13.yml > bootstrap/v13-workflow-sha256.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bootstrap/v13.yml')
+          s = p.read_text()
+
+          old_needle = """          needle = '''          s = p.read_text()\\n'''"""
+          new_needle = """          needle = '''          p = Path('bootstrap/v9-run.sh')\\n          s = p.read_text()\\n'''"""
+          assert s.count(old_needle) == 1
+          s = s.replace(old_needle, new_needle)
+
+          old_injection = """          injection = '''          s = p.read_text()\\n"""
+          new_injection = """          injection = '''          p = Path('bootstrap/v9-run.sh')\\n          s = p.read_text()\\n"""
+          assert s.count(old_injection) == 1
+          s = s.replace(old_injection, new_injection)
+
+          assert s.count(old_needle) == 0
+          assert s.count(old_injection) == 0
+          assert s.count(new_needle) == 1
+          assert s.count(new_injection) == 1
+          Path('bootstrap/v14-patched-v13.yml').write_text(s)
+          PY
+
+          sha256sum bootstrap/v14-patched-v13.yml > bootstrap/v14-patched-v13-sha256.txt
+          diff -u bootstrap/v13.yml bootstrap/v14-patched-v13.yml > bootstrap/v13-to-v14.diff || test "$?" = 1
+          test "$(grep -c '^@@' bootstrap/v13-to-v14.diff)" = 1
+          test "$(grep -c '^[-+]          needle = ' bootstrap/v13-to-v14.diff)" = 2
+          test "$(grep -c '^[-+]          injection = ' bootstrap/v13-to-v14.diff)" = 2
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 V13 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v14-patched-v13.yml > bootstrap/v14-inner.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v14-inner.sh)" = 1
+          sha256sum bootstrap/v14-inner.sh > bootstrap/v14-inner-sha256.txt
+
+          # Compile/link only. This executes the unchanged V13 candidate after only the
+          # demonstrated selector repair; inherited contracts forbid WASM instantiation.
+          bash bootstrap/v14-inner.sh
+
+          test -f work/evidence/v13-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v13-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_HDF5_CONFIG_DISCOVERY_P_COMPILE_CLOSURE_PASS' work/evidence/v13-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v13-receipt.txt
+
+          cp bootstrap/v13-workflow-sha256.txt work/evidence/
+          cp bootstrap/v14-patched-v13-sha256.txt work/evidence/
+          cp bootstrap/v13-to-v14.diff work/evidence/
+          cp bootstrap/v14-inner-sha256.txt work/evidence/
+          cat > work/evidence/v14-receipt.txt <<'EOF'
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_HDF5_CONFIG_DISCOVERY_P_COMPILE_CLOSURE_PASS_AFTER_SELECTOR_REPAIR
+          predecessor_v13_run=35253096086
+          predecessor_v13_terminal=failure
+          predecessor_v13_failure=outer_patcher_generic_read_text_selector_cardinality
+          repair=unique_v9_run_transform_anchor_only
+          candidate_semantics_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result exact410 V14 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v14
+          path: |
+            work/evidence
+            bootstrap/v13-workflow-sha256.txt
+            bootstrap/v14-patched-v13-sha256.txt
+            bootstrap/v13-to-v14.diff
+            bootstrap/v14-inner-sha256.txt
+          if-no-files-found: error
+          retention-days: 90

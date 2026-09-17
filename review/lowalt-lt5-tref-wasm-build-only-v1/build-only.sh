@@ -35,8 +35,20 @@ if [[ -z "$EMCC" && -x /opt/emsdk/upstream/emscripten/emcc ]]; then EMCC=/opt/em
 "$FLANG" -c -O3 --target=wasm32-unknown-emscripten -I"$SRC" -o "$OBJ/geofast_exact.o" "$SRC/geofast_exact.f"
 "$FLANG" -c -O3 --target=wasm32-unknown-emscripten -I"$SRC" -o "$OBJ/direct_ref_full.o" "$SRC/direct_ref_full.f"
 
-NM="$(command -v llvm-nm || command -v nm || true)"
-[[ -n "$NM" ]] || { echo 'refusal: nm unavailable' >&2; exit 44; }
+# Prefer the wasm-aware LLVM utilities shipped by the exact Emscripten toolchain.
+# A host llvm-nm can reject wasm32 object files even though compilation itself succeeded.
+NM=""
+if [[ -x /opt/emsdk/upstream/bin/llvm-nm ]]; then
+  NM=/opt/emsdk/upstream/bin/llvm-nm
+elif command -v emnm >/dev/null 2>&1; then
+  NM="$(command -v emnm)"
+elif command -v llvm-nm >/dev/null 2>&1; then
+  NM="$(command -v llvm-nm)"
+elif command -v nm >/dev/null 2>&1; then
+  NM="$(command -v nm)"
+fi
+[[ -n "$NM" ]] || { echo 'refusal: wasm-capable nm unavailable' >&2; exit 44; }
+printf '%s\n' "$NM" > "$DIST/nm-tool.txt"
 "$NM" "$OBJ/direct_ref_full.o" > "$DIST/direct-ref-symbols.txt"
 DIRECT_SYMBOL="$(awk '$NF ~ /direct_ref_full/ && $2 ~ /[Tt]/ {print $NF; exit}' "$DIST/direct-ref-symbols.txt")"
 if [[ -z "$DIRECT_SYMBOL" ]]; then DIRECT_SYMBOL="$(awk '$NF ~ /direct_ref_full/ {print $NF; exit}' "$DIST/direct-ref-symbols.txt")"; fi

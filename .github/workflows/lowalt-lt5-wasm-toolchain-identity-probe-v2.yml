@@ -1,0 +1,98 @@
+name: LowAlt LT5 WASM Toolchain Identity Probe V2
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-wasm-toolchain-identity-probe-v2-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-wasm-toolchain-identity-probe-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Capture immutable toolchain identity and compile-only smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p lowalt-wasm-toolchain-probe
+          cd lowalt-wasm-toolchain-probe
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+
+          FLANG=/opt/flang/host/bin/flang
+          FRT=/opt/flang/wasm/lib/libFortranRuntime.a
+          EMCC="$(command -v emcc)"
+          EMXX="$(command -v em++)"
+          EMAR="$(command -v emar)"
+          WASMLD="$(command -v wasm-ld)"
+          NODE="$(command -v node)"
+
+          for p in "$FLANG" "$FRT" "$EMCC" "$EMXX" "$EMAR" "$WASMLD" "$NODE"; do
+            test -f "$p"
+          done
+
+          cat > identity-probe.f90 <<'EOF'
+          subroutine lowalt_identity_probe(x, y) bind(C, name="lowalt_identity_probe")
+            use iso_c_binding
+            real(c_float), value :: x
+            real(c_float) :: y
+            y = x
+          end subroutine lowalt_identity_probe
+          EOF
+
+          "$FLANG" --target=wasm32-unknown-emscripten -c identity-probe.f90 -o identity-probe.o
+          test -s identity-probe.o
+
+          {
+            echo 'schema=1'
+            echo 'classification=PRE_RESULT_TOOLCHAIN_IDENTITY_ONLY_NO_LT5_NO_C_NO_D'
+            echo 'container_image=ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5'
+            echo 'target=wasm32-unknown-emscripten'
+            echo "flang_path=$FLANG"
+            echo "fortran_runtime_path=$FRT"
+            echo "emcc_path=$EMCC"
+            echo "emxx_path=$EMXX"
+            echo "emar_path=$EMAR"
+            echo "wasmld_path=$WASMLD"
+            echo "node_path=$NODE"
+            echo '--- sha256 ---'
+            sha256sum "$FLANG" "$FRT" "$EMCC" "$EMXX" "$EMAR" "$WASMLD" "$NODE" identity-probe.f90 identity-probe.o
+            echo '--- flang-version ---'
+            "$FLANG" --version
+            echo '--- emcc-version ---'
+            "$EMCC" --version
+            echo '--- node-version ---'
+            "$NODE" --version
+            echo '--- os-release ---'
+            cat /etc/os-release
+            echo '--- uname ---'
+            uname -a
+            echo '--- compile-command ---'
+            printf '%q ' "$FLANG" --target=wasm32-unknown-emscripten -c identity-probe.f90 -o identity-probe.o
+            echo
+          } > toolchain-identity.txt
+
+          sha256sum toolchain-identity.txt > toolchain-identity.sha256
+          cat toolchain-identity.txt
+          cat toolchain-identity.sha256
+
+      - name: Publish identity-only proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lowalt-lt5-wasm-toolchain-identity-probe-v2
+          path: |
+            lowalt-wasm-toolchain-probe/toolchain-identity.txt
+            lowalt-wasm-toolchain-probe/toolchain-identity.sha256
+            lowalt-wasm-toolchain-probe/identity-probe.f90
+            lowalt-wasm-toolchain-probe/identity-probe.o
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

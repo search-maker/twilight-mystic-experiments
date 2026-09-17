@@ -1,0 +1,317 @@
+name: LowAlt LT5 P Source Closure V3
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-source-closure-v3-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-source-closure-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-closure-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze exact P source closure and compile feasibility without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/evidence work/objects work/compile-logs
+          cd work
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > evidence/failure-receipt.txt; exit "$rc"' ERR
+
+          for cmd in curl unzip gzip tar sha256sum python3; do command -v "$cmd" >/dev/null; done
+
+          STAGE=toolchain
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          PYTHON="$(command -v python3)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+
+          STAGE=source
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/8894652347/zip" \
+            -o source-audit.zip
+          test "$(sha256sum source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p source-audit.zip libRadtran-2.0.6.tar.gz > libRadtran-2.0.6.tar.gz
+          test "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc libRadtran-2.0.6.tar.gz > source.tar
+          test "$(sha256sum source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf source.tar
+
+          STAGE=static-closure
+          cat > freeze_p_closure.py <<'PY'
+          import hashlib, json, pathlib, re
+
+          root = pathlib.Path('libRadtran-2.0.6').resolve()
+          tokens = ('setup_and_call_solver', 'optical_properties')
+          exts = {'.c','.h','.cc','.cpp','.inc','.f','.F','.f90','.F90'}
+
+          def sha256(p):
+              h = hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def line_no(text, pos):
+              return text.count('\n', 0, pos) + 1
+
+          def classify_occurrences(text, token, rel):
+              out = []
+              for m in re.finditer(r'\b' + re.escape(token) + r'\s*\(', text):
+                  op = text.find('(', m.start())
+                  depth = 0
+                  i = op
+                  in_str = None
+                  esc = False
+                  while i < len(text):
+                      ch = text[i]
+                      if in_str:
+                          if esc:
+                              esc = False
+                          elif ch == '\\':
+                              esc = True
+                          elif ch == in_str:
+                              in_str = None
+                      else:
+                          if ch in ('\"', "'"):
+                              in_str = ch
+                          elif ch == '(':
+                              depth += 1
+                          elif ch == ')':
+                              depth -= 1
+                              if depth == 0:
+                                  break
+                      i += 1
+                  if i >= len(text):
+                      continue
+                  j = i + 1
+                  while j < len(text):
+                      if text.startswith('/*', j):
+                          k = text.find('*/', j + 2)
+                          if k < 0:
+                              break
+                          j = k + 2
+                          continue
+                      if text.startswith('//', j):
+                          k = text.find('\n', j + 2)
+                          j = len(text) if k < 0 else k + 1
+                          continue
+                      if text[j].isspace():
+                          j += 1
+                          continue
+                      break
+                  nxt = text[j] if j < len(text) else ''
+                  kind = 'definition' if nxt == '{' else ('declaration' if nxt == ';' else 'other')
+                  line_start = text.rfind('\n', 0, m.start()) + 1
+                  line_end = text.find('\n', m.start())
+                  if line_end < 0:
+                      line_end = len(text)
+                  out.append({
+                      'path': rel,
+                      'line': line_no(text, m.start()),
+                      'kind': kind,
+                      'nextSignificantChar': nxt,
+                      'lineText': text[line_start:line_end].strip()[:500],
+                  })
+              return out
+
+          all_occ = {t: [] for t in tokens}
+          source_files = [p for p in root.rglob('*') if p.is_file() and p.suffix in exts]
+          for p in source_files:
+              text = p.read_text(encoding='utf-8', errors='replace')
+              rel = p.relative_to(root).as_posix()
+              for token in tokens:
+                  if token in text:
+                      all_occ[token].extend(classify_occurrences(text, token, rel))
+
+          defs = {t: [r for r in all_occ[t] if r['kind'] == 'definition'] for t in tokens}
+          for token in tokens:
+              if len(defs[token]) != 1:
+                  pathlib.Path('evidence/definition-cardinality-failure.json').write_text(
+                      json.dumps({'token': token, 'definitions': defs[token], 'occurrences': all_occ[token]}, indent=2, sort_keys=True) + '\n',
+                      encoding='utf-8')
+                  raise SystemExit(f'expected exactly one true definition for {token}, got {len(defs[token])}')
+
+          units = []
+          for token in tokens:
+              p = defs[token][0]['path']
+              if p not in units:
+                  units.append(p)
+
+          roots = [root, root/'src', root/'src_c', root/'libsrc_c', root/'libsrc_f']
+          include_re = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
+
+          def resolve_include(parent, name):
+              for c in [parent.parent / name] + [r / name for r in roots]:
+                  if c.is_file():
+                      return c.resolve()
+              return None
+
+          per_unit = {}
+          union = set()
+          unresolved_all = []
+          for unit in units:
+              closure = set()
+              unresolved = []
+              queue = [(root / unit).resolve()]
+              while queue:
+                  p = queue.pop()
+                  if p in closure:
+                      continue
+                  closure.add(p)
+                  text = p.read_text(encoding='utf-8', errors='replace')
+                  for n, line in enumerate(text.splitlines(), 1):
+                      m = include_re.match(line)
+                      if not m:
+                          continue
+                      q = resolve_include(p, m.group(1))
+                      if q is None:
+                          unresolved.append({'from': p.relative_to(root).as_posix(), 'line': n, 'include': m.group(1)})
+                      elif q not in closure:
+                          queue.append(q)
+              union.update(closure)
+              unresolved_all.extend({'unit': unit, **r} for r in unresolved)
+              per_unit[unit] = {
+                  'closure': [
+                      {'path': p.relative_to(root).as_posix(), 'size': p.stat().st_size, 'sha256': sha256(p)}
+                      for p in sorted(closure)
+                  ],
+                  'unresolvedQuotedIncludes': unresolved,
+              }
+
+          make_refs = []
+          unit_basenames = {pathlib.Path(u).name for u in units}
+          for make_name in ('Makefile.am', 'Makefile.in'):
+              for p in root.rglob(make_name):
+                  text = p.read_text(encoding='utf-8', errors='replace')
+                  for n, line in enumerate(text.splitlines(), 1):
+                      if any(base in line for base in unit_basenames):
+                          make_refs.append({'path': p.relative_to(root).as_posix(), 'line': n, 'text': line.strip()[:500]})
+
+          union_records = [
+              {'path': p.relative_to(root).as_posix(), 'size': p.stat().st_size, 'sha256': sha256(p)}
+              for p in sorted(union)
+          ]
+          out = {
+              'schema': 3,
+              'classification': 'PRE_RESULT_P_STATIC_SOURCE_CLOSURE_ONLY',
+              'sourceEntitySha256': '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'definitions': defs,
+              'occurrences': all_occ,
+              'governingTranslationUnits': units,
+              'perTranslationUnitQuotedIncludeClosure': per_unit,
+              'unionQuotedIncludeClosure': union_records,
+              'unresolvedQuotedIncludes': unresolved_all,
+              'makefileReferences': make_refs,
+              'predecessorFailures': {
+                  'v1Run': 35225234639,
+                  'v1': 'prototype_and_definition_misclassified_as_two_definitions',
+                  'v2Run': 35225560960,
+                  'v2': 'incorrect_same_translation_unit_assumption',
+              },
+              'wasmInstantiated': False,
+              'runtimeExecuted': False,
+              'lt5Result': False,
+              'cExecuted': False,
+              'dExecuted': False,
+              'bSelected': False,
+              'bResolved': False,
+              'productionChanged': False,
+          }
+          pathlib.Path('evidence/p-source-closure.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          pathlib.Path('evidence/definition-units.txt').write_text('\n'.join(units) + '\n', encoding='utf-8')
+          PY
+          "$PYTHON" freeze_p_closure.py
+
+          STAGE=compile-probe
+          : > evidence/compile-status.tsv
+          INDEX=0
+          while IFS= read -r UNIT; do
+            test -n "$UNIT"
+            INDEX=$((INDEX + 1))
+            BASE="$(basename "$UNIT")"
+            STEM="${BASE%.*}"
+            OBJ="objects/${INDEX}-${STEM}.o"
+            LOG="compile-logs/${INDEX}-${STEM}.stderr.txt"
+            set +e
+            "$EMCC" -O0 -std=gnu11 -c "libRadtran-2.0.6/$UNIT" \
+              -IlibRadtran-2.0.6 -IlibRadtran-2.0.6/src -IlibRadtran-2.0.6/src_c \
+              -IlibRadtran-2.0.6/libsrc_c -IlibRadtran-2.0.6/libsrc_f \
+              -o "$OBJ" 2>"$LOG"
+            RC=$?
+            set -e
+            cp "$LOG" "evidence/${INDEX}-${STEM}.stderr.txt"
+            if [ "$RC" -eq 0 ]; then
+              test -s "$OBJ"
+              cp "$OBJ" "evidence/${INDEX}-${STEM}.o"
+              printf '%s\tSUCCESS\t%s\t%s\n' "$UNIT" "$(sha256sum "$OBJ" | awk '{print $1}')" "$(wc -c < "$OBJ" | tr -d ' ')" >> evidence/compile-status.tsv
+            else
+              rm -f "$OBJ"
+              printf '%s\tBLOCKED_RC_%s\t-\t-\n' "$UNIT" "$RC" >> evidence/compile-status.tsv
+            fi
+          done < evidence/definition-units.txt
+
+          STAGE=receipt
+          {
+            echo 'schema=3'
+            echo 'classification=PRE_RESULT_P_SOURCE_CLOSURE_AND_COMPILE_FEASIBILITY_ONLY'
+            echo 'predecessor_v1_run=35225234639'
+            echo 'predecessor_v1_failure=prototype_and_definition_misclassified_as_two_definitions'
+            echo 'predecessor_v2_run=35225560960'
+            echo 'predecessor_v2_failure=incorrect_same_translation_unit_assumption'
+            echo 'bSelected=false'
+            echo 'bResolved=false'
+            echo 'wasmInstantiated=false'
+            echo 'runtimeExecuted=false'
+            echo 'lt5Result=false'
+            echo 'cExecuted=false'
+            echo 'dExecuted=false'
+            echo 'productionChanged=false'
+            echo 'source_artifact_id=8894652347'
+            echo 'source_artifact_zip_sha256=db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b'
+            echo 'source_member_sha256=64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840'
+            echo 'source_decoded_tar_sha256=999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+            echo 'container_image=ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5'
+            echo 'target=wasm32-unknown-emscripten'
+            echo "emcc_sha256=$(sha256sum "$EMCC" | awk '{print $1}')"
+            echo "closure_json_sha256=$(sha256sum evidence/p-source-closure.json | awk '{print $1}')"
+            echo "definition_units_sha256=$(sha256sum evidence/definition-units.txt | awk '{print $1}')"
+            echo "compile_status_sha256=$(sha256sum evidence/compile-status.tsv | awk '{print $1}')"
+            echo '--- governing-units ---'
+            cat evidence/definition-units.txt
+            echo '--- compile-status ---'
+            cat evidence/compile-status.tsv
+            echo '--- first-compile-diagnostics ---'
+            for LOG in evidence/*.stderr.txt; do
+              echo "### ${LOG}"
+              sed -n '1,80p' "$LOG"
+            done
+            echo '--- emcc-version ---'
+            "$EMCC" --version
+          } > evidence/completion-receipt.txt
+          find evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence/manifest.sha256
+
+      - name: Upload immutable pre-result P closure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-source-closure-v3
+          path: work/evidence/
+          if-no-files-found: error
+          retention-days: 90

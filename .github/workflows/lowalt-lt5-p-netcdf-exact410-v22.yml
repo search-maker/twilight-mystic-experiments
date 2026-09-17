@@ -1,0 +1,203 @@
+name: LowAlt LT5 P NetCDF Exact410 V22
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v22-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v22.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Execute exact V19 candidate with representation-aware NetCDF test-option repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V19_HEAD=a29ce4a9da0d735d60c5a4b347584df3175cc613
+          V19_BLOB=e894fee0faa9f25080f144571b219a74abd069ae
+          V19_RUN=35264984007
+          V19_JOB=105349784836
+          V19_ARTIFACT=10516650984
+          V19_ARTIFACT_DIGEST=67d6cf63f59e873de1b2118a2bdf00fc90c6f81de9a83f6a11d9c1c321217097
+          V19_CORRECTED_V13_SHA256=d27b7e3f1b3d898bb55175dd65b191c2fe9bee470671df92b08fdebea78b4a57
+          V21_RUN=35267452094
+          V21_ARTIFACT=10516779021
+          V21_ARTIFACT_DIGEST=a1c5c249b0bc00bc475418dc59f0509f7ac790c3267392951a4b072dfb83c69a
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v19.yml?ref=${V19_HEAD}" \
+            -o bootstrap/v19.yml
+          test "$(git hash-object bootstrap/v19.yml)" = "$V19_BLOB"
+          sha256sum bootstrap/v19.yml > evidence/v22-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 V19 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v19.yml > bootstrap/v19-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v19-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v19-run.sh').read_text()
+          marker = 'source bootstrap/v19-suffix.sh\n'
+          assert s.count(marker) == 1
+          a, _ = s.split(marker, 1)
+          Path('bootstrap/v22-v19-prefix.sh').write_text(a)
+          PY_SPLIT
+
+          # Execute only the already-frozen V19 PRE-RESULT preparation.
+          source bootstrap/v22-v19-prefix.sh
+          test "$(sha256sum bootstrap/v17-patched-v13.yml | awk '{print $1}')" = "$V19_CORRECTED_V13_SHA256"
+          cp bootstrap/v17-patched-v13.yml evidence/v22-before-representation-repair.yml
+          sha256sum bootstrap/v22-v19-prefix.sh bootstrap/v17-patched-v13.yml bootstrap/v19-suffix.sh >> evidence/v22-sha256.txt
+
+          # Insert one representation-aware source transformation into the already-corrected
+          # V13 harness. The V11 new_flags literal is one physical source line containing
+          # escaped logical newlines, so replace the unique logical adjacency in place.
+          python3 - <<'PY_OUTER_PATCH'
+          from pathlib import Path
+          p = Path('bootstrap/v17-patched-v13.yml')
+          s = p.read_text()
+          marker = '          sha256sum bootstrap/v13-patched-v11.yml > bootstrap/v13-patched-v11-sha256.txt\n'
+          assert s.count(marker) == 1
+          injection = r'''          python3 - <<'PY_V22_NETCDF_TESTS'
+          from pathlib import Path
+          p2 = Path('bootstrap/v13-patched-v11.yml')
+          t = p2.read_text()
+          start_marker = "          new_flags = '''"
+          end_marker = "          assert s.count(old_flags) == 1"
+          assert t.count(start_marker) == 1
+          start = t.index(start_marker)
+          end = t.index(end_marker, start)
+          segment = t[start:end]
+          bs = chr(92)
+          escaped_nl = (bs * 3) + 'n'
+          old = '-DBUILD_TESTING=OFF ' + escaped_nl + '  -DHDF5_DIR=$PREFIX/cmake ' + escaped_nl
+          new = '-DBUILD_TESTING=OFF ' + escaped_nl + '  -DNETCDF_ENABLE_TESTS=OFF ' + escaped_nl + '  -DHDF5_DIR=$PREFIX/cmake ' + escaped_nl
+          assert segment.count(old) == 1
+          assert segment.count('-DNETCDF_ENABLE_TESTS=OFF') == 0
+          assert segment.count("new_flags = '''") == 1
+          new_segment = segment.replace(old, new)
+          assert new_segment.count(old) == 0
+          assert new_segment.count('-DNETCDF_ENABLE_TESTS=OFF') == 1
+          assert new_segment.count("new_flags = '''") == 1
+          t = t[:start] + new_segment + t[end:]
+          assert t.count('-DNETCDF_ENABLE_TESTS=OFF') == 1
+          assert t.count('-DHDF5_DIR=$PREFIX/cmake') == 1
+          assert t.count('EVIDENCE_DIR=') == 1
+          p2.write_text(t)
+          PY_V22_NETCDF_TESTS
+          test "$(grep -c -- '-DHDF5_DIR=$PREFIX/cmake' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c 'EVIDENCE_DIR=' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c -- '-DNETCDF_ENABLE_TESTS=OFF' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c \"new_flags = '''\" bootstrap/v13-patched-v11.yml)" = 1
+
+'''
+          s = s.replace(marker, injection + marker)
+          assert s.count('PY_V22_NETCDF_TESTS') == 2
+          p.write_text(s)
+          PY_OUTER_PATCH
+
+          cp bootstrap/v17-patched-v13.yml evidence/v22-after-representation-repair.yml
+          diff -u evidence/v22-before-representation-repair.yml evidence/v22-after-representation-repair.yml > evidence/v22-representation-repair.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v22-representation-repair.diff)" = 1
+          sha256sum evidence/v22-before-representation-repair.yml evidence/v22-after-representation-repair.yml evidence/v22-representation-repair.diff >> evidence/v22-sha256.txt
+
+          cat > evidence/v22-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_REPRESENTATION_AWARE_TEST_OPTION_REPAIR_FROZEN
+          predecessor_v19_head=${V19_HEAD}
+          predecessor_v19_run=${V19_RUN}
+          predecessor_v19_job=${V19_JOB}
+          predecessor_v19_artifact=${V19_ARTIFACT}
+          predecessor_v19_artifact_digest=sha256:${V19_ARTIFACT_DIGEST}
+          diagnostic_v21_run=${V21_RUN}
+          diagnostic_v21_artifact=${V21_ARTIFACT}
+          diagnostic_v21_artifact_digest=sha256:${V21_ARTIFACT_DIGEST}
+          repair=NETCDF_4_10_0_REPRESENTATION_AWARE_IN_PLACE_TEST_OPTION_INSERTION_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v22-preexecution-receipt.txt >> evidence/v22-sha256.txt
+
+          # Continue the exact inherited compile/link-only chain. No generated WASM is instantiated.
+          source bootstrap/v19-suffix.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_TESTS:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^Tests Enabled:[[:space:]]+OFF$' work/evidence/netcdf-configure.txt
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          test -f work/evidence/v13-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v13-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v13-receipt.txt
+
+          cp evidence/v22-* work/evidence/
+          cat > work/evidence/v22-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_REPRESENTATION_AWARE_TEST_OPTION_REPAIR
+          predecessor_v19_run=${V19_RUN}
+          diagnostic_v21_run=${V21_RUN}
+          repair=NETCDF_4_10_0_REPRESENTATION_AWARE_IN_PLACE_TEST_OPTION_INSERTION_ONLY
+          NETCDF_ENABLE_TESTS=OFF
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v22-receipt.txt >> work/evidence/v22-sha256.txt
+
+      - name: Upload immutable pre-result exact410 V22 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v22
+          path: |
+            work/evidence
+            evidence
+            bootstrap/v19.yml
+            bootstrap/v19-run.sh
+            bootstrap/v22-v19-prefix.sh
+            bootstrap/v19-suffix.sh
+          if-no-files-found: warn
+          retention-days: 90

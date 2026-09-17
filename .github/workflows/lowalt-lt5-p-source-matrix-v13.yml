@@ -1,0 +1,195 @@
+name: LowAlt LT5 P Source Matrix V13
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-source-matrix-v13-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-source-matrix-v13.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compile-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Rebuild exact V10 dependency bytes and compile authoritative P source matrix without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_WORKFLOW_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+          V9_RUN_SCRIPT_SHA256=d64324df6f9046fa65c13e85ad5eaac1145754afef785cb63103e2407d0babfd
+          V10_RUN_SCRIPT_SHA256=5f032bfb2d6f1d8f49ac14fdf0df89f02f8b1aba9701654aa3658c5ca5660fb5
+          V10_HEAD=ca8b4f444dc6487fb5b037bcc1d068c9b48106dd
+          V10_RUN=35234131280
+          V10_ARTIFACT=10503111271
+          V10_DIGEST=sha256:b6e94fee5212c656185e29f551f0b47b7c18ec5067e8d87e7c2125803b31562c
+          V11_RUN=35235555346
+          V11_ARTIFACT=10502672710
+          V11_DIGEST=sha256:a355d115abc3c3c8bc89a1a1cd2c19b539263ec5e13ddb6fd65aece6989b21ee
+          V12_RUN=35235878967
+          V12_ARTIFACT=10502823058
+          V12_DIGEST=sha256:938df84c1c446243d4164298ab8709eeb6a966e32e98807df2eef305148a955f
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-build-v9.yml?ref=${V9_HEAD}" \
+            -o bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_WORKFLOW_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result NetCDF4 build closure evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v9.yml > bootstrap/v9-run.sh
+          test "$(sha256sum bootstrap/v9-run.sh | awk '{print $1}')" = "$V9_RUN_SCRIPT_SHA256"
+
+          awk '{
+            print
+            if ($0 ~ /-DENABLE_NETCDF_4=ON \\$/) print "  -DENABLE_MMAP=OFF \\" 
+          }' bootstrap/v9-run.sh > bootstrap/v10-run.sh
+          test "$(sha256sum bootstrap/v10-run.sh | awk '{print $1}')" = "$V10_RUN_SCRIPT_SHA256"
+          diff -u bootstrap/v9-run.sh bootstrap/v10-run.sh > bootstrap/v9-to-v10.diff || test "$?" = 1
+          test "$(grep -c '^+  -DENABLE_MMAP=OFF \\' bootstrap/v9-to-v10.diff)" = 1
+          sha256sum bootstrap/v9.yml bootstrap/v9-run.sh bootstrap/v10-run.sh > bootstrap/bootstrap-sha256.txt
+
+          # Exact V10 dependency/compile closure, previously terminal SUCCESS. No WASM instantiation.
+          bash bootstrap/v10-run.sh
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -qx 'ENABLE_MMAP:BOOL=OFF' work/build/netcdf/CMakeCache.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          EMAR="$(command -v emar)"
+          ROOT="$PWD/work/libRadtran-2.0.6"
+          PREFIX="$PWD/work/install"
+          ABI="$PWD/work/p-generated-abi.h"
+          test -f "$ABI"
+          test -f "$ROOT/src/Makefile.in"
+          mkdir -p work/p-matrix work/evidence/p-source-stderr work/evidence/p-source-stdout
+
+          cat > work/evidence/p-core-source-list.txt <<'EOF'
+          src/uvspec.c
+          src/ancillary.c
+          src/options_stash.c
+          src/atmosphere.c
+          src/extraterrestrial.c
+          src/aerosol.c
+          src/cloud.c
+          src/cloud3d.c
+          src/elevation2d.c
+          src/temperature2d.c
+          src/molecular.c
+          src/sza.c
+          src/albedo.c
+          src/redistribute.c
+          src/fluorescence.c
+          src/molecular3d.c
+          src/solve_rte.c
+          src/ipa.c
+          src/ck.c
+          src/ckdfu.c
+          EOF
+
+          sha256sum "$ROOT/src/Makefile.in" "$ROOT/src/uvspec.c" "$ROOT/src/ancillary.c" > work/evidence/p-source-authority-sha256.txt
+          : > work/evidence/p-source-matrix.tsv
+          printf 'source\trc\tobject_sha256\tobject_bytes\n' >> work/evidence/p-source-matrix.tsv
+          pass=0
+          fail=0
+          while IFS= read -r rel; do
+            test -n "$rel"
+            src="$ROOT/$rel"
+            test -f "$src"
+            base="$(basename "$rel" .c)"
+            obj="$PWD/work/p-matrix/${base}.o"
+            out="$PWD/work/evidence/p-source-stdout/${base}.txt"
+            err="$PWD/work/evidence/p-source-stderr/${base}.txt"
+            set +e
+            "$EMCC" -O0 -std=gnu11 -include "$ABI" -c "$src" \
+              -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$PREFIX/include" \
+              -o "$obj" >"$out" 2>"$err"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              sha="$(sha256sum "$obj" | awk '{print $1}')"
+              bytes="$(wc -c < "$obj")"
+              printf '%s\t0\t%s\t%s\n' "$rel" "$sha" "$bytes" >> work/evidence/p-source-matrix.tsv
+              pass=$((pass+1))
+            else
+              rm -f "$obj"
+              printf '%s\t%s\t-\t-\n' "$rel" "$rc" >> work/evidence/p-source-matrix.tsv
+              fail=$((fail+1))
+            fi
+          done < work/evidence/p-core-source-list.txt
+
+          printf 'pass=%s\nfail=%s\n' "$pass" "$fail" > work/evidence/p-source-matrix-summary.txt
+          while IFS= read -r rel; do sha256sum "$ROOT/$rel"; done < work/evidence/p-core-source-list.txt > work/evidence/p-core-source-bytes-sha256.txt
+
+          if [ "$pass" -gt 0 ]; then
+            "$EMAR" rcs work/p-matrix/p-core-compile-only.a work/p-matrix/*.o
+            sha256sum work/p-matrix/*.o work/p-matrix/p-core-compile-only.a > work/evidence/p-compiled-object-sha256.txt
+            wc -c work/p-matrix/*.o work/p-matrix/p-core-compile-only.a > work/evidence/p-compiled-object-size.txt
+          fi
+
+          if [ "$fail" -eq 0 ]; then
+            classification=P_CORE_SOURCE_MATRIX_ALL_COMPILE_PASS
+          else
+            classification=P_CORE_SOURCE_MATRIX_DIAGNOSTIC_HAS_COMPILE_BLOCKERS
+          fi
+          cat > work/evidence/v13-receipt.txt <<EOF
+          status=PASS
+          classification=${classification}
+          predecessor_v10_head=${V10_HEAD}
+          predecessor_v10_run=${V10_RUN}
+          predecessor_v10_artifact=${V10_ARTIFACT}
+          predecessor_v10_digest=${V10_DIGEST}
+          predecessor_v11_run=${V11_RUN}
+          predecessor_v11_artifact=${V11_ARTIFACT}
+          predecessor_v11_digest=${V11_DIGEST}
+          predecessor_v12_run=${V12_RUN}
+          predecessor_v12_artifact=${V12_ARTIFACT}
+          predecessor_v12_digest=${V12_DIGEST}
+          v11_failure_class=PRE_MATRIX_WRAPPER_TEXT_COUNT_ASSERTION
+          v12_failure_class=PRE_MATRIX_WRONG_WRAPPER_SCRIPT_HASH_TARGET
+          v13_correction=RECONSTRUCT_EXACT_V10_RUN_FROM_V9_RUN_PLUS_SINGLE_ENABLE_MMAP_OFF_DELTA
+          source_count=$((pass+fail))
+          compile_pass=${pass}
+          compile_fail=${fail}
+          wasm_instantiated=false
+          runtime_executed=false
+          p_numeric_evaluation=false
+          t_called=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result P compile-matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-source-matrix-v13
+          path: |
+            work/evidence
+            work/p-matrix
+            bootstrap/bootstrap-sha256.txt
+            bootstrap/v9-to-v10.diff
+          if-no-files-found: error
+          retention-days: 90

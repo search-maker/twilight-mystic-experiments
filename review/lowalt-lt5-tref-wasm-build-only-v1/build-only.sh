@@ -75,8 +75,13 @@ RUNTIME_DIR="$(dirname "$RUNTIME_LIB")"
 mapfile -t RUNTIME_LIBS < <(find "$RUNTIME_DIR" -maxdepth 1 -name '*.a' -print | sort)
 [[ ${#RUNTIME_LIBS[@]} -gt 0 ]] || { echo 'refusal: no runtime libraries' >&2; exit 48; }
 printf '%s\n' "${RUNTIME_LIBS[@]}" > "$DIST/fortran-runtime-libraries.txt"
+printf '%s\n' 'wasm-ld archive group: --start-group <all pinned /opt/flang/wasm/lib/*.a> --end-group' > "$DIST/runtime-link-mode.txt"
 
-"$EMCC" "$OBJ/geofast_exact.o" "$OBJ/direct_ref_full.o" "$OBJ/wasm_export.o" "${RUNTIME_LIBS[@]}" \
+# Flang runtime archives have cross-archive references (FortranRuntime -> FortranDecimal
+# for convertReal32ToString in this pinned image). Use a linker archive group so the
+# linker may rescan the exact same frozen runtime archives without changing source.
+"$EMCC" "$OBJ/geofast_exact.o" "$OBJ/direct_ref_full.o" "$OBJ/wasm_export.o" \
+  -Wl,--start-group "${RUNTIME_LIBS[@]}" -Wl,--end-group \
   -O3 -s MODULARIZE=1 -s EXPORT_NAME=Lt5TRefModule -s EXPORT_ES6=1 -s ALLOW_MEMORY_GROWTH=1 \
   -s 'EXPORTED_FUNCTIONS=["_lt5_tref_direct_ref_full","_malloc","_free"]' \
   -s ERROR_ON_UNDEFINED_SYMBOLS=1 -o "$DIST/lt5-tref.mjs"

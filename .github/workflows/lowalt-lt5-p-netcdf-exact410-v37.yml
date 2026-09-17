@@ -1,0 +1,174 @@
+name: LowAlt LT5 P NetCDF Exact410 V37 V19 HDF5_DIR Cache-Type Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v37-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v37.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay V36 and repair only exact V19 HDF5_DIR cache-type postcondition
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V36_HEAD=c38a816ddfb0cf59922ccc3caf2cd9bf75323618
+          V36_BLOB=e7ea1c4d4ed0c8d4661b6935e5eeb8dc5d898ee1
+          V36_RUN=35285661288
+          V36_JOB=105417288468
+          V36_ARTIFACT=10524621071
+          V36_ARTIFACT_DIGEST=6c49f94432c58d445841b7b3eabf5f066d7c6d64b5e4e2e8376be998f1d1209e
+          V19_SUFFIX_SHA256=a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v36.yml?ref=${V36_HEAD}" \
+            -o bootstrap/v36.yml
+          test "$(git hash-object bootstrap/v36.yml)" = "$V36_BLOB"
+          sha256sum bootstrap/v36.yml > evidence/v37-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V36 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v36.yml > bootstrap/v36-top-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v36-top-run.sh)" = 1
+          bash -n bootstrap/v36-top-run.sh
+
+          python3 - <<'PY_SPLIT_V36'
+          from pathlib import Path
+          s = Path('bootstrap/v36-top-run.sh').read_text()
+          marker = 'bash bootstrap/v36-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v37-v36-prefix.sh').write_text(a)
+          Path('bootstrap/v37-v36-tail.sh').write_text(b)
+          PY_SPLIT_V36
+          sha256sum bootstrap/v36-top-run.sh bootstrap/v37-v36-prefix.sh bootstrap/v37-v36-tail.sh >> evidence/v37-sha256.txt
+
+          # Recreate V36 exactly through construction of its child and all inherited
+          # bootstrap files, but stop before entering the candidate chain.
+          source bootstrap/v37-v36-prefix.sh
+          test -f bootstrap/v36-run.sh
+          test -f bootstrap/v19-suffix.sh
+          bash -n bootstrap/v36-run.sh
+          bash -n bootstrap/v19-suffix.sh
+          test "$(sha256sum bootstrap/v19-suffix.sh | awk '{print $1}')" = "$V19_SUFFIX_SHA256"
+          cp bootstrap/v19-suffix.sh evidence/v37-v19-suffix-before.sh
+
+          python3 - <<'PY_V37_V19'
+          from pathlib import Path
+          from difflib import unified_diff
+          p = Path('bootstrap/v19-suffix.sh')
+          before = p.read_text()
+          old = "grep -Eq '^HDF5_DIR:PATH=.*/work/install/cmake$' work/build/netcdf/CMakeCache.txt\n"
+          new = "grep -Eq '^HDF5_DIR:UNINITIALIZED=.*/work/install/cmake$' work/build/netcdf/CMakeCache.txt\n"
+          lines = before.splitlines(keepends=True)
+          assert lines.count(old) == 1, old
+          assert lines.count(new) == 0, new
+          lines[lines.index(old)] = new
+          assert lines.count(old) == 0
+          assert lines.count(new) == 1
+          after = ''.join(lines)
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v19-suffix-before-hdf5dir-cache-type', tofile='v19-suffix-after-hdf5dir-cache-type'))
+          dl = d.splitlines()
+          assert sum(1 for line in dl if line.startswith('-') and not line.startswith('---')) == 1
+          assert sum(1 for line in dl if line.startswith('+') and not line.startswith('+++')) == 1
+          Path('evidence/v37-v19-hdf5-dir-postcondition.diff').write_text(d)
+          Path('evidence/v37-v19-hdf5-dir-postcondition-receipt.txt').write_text(
+              'repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY\n'
+              'old_type=PATH\n'
+              'exact_generated_type=UNINITIALIZED\n'
+              'exact_value_suffix=/work/install/cmake\n'
+              'changed_postconditions=1\n'
+              'candidate_semantics_changed=false\n'
+              'source_or_dependency_identity_changed=false\n'
+          )
+          p.write_text(after)
+          PY_V37_V19
+
+          bash -n bootstrap/v19-suffix.sh
+          test "$(grep -c '^@@' evidence/v37-v19-hdf5-dir-postcondition.diff)" = 1
+          cp bootstrap/v19-suffix.sh evidence/v37-v19-suffix-after.sh
+          sha256sum evidence/v37-v19-suffix-before.sh evidence/v37-v19-suffix-after.sh evidence/v37-v19-hdf5-dir-postcondition.diff evidence/v37-v19-hdf5-dir-postcondition-receipt.txt >> evidence/v37-sha256.txt
+
+          cat > evidence/v37-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_REPAIR_FROZEN
+          predecessor_v36_head=${V36_HEAD}
+          predecessor_v36_blob=${V36_BLOB}
+          predecessor_v36_run=${V36_RUN}
+          predecessor_v36_job=${V36_JOB}
+          predecessor_v36_artifact=${V36_ARTIFACT}
+          predecessor_v36_artifact_digest=sha256:${V36_ARTIFACT_DIGEST}
+          predecessor_v36_first_false=V19_HDF5_DIR_CACHE_TYPE_PATH_VS_UNINITIALIZED
+          frozen_v19_suffix_sha256=${V19_SUFFIX_SHA256}
+          repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v37-preexecution-receipt.txt >> evidence/v37-sha256.txt
+
+          # PRE-RESULT compile/link diagnostic only. A new first-false remains terminal.
+          bash bootstrap/v36-run.sh
+
+          # Reachable only if the inherited chain gets past the repaired V19 suffix.
+          source bootstrap/v37-v36-tail.sh
+          test -f work/evidence/v17-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v17-receipt.txt
+          cp evidence/v37-* work/evidence/
+          cat > work/evidence/v37-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_P_COMPILE_CLOSURE_PASS_AFTER_EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_REPAIR
+          predecessor_v36_run=${V36_RUN}
+          repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable V37 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v37
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

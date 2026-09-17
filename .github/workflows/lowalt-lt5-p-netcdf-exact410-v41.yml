@@ -1,0 +1,168 @@
+name: LowAlt LT5 P NetCDF Exact410 V41 Nested Newline Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v41-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v41.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay V40 preparation and repair only nested newline serialization
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V40_HEAD=c9e022ca9091125fc956e763b74cb9dabbe8c94e
+          V40_BLOB=8796874ce68f21fcd3336b2dc91d82d6798f1d89
+          V40_RUN=35287691365
+          V40_JOB=105423573141
+          V40_ARTIFACT=10524539157
+          V40_ARTIFACT_DIGEST=24167fd031183fe17ece581498a6c306529567385279570b7067f0c282eba5b9
+          V40_TOP_SHA256=ca1633dedfee53b3a461f4f1b8d52821de37fb3f739ff70fc62630c75143963c
+          V40_DIFF_SHA256=c4d148ced16851dc58714bd58030de6659481b7e73b2d417e761dcffd2932d3c
+          V19_SUFFIX_SHA256=a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v40.yml?ref=${V40_HEAD}" \
+            -o bootstrap/v40.yml
+          test "$(git hash-object bootstrap/v40.yml)" = "$V40_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V40 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v40.yml > bootstrap/v40-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v40-run.sh)" = 1
+          bash -n bootstrap/v40-run.sh
+
+          python3 - <<'PY_V41_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v40-run.sh').read_text()
+          marker = 'bash bootstrap/v40-top-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v41-v40-prefix.sh').write_text(a)
+          Path('bootstrap/v41-v40-tail.sh').write_text(b)
+          PY_V41_SPLIT
+          bash -n bootstrap/v41-v40-prefix.sh
+
+          # Reproduce V40 exactly up to, but not including, its failing child execution.
+          source bootstrap/v41-v40-prefix.sh
+          test -f bootstrap/v40-top-run.sh
+          test "$(sha256sum bootstrap/v40-top-run.sh | awk '{print $1}')" = "$V40_TOP_SHA256"
+          test "$(sha256sum evidence/v40-v38-top-run-major-postcondition.diff | awk '{print $1}')" = "$V40_DIFF_SHA256"
+          cp bootstrap/v40-top-run.sh evidence/v41-v40-top-run-before.sh
+
+          # V40's first false is serialization-only: the generated nested Python source
+          # contains two backslashes before n, while the frozen V19 suffix has an actual
+          # line terminator. Change exactly those two generated-source escapes to one.
+          python3 - <<'PY_V41_REPAIR'
+          from pathlib import Path
+          from difflib import unified_diff
+          p = Path('bootstrap/v40-top-run.sh')
+          before = p.read_text()
+          bs = chr(92)
+          suffix = 'work/install/include/netcdf_meta.h'
+          bad = suffix + bs + bs + 'n"'
+          good = suffix + bs + 'n"'
+          assert before.count(bad) == 2, before.count(bad)
+          assert before.count(good) == 0, before.count(good)
+          after = before.replace(bad, good)
+          assert after.count(bad) == 0
+          assert after.count(good) == 2
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v40-top-run-bad-nested-newline', tofile='v41-top-run-correct-nested-newline'))
+          dl = d.splitlines()
+          assert sum(1 for x in dl if x.startswith('-') and not x.startswith('---')) == 2
+          assert sum(1 for x in dl if x.startswith('+') and not x.startswith('+++')) == 2
+          Path('evidence/v41-v40-nested-newline-serialization-only.diff').write_text(d)
+          Path('bootstrap/v41-top-run.sh').write_text(after)
+          PY_V41_REPAIR
+
+          bash -n bootstrap/v41-top-run.sh
+          cp bootstrap/v41-top-run.sh evidence/v41-top-run-before-execution.sh
+          sha256sum bootstrap/v40.yml bootstrap/v40-run.sh bootstrap/v41-v40-prefix.sh evidence/v41-v40-top-run-before.sh evidence/v41-top-run-before-execution.sh evidence/v41-v40-nested-newline-serialization-only.diff > evidence/v41-sha256.txt
+
+          cat > evidence/v41-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V41_NESTED_NEWLINE_SERIALIZATION_REPAIR_FROZEN
+          predecessor_v40_head=${V40_HEAD}
+          predecessor_v40_blob=${V40_BLOB}
+          predecessor_v40_run=${V40_RUN}
+          predecessor_v40_job=${V40_JOB}
+          predecessor_v40_artifact=${V40_ARTIFACT}
+          predecessor_v40_artifact_digest=sha256:${V40_ARTIFACT_DIGEST}
+          predecessor_v40_top_run_sha256=${V40_TOP_SHA256}
+          predecessor_v40_patch_diff_sha256=${V40_DIFF_SHA256}
+          frozen_v19_suffix_sha256=${V19_SUFFIX_SHA256}
+          predecessor_v40_first_false=NESTED_MAJOR_MATCHER_LITERAL_BACKSLASH_N_INSTEAD_OF_ACTUAL_NEWLINE
+          bad_generated_source_occurrences=2
+          repaired_generated_source_occurrences=2
+          repair=NESTED_PYTHON_NEWLINE_SERIALIZATION_ONLY
+          nc_version_major_target_unchanged=true
+          nc_version_minor_touched=false
+          nc_version_patch_touched=false
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v41-preexecution-receipt.txt >> evidence/v41-sha256.txt
+
+          # PRE-RESULT compile/link diagnostic only. A later first-false is terminal.
+          bash bootstrap/v41-top-run.sh
+
+          mkdir -p work/evidence
+          cp evidence/v41-* work/evidence/
+          cat > work/evidence/v41-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_P_COMPILE_CLOSURE_PASS_AFTER_V41_NESTED_NEWLINE_REPAIR
+          predecessor_v40_run=${V40_RUN}
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable V41 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v41
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

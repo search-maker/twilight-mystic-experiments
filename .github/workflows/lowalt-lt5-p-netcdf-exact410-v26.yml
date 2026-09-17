@@ -1,0 +1,154 @@
+name: LowAlt LT5 P NetCDF Exact410 V26 Diagnostic
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v26-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v26.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V25 PRE-RESULT candidate and capture first postcondition false
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V25_HEAD=3283570efd7b62c120e36d308c718b5c645eb930
+          V25_BLOB=a533edd1f7249f6d78293a091be2ad6eb8b66e50
+          V25_RUN=35270299384
+          V25_JOB=105367626761
+          V25_ARTIFACT=10519130154
+          V25_ARTIFACT_DIGEST=6fe3a79a628a369c6d4cda6d0eb7651f64b138f0f4a9475f200f8ff3706d0a30
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v25.yml?ref=${V25_HEAD}" \
+            -o bootstrap/v25.yml
+          test "$(git hash-object bootstrap/v25.yml)" = "$V25_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 V22 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v25.yml > bootstrap/v25-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v25-run.sh)" = 1
+          cp bootstrap/v25-run.sh evidence/v26-v25-run-before.sh
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bootstrap/v25-run.sh')
+          s = p.read_text()
+          marker = 'source bootstrap/v19-suffix.sh\n'
+          assert s.count(marker) == 1
+          probe = r'''V26_PHASE=v11_chain
+          v26_failure_probe() {
+            rc=$?
+            trap - ERR
+            set +e
+            mkdir -p evidence
+            printf 'status=DIAGNOSTIC_FAILURE_CAPTURED\nphase=%s\noriginal_exit=%s\n' "$V26_PHASE" "$rc" > evidence/v26-failure-probe.txt
+            if test -f work/build/netcdf/CMakeCache.txt; then
+              cp work/build/netcdf/CMakeCache.txt evidence/v26-CMakeCache.txt
+              grep -E '^(NETCDF_ENABLE_HDF5|NETCDF_ENABLE_MMAP|NETCDF_ENABLE_REMOTE_FUNCTIONALITY|NETCDF_ENABLE_DAP|NETCDF_ENABLE_NCZARR|NETCDF_ENABLE_PLUGINS|NETCDF_BUILD_UTILITIES|NETCDF_ENABLE_TESTS|HDF5_DIR):' work/build/netcdf/CMakeCache.txt > evidence/v26-cache-excerpt.txt || true
+            fi
+            first_false=UNCLASSIFIED
+            if test "$V26_PHASE" = v11_chain; then
+              if ! test -f work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_MISSING_CMAKE_CACHE
+              elif ! grep -Eq '^NETCDF_ENABLE_HDF5:BOOL=ON$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_HDF5_BOOL_ON
+              elif ! grep -Eq '^NETCDF_ENABLE_MMAP:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_MMAP_BOOL_OFF
+              elif ! grep -Eq '^NETCDF_ENABLE_REMOTE_FUNCTIONALITY:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_REMOTE_FUNCTIONALITY_BOOL_OFF
+              elif ! grep -Eq '^NETCDF_ENABLE_DAP:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_DAP_BOOL_OFF
+              elif ! grep -Eq '^NETCDF_ENABLE_NCZARR:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_NCZARR_BOOL_OFF
+              elif ! grep -Eq '^NETCDF_ENABLE_PLUGINS:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_ENABLE_PLUGINS_BOOL_OFF
+              elif ! grep -Eq '^NETCDF_BUILD_UTILITIES:BOOL=OFF$' work/build/netcdf/CMakeCache.txt; then
+                first_false=V11_NETCDF_BUILD_UTILITIES_BOOL_OFF
+              elif ! grep -Fq 'netcdf_c_commit=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c' work/evidence/dependency-commits.txt; then
+                first_false=V11_NETCDF_COMMIT_EVIDENCE
+              elif ! grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h; then
+                first_false=V11_NC_VERSION_MAJOR_4
+              elif ! grep -Eq '^#define[[:space:]]+NC_VERSION_MINOR[[:space:]]+10$' work/install/include/netcdf_meta.h; then
+                first_false=V11_NC_VERSION_MINOR_10
+              elif ! grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h; then
+                first_false=V11_NC_VERSION_PATCH_0
+              else
+                first_false=NO_FALSE_BEFORE_V11_EMAR_BOUNDARY
+              fi
+            else
+              first_false=OUTER_V25_FAILURE_AFTER_V11_CHAIN
+            fi
+            printf 'first_false=%s\n' "$first_false" >> evidence/v26-failure-probe.txt
+            sha256sum evidence/v26-failure-probe.txt > evidence/v26-diagnostic-sha256.txt
+            test ! -f evidence/v26-CMakeCache.txt || sha256sum evidence/v26-CMakeCache.txt >> evidence/v26-diagnostic-sha256.txt
+            test ! -f evidence/v26-cache-excerpt.txt || sha256sum evidence/v26-cache-excerpt.txt >> evidence/v26-diagnostic-sha256.txt
+            exit "$rc"
+          }
+          trap v26_failure_probe ERR
+'''
+          s = s.replace(marker, probe + marker + 'V26_PHASE=outer_v25\n')
+          assert s.count('v26_failure_probe') == 2
+          assert s.count(marker) == 1
+          p.write_text(s)
+          PY
+
+          cp bootstrap/v25-run.sh evidence/v26-v25-run-after.sh
+          diff -u evidence/v26-v25-run-before.sh evidence/v26-v25-run-after.sh > evidence/v26-diagnostic-only.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v26-diagnostic-only.diff)" = 1
+          sha256sum bootstrap/v25.yml evidence/v26-v25-run-before.sh evidence/v26-v25-run-after.sh evidence/v26-diagnostic-only.diff > evidence/v26-preexecution-sha256.txt
+          cat > evidence/v26-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_DIAGNOSTIC_ONLY_FROZEN
+          predecessor_v25_head=${V25_HEAD}
+          predecessor_v25_run=${V25_RUN}
+          predecessor_v25_job=${V25_JOB}
+          predecessor_v25_artifact=${V25_ARTIFACT}
+          predecessor_v25_artifact_digest=sha256:${V25_ARTIFACT_DIGEST}
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          diagnostic_only=true
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+          bash bootstrap/v25-run.sh
+
+      - name: Upload immutable V26 diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v26-diagnostic
+          path: |
+            evidence
+            work/evidence
+            bootstrap/v25.yml
+            bootstrap/v25-run.sh
+          if-no-files-found: warn
+          retention-days: 90

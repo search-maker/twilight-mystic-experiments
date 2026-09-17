@@ -1,0 +1,222 @@
+name: LowAlt LT5 P NetCDF Exact410 V32 YAML Indent Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v32-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v32.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay V30 and repair only exact V11 netCDF version postconditions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V30_HEAD=03f0f7906ac91913654a1f574441979196dbff35
+          V30_BLOB=417cfed496c866627df48508c500295233424d23
+          V30_RUN=35278834683
+          V30_JOB=105395816934
+          V30_ARTIFACT=10522065934
+          V30_ARTIFACT_DIGEST=7dccfaab4f9f589a4ee5994cd1985522ee114806fc06937de7e0499f7fd37262
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v30.yml?ref=${V30_HEAD}" \
+            -o bootstrap/v30.yml
+          test "$(git hash-object bootstrap/v30.yml)" = "$V30_BLOB"
+          sha256sum bootstrap/v30.yml > evidence/v31-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V30 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v30.yml > bootstrap/v30-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v30-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT_V30'
+          from pathlib import Path
+          s = Path('bootstrap/v30-run.sh').read_text()
+          marker = 'bash bootstrap/v25-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v31-v30-prefix.sh').write_text(a)
+          Path('bootstrap/v31-v30-tail.sh').write_text(b)
+          PY_SPLIT_V30
+          sha256sum bootstrap/v30-run.sh bootstrap/v31-v30-prefix.sh bootstrap/v31-v30-tail.sh >> evidence/v31-sha256.txt
+
+          # Recreate the exact V30 pre-candidate state, including V27 receipt literalization,
+          # but stop before the candidate build is entered.
+          source bootstrap/v31-v30-prefix.sh
+          test -f bootstrap/v25-run.sh
+          cp bootstrap/v25-run.sh evidence/v31-v25-run-from-v30.sh
+
+          python3 - <<'PY_SPLIT_V25'
+          from pathlib import Path
+          s = Path('bootstrap/v25-run.sh').read_text()
+          marker = 'source bootstrap/v19-suffix.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v31-v25-prefix.sh').write_text(a)
+          Path('bootstrap/v31-v25-tail.sh').write_text(b)
+          PY_SPLIT_V25
+          sha256sum bootstrap/v25-run.sh bootstrap/v31-v25-prefix.sh bootstrap/v31-v25-tail.sh >> evidence/v31-sha256.txt
+
+          # Execute only the inherited preparation prefix. This constructs the exact V30/V29/V28
+          # corrected V17-patched V13 workflow but does not enter NetCDF/HDF5/libRadtran build.
+          source bootstrap/v31-v25-prefix.sh
+          test -f bootstrap/v17-patched-v13.yml
+          cp bootstrap/v17-patched-v13.yml evidence/v31-v13-before.yml
+
+          # V30 proved the only current first-false is the V11 version-macro postcondition text
+          # representation. Inject exactly three exact-source postcondition replacements into
+          # V13's V11-source transform immediately before V13 writes its patched V11 workflow.
+          python3 - <<'PY_V31_PATCH'
+          from pathlib import Path
+          p = Path('bootstrap/v17-patched-v13.yml')
+          t = p.read_text()
+          marker = "          Path('bootstrap/v13-patched-v11.yml').write_text(s)\n"
+          assert t.count(marker) == 1
+          injection = r'''          from difflib import unified_diff
+          v31_before = s
+          v31_replacements = [
+              ("          grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h", "          grep -Fxq '#define NC_VERSION_MAJOR 4 /*!< netcdf-c major version. */' work/install/include/netcdf_meta.h"),
+              ("          grep -Eq '^#define[[:space:]]+NC_VERSION_MINOR[[:space:]]+10$' work/install/include/netcdf_meta.h", "          grep -Fxq '#define NC_VERSION_MINOR 10 /*!< netcdf-c minor version. */' work/install/include/netcdf_meta.h"),
+              ("          grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h", "          grep -Fxq '#define NC_VERSION_PATCH 0 /*!< netcdf-c patch version. */' work/install/include/netcdf_meta.h"),
+          ]
+          for old, new in v31_replacements:
+              assert s.count(old) == 1, old
+              assert s.count(new) == 0, new
+              s = s.replace(old, new)
+              assert s.count(old) == 0
+              assert s.count(new) == 1
+          v31_diff = ''.join(unified_diff(v31_before.splitlines(True), s.splitlines(True), fromfile='v11-before', tofile='v11-after'))
+          v31_lines = v31_diff.splitlines()
+          assert sum(1 for line in v31_lines if line.startswith('-') and not line.startswith('---')) == 3
+          assert sum(1 for line in v31_lines if line.startswith('+') and not line.startswith('+++')) == 3
+          Path('bootstrap/v31-v11-version-postconditions.diff').write_text(v31_diff)
+          Path('bootstrap/v31-v11-version-postconditions-receipt.txt').write_text(
+              'repair=EXACT_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY\n'
+              'major=#define NC_VERSION_MAJOR 4 /*!< netcdf-c major version. */\n'
+              'minor=#define NC_VERSION_MINOR 10 /*!< netcdf-c minor version. */\n'
+              'patch=#define NC_VERSION_PATCH 0 /*!< netcdf-c patch version. */\n'
+              'changed_postconditions=3\n'
+              'candidate_semantics_changed=false\n'
+              'source_or_dependency_identity_changed=false\n'
+          )
+          '''
+          t = t.replace(marker, injection + marker)
+          assert t.count('EXACT_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY') == 1
+          assert t.count(marker) == 1
+          p.write_text(t)
+          PY_V31_PATCH
+
+          cp bootstrap/v17-patched-v13.yml evidence/v31-v13-after.yml
+          diff -u evidence/v31-v13-before.yml evidence/v31-v13-after.yml > evidence/v31-v13-injection-only.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v31-v13-injection-only.diff)" = 1
+          grep -Fq 'EXACT_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY' evidence/v31-v13-after.yml
+          sha256sum evidence/v31-v13-before.yml evidence/v31-v13-after.yml evidence/v31-v13-injection-only.diff >> evidence/v31-sha256.txt
+
+          cat > evidence/v31-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_EXACT_V11_VERSION_POSTCONDITION_REPAIR_FROZEN
+          predecessor_v30_head=${V30_HEAD}
+          predecessor_v30_blob=${V30_BLOB}
+          predecessor_v30_run=${V30_RUN}
+          predecessor_v30_job=${V30_JOB}
+          predecessor_v30_artifact=${V30_ARTIFACT}
+          predecessor_v30_artifact_digest=sha256:${V30_ARTIFACT_DIGEST}
+          predecessor_v30_first_false=V11_NC_VERSION_MAJOR_4
+          repair=EXACT_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY
+          changed_postconditions=3
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v31-preexecution-receipt.txt >> evidence/v31-sha256.txt
+
+          # Continue the inherited PRE-RESULT chain exactly once against only the three-line
+          # V11 postcondition repair. Any next false predicate stops the run fail-closed.
+          source bootstrap/v19-suffix.sh
+          source bootstrap/v31-v25-tail.sh
+          source bootstrap/v31-v30-tail.sh
+
+          # This boundary is reachable only if every inherited postcondition also passes.
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v11-receipt.txt
+
+          cp evidence/v31-* work/evidence/
+          test ! -f bootstrap/v31-v11-version-postconditions.diff || cp bootstrap/v31-v11-version-postconditions.diff work/evidence/
+          test ! -f bootstrap/v31-v11-version-postconditions-receipt.txt || cp bootstrap/v31-v11-version-postconditions-receipt.txt work/evidence/
+          cat > work/evidence/v31-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_EXACT_VERSION_POSTCONDITION_REPAIR
+          predecessor_v30_run=${V30_RUN}
+          repair=EXACT_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v31-receipt.txt >> work/evidence/v31-sha256.txt
+
+      - name: Upload immutable V31 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v31
+          path: |
+            evidence
+            work/evidence
+            bootstrap/v30.yml
+            bootstrap/v30-run.sh
+            bootstrap/v31-v30-prefix.sh
+            bootstrap/v31-v30-tail.sh
+            bootstrap/v25-run.sh
+            bootstrap/v31-v25-prefix.sh
+            bootstrap/v31-v25-tail.sh
+            bootstrap/v17-patched-v13.yml
+            bootstrap/v31-v11-version-postconditions.diff
+            bootstrap/v31-v11-version-postconditions-receipt.txt
+          if-no-files-found: warn
+          retention-days: 90

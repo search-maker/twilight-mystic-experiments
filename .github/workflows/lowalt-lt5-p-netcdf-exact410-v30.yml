@@ -1,0 +1,173 @@
+name: LowAlt LT5 P NetCDF Exact410 V30 Receipt Scope Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v30-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v30.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V29 substrate with V27 receipt provenance literalization only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V29_HEAD=7954c0a58a52c045438d22de044b5324db9b6ddd
+          V29_BLOB=fb1392396e4e8adce850a572e6f55858d53729d6
+          V29_RUN=35278513464
+          V29_JOB=105394775433
+          V29_ARTIFACT=10521573001
+          V29_ARTIFACT_DIGEST=e5daa1dbbd4cecc6096dc485c69ffa7497796f0e459308e1526d0debdb4c45f1
+          V29_CHILD_SHA256=98f2994e442a498b1fcab14d50f6e38a3d13f5231f81b10c82425dccba9245df
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v29.yml?ref=${V29_HEAD}" \
+            -o bootstrap/v29.yml
+          test "$(git hash-object bootstrap/v29.yml)" = "$V29_BLOB"
+          sha256sum bootstrap/v29.yml > evidence/v30-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V29 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v29.yml > bootstrap/v29-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v29-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v29-run.sh').read_text()
+          marker = 'bash bootstrap/v25-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v30-v29-prefix.sh').write_text(a)
+          Path('bootstrap/v30-v29-suffix.sh').write_text(marker + b)
+          PY_SPLIT
+          sha256sum bootstrap/v29-run.sh bootstrap/v30-v29-prefix.sh bootstrap/v30-v29-suffix.sh >> evidence/v30-sha256.txt
+
+          # Recreate the exact corrected V29 child, but stop before its execution.
+          source bootstrap/v30-v29-prefix.sh
+          test -f bootstrap/v25-run.sh
+          test "$(sha256sum bootstrap/v25-run.sh | awk '{print $1}')" = "$V29_CHILD_SHA256"
+          cp bootstrap/v25-run.sh evidence/v30-v25-run-before.sh
+
+          python3 - <<'PY_V30_RECEIPT'
+          from pathlib import Path
+          p = Path('bootstrap/v25-run.sh')
+          s = p.read_text()
+          replacements = {
+              'predecessor_v27_head=${V27_HEAD}': 'predecessor_v27_head=23d53475fbbec8a79ef79d95c6d86d8c5f24a4ca',
+              'predecessor_v27_run=${V27_RUN}': 'predecessor_v27_run=35275805682',
+              'predecessor_v27_job=${V27_JOB}': 'predecessor_v27_job=105386025655',
+              'predecessor_v27_artifact=${V27_ARTIFACT}': 'predecessor_v27_artifact=10519949414',
+              'predecessor_v27_artifact_digest=sha256:${V27_ARTIFACT_DIGEST}': 'predecessor_v27_artifact_digest=sha256:dc60d4ea3d0f917b1f52f1b8ecdac619932c4ec3098c720c638cacc553bf19b1',
+              'predecessor_v27_cache_sha256=${V27_CACHE_SHA256}': 'predecessor_v27_cache_sha256=d114a5ed422c0c028570b2cc937988c068e2210a62059d923604912d26e5eb3e',
+          }
+          for old, new in replacements.items():
+              assert s.count(old) == 1, old
+              assert s.count(new) == 0, new
+              s = s.replace(old, new)
+              assert s.count(old) == 0
+              assert s.count(new) == 1
+          assert '${V27_' not in s
+          p.write_text(s)
+          PY_V30_RECEIPT
+
+          cp bootstrap/v25-run.sh evidence/v30-v25-run-after.sh
+          diff -u evidence/v30-v25-run-before.sh evidence/v30-v25-run-after.sh > evidence/v30-receipt-scope-only.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v30-receipt-scope-only.diff)" = 1
+          test "$(grep -c '^-' evidence/v30-receipt-scope-only.diff)" -ge 7
+          test "$(grep -c '^+' evidence/v30-receipt-scope-only.diff)" -ge 7
+          grep -Fq 'predecessor_v27_head=23d53475fbbec8a79ef79d95c6d86d8c5f24a4ca' evidence/v30-v25-run-after.sh
+          grep -Fq 'predecessor_v27_cache_sha256=d114a5ed422c0c028570b2cc937988c068e2210a62059d923604912d26e5eb3e' evidence/v30-v25-run-after.sh
+          bash -n bootstrap/v25-run.sh
+          sha256sum evidence/v30-v25-run-before.sh evidence/v30-v25-run-after.sh evidence/v30-receipt-scope-only.diff >> evidence/v30-sha256.txt
+
+          cat > evidence/v30-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V27_RECEIPT_PROVENANCE_LITERALIZATION_FROZEN
+          predecessor_v29_head=${V29_HEAD}
+          predecessor_v29_run=${V29_RUN}
+          predecessor_v29_job=${V29_JOB}
+          predecessor_v29_artifact=${V29_ARTIFACT}
+          predecessor_v29_artifact_digest=sha256:${V29_ARTIFACT_DIGEST}
+          repair=V28_RECEIPT_V27_PROVENANCE_LITERALIZATION_ONLY
+          exported_candidate_environment_changed=false
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v30-preexecution-receipt.txt >> evidence/v30-sha256.txt
+
+          bash bootstrap/v25-run.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_PLUGINS:INTERNAL=OFF$' work/build/netcdf/CMakeCache.txt
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v11-receipt.txt
+
+          cp evidence/v30-* work/evidence/
+          cat > work/evidence/v30-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_RECEIPT_SCOPE_REPAIR
+          predecessor_v29_run=${V29_RUN}
+          repair=V28_RECEIPT_V27_PROVENANCE_LITERALIZATION_ONLY
+          observed_cache=NETCDF_ENABLE_PLUGINS:INTERNAL=OFF
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v30-receipt.txt >> work/evidence/v30-sha256.txt
+
+      - name: Upload immutable V30 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v30
+          path: |
+            evidence
+            work/evidence
+            bootstrap/v29.yml
+            bootstrap/v29-run.sh
+            bootstrap/v30-v29-prefix.sh
+            bootstrap/v30-v29-suffix.sh
+            bootstrap/v25-run.sh
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,267 @@
+name: LowAlt LT5 P Prebuild Diagnostic V18
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-prebuild-diagnostic-v18-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-prebuild-diagnostic-v18.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze nested prebuild stage diagnostics without V9 execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+          V13_HEAD=a4c5aaa6be54b63658d9fd765c4786eb77cc7c21
+          V13_BLOB=f9eb21d03961867f83e99cc0883105eec65b9c31
+          V11_HEAD=7b3c04d4b265f70cf0c59702d24da706933ab2c1
+          V11_BLOB=474a6e8cc943afbd1388555629d6d7569a6e03dd
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+
+          fetch_raw() {
+            path="$1"; ref="$2"; out="$3"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github.raw+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/${path}?ref=${ref}" \
+              -o "$out"
+          }
+          fetch_raw .github/workflows/lowalt-lt5-p-netcdf-exact410-v13.yml "$V13_HEAD" bootstrap/v13.yml
+          fetch_raw .github/workflows/lowalt-lt5-p-netcdf-exact410-v11.yml "$V11_HEAD" bootstrap/v11.yml
+          fetch_raw .github/workflows/lowalt-lt5-p-netcdf-build-v9.yml "$V9_HEAD" bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v13.yml)" = "$V13_BLOB"
+          test "$(git hash-object bootstrap/v11.yml)" = "$V11_BLOB"
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_BLOB"
+          sha256sum bootstrap/v13.yml bootstrap/v11.yml bootstrap/v9.yml > evidence/source-sha256.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, traceback
+
+          bs = chr(92)
+          nl = chr(10)
+          v13 = Path('bootstrap/v13.yml').read_text()
+          v11 = Path('bootstrap/v11.yml').read_text()
+          v9 = Path('bootstrap/v9.yml').read_text()
+          checks = []
+
+          def add(name, observed, expected, ok=None):
+              if ok is None:
+                  ok = observed == expected
+              checks.append({'name': name, 'observed': observed, 'expected': expected, 'pass': bool(ok)})
+              return bool(ok)
+
+          def sha(text):
+              return hashlib.sha256(text.encode()).hexdigest()
+
+          def extract_run(yaml_text, stop_name):
+              marker = '        run: |' + nl
+              start = yaml_text.index(marker) + len(marker)
+              end = yaml_text.index(stop_name, start)
+              block = yaml_text[start:end]
+              out = []
+              for line in block.splitlines(keepends=True):
+                  out.append(line[10:] if line.startswith('          ') else line)
+              return ''.join(out)
+
+          # Reproduce the exact V17 patch to V13 and bind it to V17 artifact evidence.
+          pv13 = v13
+          old_needle_src = "          needle = '''          s = p.read_text()" + bs + "n'''"
+          new_needle_src = "          needle = '''          p = Path('bootstrap/v9-run.sh')" + bs + "n          s = p.read_text()" + bs + "n'''"
+          old_injection_src = "          injection = '''          s = p.read_text()" + bs + "n"
+          new_injection_src = "          injection = '''          p = Path('bootstrap/v9-run.sh')" + bs + "n          s = p.read_text()" + bs + "n"
+          add('V17_V14_SELECTOR_SOURCE_TARGET', pv13.count(old_needle_src), 1)
+          add('V17_V14_INJECTION_SOURCE_TARGET', pv13.count(old_injection_src), 1)
+          if pv13.count(old_needle_src) == 1 and pv13.count(old_injection_src) == 1:
+              pv13 = pv13.replace(old_needle_src, new_needle_src).replace(old_injection_src, new_injection_src)
+          start_marker = "          old_flag = '''  -DHDF5_HAS_COLL_METADATA_OPS=OFF"
+          end_marker = "          assert s.count(old_flag) == 1"
+          add('V17_HDF5_DEFINITION_BLOCK_TARGET', pv13.count(start_marker), 1)
+          if pv13.count(start_marker) == 1:
+              start = pv13.index(start_marker)
+              end = pv13.index(end_marker, start)
+              replacement = nl.join([
+                  "          source_bs = chr(92)",
+                  "          old_flag = '  -DHDF5_HAS_COLL_METADATA_OPS=OFF ' + (source_bs * 3) + 'n'",
+                  "          new_flag = '  -DHDF5_DIR=$PREFIX/cmake ' + (source_bs * 3) + 'n' + '  -DHDF5_HAS_COLL_METADATA_OPS=OFF ' + (source_bs * 3) + 'n'",
+              ]) + nl
+              pv13 = pv13[:start] + replacement + pv13[end:]
+          Path('evidence/v18-reproduced-v17-patched-v13.yml').write_text(pv13)
+          add('V17_PATCHED_V13_SHA256', sha(pv13), '117b319943e71f7ee39f1941cdd6cfb866e122e9f8eb9d8b4591ba0ed2076efa')
+
+          # Reproduce V13's intended static edits to raw V11, without running V11/V9.
+          pv11 = v11
+          old_count = "          test \"$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)\" = 1"
+          new_count = "          test \"$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)\" = 2"
+          add('V13_V12_COUNT_TARGET', pv11.count(old_count), 1)
+          if pv11.count(old_count) == 1:
+              pv11 = pv11.replace(old_count, new_count)
+
+          old_flag_raw = '  -DHDF5_HAS_COLL_METADATA_OPS=OFF ' + (bs * 3) + 'n'
+          new_flag_raw = '  -DHDF5_DIR=$PREFIX/cmake ' + (bs * 3) + 'n' + '  -DHDF5_HAS_COLL_METADATA_OPS=OFF ' + (bs * 3) + 'n'
+          add('V13_HDF5_SOURCE_REPRESENTATION_TARGET', pv11.count(old_flag_raw), 1)
+          if pv11.count(old_flag_raw) == 1:
+              pv11 = pv11.replace(old_flag_raw, new_flag_raw)
+
+          selector = "          p = Path('bootstrap/v9-run.sh')" + nl + "          s = p.read_text()" + nl
+          inj = selector
+          inj += "          old_cd = 'cd work" + bs + "nSTAGE=bootstrap" + bs + "n'" + nl
+          inj += "          new_cd = 'cd work" + bs + "nEVIDENCE_DIR=\"$(pwd)/evidence\"" + bs + "nSTAGE=bootstrap" + bs + "n'" + nl
+          inj += "          assert s.count(old_cd) == 1" + nl
+          inj += "          s = s.replace(old_cd, new_cd)" + nl
+          inj += "          old_sink = '> evidence/failure-receipt.txt; exit \"$rc\"'" + nl
+          inj += "          new_sink = '> \"$EVIDENCE_DIR/failure-receipt.txt\"; exit \"$rc\"'" + nl
+          inj += "          assert s.count(old_sink) == 1" + nl
+          inj += "          s = s.replace(old_sink, new_sink)" + nl
+          add('V14_UNIQUE_V9_READ_SELECTOR_TARGET', pv11.count(selector), 1)
+          if pv11.count(selector) == 1:
+              pv11 = pv11.replace(selector, inj)
+
+          Path('evidence/v18-patched-v11.yml').write_text(pv11)
+          add('V13_POST_HDF5_DIR_CARDINALITY', pv11.count('-DHDF5_DIR=$PREFIX/cmake'), 1)
+          # This is the exact V13 shell assertion retained after the V14 selector repair.
+          add('V13_POST_EVIDENCE_DIR_LINE_CARDINALITY', sum('EVIDENCE_DIR=' in line for line in pv11.splitlines()), 2)
+
+          v11_run = ''
+          try:
+              v11_run = extract_run(pv11, '      - name: Upload immutable pre-result exact410 evidence')
+              Path('evidence/v18-patched-v11-run.sh').write_text(v11_run)
+              add('V11_RUN_SET_E_CARDINALITY', v11_run.count('set -euo pipefail'), 1)
+          except Exception as exc:
+              add('V11_RUN_EXTRACTION', type(exc).__name__, 'SUCCESS', False)
+
+          v9_run = extract_run(v9, '      - name: Upload immutable pre-result NetCDF4 build closure evidence')
+          Path('bootstrap/v9-run.sh').write_text(v9_run)
+          Path('evidence/v18-v9-run.sh').write_text(v9_run)
+
+          # Named V11->V9 preconditions, all evaluated without executing V9.
+          old_cd = 'cd work' + nl + 'STAGE=bootstrap' + nl
+          old_sink = '> evidence/failure-receipt.txt; exit "$rc"'
+          old_commit = 'NETCDF_COMMIT=9328ba17cb53f13a63707547c94f4715243dafdf'
+          old_flags = ''.join([
+              '  -DENABLE_NETCDF_4=ON ' + bs + nl,
+              '  -DENABLE_HDF5=ON ' + bs + nl,
+              '  -DENABLE_DAP=OFF ' + bs + nl,
+              '  -DENABLE_BYTERANGE=OFF ' + bs + nl,
+              '  -DBUILD_UTILITIES=OFF ' + bs + nl,
+              '  -DBUILD_TESTING=OFF ' + bs + nl,
+              '  -DENABLE_TESTS=OFF ' + bs + nl,
+          ])
+          add('V11_V9_OLD_CD', v9_run.count(old_cd), 1)
+          add('V11_V9_OLD_SINK', v9_run.count(old_sink), 1)
+          add('V11_V9_OLD_COMMIT', v9_run.count(old_commit), 1)
+          add('V11_V9_OLD_FLAGS_BLOCK', v9_run.count(old_flags), 1)
+          add('V11_V9_PATCH_STAGE', v9_run.count('STAGE=netcdf-patch-freeze'), 1)
+          add('V11_V9_CONFIGURE_STAGE', v9_run.count('STAGE=netcdf-configure'), 1)
+
+          transform_compile_ok = False
+          transform_exec_ok = False
+          transform_exc = None
+          transform_src = ''
+          if v11_run:
+              try:
+                  start_marker2 = "cat > bootstrap/transform.py <<'PY'" + nl
+                  a = v11_run.index(start_marker2) + len(start_marker2)
+                  b = v11_run.index(nl + 'PY' + nl, a)
+                  transform_src = v11_run[a:b] + nl
+                  Path('evidence/v18-v11-transform.py').write_text(transform_src)
+                  code = compile(transform_src, 'v18-v11-transform.py', 'exec')
+                  transform_compile_ok = True
+                  add('V11_TRANSFORM_PYTHON_COMPILES', 'SUCCESS', 'SUCCESS')
+                  try:
+                      exec(code, {})
+                      transform_exec_ok = True
+                      add('V11_TRANSFORM_EXECUTES_TO_OUTPUT', 'SUCCESS', 'SUCCESS')
+                  except Exception as exc:
+                      transform_exc = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+                      add('V11_TRANSFORM_EXECUTES_TO_OUTPUT', type(exc).__name__, 'SUCCESS', False)
+              except Exception as exc:
+                  transform_exc = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+                  add('V11_TRANSFORM_PYTHON_COMPILES', type(exc).__name__, 'SUCCESS', False)
+
+          if transform_exc:
+              Path('evidence/v18-transform-exception.txt').write_text(transform_exc)
+
+          out_exists = Path('bootstrap/v11-run.sh').exists()
+          add('V11_RUN_OUTPUT_EXISTS', out_exists, True)
+          if out_exists:
+              out = Path('bootstrap/v11-run.sh').read_text()
+              Path('evidence/v18-v11-run-output.sh').write_text(out)
+              add('V11_OUTPUT_NEW_COMMIT', out.count('NETCDF_COMMIT=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c'), 1)
+              add('V11_OUTPUT_OLD_PATCH_STAGE', out.count('STAGE=netcdf-patch-freeze'), 0)
+              add('V11_OUTPUT_HDF5_DIR', out.count('-DHDF5_DIR=$PREFIX/cmake'), 1)
+              add('V11_OUTPUT_EVIDENCE_DIR_ASSIGNMENT', out.count('EVIDENCE_DIR="$(pwd)/evidence"'), 1)
+
+          first_false = next((c['name'] for c in checks if not c['pass']), None)
+          report = {
+              'status': 'PASS_DIAGNOSTIC',
+              'classification': 'NESTED_PREBUILD_STAGE_DIAGNOSTIC_ONLY',
+              'first_false_predicate': first_false,
+              'checks': checks,
+              'v17_run': 35264076779,
+              'v17_artifact': 10515438445,
+              'v17_artifact_digest': 'sha256:5dd163e7299070ff918f4f67f1c82dd4ef2b00eb1673a95b13b37ae08de217fc',
+              'patched_v13_sha256': sha(pv13),
+              'patched_v11_sha256': sha(pv11),
+              'v11_run_sha256': sha(v11_run) if v11_run else None,
+              'v9_run_sha256': sha(v9_run),
+              'v11_transform_sha256': sha(transform_src) if transform_src else None,
+              'v11_transform_compile_ok': transform_compile_ok,
+              'v11_transform_exec_ok': transform_exec_ok,
+              'v9_dependency_build_entered': False,
+              'wasm_instantiated': False,
+              'runtime_executed': False,
+              'lt5_result': False,
+              'c_executed': False,
+              'd_executed': False,
+              'b_selected': False,
+              'b_resolved': False,
+              'production_changed': False,
+          }
+          Path('evidence/v18-report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + nl)
+          Path('evidence/v18-receipt.txt').write_text(
+              'status=PASS_DIAGNOSTIC' + nl
+              + 'first_false_predicate=' + str(first_false) + nl
+              + 'v9_dependency_build_entered=false' + nl
+              + 'wasm_instantiated=false' + nl
+              + 'runtime_executed=false' + nl
+              + 'lt5_result=false' + nl
+              + 'c_executed=false' + nl
+              + 'd_executed=false' + nl
+              + 'b_selected=false' + nl
+              + 'b_resolved=false' + nl
+              + 'production_changed=false' + nl
+          )
+          PY
+
+          sha256sum evidence/* > evidence/v18-evidence-sha256.txt
+          grep -Fxq 'status=PASS_DIAGNOSTIC' evidence/v18-receipt.txt
+          grep -Fxq 'v9_dependency_build_entered=false' evidence/v18-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' evidence/v18-receipt.txt
+          grep -Fxq 'runtime_executed=false' evidence/v18-receipt.txt
+
+      - name: Upload immutable V18 diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-prebuild-diagnostic-v18
+          path: evidence
+          if-no-files-found: error
+          retention-days: 90

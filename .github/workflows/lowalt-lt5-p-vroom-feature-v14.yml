@@ -1,0 +1,246 @@
+name: LowAlt LT5 P VROOM Feature V14
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-vroom-feature-v14-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-vroom-feature-v14.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compile-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Restore source-proven VROOM feature and compile coherent P source matrix without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_WORKFLOW_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+          V9_RUN_SCRIPT_SHA256=d64324df6f9046fa65c13e85ad5eaac1145754afef785cb63103e2407d0babfd
+          V10_RUN_SCRIPT_SHA256=5f032bfb2d6f1d8f49ac14fdf0df89f02f8b1aba9701654aa3658c5ca5660fb5
+          V10_HEAD=ca8b4f444dc6487fb5b037bcc1d068c9b48106dd
+          V10_RUN=35234131280
+          V10_ARTIFACT=10503111271
+          V10_DIGEST=sha256:b6e94fee5212c656185e29f551f0b47b7c18ec5067e8d87e7c2125803b31562c
+          V13_HEAD=55c56f49eaebecde1fcc5a4ff23522b35c54a70d
+          V13_RUN=35236179573
+          V13_ARTIFACT=10503359351
+          V13_DIGEST=sha256:2b39b3699edcdbb31d33ddf28e870fdc62fd280e2c67aa02290896c8dd558d7c
+          R31_ARTIFACT=10166620940
+          R31_DIGEST=sha256:d02da812d260024e358cc92b62d5cbdcae6d6f7455eb4767b44242cf186d7115
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-build-v9.yml?ref=${V9_HEAD}" \
+            -o bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_WORKFLOW_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result NetCDF4 build closure evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v9.yml > bootstrap/v9-run.sh
+          test "$(sha256sum bootstrap/v9-run.sh | awk '{print $1}')" = "$V9_RUN_SCRIPT_SHA256"
+
+          awk '{
+            print
+            if ($0 ~ /-DENABLE_NETCDF_4=ON \\$/) print "  -DENABLE_MMAP=OFF \\" 
+          }' bootstrap/v9-run.sh > bootstrap/v10-run.sh
+          test "$(sha256sum bootstrap/v10-run.sh | awk '{print $1}')" = "$V10_RUN_SCRIPT_SHA256"
+          diff -u bootstrap/v9-run.sh bootstrap/v10-run.sh > bootstrap/v9-to-v10.diff || test "$?" = 1
+          test "$(grep -c '^+  -DENABLE_MMAP=OFF \\' bootstrap/v9-to-v10.diff)" = 1
+
+          # Exact V10 dependency/compile closure; inherited script never instantiates WASM.
+          bash bootstrap/v10-run.sh
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -qx 'ENABLE_MMAP:BOOL=OFF' work/build/netcdf/CMakeCache.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          EMAR="$(command -v emar)"
+          NM="/opt/emsdk/upstream/bin/llvm-nm"
+          test -x "$NM"
+          ROOT="$PWD/work/libRadtran-2.0.6"
+          PREFIX="$PWD/work/install"
+          ABI_BASE="$PWD/work/p-generated-abi.h"
+          ABI="$PWD/work/p-generated-abi-v14.h"
+          test -f "$ABI_BASE"
+          test -f "$ROOT/configure"
+          test -f "$ROOT/configure.in"
+          test -f "$ROOT/libsrc_c/vroom.c"
+          test -f "$ROOT/libsrc_c/vroom.h"
+          mkdir -p work/p-matrix-v14 work/evidence/p-source-stderr-v14 work/evidence/p-source-stdout-v14 work/evidence/r31
+
+          # Authoritative source configuration says VROOM is enabled whenever MYSTIC is found
+          # and libsrc_c/vroom.c + vroom.h exist. Freeze that source-order fact.
+          sed -n '10354,10372p' "$ROOT/configure" > work/evidence/configure-vroom-block.txt
+          sed -n '798,818p' "$ROOT/configure.in" > work/evidence/configure-in-vroom-block.txt
+          grep -q 'HAVE_VROOM="-DHAVE_VROOM=1"' work/evidence/configure-vroom-block.txt
+          grep -q 'VROOM_SOURCES="vroom.c"' work/evidence/configure-vroom-block.txt
+          grep -q 'if test $FOUND_MYSTIC = "yes"' work/evidence/configure-vroom-block.txt
+          sha256sum "$ROOT/configure" "$ROOT/configure.in" "$ROOT/libsrc_c/vroom.c" "$ROOT/libsrc_c/vroom.h" > work/evidence/vroom-source-authority-sha256.txt
+
+          # Independent frozen R31 runtime evidence proves the authoritative native binary
+          # actually contains VROOM code; this is build identity evidence only, not science.
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${R31_ARTIFACT}/zip" \
+            -o work/r31.zip
+          test "sha256:$(sha256sum work/r31.zip | awk '{print $1}')" = "$R31_DIGEST"
+          unzip -p work/r31.zip runtime/nm-all.txt > work/evidence/r31/nm-all.txt
+          grep -F ' a vroom.c' work/evidence/r31/nm-all.txt > work/evidence/r31/vroom-runtime-symbols.txt
+          grep -F ' T set_vroom_settings' work/evidence/r31/nm-all.txt >> work/evidence/r31/vroom-runtime-symbols.txt
+          test "$(wc -l < work/evidence/r31/vroom-runtime-symbols.txt)" -ge 2
+
+          # V13's sole compile blocker is cloud3d.c because sample_struct VROOM fields are
+          # conditionally present only under HAVE_VROOM. Preserve exact diagnostic provenance.
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${V13_ARTIFACT}/zip" \
+            -o work/v13.zip
+          test "sha256:$(sha256sum work/v13.zip | awk '{print $1}')" = "$V13_DIGEST"
+          unzip -p work/v13.zip work/evidence/p-source-matrix.tsv > work/evidence/v13-p-source-matrix.tsv
+          unzip -p work/v13.zip work/evidence/p-source-stderr/cloud3d.txt > work/evidence/v13-cloud3d.stderr.txt
+          test "$(awk -F '\t' '$1=="src/cloud3d.c" && $2!=0 {n++} END {print n+0}' work/evidence/v13-p-source-matrix.tsv)" = 1
+          grep -q "no member named 'Nli'" work/evidence/v13-cloud3d.stderr.txt
+          grep -q "no member named 'jacobian'" work/evidence/v13-cloud3d.stderr.txt
+
+          cp "$ABI_BASE" "$ABI"
+          printf '#define HAVE_VROOM 1\n' >> "$ABI"
+          test "$(grep -c '^#define HAVE_VROOM 1$' "$ABI")" = 1
+          cp "$ABI_BASE" work/evidence/p-generated-abi-v10-base.h
+          cp "$ABI" work/evidence/p-generated-abi-v14.h
+          diff -u "$ABI_BASE" "$ABI" > work/evidence/v10-to-v14-abi.diff || test "$?" = 1
+          test "$(grep -c '^+#define HAVE_VROOM 1$' work/evidence/v10-to-v14-abi.diff)" = 1
+          test "$(grep -c '^+' work/evidence/v10-to-v14-abi.diff)" = 2
+
+          cat > work/evidence/p-core-source-list-v14.txt <<'EOF'
+          src/uvspec.c
+          src/ancillary.c
+          src/options_stash.c
+          src/atmosphere.c
+          src/extraterrestrial.c
+          src/aerosol.c
+          src/cloud.c
+          src/cloud3d.c
+          src/elevation2d.c
+          src/temperature2d.c
+          src/molecular.c
+          src/sza.c
+          src/albedo.c
+          src/redistribute.c
+          src/fluorescence.c
+          src/molecular3d.c
+          src/solve_rte.c
+          src/ipa.c
+          src/ck.c
+          src/ckdfu.c
+          libsrc_c/vroom.c
+          EOF
+
+          : > work/evidence/p-source-matrix-v14.tsv
+          printf 'source\trc\tobject_sha256\tobject_bytes\n' >> work/evidence/p-source-matrix-v14.tsv
+          pass=0
+          fail=0
+          while IFS= read -r rel; do
+            test -n "$rel"
+            src="$ROOT/$rel"
+            test -f "$src"
+            base="$(basename "$rel" .c)"
+            obj="$PWD/work/p-matrix-v14/${base}.o"
+            out="$PWD/work/evidence/p-source-stdout-v14/${base}.txt"
+            err="$PWD/work/evidence/p-source-stderr-v14/${base}.txt"
+            set +e
+            "$EMCC" -O0 -std=gnu11 -include "$ABI" -c "$src" \
+              -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$PREFIX/include" \
+              -o "$obj" >"$out" 2>"$err"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              sha="$(sha256sum "$obj" | awk '{print $1}')"
+              bytes="$(wc -c < "$obj")"
+              printf '%s\t0\t%s\t%s\n' "$rel" "$sha" "$bytes" >> work/evidence/p-source-matrix-v14.tsv
+              pass=$((pass+1))
+            else
+              rm -f "$obj"
+              printf '%s\t%s\t-\t-\n' "$rel" "$rc" >> work/evidence/p-source-matrix-v14.tsv
+              fail=$((fail+1))
+            fi
+          done < work/evidence/p-core-source-list-v14.txt
+
+          printf 'pass=%s\nfail=%s\n' "$pass" "$fail" > work/evidence/p-source-matrix-v14-summary.txt
+          while IFS= read -r rel; do sha256sum "$ROOT/$rel"; done < work/evidence/p-core-source-list-v14.txt > work/evidence/p-core-source-bytes-v14-sha256.txt
+
+          if [ "$pass" -gt 0 ]; then
+            "$EMAR" rcs work/p-matrix-v14/p-core-vroom-compile-only.a work/p-matrix-v14/*.o
+            sha256sum work/p-matrix-v14/*.o work/p-matrix-v14/p-core-vroom-compile-only.a > work/evidence/p-compiled-object-v14-sha256.txt
+            wc -c work/p-matrix-v14/*.o work/p-matrix-v14/p-core-vroom-compile-only.a > work/evidence/p-compiled-object-v14-size.txt
+            "$NM" -u work/p-matrix-v14/p-core-vroom-compile-only.a > work/evidence/p-core-vroom-undefined-symbols.txt || true
+          fi
+
+          if [ "$fail" -eq 0 ]; then
+            classification=P_CORE_VROOM_SOURCE_MATRIX_ALL_COMPILE_PASS
+          else
+            classification=P_CORE_VROOM_SOURCE_MATRIX_DIAGNOSTIC_HAS_COMPILE_BLOCKERS
+          fi
+          cat > work/evidence/v14-receipt.txt <<EOF
+          status=PASS
+          classification=${classification}
+          predecessor_v10_head=${V10_HEAD}
+          predecessor_v10_run=${V10_RUN}
+          predecessor_v10_artifact=${V10_ARTIFACT}
+          predecessor_v10_digest=${V10_DIGEST}
+          predecessor_v13_head=${V13_HEAD}
+          predecessor_v13_run=${V13_RUN}
+          predecessor_v13_artifact=${V13_ARTIFACT}
+          predecessor_v13_digest=${V13_DIGEST}
+          r31_artifact=${R31_ARTIFACT}
+          r31_digest=${R31_DIGEST}
+          exact_feature_delta=HAVE_VROOM=1
+          feature_basis=authoritative_configure_plus_frozen_R31_runtime_vroom_symbols
+          source_count=$((pass+fail))
+          compile_pass=${pass}
+          compile_fail=${fail}
+          wasm_instantiated=false
+          runtime_executed=false
+          p_numeric_evaluation=false
+          t_called=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result VROOM compile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-vroom-feature-v14
+          path: |
+            work/evidence
+            work/p-matrix-v14
+            bootstrap/v9-to-v10.diff
+          if-no-files-found: error
+          retention-days: 90

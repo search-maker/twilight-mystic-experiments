@@ -1,0 +1,193 @@
+name: LowAlt LT5 P NetCDF Exact410 V11
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v11-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v11.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Build exact build1 NetCDF 4.10 compile closure without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_WORKFLOW_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+          EXACT_PACKAGE_SHA256=9090033a39a7e963ecabb31d5cbd264330c64ec1c4cb5f44be2e70f10cbc54c2
+          FEEDSTOCK_SHA=52d709673d44aa958680321ea745d30b58ecf103
+          FEEDSTOCK_VARIANT_BLOB=47c5f98cab0c1efa1080f915ef03166ef2ece915
+          NETCDF_TAG_OBJECT=31b2bf21bfaf16f8b38f0b10b45ffae250549288
+          NETCDF_COMMIT=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c
+
+          # Freeze exact successful build-1 feedstock/variant before any compile.
+          git init -q bootstrap/feedstock
+          git -C bootstrap/feedstock remote add origin https://github.com/conda-forge/rubin-libradtran-feedstock.git
+          git -C bootstrap/feedstock fetch -q --depth=1 origin "$FEEDSTOCK_SHA"
+          git -C bootstrap/feedstock checkout -q --detach FETCH_HEAD
+          test "$(git -C bootstrap/feedstock rev-parse HEAD)" = "$FEEDSTOCK_SHA"
+          test "$(git -C bootstrap/feedstock hash-object .ci_support/linux_64_python3.12.____cpython.yaml)" = "$FEEDSTOCK_VARIANT_BLOB"
+          awk 'BEGIN{ok=0} /^libnetcdf:$/ {getline; if ($0 != "- 4.10.0") exit 71; ok=1} END{if (!ok) exit 72}' \
+            bootstrap/feedstock/.ci_support/linux_64_python3.12.____cpython.yaml
+          grep -Fq 'sha256: 999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85' bootstrap/feedstock/recipe/meta.yaml
+          grep -Fq 'number: 1' bootstrap/feedstock/recipe/meta.yaml
+          printf 'exact_package_sha256=%s\nfeedstock_sha=%s\nvariant_blob=%s\nlibnetcdf=4.10.0\n' \
+            "$EXACT_PACKAGE_SHA256" "$FEEDSTOCK_SHA" "$FEEDSTOCK_VARIANT_BLOB" > bootstrap/build1-netcdf-provenance.txt
+          sha256sum bootstrap/feedstock/.ci_support/linux_64_python3.12.____cpython.yaml bootstrap/feedstock/recipe/meta.yaml >> bootstrap/build1-netcdf-provenance.txt
+
+          # Freeze upstream annotated v4.10.0 tag -> exact commit identity.
+          git init -q bootstrap/netcdf-tag
+          git -C bootstrap/netcdf-tag remote add origin https://github.com/Unidata/netcdf-c.git
+          git -C bootstrap/netcdf-tag fetch -q --depth=1 origin refs/tags/v4.10.0:refs/tags/v4.10.0
+          test "$(git -C bootstrap/netcdf-tag rev-parse refs/tags/v4.10.0)" = "$NETCDF_TAG_OBJECT"
+          test "$(git -C bootstrap/netcdf-tag rev-parse 'refs/tags/v4.10.0^{}')" = "$NETCDF_COMMIT"
+          printf 'tag=v4.10.0\ntag_object=%s\ncommit=%s\n' "$NETCDF_TAG_OBJECT" "$NETCDF_COMMIT" > bootstrap/netcdf-tag-provenance.txt
+
+          # Reuse only the already-frozen V9 build/compile harness shape, then apply a
+          # deterministic pre-result source/provenance correction from 4.9.2 -> 4.10.0.
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-build-v9.yml?ref=${V9_HEAD}" \
+            -o bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_WORKFLOW_BLOB"
+          sha256sum bootstrap/v9.yml > bootstrap/v9-workflow-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result NetCDF4 build closure evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v9.yml > bootstrap/v9-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v9-run.sh)" = 1
+          test "$(grep -c 'NETCDF_COMMIT=9328ba17cb53f13a63707547c94f4715243dafdf' bootstrap/v9-run.sh)" = 1
+          test "$(grep -c 'STAGE=netcdf-patch-freeze' bootstrap/v9-run.sh)" = 1
+          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 1
+
+          cat > bootstrap/transform.py <<'PY'
+          from pathlib import Path
+          p = Path('bootstrap/v9-run.sh')
+          s = p.read_text()
+          old_commit = 'NETCDF_COMMIT=9328ba17cb53f13a63707547c94f4715243dafdf'
+          new_commit = 'NETCDF_COMMIT=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c'
+          assert s.count(old_commit) == 1
+          s = s.replace(old_commit, new_commit)
+
+          start = s.index('STAGE=netcdf-patch-freeze')
+          end = s.index('STAGE=netcdf-configure', start)
+          replacement = '''STAGE=netcdf-source-freeze\n# V11 uses unmodified NetCDF-C 4.10.0 source; cross-compile facts are supplied only as CMake cache inputs.\ncp src/netcdf-c/CMakeLists.txt evidence/netcdf-CMakeLists-before.txt\ncp src/netcdf-c/CMakeLists.txt evidence/netcdf-CMakeLists-after.txt\nsha256sum evidence/netcdf-CMakeLists-before.txt evidence/netcdf-CMakeLists-after.txt > evidence/netcdf-cmake-source-sha256.txt\n\n'''
+          s = s[:start] + replacement + s[end:]
+
+          old_flags = '''  -DENABLE_NETCDF_4=ON \\\n  -DENABLE_HDF5=ON \\\n  -DENABLE_DAP=OFF \\\n  -DENABLE_BYTERANGE=OFF \\\n  -DBUILD_UTILITIES=OFF \\\n  -DBUILD_TESTING=OFF \\\n  -DENABLE_TESTS=OFF \\\n'''
+          new_flags = '''  -DNETCDF_ENABLE_HDF5=ON \\\n  -DNETCDF_ENABLE_MMAP=OFF \\\n  -DNETCDF_ENABLE_REMOTE_FUNCTIONALITY=OFF \\\n  -DNETCDF_ENABLE_DAP=OFF \\\n  -DNETCDF_ENABLE_NCZARR=OFF \\\n  -DNETCDF_ENABLE_PLUGINS=OFF \\\n  -DNETCDF_ENABLE_BYTERANGE=OFF \\\n  -DNETCDF_BUILD_UTILITIES=OFF \\\n  -DBUILD_TESTING=OFF \\\n  -DHDF5_HAS_COLL_METADATA_OPS=OFF \\\n  -DHAS_READCHUNKS=OFF \\\n  -DHAS_HDF5_ROS3=OFF \\\n'''
+          assert s.count(old_flags) == 1
+          s = s.replace(old_flags, new_flags)
+          Path('bootstrap/v11-run.sh').write_text(s)
+          PY
+          python3 bootstrap/transform.py
+          test "$(grep -c 'NETCDF_COMMIT=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c 'STAGE=netcdf-patch-freeze' bootstrap/v11-run.sh || true)" = 0
+          test "$(grep -c -- '-DNETCDF_ENABLE_HDF5=ON' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c -- '-DNETCDF_ENABLE_MMAP=OFF' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c -- '-DNETCDF_ENABLE_REMOTE_FUNCTIONALITY=OFF' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c -- '-DNETCDF_ENABLE_NCZARR=OFF' bootstrap/v11-run.sh)" = 1
+          sha256sum bootstrap/v9-run.sh bootstrap/v11-run.sh > bootstrap/run-script-sha256.txt
+          diff -u bootstrap/v9-run.sh bootstrap/v11-run.sh > bootstrap/v9-to-v11.diff || test "$?" = 1
+
+          # Build/compile/link only. The inherited harness itself freezes no-runtime receipts
+          # and never instantiates the generated WASM.
+          bash bootstrap/v11-run.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_HDF5:BOOL=ON$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_MMAP:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_REMOTE_FUNCTIONALITY:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_DAP:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_NCZARR:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_PLUGINS:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_BUILD_UTILITIES:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Fq 'netcdf_c_commit=80c6d3fbe3ee5b80014b0078c17b737b7e14d80c' work/evidence/dependency-commits.txt
+          grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h
+          grep -Eq '^#define[[:space:]]+NC_VERSION_MINOR[[:space:]]+10$' work/install/include/netcdf_meta.h
+          grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          emar t work/install/lib/libnetcdf.a > work/evidence/libnetcdf-archive-members.txt
+          if grep -i 'mmapio' work/evidence/libnetcdf-archive-members.txt; then
+            echo 'FAIL: mmapio member present despite NETCDF_ENABLE_MMAP=OFF' >&2
+            exit 91
+          fi
+          if grep -F 'mremap' work/evidence/netcdf-link.stderr.txt; then
+            echo 'FAIL: unexpected mremap diagnostic' >&2
+            exit 92
+          fi
+
+          cp bootstrap/build1-netcdf-provenance.txt work/evidence/
+          cp bootstrap/netcdf-tag-provenance.txt work/evidence/
+          cp bootstrap/v9-workflow-sha256.txt work/evidence/
+          cp bootstrap/run-script-sha256.txt work/evidence/
+          cp bootstrap/v9-to-v11.diff work/evidence/
+          sha256sum work/install/include/netcdf.h work/install/include/netcdf_meta.h \
+            work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm \
+            > work/evidence/v11-key-output-sha256.txt
+          wc -c work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm \
+            > work/evidence/v11-key-output-size.txt
+
+          cat > work/evidence/v11-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS
+          exact_package_sha256=${EXACT_PACKAGE_SHA256}
+          exact_feedstock_sha=${FEEDSTOCK_SHA}
+          exact_feedstock_variant_blob=${FEEDSTOCK_VARIANT_BLOB}
+          exact_feedstock_libnetcdf=4.10.0
+          netcdf_tag=v4.10.0
+          netcdf_tag_object=${NETCDF_TAG_OBJECT}
+          netcdf_commit=${NETCDF_COMMIT}
+          netcdf_source_modified=false
+          NETCDF_ENABLE_MMAP=OFF
+          NETCDF_ENABLE_REMOTE_FUNCTIONALITY=OFF
+          NETCDF_ENABLE_NCZARR=OFF
+          NETCDF_ENABLE_PLUGINS=OFF
+          ancillary_compile=PASS
+          netCDF_functions_compile=PASS
+          netcdf_static_link=PASS
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result exact410 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v11
+          path: |
+            work/evidence
+            bootstrap/build1-netcdf-provenance.txt
+            bootstrap/netcdf-tag-provenance.txt
+            bootstrap/v9-workflow-sha256.txt
+            bootstrap/run-script-sha256.txt
+            bootstrap/v9-to-v11.diff
+          if-no-files-found: error
+          retention-days: 90

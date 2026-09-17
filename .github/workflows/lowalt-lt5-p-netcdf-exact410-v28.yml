@@ -1,0 +1,212 @@
+name: LowAlt LT5 P NetCDF Exact410 V28 Postcondition Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v28-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v28.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V27 diagnostic substrate with one source-derived postcondition repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V27_HEAD=23d53475fbbec8a79ef79d95c6d86d8c5f24a4ca
+          V27_BLOB=82f0c9c1cc7fcb80c82767205db7990c1ee3e716
+          V27_RUN=35275805682
+          V27_JOB=105386025655
+          V27_ARTIFACT=10519949414
+          V27_ARTIFACT_DIGEST=dc60d4ea3d0f917b1f52f1b8ecdac619932c4ec3098c720c638cacc553bf19b1
+          V27_CACHE_SHA256=d114a5ed422c0c028570b2cc937988c068e2210a62059d923604912d26e5eb3e
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v27.yml?ref=${V27_HEAD}" \
+            -o bootstrap/v27.yml
+          test "$(git hash-object bootstrap/v27.yml)" = "$V27_BLOB"
+          sha256sum bootstrap/v27.yml > evidence/v28-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V26 diagnostic evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v27.yml > bootstrap/v27-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v27-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v27-run.sh').read_text()
+          marker = 'bash bootstrap/v25-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v28-v27-prefix.sh').write_text(a)
+          Path('bootstrap/v28-v27-suffix.sh').write_text(marker + b)
+          PY_SPLIT
+          sha256sum bootstrap/v27-run.sh bootstrap/v28-v27-prefix.sh bootstrap/v28-v27-suffix.sh >> evidence/v28-sha256.txt
+
+          # Execute only V27's already-frozen diagnostic preparation. This fetches and
+          # prepares the exact V25 candidate script but stops before any dependency build.
+          source bootstrap/v28-v27-prefix.sh
+          test -f bootstrap/v25-run.sh
+          cp bootstrap/v25-run.sh evidence/v28-v25-run-before.sh
+
+          python3 - <<'PY_V28_OUTER'
+          from pathlib import Path
+          p = Path('bootstrap/v25-run.sh')
+          s = p.read_text()
+
+          # V27 proved this exact candidate deterministically stores the dependent option as
+          # INTERNAL=OFF. Update only the inherited diagnostic expectation so any later
+          # first-false predicate remains observable after the single authorized repair.
+          old_diag = "^NETCDF_ENABLE_PLUGINS:BOOL=OFF$"
+          new_diag = "^NETCDF_ENABLE_PLUGINS:INTERNAL=OFF$"
+          old_diag_label = "V11_NETCDF_ENABLE_PLUGINS_BOOL_OFF"
+          new_diag_label = "V11_NETCDF_ENABLE_PLUGINS_INTERNAL_OFF"
+          assert s.count(old_diag) == 1
+          assert s.count(new_diag) == 0
+          assert s.count(old_diag_label) == 1
+          assert s.count(new_diag_label) == 0
+          s = s.replace(old_diag, new_diag)
+          s = s.replace(old_diag_label, new_diag_label)
+
+          # Inject exactly one representation-only V11 postcondition correction into the
+          # already-frozen V13 harness after V25 finishes its prior representation repairs
+          # and immediately before the inherited V19 suffix enters the build chain.
+          marker = 'V26_PHASE=v11_chain\n'
+          assert s.count(marker) == 1
+          repair = r"""cp bootstrap/v17-patched-v13.yml evidence/v28-v13-before-plugin-postcondition-repair.yml
+          python3 - <<'PY_V28_PLUGIN_POSTCONDITION'
+          from pathlib import Path
+          p2 = Path('bootstrap/v17-patched-v13.yml')
+          t = p2.read_text()
+          needle = "          Path('bootstrap/v13-patched-v11.yml').write_text(s)\\n"
+          assert t.count(needle) == 1
+          injection = (
+              "          old_plugin_postcondition = \\\"          grep -Eq '^NETCDF_ENABLE_PLUGINS:BOOL=OFF$' work/build/netcdf/CMakeCache.txt\\\"\\n"
+              "          new_plugin_postcondition = \\\"          grep -Eq '^NETCDF_ENABLE_PLUGINS:INTERNAL=OFF$' work/build/netcdf/CMakeCache.txt\\\"\\n"
+              "          assert s.count(old_plugin_postcondition) == 1\\n"
+              "          assert s.count(new_plugin_postcondition) == 0\\n"
+              "          s = s.replace(old_plugin_postcondition, new_plugin_postcondition)\\n"
+              "          assert s.count(old_plugin_postcondition) == 0\\n"
+              "          assert s.count(new_plugin_postcondition) == 1\\n"
+              "          Path('evidence/v28-plugin-postcondition-before-after.txt').write_text(old_plugin_postcondition + '\\\\n' + new_plugin_postcondition + '\\\\n')\\n"
+          )
+          t = t.replace(needle, injection + needle)
+          assert t.count("old_plugin_postcondition =") == 1
+          assert t.count("new_plugin_postcondition =") == 1
+          p2.write_text(t)
+          PY_V28_PLUGIN_POSTCONDITION
+          cp bootstrap/v17-patched-v13.yml evidence/v28-v13-after-plugin-postcondition-repair.yml
+          diff -u evidence/v28-v13-before-plugin-postcondition-repair.yml evidence/v28-v13-after-plugin-postcondition-repair.yml > evidence/v28-plugin-postcondition-only.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v28-plugin-postcondition-only.diff)" = 1
+          grep -Fq "NETCDF_ENABLE_PLUGINS:BOOL=OFF" evidence/v28-plugin-postcondition-only.diff
+          grep -Fq "NETCDF_ENABLE_PLUGINS:INTERNAL=OFF" evidence/v28-plugin-postcondition-only.diff
+          sha256sum evidence/v28-v13-before-plugin-postcondition-repair.yml evidence/v28-v13-after-plugin-postcondition-repair.yml evidence/v28-plugin-postcondition-only.diff >> evidence/v28-sha256.txt
+          cat > evidence/v28-preexecution-receipt.txt <<EOF_V28
+          status=PRE_RESULT_SINGLE_POSTCONDITION_REPRESENTATION_REPAIR_FROZEN
+          predecessor_v27_head=${V27_HEAD}
+          predecessor_v27_run=${V27_RUN}
+          predecessor_v27_job=${V27_JOB}
+          predecessor_v27_artifact=${V27_ARTIFACT}
+          predecessor_v27_artifact_digest=sha256:${V27_ARTIFACT_DIGEST}
+          predecessor_v27_cache_sha256=${V27_CACHE_SHA256}
+          predecessor_v27_first_false=V11_NETCDF_ENABLE_PLUGINS_BOOL_OFF
+          repair=V11_NETCDF_ENABLE_PLUGINS_CACHE_TYPE_BOOL_TO_INTERNAL_ONLY
+          build_flag_changed=false
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF_V28
+          """
+          s = s.replace(marker, repair + marker)
+          assert s.count('PY_V28_PLUGIN_POSTCONDITION') == 2
+          assert s.count('V11_NETCDF_ENABLE_PLUGINS_CACHE_TYPE_BOOL_TO_INTERNAL_ONLY') == 1
+          p.write_text(s)
+          PY_V28_OUTER
+
+          cp bootstrap/v25-run.sh evidence/v28-v25-run-after.sh
+          diff -u evidence/v28-v25-run-before.sh evidence/v28-v25-run-after.sh > evidence/v28-v25-harness.diff || test "$?" = 1
+          sha256sum evidence/v28-v25-run-before.sh evidence/v28-v25-run-after.sh evidence/v28-v25-harness.diff >> evidence/v28-sha256.txt
+
+          # Execute the exact inherited PRE-RESULT compile/link-only chain with the single
+          # source-derived postcondition cache-type repair. No generated WASM is instantiated.
+          bash bootstrap/v25-run.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_PLUGINS:INTERNAL=OFF$' work/build/netcdf/CMakeCache.txt
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v11-receipt.txt
+
+          cp evidence/v28-* work/evidence/
+          cat > work/evidence/v28-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_PLUGIN_CACHE_TYPE_POSTCONDITION_REPAIR
+          predecessor_v27_run=${V27_RUN}
+          predecessor_v27_artifact=${V27_ARTIFACT}
+          predecessor_v27_artifact_digest=sha256:${V27_ARTIFACT_DIGEST}
+          repair=V11_NETCDF_ENABLE_PLUGINS_CACHE_TYPE_BOOL_TO_INTERNAL_ONLY
+          observed_cache=NETCDF_ENABLE_PLUGINS:INTERNAL=OFF
+          build_flag=-DNETCDF_ENABLE_PLUGINS=OFF
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v28-receipt.txt >> work/evidence/v28-sha256.txt
+
+      - name: Upload immutable V28 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v28
+          path: |
+            evidence
+            work/evidence
+            bootstrap/v27.yml
+            bootstrap/v27-run.sh
+            bootstrap/v28-v27-prefix.sh
+            bootstrap/v28-v27-suffix.sh
+            bootstrap/v25-run.sh
+          if-no-files-found: warn
+          retention-days: 90

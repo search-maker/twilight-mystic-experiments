@@ -1,0 +1,150 @@
+name: LowAlt LT5 P NetCDF Exact410 V13
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v13-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v13.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Execute exact410 candidate with frozen HDF5 package discovery repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+          V11_HEAD=7b3c04d4b265f70cf0c59702d24da706933ab2c1
+          V11_WORKFLOW_BLOB=474a6e8cc943afbd1388555629d6d7569a6e03dd
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v11.yml?ref=${V11_HEAD}" \
+            -o bootstrap/v11.yml
+          test "$(git hash-object bootstrap/v11.yml)" = "$V11_WORKFLOW_BLOB"
+          sha256sum bootstrap/v11.yml > bootstrap/v11-workflow-sha256.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bootstrap/v11.yml')
+          s = p.read_text()
+
+          # Preserve the already-proven V12 repair: V9 contains this literal exactly twice,
+          # once in recipe provenance and once in the actual CMake flag.
+          old_count = '''          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 1'''
+          new_count = '''          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 2'''
+          assert s.count(old_count) == 1
+          s = s.replace(old_count, new_count)
+
+          # CMake 3.28 FindHDF5 first tries the installed HDF5 config package. V12 proved
+          # HDF5 1.14.3 installed $PREFIX/cmake/hdf5-config.cmake before NetCDF configure.
+          # Bind that exact package directory; do not change source or dependency versions.
+          old_flag = '''  -DHDF5_HAS_COLL_METADATA_OPS=OFF \\\n'''
+          new_flag = '''  -DHDF5_DIR=$PREFIX/cmake \\\n  -DHDF5_HAS_COLL_METADATA_OPS=OFF \\\n'''
+          assert s.count(old_flag) == 1
+          s = s.replace(old_flag, new_flag)
+
+          # V12 also proved the inherited ERR trap becomes cwd-relative inside build/netcdf.
+          # Anchor only its evidence sink to work/evidence; this changes no candidate bytes.
+          needle = '''          s = p.read_text()\n'''
+          injection = '''          s = p.read_text()\n          old_cd = 'cd work\\nSTAGE=bootstrap\\n'\n          new_cd = 'cd work\\nEVIDENCE_DIR="$(pwd)/evidence"\\nSTAGE=bootstrap\\n'\n          assert s.count(old_cd) == 1\n          s = s.replace(old_cd, new_cd)\n          old_sink = '> evidence/failure-receipt.txt; exit "$rc"'\n          new_sink = '> "$EVIDENCE_DIR/failure-receipt.txt"; exit "$rc"'\n          assert s.count(old_sink) == 1\n          s = s.replace(old_sink, new_sink)\n'''
+          assert s.count(needle) == 1
+          s = s.replace(needle, injection)
+
+          Path('bootstrap/v13-patched-v11.yml').write_text(s)
+          PY
+
+          sha256sum bootstrap/v13-patched-v11.yml > bootstrap/v13-patched-v11-sha256.txt
+          diff -u bootstrap/v11.yml bootstrap/v13-patched-v11.yml > bootstrap/v11-to-v13.diff || test "$?" = 1
+          test "$(grep -c -- '-DHDF5_DIR=$PREFIX/cmake' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c 'EVIDENCE_DIR=' bootstrap/v13-patched-v11.yml)" = 2
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v13-patched-v11.yml > bootstrap/v13-inner.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v13-inner.sh)" = 1
+          sha256sum bootstrap/v13-inner.sh > bootstrap/v13-inner-sha256.txt
+
+          # Compile/link only. The inherited candidate never instantiates WASM.
+          bash bootstrap/v13-inner.sh
+
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v11-receipt.txt
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^HDF5_DIR:PATH=.*/work/install/cmake$' work/build/netcdf/CMakeCache.txt
+          grep -Fq 'Found HDF5 version: 1.14.3' work/evidence/netcdf-configure.txt
+          grep -Fq 'Using HDF5 include dir:' work/evidence/netcdf-configure.txt
+          grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h
+          grep -Eq '^#define[[:space:]]+NC_VERSION_MINOR[[:space:]]+10$' work/install/include/netcdf_meta.h
+          grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h
+
+          cp bootstrap/v11-workflow-sha256.txt work/evidence/
+          cp bootstrap/v13-patched-v11-sha256.txt work/evidence/
+          cp bootstrap/v11-to-v13.diff work/evidence/
+          cp bootstrap/v13-inner-sha256.txt work/evidence/
+          sha256sum work/install/include/netcdf.h work/install/include/netcdf_meta.h \
+            work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm \
+            > work/evidence/v13-key-output-sha256.txt
+          wc -c work/install/lib/libnetcdf.a work/ancillary.o work/netCDF_functions.o work/netcdf-link-probe.wasm \
+            > work/evidence/v13-key-output-size.txt
+
+          cat > work/evidence/v13-receipt.txt <<'EOF'
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_HDF5_CONFIG_DISCOVERY_P_COMPILE_CLOSURE_PASS
+          predecessor_v12_run=35252160303
+          predecessor_v12_terminal=failure
+          predecessor_v12_root=FindHDF5_missing_HDF5_LIBRARIES_HDF5_HL_LIBRARIES_C_HL
+          hdf5_config_binding=$PREFIX/cmake
+          netcdf_source_modified=false
+          libradtran_source_modified=false
+          candidate_semantics_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result exact410 V13 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v13
+          path: |
+            work/evidence
+            bootstrap/v11-workflow-sha256.txt
+            bootstrap/v13-patched-v11-sha256.txt
+            bootstrap/v11-to-v13.diff
+            bootstrap/v13-inner-sha256.txt
+          if-no-files-found: error
+          retention-days: 90

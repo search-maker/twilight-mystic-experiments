@@ -1,0 +1,267 @@
+name: LowAlt LT5 P Source Closure V4
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-source-closure-v4-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-source-closure-v4.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-closure-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze P source units and exact compile blockers without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/evidence work/objects
+          cd work
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > evidence/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          export EMCC="$(command -v emcc)"
+          export PYTHON="$(command -v python3)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+
+          STAGE=source
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/8894652347/zip" \
+            -o source-audit.zip
+          test "$(sha256sum source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p source-audit.zip libRadtran-2.0.6.tar.gz > libRadtran-2.0.6.tar.gz
+          test "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc libRadtran-2.0.6.tar.gz > source.tar
+          test "$(sha256sum source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf source.tar
+
+          STAGE=static-and-compile
+          cat > probe.py <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+
+          root = pathlib.Path('libRadtran-2.0.6').resolve()
+          evidence = pathlib.Path('evidence')
+          objects = pathlib.Path('objects')
+          evidence.mkdir(exist_ok=True)
+          objects.mkdir(exist_ok=True)
+          tokens = ('setup_and_call_solver', 'optical_properties')
+          exts = {'.c','.h','.cc','.cpp','.inc','.f','.F','.f90','.F90'}
+
+          def sha256(p):
+              h = hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def classify(text, token, rel):
+              out = []
+              for m in re.finditer(r'\b' + re.escape(token) + r'\s*\(', text):
+                  op = text.find('(', m.start())
+                  depth = 0
+                  i = op
+                  quote = None
+                  esc = False
+                  while i < len(text):
+                      ch = text[i]
+                      if quote:
+                          if esc: esc = False
+                          elif ch == '\\': esc = True
+                          elif ch == quote: quote = None
+                      else:
+                          if ch in ('\"', "'"): quote = ch
+                          elif ch == '(': depth += 1
+                          elif ch == ')':
+                              depth -= 1
+                              if depth == 0: break
+                      i += 1
+                  if i >= len(text): continue
+                  j = i + 1
+                  while j < len(text):
+                      if text.startswith('/*', j):
+                          k = text.find('*/', j + 2)
+                          if k < 0: break
+                          j = k + 2; continue
+                      if text.startswith('//', j):
+                          k = text.find('\n', j + 2)
+                          j = len(text) if k < 0 else k + 1; continue
+                      if text[j].isspace(): j += 1; continue
+                      break
+                  nxt = text[j] if j < len(text) else ''
+                  kind = 'definition' if nxt == '{' else ('declaration' if nxt == ';' else 'other')
+                  line = text.count('\n', 0, m.start()) + 1
+                  out.append({'path': rel, 'line': line, 'kind': kind, 'nextSignificantChar': nxt})
+              return out
+
+          occurrences = {t: [] for t in tokens}
+          files = [p for p in root.rglob('*') if p.is_file() and p.suffix in exts]
+          for p in files:
+              text = p.read_text(encoding='utf-8', errors='replace')
+              rel = p.relative_to(root).as_posix()
+              for token in tokens:
+                  if token in text:
+                      occurrences[token].extend(classify(text, token, rel))
+
+          definitions = {t: [x for x in occurrences[t] if x['kind'] == 'definition'] for t in tokens}
+          for token in tokens:
+              if len(definitions[token]) != 1:
+                  raise SystemExit(f'definition cardinality mismatch for {token}: {definitions[token]}')
+
+          units = []
+          for token in tokens:
+              unit = definitions[token][0]['path']
+              if unit not in units: units.append(unit)
+
+          include_re = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
+          roots = [root, root/'src', root/'src_c', root/'libsrc_c', root/'libsrc_f']
+          per_unit = {}
+          unresolved = []
+          for unit in units:
+              p = root / unit
+              refs = []
+              for line_no, line in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                  m = include_re.match(line)
+                  if not m: continue
+                  name = m.group(1)
+                  found = None
+                  for candidate in [p.parent/name] + [r/name for r in roots]:
+                      if candidate.is_file():
+                          found = candidate.resolve(); break
+                  rec = {'line': line_no, 'include': name, 'resolved': found is not None}
+                  if found:
+                      rec.update({'path': found.relative_to(root).as_posix(), 'sha256': sha256(found), 'size': found.stat().st_size})
+                  else:
+                      unresolved.append({'unit': unit, 'line': line_no, 'include': name})
+                  refs.append(rec)
+              per_unit[unit] = refs
+
+          generated_candidates = []
+          needles = {'tipa.h', 'tipa', 'HAVE_TIPA'}
+          for p in root.rglob('*'):
+              if not p.is_file(): continue
+              rel = p.relative_to(root).as_posix()
+              name_hit = 'tipa' in p.name.lower()
+              text_hit = False
+              excerpts = []
+              if p.stat().st_size <= 2_000_000:
+                  try:
+                      text = p.read_text(encoding='utf-8', errors='replace')
+                  except Exception:
+                      text = ''
+                  if any(n in text for n in needles):
+                      text_hit = True
+                      for n, line in enumerate(text.splitlines(), 1):
+                          if any(needle in line for needle in needles):
+                              excerpts.append({'line': n, 'text': line.strip()[:500]})
+                              if len(excerpts) >= 30: break
+              if name_hit or text_hit:
+                  generated_candidates.append({'path': rel, 'size': p.stat().st_size, 'sha256': sha256(p), 'nameHit': name_hit, 'textHit': text_hit, 'excerpts': excerpts})
+
+          emcc = os.environ['EMCC']
+          compile_records = []
+          include_args = ['-I'+str(root), '-I'+str(root/'src'), '-I'+str(root/'src_c'), '-I'+str(root/'libsrc_c'), '-I'+str(root/'libsrc_f')]
+          for idx, unit in enumerate(units, 1):
+              src = root / unit
+              stem = pathlib.Path(unit).stem
+              obj = objects / f'{idx}-{stem}.o'
+              cmd = [emcc, '-O0', '-std=gnu11', '-c', str(src), *include_args, '-o', str(obj)]
+              cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              stdout_path = evidence / f'{idx}-{stem}.stdout.txt'
+              stderr_path = evidence / f'{idx}-{stem}.stderr.txt'
+              stdout_path.write_text(cp.stdout, encoding='utf-8')
+              stderr_path.write_text(cp.stderr, encoding='utf-8')
+              rec = {
+                  'unit': unit,
+                  'command': cmd,
+                  'returncode': cp.returncode,
+                  'stdoutSha256': sha256(stdout_path),
+                  'stderrSha256': sha256(stderr_path),
+                  'objectProduced': obj.is_file(),
+              }
+              if obj.is_file():
+                  rec.update({'objectSha256': sha256(obj), 'objectSize': obj.stat().st_size})
+                  (evidence / obj.name).write_bytes(obj.read_bytes())
+              compile_records.append(rec)
+
+          out = {
+              'schema': 4,
+              'classification': 'PRE_RESULT_P_SOURCE_UNITS_AND_COMPILE_BLOCKERS_ONLY',
+              'sourceDecodedTarSha256': '999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85',
+              'definitions': definitions,
+              'occurrences': occurrences,
+              'governingTranslationUnits': units,
+              'directQuotedIncludes': per_unit,
+              'unresolvedDirectQuotedIncludes': unresolved,
+              'tipaAndGeneratedHeaderCandidates': generated_candidates,
+              'compileRecords': compile_records,
+              'predecessorRuns': {
+                  'v1': {'run': 35225234639, 'failure': 'prototype_definition_classifier'},
+                  'v2': {'run': 35225560960, 'failure': 'incorrect_same_translation_unit_assumption'},
+                  'v3': {'run': 35225990252, 'failure': 'compile_probe_harness_before_first_status_record'},
+              },
+              'wasmInstantiated': False,
+              'runtimeExecuted': False,
+              'lt5Result': False,
+              'cExecuted': False,
+              'dExecuted': False,
+              'bSelected': False,
+              'bResolved': False,
+              'productionChanged': False,
+          }
+          (evidence/'p-source-compile-blockers.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          (evidence/'definition-units.txt').write_text('\n'.join(units) + '\n', encoding='utf-8')
+          with (evidence/'compile-status.tsv').open('w', encoding='utf-8') as f:
+              for rec in compile_records:
+                  f.write(f"{rec['unit']}\tRC_{rec['returncode']}\t{rec.get('objectSha256','-')}\t{rec.get('objectSize','-')}\n")
+          PY
+          "$PYTHON" probe.py
+
+          STAGE=receipt
+          {
+            echo 'schema=4'
+            echo 'classification=PRE_RESULT_P_SOURCE_UNITS_AND_COMPILE_BLOCKERS_ONLY'
+            echo 'bSelected=false'
+            echo 'bResolved=false'
+            echo 'wasmInstantiated=false'
+            echo 'runtimeExecuted=false'
+            echo 'lt5Result=false'
+            echo 'cExecuted=false'
+            echo 'dExecuted=false'
+            echo 'productionChanged=false'
+            echo 'source_artifact_id=8894652347'
+            echo 'source_decoded_tar_sha256=999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85'
+            echo 'container_image=ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5'
+            echo "emcc_sha256=$(sha256sum "$EMCC" | awk '{print $1}')"
+            echo "blocker_json_sha256=$(sha256sum evidence/p-source-compile-blockers.json | awk '{print $1}')"
+            echo '--- definition-units ---'
+            cat evidence/definition-units.txt
+            echo '--- compile-status ---'
+            cat evidence/compile-status.tsv
+            echo '--- diagnostics ---'
+            for LOG in evidence/*.stderr.txt; do echo "### $LOG"; sed -n '1,120p' "$LOG"; done
+          } > evidence/completion-receipt.txt
+          find evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence/manifest.sha256
+
+      - name: Upload immutable pre-result P compile-blocker evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-source-closure-v4
+          path: work/evidence/
+          if-no-files-found: error
+          retention-days: 90

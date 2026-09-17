@@ -1,0 +1,187 @@
+name: LowAlt LT5 P Runtime Provider Closure V17
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-runtime-provider-closure-v17-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-runtime-provider-closure-v17.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  static-runtime-closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Resolve V15 hard orphans through exact Emscripten linker/loader without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/v16 work/evidence-v17
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\np_numeric_evaluation=false\nt_called=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > work/evidence-v17/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          NM=/opt/emsdk/upstream/bin/llvm-nm
+          WASMLD="$(command -v wasm-ld)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+          test "$(sha256sum "$NM" | awk '{print $1}')" = "da29308c85338327ff5ff7e638a4d6337ea16250d9eee5788326f93c9f78f3d9"
+          test "$(sha256sum "$WASMLD" | awk '{print $1}')" = "7ad9a0e8fe6d0e79b71172d731e33872c0274e49fceb7b516d774876d5a58ade"
+
+          STAGE=v16-bind
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/10513329289/zip" \
+            -o work/v16.zip
+          test "sha256:$(sha256sum work/v16.zip | awk '{print $1}')" = "sha256:fdd0a2e5314b95246b63e2810400f66bc2f8f8ae36e35af3f4fd72786d0ea2ba"
+          unzip -q work/v16.zip -d work/v16
+          test "$(jq -r .classification work/v16/runtime-provider-summary.json)" = P_RUNTIME_PROVIDER_CLOSURE_PARTIAL
+          cp work/v16/expected-hard-orphans.txt work/evidence-v17/expected-hard-orphans.txt
+          cp work/v16/native-source-summary.json work/evidence-v17/native-source-summary-v16.json
+          cp work/v16/native-r31-source-map.tsv work/evidence-v17/native-r31-source-map-v16.tsv
+
+          STAGE=runtime-probe
+          cat > work/runtime-probe.c <<'EOF'
+          #include <stddef.h>
+          extern void __assert_fail(const char*, const char*, unsigned int, const char*);
+          extern int __fpclassifyl(long double);
+          extern long double __extendsftf2(float);
+          static int plus_one(int x) { volatile int y=x; return y+1; }
+          typedef int (*probe_fn)(int);
+          volatile probe_fn lowalt_probe_fn = plus_one;
+          __attribute__((used,noinline)) long double lowalt_runtime_probe(float x) {
+            volatile unsigned char local[33];
+            local[0]=1;
+            if (x == -9999.0f) __assert_fail("x", "runtime-probe.c", 1u, "lowalt_runtime_probe");
+            return __extendsftf2(x) + (long double)__fpclassifyl((long double)x) + (long double)lowalt_probe_fn(local[0]);
+          }
+          EOF
+          "$EMCC" -O0 -fno-builtin -c work/runtime-probe.c -o work/runtime-probe.o
+          "$NM" work/runtime-probe.o > work/evidence-v17/runtime-probe-object-nm.txt
+          for s in __assert_fail __extendsftf2 __fpclassifyl __indirect_function_table __stack_pointer; do grep -q "$s" work/evidence-v17/runtime-probe-object-nm.txt; done
+
+          # Link first so the exact Emscripten cache/system-library closure is materialized.
+          "$EMCC" work/runtime-probe.o --no-entry -O0 \
+            -Wl,-Map=work/runtime-probe.map \
+            -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=worker \
+            -sALLOW_MEMORY_GROWTH=0 -sINITIAL_MEMORY=16777216 \
+            -sERROR_ON_UNDEFINED_SYMBOLS=1 \
+            -sEXPORTED_FUNCTIONS='["_lowalt_runtime_probe"]' \
+            -sEXPORTED_RUNTIME_METHODS='[]' \
+            -o work/runtime-probe.mjs
+          test -s work/runtime-probe.wasm
+          test -s work/runtime-probe.mjs
+          cp work/runtime-probe.map work/evidence-v17/runtime-probe-link.map
+          grep -n '__assert_fail' work/runtime-probe.mjs > work/evidence-v17/mjs-assert-fail-lines.txt || true
+          sha256sum work/runtime-probe.c work/runtime-probe.o work/runtime-probe.mjs work/runtime-probe.wasm work/runtime-probe.map > work/evidence-v17/runtime-probe-sha256.txt
+
+          STAGE=postlink-provider-scan
+          find /opt/emsdk/upstream/emscripten/cache /opt/flang/wasm/lib -type f \( -name '*.a' -o -name '*.o' \) -print 2>/dev/null | LC_ALL=C sort -u > work/evidence-v17/postlink-static-files.txt
+          : > work/evidence-v17/postlink-function-providers.tsv
+          while IFS= read -r f; do
+            "$NM" --defined-only "$f" 2>/dev/null | awk -v file="$f" '
+              $NF=="__assert_fail" || $NF=="__extendsftf2" || $NF=="__fpclassifyl" {print $NF "\t" file}
+            ' >> work/evidence-v17/postlink-function-providers.tsv || true
+          done < work/evidence-v17/postlink-static-files.txt
+          LC_ALL=C sort -u -o work/evidence-v17/postlink-function-providers.tsv work/evidence-v17/postlink-function-providers.tsv
+
+          STAGE=wasm-static-inspection
+          python3 - <<'PY'
+          import json, pathlib, re
+          hard=pathlib.Path('work/evidence-v17/expected-hard-orphans.txt').read_text().split()
+          nm=pathlib.Path('work/evidence-v17/runtime-probe-object-nm.txt').read_text(errors='replace')
+          mjs=pathlib.Path('work/runtime-probe.mjs').read_text(errors='replace')
+          providers={s:[] for s in hard}
+          for line in pathlib.Path('work/evidence-v17/postlink-function-providers.tsv').read_text(errors='replace').splitlines():
+              if '\t' in line:
+                  s,f=line.split('\t',1); providers.setdefault(s,[]).append(f)
+          data=pathlib.Path('work/runtime-probe.wasm').read_bytes()
+          if data[:8] != b'\x00asm\x01\x00\x00\x00': raise SystemExit('bad wasm')
+          def uleb(pos):
+              v=0; sh=0
+              while True:
+                  b=data[pos]; pos+=1; v|=(b&127)<<sh
+                  if not b&128:return v,pos
+                  sh+=7
+          def name(pos):
+              n,pos=uleb(pos); return data[pos:pos+n].decode(),pos+n
+          imports=[]; pos=8
+          while pos<len(data):
+              sid=data[pos]; pos+=1; size,pos=uleb(pos); end=pos+size
+              if sid==2:
+                  n,pos=uleb(pos)
+                  for _ in range(n):
+                      mod,pos=name(pos); nm_,pos=name(pos); kind=data[pos]; pos+=1
+                      if kind==0: _,pos=uleb(pos)
+                      elif kind==1:
+                          pos+=1; flags,pos=uleb(pos); _,pos=uleb(pos)
+                          if flags&1: _,pos=uleb(pos)
+                      elif kind==2:
+                          flags,pos=uleb(pos); _,pos=uleb(pos)
+                          if flags&1: _,pos=uleb(pos)
+                      elif kind==3: pos+=2
+                      elif kind==4: pos+=1; _,pos=uleb(pos)
+                      else: raise SystemExit('unknown import kind')
+                      imports.append((mod,nm_,kind))
+              pos=end
+          imported={n for _,n,_ in imports}
+          pathlib.Path('work/evidence-v17/runtime-probe-final-imports.tsv').write_text(''.join(f'{m}\t{n}\t{k}\n' for m,n,k in imports))
+          assert all(s in nm for s in hard)
+          special_not_imported=all(s not in imported for s in ('__indirect_function_table','__stack_pointer'))
+          numeric_helpers_not_imported=all(s not in imported for s in ('__extendsftf2','__fpclassifyl'))
+          assert_import=('env','__assert_fail',0) in imports
+          loader_assert_mentions=mjs.count('__assert_fail')
+          # Emscripten ES6 loader must contain a concrete JS-side binding/implementation for the sole hard-symbol import.
+          loader_assert_bound=bool(re.search(r'(?:function\s+___assert_fail\b|(?:var|let|const)\s+___assert_fail\s*=|___assert_fail\s*=\s*\()', mjs))
+          complete=special_not_imported and numeric_helpers_not_imported and assert_import and loader_assert_bound
+          summary={
+            'schema':2,
+            'purpose':'LOWALT_LT5_P_PRE_RESULT_RUNTIME_PROVIDER_CLOSURE_V17',
+            'classification':'P_RUNTIME_PROVIDER_CLOSURE_COMPLETE' if complete else 'P_RUNTIME_PROVIDER_CLOSURE_PARTIAL',
+            'object_has_all_five_v15_hard_symbols':all(s in nm for s in hard),
+            'special_linker_symbols_not_final_imports':special_not_imported,
+            'numeric_helpers_not_final_imports':numeric_helpers_not_imported,
+            'final_hard_symbol_imports':sorted(s for s in hard if s in imported),
+            'assert_fail_import_exact_env_function':assert_import,
+            'assert_fail_loader_binding_found':loader_assert_bound,
+            'assert_fail_loader_mention_count':loader_assert_mentions,
+            'postlink_static_provider_counts':{s:len(set(providers.get(s,[]))) for s in ('__assert_fail','__extendsftf2','__fpclassifyl')},
+            'wasm_linked':True,
+            'wasm_instantiated':False,
+            'runtime_executed':False,
+            'p_numeric_evaluation':False,
+            't_called':False,
+            'lt5_result':False,
+            'c_executed':False,
+            'd_executed':False,
+            'b_selected':False,
+            'b_resolved':False,
+            'production_changed':False,
+          }
+          pathlib.Path('work/evidence-v17/runtime-provider-summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+
+          STAGE=receipt
+          sha256sum work/evidence-v17/* > work/evidence-v17/evidence-sha256.txt
+          cat work/evidence-v17/runtime-provider-summary.json
+
+      - name: Upload immutable pre-result runtime closure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-runtime-provider-closure-v17
+          path: work/evidence-v17
+          if-no-files-found: error
+          retention-days: 90

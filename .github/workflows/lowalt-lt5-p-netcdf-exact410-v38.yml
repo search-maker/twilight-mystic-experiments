@@ -1,0 +1,203 @@
+name: LowAlt LT5 P NetCDF Exact410 V38 Runtime V19 HDF5_DIR Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v38-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v38.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay V36 and inject exact V19 repair at runtime creation point
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V36_HEAD=c38a816ddfb0cf59922ccc3caf2cd9bf75323618
+          V36_BLOB=e7ea1c4d4ed0c8d4661b6935e5eeb8dc5d898ee1
+          V36_RUN=35285661288
+          V36_JOB=105417288468
+          V36_ARTIFACT=10524621071
+          V36_ARTIFACT_DIGEST=6c49f94432c58d445841b7b3eabf5f066d7c6d64b5e4e2e8376be998f1d1209e
+          V19_SUFFIX_SHA256=a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v36.yml?ref=${V36_HEAD}" \
+            -o bootstrap/v36.yml
+          test "$(git hash-object bootstrap/v36.yml)" = "$V36_BLOB"
+          sha256sum bootstrap/v36.yml > evidence/v38-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V36 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v36.yml > bootstrap/v36-top-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v36-top-run.sh)" = 1
+          bash -n bootstrap/v36-top-run.sh
+
+          python3 - <<'PY_SPLIT_V36'
+          from pathlib import Path
+          s = Path('bootstrap/v36-top-run.sh').read_text()
+          marker = 'bash bootstrap/v36-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v38-v36-prefix.sh').write_text(a)
+          Path('bootstrap/v38-v36-tail.sh').write_text(b)
+          PY_SPLIT_V36
+          sha256sum bootstrap/v36-top-run.sh bootstrap/v38-v36-prefix.sh bootstrap/v38-v36-tail.sh >> evidence/v38-sha256.txt
+
+          # Recreate the exact V36 child construction. Do not execute it yet.
+          source bootstrap/v38-v36-prefix.sh
+          test -f bootstrap/v36-run.sh
+          bash -n bootstrap/v36-run.sh
+          cp bootstrap/v36-run.sh evidence/v38-v36-run-before.sh
+
+          # V37 proved the suffix does not exist until v36-run reaches its inherited
+          # preparation. Insert the exact repair immediately before the unique runtime
+          # source point where the suffix is guaranteed to have been created.
+          python3 - <<'PY_V38_INSERT'
+          from pathlib import Path
+          from difflib import unified_diff
+          p = Path('bootstrap/v36-run.sh')
+          before = p.read_text()
+          needle = 'source bootstrap/v19-suffix.sh\n'
+          assert before.count(needle) == 1
+          insertion = r'''test -f bootstrap/v19-suffix.sh
+          python3 - <<'PY_V38_V19'
+          from pathlib import Path
+          from hashlib import sha256
+          from difflib import unified_diff
+          p = Path('bootstrap/v19-suffix.sh')
+          before = p.read_text()
+          assert sha256(p.read_bytes()).hexdigest() == 'a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5'
+          old = "grep -Eq '^HDF5_DIR:PATH=.*/work/install/cmake$' work/build/netcdf/CMakeCache.txt\n"
+          new = "grep -Eq '^HDF5_DIR:UNINITIALIZED=.*/work/install/cmake$' work/build/netcdf/CMakeCache.txt\n"
+          lines = before.splitlines(keepends=True)
+          assert lines.count(old) == 1, old
+          assert lines.count(new) == 0, new
+          lines[lines.index(old)] = new
+          after = ''.join(lines)
+          assert after.splitlines(keepends=True).count(old) == 0
+          assert after.splitlines(keepends=True).count(new) == 1
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v19-suffix-before-hdf5dir-cache-type', tofile='v19-suffix-after-hdf5dir-cache-type'))
+          dl = d.splitlines()
+          assert sum(1 for line in dl if line.startswith('-') and not line.startswith('---')) == 1
+          assert sum(1 for line in dl if line.startswith('+') and not line.startswith('+++')) == 1
+          Path('evidence/v38-v19-hdf5-dir-postcondition.diff').write_text(d)
+          Path('evidence/v38-v19-hdf5-dir-postcondition-receipt.txt').write_text(
+              'repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY\n'
+              'old_type=PATH\n'
+              'exact_generated_type=UNINITIALIZED\n'
+              'exact_value_suffix=/work/install/cmake\n'
+              'pre_repair_suffix_sha256=a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5\n'
+              'changed_postconditions=1\n'
+              'candidate_semantics_changed=false\n'
+              'source_or_dependency_identity_changed=false\n'
+          )
+          p.write_text(after)
+          PY_V38_V19
+          bash -n bootstrap/v19-suffix.sh
+          '''
+          after = before.replace(needle, insertion + needle)
+          assert after.count(needle) == 1
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v36-run-before-v38-runtime-insertion', tofile='v38-run-after-runtime-insertion'))
+          assert d
+          Path('evidence/v38-v36-run-to-v38-run.diff').write_text(d)
+          Path('bootstrap/v38-run.sh').write_text(after)
+          PY_V38_INSERT
+
+          bash -n bootstrap/v38-run.sh
+          cp bootstrap/v38-run.sh evidence/v38-run-before-execution.sh
+
+          # Extract and syntax-check the inserted Python transformation before execution.
+          python3 - <<'PY_V38_EXTRACT'
+          from pathlib import Path
+          s = Path('bootstrap/v38-run.sh').read_text()
+          start = "python3 - <<'PY_V38_V19'\n"
+          end = "\nPY_V38_V19\n"
+          assert s.count(start) == 1
+          a = s.index(start) + len(start)
+          b = s.index(end, a)
+          Path('bootstrap/v38-v19.py').write_text(s[a:b] + '\n')
+          PY_V38_EXTRACT
+          python3 -m py_compile bootstrap/v38-v19.py
+          sha256sum evidence/v38-v36-run-before.sh evidence/v38-run-before-execution.sh evidence/v38-v36-run-to-v38-run.diff bootstrap/v38-v19.py >> evidence/v38-sha256.txt
+
+          cat > evidence/v38-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V19_RUNTIME_POINT_REPAIR_FROZEN
+          predecessor_v36_head=${V36_HEAD}
+          predecessor_v36_blob=${V36_BLOB}
+          predecessor_v36_run=${V36_RUN}
+          predecessor_v36_job=${V36_JOB}
+          predecessor_v36_artifact=${V36_ARTIFACT}
+          predecessor_v36_artifact_digest=sha256:${V36_ARTIFACT_DIGEST}
+          predecessor_v37_first_false=PREBUILD_HARNESS_ORDERING_SUFFIX_NOT_YET_CREATED
+          frozen_v19_suffix_sha256=${V19_SUFFIX_SHA256}
+          repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY_AT_RUNTIME_CREATION_POINT
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v38-preexecution-receipt.txt >> evidence/v38-sha256.txt
+
+          # PRE-RESULT compile/link diagnostic only. A new first-false remains terminal.
+          bash bootstrap/v38-run.sh
+
+          # Reachable only if the inherited chain gets past the repaired V19 suffix.
+          source bootstrap/v38-v36-tail.sh
+          cp evidence/v38-* work/evidence/
+          cat > work/evidence/v38-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_P_COMPILE_CLOSURE_PASS_AFTER_EXACT_V19_HDF5_DIR_RUNTIME_POINT_REPAIR
+          predecessor_v36_run=${V36_RUN}
+          repair=EXACT_V19_HDF5_DIR_CACHE_TYPE_POSTCONDITION_ONLY_AT_RUNTIME_CREATION_POINT
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable V38 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v38
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

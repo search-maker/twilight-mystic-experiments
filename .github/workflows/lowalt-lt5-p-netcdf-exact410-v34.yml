@@ -1,0 +1,181 @@
+name: LowAlt LT5 P NetCDF Exact410 V34 Serialization-Safe Outer Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v34-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v34.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V32 payload with serialization-safe V13 outer repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V32_HEAD=60d7d784549732b3a0316fb83019dc8186918f67
+          V32_BLOB=a966fb8b148f4202c61b97ff8a037c8dcea67158
+          V32_RUN=35280966694
+          V32_JOB=105402541921
+          V32_ARTIFACT=10521833849
+          V32_ARTIFACT_DIGEST=9fb4aefedfd9b0d9a9418545d2074d62f615ab80b22dc722ebe54a6e59edd14e
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v32.yml?ref=${V32_HEAD}" \
+            -o bootstrap/v32.yml
+          test "$(git hash-object bootstrap/v32.yml)" = "$V32_BLOB"
+          sha256sum bootstrap/v32.yml > evidence/v34-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V31 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v32.yml > bootstrap/v32-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v32-run.sh)" = 1
+          bash -n bootstrap/v32-run.sh
+          cp bootstrap/v32-run.sh bootstrap/v34-run.sh
+
+          python3 - <<'PY_V34_PATCH'
+          from pathlib import Path
+          p = Path('bootstrap/v34-run.sh')
+          s = p.read_text()
+          needle = "t = t.replace(marker, injection + marker)\n"
+          assert s.count(needle) == 1
+          insert_lines = [
+              "from difflib import unified_diff",
+              "v33_outer_before = t",
+              "v33_outer_replacements = [",
+              "    (\"          grep -Eq '^#define[[:space:]]+NC_VERSION_MAJOR[[:space:]]+4$' work/install/include/netcdf_meta.h\", \"          grep -Fxq '#define NC_VERSION_MAJOR 4 /*!< netcdf-c major version. */' work/install/include/netcdf_meta.h\"),",
+              "    (\"          grep -Eq '^#define[[:space:]]+NC_VERSION_MINOR[[:space:]]+10$' work/install/include/netcdf_meta.h\", \"          grep -Fxq '#define NC_VERSION_MINOR 10 /*!< netcdf-c minor version. */' work/install/include/netcdf_meta.h\"),",
+              "    (\"          grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h\", \"          grep -Fxq '#define NC_VERSION_PATCH 0 /*!< netcdf-c patch version. */' work/install/include/netcdf_meta.h\"),",
+              "]",
+              "for old, new in v33_outer_replacements:",
+              "    assert t.count(old) == 1, old",
+              "    assert t.count(new) == 0, new",
+              "    t = t.replace(old, new)",
+              "    assert t.count(old) == 0",
+              "    assert t.count(new) == 1",
+              "v33_outer_diff = ''.join(unified_diff(v33_outer_before.splitlines(True), t.splitlines(True), fromfile='v13-outer-before', tofile='v13-outer-after'))",
+              "v33_outer_lines = v33_outer_diff.splitlines()",
+              "assert sum(1 for line in v33_outer_lines if line.startswith('-') and not line.startswith('---')) == 3",
+              "assert sum(1 for line in v33_outer_lines if line.startswith('+') and not line.startswith('+++')) == 3",
+              "Path('bootstrap/v33-v13-outer-version-postconditions.diff').write_text(v33_outer_diff)",
+              "Path('bootstrap/v33-v13-outer-version-postconditions-receipt.txt').write_text(",
+              "    'repair=EXACT_V13_OUTER_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY\\n'",
+              "    'major=#define NC_VERSION_MAJOR 4 /*!< netcdf-c major version. */\\n'",
+              "    'minor=#define NC_VERSION_MINOR 10 /*!< netcdf-c minor version. */\\n'",
+              "    'patch=#define NC_VERSION_PATCH 0 /*!< netcdf-c patch version. */\\n'",
+              "    'changed_outer_postconditions=3\\n'",
+              "    'candidate_semantics_changed=false\\n'",
+              "    'source_or_dependency_identity_changed=false\\n'",
+              ")",
+          ]
+          insert = "\n".join(insert_lines) + "\n"
+          s = s.replace(needle, insert + needle)
+          assert s.count('EXACT_V13_OUTER_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY') == 1
+          assert s.count(needle) == 1
+          p.write_text(s)
+          PY_V34_PATCH
+
+          bash -n bootstrap/v34-run.sh
+          diff -u bootstrap/v32-run.sh bootstrap/v34-run.sh > evidence/v34-v32-run-to-v34-run.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v34-v32-run-to-v34-run.diff)" = 1
+          grep -Fq 'EXACT_V13_OUTER_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY' bootstrap/v34-run.sh
+
+          python3 - <<'PY_EXTRACT_PATCHER'
+          from pathlib import Path
+          s = Path('bootstrap/v34-run.sh').read_text()
+          start = "python3 - <<'PY_V31_PATCH'\n"
+          end = "\nPY_V31_PATCH\n"
+          assert s.count(start) == 1
+          a = s.index(start) + len(start)
+          b = s.index(end, a)
+          Path('bootstrap/v34-patcher.py').write_text(s[a:b] + "\n")
+          PY_EXTRACT_PATCHER
+          python3 -m py_compile bootstrap/v34-patcher.py
+          sha256sum bootstrap/v32-run.sh bootstrap/v34-run.sh bootstrap/v34-patcher.py evidence/v34-v32-run-to-v34-run.diff >> evidence/v34-sha256.txt
+
+          cat > evidence/v34-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_SERIALIZATION_SAFE_EXACT_V13_OUTER_VERSION_POSTCONDITION_REPAIR_FROZEN
+          predecessor_v32_head=${V32_HEAD}
+          predecessor_v32_blob=${V32_BLOB}
+          predecessor_v32_run=${V32_RUN}
+          predecessor_v32_job=${V32_JOB}
+          predecessor_v32_artifact=${V32_ARTIFACT}
+          predecessor_v32_artifact_digest=sha256:${V32_ARTIFACT_DIGEST}
+          predecessor_v32_first_false=V13_OUTER_NC_VERSION_MAJOR_4
+          repair=EXACT_V13_OUTER_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY
+          changed_outer_postconditions=3
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v34-preexecution-receipt.txt >> evidence/v34-sha256.txt
+
+          # PRE-RESULT compile/link diagnostic only. The inherited chain may stop at a new first-false.
+          bash bootstrap/v34-run.sh
+
+          # Reachable only if the inherited chain passes through V13 and all outer receipts.
+          test -f work/evidence/v13-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v13-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_HDF5_CONFIG_DISCOVERY_P_COMPILE_CLOSURE_PASS' work/evidence/v13-receipt.txt
+          test -f bootstrap/v33-v13-outer-version-postconditions.diff
+          cp evidence/v34-* work/evidence/
+          cp bootstrap/v33-v13-outer-version-postconditions.diff work/evidence/
+          cp bootstrap/v33-v13-outer-version-postconditions-receipt.txt work/evidence/
+          cat > work/evidence/v34-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_V11_AND_V13_EXACT_VERSION_POSTCONDITION_REPAIRS
+          predecessor_v32_run=${V32_RUN}
+          repair=EXACT_V13_OUTER_NETCDF_4_10_0_VERSION_MACRO_TRAILING_COMMENT_POSTCONDITIONS_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v34-receipt.txt >> work/evidence/v34-sha256.txt
+
+      - name: Upload immutable V34 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v34
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

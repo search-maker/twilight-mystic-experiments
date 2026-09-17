@@ -1,0 +1,118 @@
+name: LowAlt LT5 P NetCDF Exact410 V12
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v12-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v12.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Execute V11 candidate with only the proven two-site cardinality repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap
+          V11_HEAD=7b3c04d4b265f70cf0c59702d24da706933ab2c1
+          V11_WORKFLOW_BLOB=474a6e8cc943afbd1388555629d6d7569a6e03dd
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v11.yml?ref=${V11_HEAD}" \
+            -o bootstrap/v11.yml
+          test "$(git hash-object bootstrap/v11.yml)" = "$V11_WORKFLOW_BLOB"
+          sha256sum bootstrap/v11.yml > bootstrap/v11-workflow-sha256.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bootstrap/v11.yml')
+          s = p.read_text()
+          old = '''          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 1'''
+          new = '''          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 2'''
+          assert s.count(old) == 1
+          s2 = s.replace(old, new)
+          assert s2.count(old) == 0
+          assert s2.count(new) == 1
+          Path('bootstrap/v12-patched-v11.yml').write_text(s2)
+          PY
+          sha256sum bootstrap/v12-patched-v11.yml > bootstrap/v12-patched-v11-sha256.txt
+          diff -u bootstrap/v11.yml bootstrap/v12-patched-v11.yml > bootstrap/v11-to-v12.diff || test "$?" = 1
+          test "$(grep -c '^[-+]          test .*ENABLE_NETCDF_4=ON.*bootstrap/v9-run.sh.* = [12]$' bootstrap/v11-to-v12.diff)" = 2
+          test "$(grep -c '^@@' bootstrap/v11-to-v12.diff)" = 1
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v12-patched-v11.yml > bootstrap/v12-inner.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v12-inner.sh)" = 1
+          test "$(grep -c -- "test \"\$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)\" = 2" bootstrap/v12-inner.sh)" = 1
+          sha256sum bootstrap/v12-inner.sh > bootstrap/v12-inner-sha256.txt
+
+          # Compile/link-only execution of the unchanged V11 candidate after the one
+          # demonstrated harness fix. The inner candidate never instantiates WASM.
+          bash bootstrap/v12-inner.sh
+
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v11-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v11-receipt.txt
+
+          cp bootstrap/v11-workflow-sha256.txt work/evidence/
+          cp bootstrap/v12-patched-v11-sha256.txt work/evidence/
+          cp bootstrap/v11-to-v12.diff work/evidence/
+          cp bootstrap/v12-inner-sha256.txt work/evidence/
+          cat > work/evidence/v12-receipt.txt <<'EOF'
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS_AFTER_SINGLE_HARNESS_REPAIR
+          predecessor_v11_run=35251798364
+          predecessor_v11_terminal=failure
+          predecessor_v11_failure=precompile_literal_cardinality_expected_1_actual_2
+          repair=expected_literal_count_1_to_2_only
+          candidate_semantics_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result exact410 V12 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v12
+          path: |
+            work/evidence
+            bootstrap/v11-workflow-sha256.txt
+            bootstrap/v12-patched-v11-sha256.txt
+            bootstrap/v11-to-v12.diff
+            bootstrap/v12-inner-sha256.txt
+          if-no-files-found: error
+          retention-days: 90

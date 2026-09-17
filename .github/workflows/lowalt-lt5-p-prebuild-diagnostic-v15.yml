@@ -1,0 +1,181 @@
+name: LowAlt LT5 P Prebuild Diagnostic V15
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-prebuild-diagnostic-v15-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-prebuild-diagnostic-v15.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze named prebuild predicate diagnostics only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+          V11_HEAD=7b3c04d4b265f70cf0c59702d24da706933ab2c1
+          V11_BLOB=474a6e8cc943afbd1388555629d6d7569a6e03dd
+          V9_HEAD=61b47f944f0bbb6b7ce1536241382951b035312d
+          V9_BLOB=43754f5e3c7e9682c32334252e39fbe80f98c99d
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v11.yml?ref=${V11_HEAD}" \
+            -o bootstrap/v11.yml
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-build-v9.yml?ref=${V9_HEAD}" \
+            -o bootstrap/v9.yml
+          test "$(git hash-object bootstrap/v11.yml)" = "$V11_BLOB"
+          test "$(git hash-object bootstrap/v9.yml)" = "$V9_BLOB"
+          sha256sum bootstrap/v11.yml bootstrap/v9.yml > evidence/input-sha256.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          v11 = Path('bootstrap/v11.yml').read_text()
+          v9 = Path('bootstrap/v9.yml').read_text()
+
+          def extract_run(yaml_text, stop_step):
+              marker = '        run: |\n'
+              start = yaml_text.index(marker) + len(marker)
+              end = yaml_text.index(stop_step, start)
+              block = yaml_text[start:end]
+              out = []
+              for line in block.splitlines(keepends=True):
+                  out.append(line[10:] if line.startswith('          ') else line)
+              return ''.join(out)
+
+          v9_run = extract_run(v9, '      - name: Upload immutable pre-result NetCDF4 build closure evidence')
+          Path('evidence/v9-run-extracted.sh').write_text(v9_run)
+
+          old_count = '''          test "$(grep -c -- '-DENABLE_NETCDF_4=ON' bootstrap/v9-run.sh)" = 1'''
+          old_flag = '''  -DHDF5_HAS_COLL_METADATA_OPS=OFF \\
+'''
+          generic_needle = '''          s = p.read_text()\n'''
+          unique_needle = '''          p = Path('bootstrap/v9-run.sh')\n          s = p.read_text()\n'''
+
+          old_cd = 'cd work\nSTAGE=bootstrap\n'
+          old_sink = '> evidence/failure-receipt.txt; exit "$rc"'
+          old_commit = 'NETCDF_COMMIT=9328ba17cb53f13a63707547c94f4715243dafdf'
+          old_flags = '''  -DENABLE_NETCDF_4=ON \\
+  -DENABLE_HDF5=ON \\
+  -DENABLE_DAP=OFF \\
+  -DENABLE_BYTERANGE=OFF \\
+  -DBUILD_UTILITIES=OFF \\
+  -DBUILD_TESTING=OFF \\
+  -DENABLE_TESTS=OFF \\
+'''
+
+          hdf5_lines = [line for line in v11.splitlines(keepends=True)
+                        if '-DHDF5_HAS_COLL_METADATA_OPS=OFF' in line]
+          hdf5_line_info = []
+          for line in hdf5_lines:
+              no_nl = line[:-1] if line.endswith('\n') else line
+              trailing = 0
+              for ch in reversed(no_nl):
+                  if ch == '\\':
+                      trailing += 1
+                  else:
+                      break
+              hdf5_line_info.append({
+                  'repr': repr(line),
+                  'sha256': hashlib.sha256(line.encode()).hexdigest(),
+                  'trailing_backslashes_before_newline': trailing,
+              })
+
+          counts = {
+              'v12_count_literal_in_v11': v11.count(old_count),
+              'v13_hdf5_evaluated_old_flag_in_v11': v11.count(old_flag),
+              'v13_generic_read_text_needle_in_v11': v11.count(generic_needle),
+              'v14_unique_v9_read_text_needle_in_v11': v11.count(unique_needle),
+              'v11_v9_old_cd_in_extracted_v9_run': v9_run.count(old_cd),
+              'v11_v9_old_sink_in_extracted_v9_run': v9_run.count(old_sink),
+              'v11_v9_old_commit_in_extracted_v9_run': v9_run.count(old_commit),
+              'v11_v9_old_flags_block_in_extracted_v9_run': v9_run.count(old_flags),
+              'v11_hdf5_source_lines': len(hdf5_lines),
+          }
+
+          ordered = [
+              ('V12_COUNT_LITERAL', counts['v12_count_literal_in_v11'] == 1),
+              ('V13_HDF5_EVALUATED_OLD_FLAG', counts['v13_hdf5_evaluated_old_flag_in_v11'] == 1),
+              ('V13_GENERIC_READ_TEXT_NEEDLE', counts['v13_generic_read_text_needle_in_v11'] == 1),
+              ('V14_UNIQUE_V9_READ_TEXT_NEEDLE', counts['v14_unique_v9_read_text_needle_in_v11'] == 1),
+              ('V11_V9_OLD_CD', counts['v11_v9_old_cd_in_extracted_v9_run'] == 1),
+              ('V11_V9_OLD_SINK', counts['v11_v9_old_sink_in_extracted_v9_run'] == 1),
+              ('V11_V9_OLD_COMMIT', counts['v11_v9_old_commit_in_extracted_v9_run'] == 1),
+              ('V11_V9_OLD_FLAGS_BLOCK', counts['v11_v9_old_flags_block_in_extracted_v9_run'] == 1),
+          ]
+          first_false = next((name for name, ok in ordered if not ok), None)
+
+          report = {
+              'status': 'PASS_DIAGNOSTIC',
+              'classification': 'NAMED_PREBUILD_PREDICATE_DIAGNOSTIC_ONLY',
+              'v11_git_blob': '474a6e8cc943afbd1388555629d6d7569a6e03dd',
+              'v9_git_blob': '43754f5e3c7e9682c32334252e39fbe80f98c99d',
+              'counts': counts,
+              'ordered_predicates': [{'name': n, 'pass': ok} for n, ok in ordered],
+              'first_false_predicate': first_false,
+              'v13_old_flag_repr': repr(old_flag),
+              'v13_old_flag_sha256': hashlib.sha256(old_flag.encode()).hexdigest(),
+              'v11_hdf5_source_line_info': hdf5_line_info,
+              'v9_run_sha256': hashlib.sha256(v9_run.encode()).hexdigest(),
+              'dependency_build_executed': False,
+              'wasm_instantiated': False,
+              'runtime_executed': False,
+              'lt5_result': False,
+              'c_executed': False,
+              'd_executed': False,
+              'b_selected': False,
+              'b_resolved': False,
+              'production_changed': False,
+          }
+          Path('evidence/v15-named-preconditions.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          Path('evidence/v15-receipt.txt').write_text(
+              'status=PASS_DIAGNOSTIC\n'
+              f'first_false_predicate={first_false}\n'
+              'dependency_build_executed=false\n'
+              'wasm_instantiated=false\n'
+              'runtime_executed=false\n'
+              'lt5_result=false\n'
+              'c_executed=false\n'
+              'd_executed=false\n'
+              'b_selected=false\n'
+              'b_resolved=false\n'
+              'production_changed=false\n'
+          )
+          PY
+
+          sha256sum evidence/v15-named-preconditions.json evidence/v15-receipt.txt evidence/v9-run-extracted.sh >> evidence/input-sha256.txt
+          grep -Fxq 'status=PASS_DIAGNOSTIC' evidence/v15-receipt.txt
+          grep -Fxq 'dependency_build_executed=false' evidence/v15-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' evidence/v15-receipt.txt
+          grep -Fxq 'runtime_executed=false' evidence/v15-receipt.txt
+
+      - name: Upload immutable V15 diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-prebuild-diagnostic-v15
+          path: evidence
+          if-no-files-found: error
+          retention-days: 90

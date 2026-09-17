@@ -1,0 +1,232 @@
+name: LowAlt LT5 P Provider Closure V15
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-provider-closure-v15-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-provider-closure-v15.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  provider-closure-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Reconstruct frozen V14 and map exact provider/static-link closure without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap work/v15-evidence
+
+          V14_HEAD=c2c9ef7824492afdd1ad8c087b007491f956c77a
+          V14_WORKFLOW_BLOB=9b3f814606f8b626675341b267d31ab1c8c8714f
+          V14_RUN=35238577389
+          V14_ARTIFACT=10503744558
+          V14_DIGEST=sha256:d4fe37d99d41f365dd0b8addbcbf5f5e547c3d0f748d6315599992c7b3cf53c3
+          V14_UNDEFINED_SHA256=56fe6152937d4c080ab23fdfd53cda256ea2bf996e21953fa0cc57a6b859d71f
+          V14_MATRIX_SHA256=3069f1fc3bd2bf0d3aba230649b1090b351617ddc5be47c21747abfc6bc4f466
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-vroom-feature-v14.yml?ref=${V14_HEAD}" \
+            -o bootstrap/v14.yml
+          test "$(git hash-object bootstrap/v14.yml)" = "$V14_WORKFLOW_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result VROOM compile evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v14.yml > bootstrap/v14-run.sh
+          sha256sum bootstrap/v14-run.sh > work/v15-evidence/v14-run-script-sha256.txt
+
+          # Reconstruct the exact frozen V14 build environment. This is compile-only and the
+          # inherited receipt itself asserts no WASM instantiation/runtime/scientific evaluation.
+          bash bootstrap/v14-run.sh
+          test -f work/evidence/p-core-vroom-undefined-symbols.txt
+          test -f work/evidence/p-source-matrix-v14.tsv
+          test "$(sha256sum work/evidence/p-core-vroom-undefined-symbols.txt | awk '{print $1}')" = "$V14_UNDEFINED_SHA256"
+          test "$(sha256sum work/evidence/p-source-matrix-v14.tsv | awk '{print $1}')" = "$V14_MATRIX_SHA256"
+          test "$(awk -F '\t' 'NR>1 && $2==0 {n++} END {print n+0}' work/evidence/p-source-matrix-v14.tsv)" = 21
+          test "$(awk -F '\t' 'NR>1 && $2!=0 {n++} END {print n+0}' work/evidence/p-source-matrix-v14.tsv)" = 0
+
+          # Independently bind the immutable V14 artifact identity as an external evidence check.
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${V14_ARTIFACT}/zip" \
+            -o work/v14-artifact.zip
+          test "sha256:$(sha256sum work/v14-artifact.zip | awk '{print $1}')" = "$V14_DIGEST"
+          unzip -p work/v14-artifact.zip work/evidence/p-core-vroom-undefined-symbols.txt > work/v15-evidence/v14-artifact-undefined-symbols.txt
+          cmp -s work/v15-evidence/v14-artifact-undefined-symbols.txt work/evidence/p-core-vroom-undefined-symbols.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          NM=/opt/emsdk/upstream/bin/llvm-nm
+          test -x "$NM"
+          ROOT="$PWD/work/libRadtran-2.0.6"
+          PREFIX="$PWD/work/install"
+          test -d "$ROOT"
+          test -d "$PREFIX"
+
+          # First remove archive-local false positives. `nm -u` on an archive reports undefined
+          # references per member even when another P member defines them. A relocatable link of
+          # exactly the 21 frozen V14 objects resolves only intra-P references and executes nothing.
+          set +e
+          "$EMCC" -r work/p-matrix-v14/*.o -o work/p-core-v15-relocatable.o \
+            > work/v15-evidence/p-core-relocatable.stdout.txt \
+            2> work/v15-evidence/p-core-relocatable.stderr.txt
+          reloc_rc=$?
+          set -e
+          printf '%s\n' "$reloc_rc" > work/v15-evidence/p-core-relocatable.rc.txt
+
+          sed -n 's/^[[:space:]]*U[[:space:]]*//p' work/evidence/p-core-vroom-undefined-symbols.txt | sed '/^$/d' | sort -u > work/v15-evidence/v14-archive-undefined-unique.txt
+          v14_archive_undef="$(wc -l < work/v15-evidence/v14-archive-undefined-unique.txt)"
+          test "$v14_archive_undef" = 437
+
+          if [ "$reloc_rc" -eq 0 ]; then
+            "$NM" -u work/p-core-v15-relocatable.o > work/v15-evidence/p-core-relocatable-undefined.txt || true
+            sed -n 's/^[[:space:]]*U[[:space:]]*//p' work/v15-evidence/p-core-relocatable-undefined.txt | sed '/^$/d' | sort -u > work/v15-evidence/p-core-relocatable-undefined-unique.txt
+          else
+            : > work/v15-evidence/p-core-relocatable-undefined.txt
+            : > work/v15-evidence/p-core-relocatable-undefined-unique.txt
+          fi
+          true_undef="$(wc -l < work/v15-evidence/p-core-relocatable-undefined-unique.txt)"
+
+          # Freeze every already-built WASM provider archive/object from the exact V10/V14 closure.
+          # Exclude the P matrix itself so provider counts cannot be satisfied by the consumer set.
+          find "$PREFIX" "$PWD/work/build" -type f \( -name '*.a' -o -name '*.o' \) -print \
+            | grep -v '/p-matrix-v14/' | sort -u > work/v15-evidence/provider-binaries.txt
+          : > work/v15-evidence/provider-binary-sha256.txt
+          : > work/v15-evidence/provider-definitions.txt
+          : > work/v15-evidence/provider-nm-errors.txt
+          while IFS= read -r f; do
+            test -f "$f"
+            sha256sum "$f" >> work/v15-evidence/provider-binary-sha256.txt
+            set +e
+            "$NM" -A --defined-only "$f" >> work/v15-evidence/provider-definitions.txt 2>> work/v15-evidence/provider-nm-errors.txt
+            set -e
+          done < work/v15-evidence/provider-binaries.txt
+
+          printf 'symbol\tprovider_definition_count\tnative_r31_definition_count\tsource_text_hit_count\n' > work/v15-evidence/provider-map.tsv
+          zero=0
+          one=0
+          multi=0
+          native_zero=0
+          while IFS= read -r sym; do
+            test -n "$sym"
+            pc="$(awk -v s="$sym" '$NF==s {n++} END {print n+0}' work/v15-evidence/provider-definitions.txt)"
+            nc="$(awk -v s="$sym" '$NF==s && $1 !~ /^[[:space:]]*U$/ {n++} END {print n+0}' work/evidence/r31/nm-all.txt)"
+            base="${sym%_}"
+            set +e
+            sc="$(grep -R -I -n -w --include='*.c' --include='*.h' --include='*.f' --include='*.F' --include='*.f90' --include='*.F90' "$base" "$ROOT/src" "$ROOT/src_c" "$ROOT/libsrc_c" "$ROOT/libsrc_f" 2>/dev/null | wc -l)"
+            set -e
+            printf '%s\t%s\t%s\t%s\n' "$sym" "$pc" "$nc" "$sc" >> work/v15-evidence/provider-map.tsv
+            if [ "$pc" -eq 0 ]; then zero=$((zero+1)); elif [ "$pc" -eq 1 ]; then one=$((one+1)); else multi=$((multi+1)); fi
+            if [ "$nc" -eq 0 ]; then native_zero=$((native_zero+1)); fi
+          done < work/v15-evidence/p-core-relocatable-undefined-unique.txt
+
+          printf 'zero_provider=%s\none_provider=%s\nmulti_provider=%s\nnative_zero=%s\n' "$zero" "$one" "$multi" "$native_zero" > work/v15-evidence/provider-map-summary.txt
+
+          # Attempt a static relocatable closure using only exact already-built prefix archives.
+          # This is diagnostic link-only: no JS loader, no WASM instantiation and no call path.
+          find "$PREFIX/lib" -maxdepth 1 -type f -name '*.a' -print | sort -u > work/v15-evidence/prefix-static-archives.txt
+          : > work/v15-evidence/prefix-static-archive-sha256.txt
+          while IFS= read -r f; do sha256sum "$f" >> work/v15-evidence/prefix-static-archive-sha256.txt; done < work/v15-evidence/prefix-static-archives.txt
+          prefix_count="$(wc -l < work/v15-evidence/prefix-static-archives.txt)"
+          prefix_rc=99
+          post_prefix_undef=-1
+          if [ "$reloc_rc" -eq 0 ] && [ "$prefix_count" -gt 0 ]; then
+            mapfile -t libs < work/v15-evidence/prefix-static-archives.txt
+            set +e
+            "$EMCC" -r work/p-core-v15-relocatable.o -Wl,--start-group "${libs[@]}" -Wl,--end-group -o work/p-core-v15-prefix-linked.o \
+              > work/v15-evidence/prefix-link.stdout.txt \
+              2> work/v15-evidence/prefix-link.stderr.txt
+            prefix_rc=$?
+            set -e
+            if [ "$prefix_rc" -eq 0 ]; then
+              "$NM" -u work/p-core-v15-prefix-linked.o > work/v15-evidence/prefix-linked-undefined.txt || true
+              sed -n 's/^[[:space:]]*U[[:space:]]*//p' work/v15-evidence/prefix-linked-undefined.txt | sed '/^$/d' | sort -u > work/v15-evidence/prefix-linked-undefined-unique.txt
+              post_prefix_undef="$(wc -l < work/v15-evidence/prefix-linked-undefined-unique.txt)"
+              sha256sum work/p-core-v15-prefix-linked.o > work/v15-evidence/prefix-linked-object-sha256.txt
+            else
+              : > work/v15-evidence/prefix-linked-undefined.txt
+              : > work/v15-evidence/prefix-linked-undefined-unique.txt
+            fi
+          else
+            : > work/v15-evidence/prefix-link.stdout.txt
+            : > work/v15-evidence/prefix-link.stderr.txt
+            : > work/v15-evidence/prefix-linked-undefined.txt
+            : > work/v15-evidence/prefix-linked-undefined-unique.txt
+          fi
+          printf '%s\n' "$prefix_rc" > work/v15-evidence/prefix-link.rc.txt
+
+          if [ "$reloc_rc" -ne 0 ]; then
+            classification=P_PROVIDER_CLOSURE_BLOCKED_AT_INTRA_P_RELOCATABLE_LINK
+          elif [ "$true_undef" -eq 0 ]; then
+            classification=P_PROVIDER_CLOSURE_NO_EXTERNAL_UNDEFINED_AFTER_INTRA_P_LINK
+          elif [ "$prefix_rc" -eq 0 ] && [ "$post_prefix_undef" -eq 0 ]; then
+            classification=P_PROVIDER_CLOSURE_PREFIX_STATIC_LIBS_RESOLVE_ALL_CURRENT_UNDEFINED
+          elif [ "$prefix_rc" -eq 0 ]; then
+            classification=P_PROVIDER_CLOSURE_PREFIX_STATIC_LIBS_PARTIAL_REMAINDER_FROZEN
+          else
+            classification=P_PROVIDER_CLOSURE_PREFIX_STATIC_LINK_DIAGNOSTIC_BLOCKER_FROZEN
+          fi
+
+          sha256sum work/v15-evidence/p-core-relocatable-undefined-unique.txt work/v15-evidence/provider-map.tsv work/v15-evidence/provider-definitions.txt work/v15-evidence/provider-binary-sha256.txt > work/v15-evidence/v15-core-evidence-sha256.txt
+          if [ -f work/p-core-v15-relocatable.o ]; then sha256sum work/p-core-v15-relocatable.o >> work/v15-evidence/v15-core-evidence-sha256.txt; fi
+
+          cat > work/v15-evidence/v15-receipt.txt <<EOF
+          status=PASS
+          classification=${classification}
+          predecessor_v14_head=${V14_HEAD}
+          predecessor_v14_run=${V14_RUN}
+          predecessor_v14_artifact=${V14_ARTIFACT}
+          predecessor_v14_digest=${V14_DIGEST}
+          predecessor_v14_workflow_blob=${V14_WORKFLOW_BLOB}
+          v14_archive_undefined_unique=${v14_archive_undef}
+          intra_p_relocatable_rc=${reloc_rc}
+          true_unresolved_after_intra_p=${true_undef}
+          already_built_provider_binary_count=$(wc -l < work/v15-evidence/provider-binaries.txt)
+          zero_already_built_provider_count=${zero}
+          one_already_built_provider_count=${one}
+          multi_already_built_provider_count=${multi}
+          native_r31_zero_definition_count=${native_zero}
+          prefix_static_archive_count=${prefix_count}
+          prefix_static_link_rc=${prefix_rc}
+          post_prefix_unresolved_unique=${post_prefix_undef}
+          wasm_instantiated=false
+          runtime_executed=false
+          p_numeric_evaluation=false
+          t_called=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable pre-result provider closure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-provider-closure-v15
+          path: |
+            work/v15-evidence
+            work/p-core-v15-relocatable.o
+            work/p-core-v15-prefix-linked.o
+          if-no-files-found: warn
+          retention-days: 90

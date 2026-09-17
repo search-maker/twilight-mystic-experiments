@@ -1,0 +1,285 @@
+name: LowAlt LT5 P NetCDF Build V9
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-build-v9-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-build-v9.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Build frozen NetCDF4 WASM dependency closure and compile P units without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p work/evidence work/src work/install work/build
+          cd work
+          STAGE=bootstrap
+          trap 'rc=$?; printf "status=FAIL\nstage=%s\nexit=%s\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n" "$STAGE" "$rc" > evidence/failure-receipt.txt; exit "$rc"' ERR
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          EMCXX="$(command -v em++)"
+          EMAR="$(command -v emar)"
+          EMRANLIB="$(command -v emranlib)"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+          "$EMCC" --version > evidence/emcc-version.txt 2>&1
+          cmake --version > evidence/cmake-version.txt
+          git --version > evidence/git-version.txt
+
+          # Immutable dependency identities. Versions are selected from the independently
+          # demonstrated Emscripten recipe at oceanum/netcdf4-wasm exact commit/blob.
+          ZLIB_COMMIT=da607da739fa6047df13e66a2af6b8bec7c2a498
+          HDF5_COMMIT=8b5cac6bc498546efa5639f99bb7dbbc1a2d5d90
+          NETCDF_COMMIT=9328ba17cb53f13a63707547c94f4715243dafdf
+          RECIPE_COMMIT=550cf513c0586a24087060ea20b5becaeeb5af5d
+          RECIPE_BLOB=55c616bc06351743a8fa346f2fc36cab3dcc4f6f
+          PREFIX="$(pwd)/install"
+
+          STAGE=recipe-provenance
+          git init -q src/recipe
+          git -C src/recipe remote add origin https://github.com/oceanum/netcdf4-wasm.git
+          git -C src/recipe fetch -q --depth=1 origin "$RECIPE_COMMIT"
+          git -C src/recipe checkout -q --detach FETCH_HEAD
+          test "$(git -C src/recipe rev-parse HEAD)" = "$RECIPE_COMMIT"
+          test "$(git -C src/recipe hash-object scripts/build-wasm.sh)" = "$RECIPE_BLOB"
+          grep -q 'ZLIB_VERSION="1.3.2"' src/recipe/scripts/build-wasm.sh
+          grep -q 'HDF5_VERSION="1.14.3"' src/recipe/scripts/build-wasm.sh
+          grep -q 'NETCDF_VERSION="4.9.2"' src/recipe/scripts/build-wasm.sh
+          grep -q -- '-DENABLE_NETCDF_4=ON' src/recipe/scripts/build-wasm.sh
+          grep -q -- '-DENABLE_HDF5=ON' src/recipe/scripts/build-wasm.sh
+          printf 'recipe_repo=oceanum/netcdf4-wasm\nrecipe_commit=%s\nrecipe_build_script_blob=%s\n' "$RECIPE_COMMIT" "$RECIPE_BLOB" > evidence/recipe-provenance.txt
+          sha256sum src/recipe/scripts/build-wasm.sh >> evidence/recipe-provenance.txt
+
+          clone_exact() {
+            repo="$1"; commit="$2"; dir="$3"
+            git init -q "$dir"
+            git -C "$dir" remote add origin "$repo"
+            git -C "$dir" fetch -q --depth=1 origin "$commit"
+            git -C "$dir" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$commit"
+            git -C "$dir" archive --format=tar HEAD | sha256sum | awk -v d="$dir" '{print $1"  "d".git-archive.tar"}' >> evidence/dependency-source-tree-sha256.txt
+          }
+
+          STAGE=dependency-source
+          clone_exact https://github.com/madler/zlib.git "$ZLIB_COMMIT" src/zlib
+          clone_exact https://github.com/HDFGroup/hdf5.git "$HDF5_COMMIT" src/hdf5
+          clone_exact https://github.com/Unidata/netcdf-c.git "$NETCDF_COMMIT" src/netcdf-c
+          printf 'zlib_commit=%s\nhdf5_commit=%s\nnetcdf_c_commit=%s\n' "$ZLIB_COMMIT" "$HDF5_COMMIT" "$NETCDF_COMMIT" > evidence/dependency-commits.txt
+
+          STAGE=zlib-build
+          pushd src/zlib >/dev/null
+          export CC="$EMCC" AR="$EMAR" RANLIB="$EMRANLIB"
+          emconfigure ./configure --prefix="$PREFIX" --static > ../../evidence/zlib-configure.txt 2>&1
+          emmake make -j2 > ../../evidence/zlib-build.txt 2>&1
+          emmake make install > ../../evidence/zlib-install.txt 2>&1
+          popd >/dev/null
+          test -f "$PREFIX/lib/libz.a"
+          test -f "$PREFIX/include/zlib.h"
+
+          STAGE=hdf5-configure
+          mkdir -p build/hdf5
+          pushd build/hdf5 >/dev/null
+          emcmake cmake ../../src/hdf5 \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DHDF5_ENABLE_THREADSAFE=OFF \
+            -DHDF5_ENABLE_PARALLEL=OFF \
+            -DHDF5_BUILD_TOOLS=OFF \
+            -DHDF5_BUILD_EXAMPLES=OFF \
+            -DHDF5_BUILD_TESTS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DHDF5_ENABLE_TESTS=OFF \
+            -DCMAKE_C_BYTE_ORDER=LITTLE_ENDIAN \
+            -DHDF5_DISABLE_COMPILER_WARNINGS=ON \
+            -DZLIB_ROOT="$PREFIX" \
+            -DZLIB_INCLUDE_DIR="$PREFIX/include" \
+            -DZLIB_LIBRARY="$PREFIX/lib/libz.a" \
+            > ../../evidence/hdf5-configure.txt 2>&1
+          STAGE=hdf5-build
+          emmake make -j2 > ../../evidence/hdf5-build.txt 2>&1
+          emmake make install > ../../evidence/hdf5-install.txt 2>&1
+          popd >/dev/null
+          test -f "$PREFIX/lib/libhdf5.a"
+          test -f "$PREFIX/include/hdf5.h"
+
+          STAGE=netcdf-patch-freeze
+          # Exact compatibility transforms are adapted from the frozen recipe above.
+          cp src/netcdf-c/CMakeLists.txt evidence/netcdf-CMakeLists-before.txt
+          sed -i '933s/^/  # /' src/netcdf-c/CMakeLists.txt
+          sed -i '941s/^/  # /' src/netcdf-c/CMakeLists.txt
+          sed -i '950s/^/  # /' src/netcdf-c/CMakeLists.txt
+          sed -i '953s/^/  # /' src/netcdf-c/CMakeLists.txt
+          sed -i '943s/SET(HDF5_HAS_COLL_METADATA_OPS ON)/SET(HDF5_HAS_COLL_METADATA_OPS OFF)/' src/netcdf-c/CMakeLists.txt
+          sed -i '950a\\n  # Frozen LowAlt Emscripten compatibility: readchunks OFF\\n  SET(HAS_READCHUNKS OFF)' src/netcdf-c/CMakeLists.txt
+          sed -i '953a\\n  # Frozen LowAlt Emscripten compatibility: ROS3 OFF\\n  SET(HAS_HDF5_ROS3 OFF)' src/netcdf-c/CMakeLists.txt
+          cp src/netcdf-c/CMakeLists.txt evidence/netcdf-CMakeLists-after.txt
+          sha256sum evidence/netcdf-CMakeLists-before.txt evidence/netcdf-CMakeLists-after.txt > evidence/netcdf-cmake-patch-sha256.txt
+
+          STAGE=netcdf-configure
+          mkdir -p build/netcdf
+          pushd build/netcdf >/dev/null
+          emcmake cmake ../../src/netcdf-c \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_NETCDF_4=ON \
+            -DENABLE_HDF5=ON \
+            -DENABLE_DAP=OFF \
+            -DENABLE_BYTERANGE=OFF \
+            -DBUILD_UTILITIES=OFF \
+            -DBUILD_TESTING=OFF \
+            -DENABLE_TESTS=OFF \
+            -DCMAKE_C_BYTE_ORDER=LITTLE_ENDIAN \
+            -DWORDS_BIGENDIAN=OFF \
+            -DHDF5_USE_STATIC_LIBRARIES=ON \
+            -DHDF5_PREFER_PARALLEL=OFF \
+            -DHDF5_FIND_QUIETLY=ON \
+            -DHDF5_INCLUDE_DIR="$PREFIX/include" \
+            -DHDF5_C_INCLUDE_DIR="$PREFIX/include" \
+            -DHDF5_C_LIBRARY="$PREFIX/lib/libhdf5.a;$PREFIX/lib/libz.a" \
+            -DHDF5_C_LIBRARY_hdf5="$PREFIX/lib/libhdf5.a" \
+            -DHDF5_HL_LIBRARY="$PREFIX/lib/libhdf5_hl.a;$PREFIX/lib/libz.a" \
+            -DHDF5_VERSION=1.14.3 \
+            -DHDF5_VERSION_STRING=1.14.3 \
+            -DHAVE_HDF5_H="$PREFIX/include" \
+            -DHAVE_HDF5_ZLIB=ON \
+            -DHDF5_IS_PARALLEL_MPIO=OFF \
+            -DHDF5_PARALLEL=OFF \
+            -DUSE_HDF5_SZIP=OFF \
+            -DZLIB_INCLUDE_DIR="$PREFIX/include" \
+            -DZLIB_LIBRARY="$PREFIX/lib/libz.a" \
+            > ../../evidence/netcdf-configure.txt 2>&1
+
+          CONFIG_H=config.h
+          test -f "$CONFIG_H"
+          cp "$CONFIG_H" ../../evidence/netcdf-config-before.h
+          sed -i 's|/\* #undef SIZEOF_DOUBLE \*/|#define SIZEOF_DOUBLE 8|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_FLOAT \*/|#define SIZEOF_FLOAT 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_INT \*/|#define SIZEOF_INT 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_LONG \*/|#define SIZEOF_LONG 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_LONG_LONG \*/|#define SIZEOF_LONG_LONG 8|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_SHORT \*/|#define SIZEOF_SHORT 2|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_SIZE_T \*/|#define SIZEOF_SIZE_T 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_CHAR \*/|#define SIZEOF_CHAR 1|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_UCHAR \*/|#define SIZEOF_UCHAR 1|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_OFF_T \*/|#define SIZEOF_OFF_T 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_OFF64_T \*/|#define SIZEOF_OFF64_T 8|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_ULONGLONG \*/|#define SIZEOF_ULONGLONG 8|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_UINT \*/|#define SIZEOF_UINT 4|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF_USHORT \*/|#define SIZEOF_USHORT 2|' "$CONFIG_H"
+          sed -i 's|/\* #undef SIZEOF___INT64 \*/|#define SIZEOF___INT64 8\n#define SIZEOF_UINT64_T 8\n#define SIZEOF_UINT64 8|' "$CONFIG_H"
+          sed -i 's|#define WORDS_BIGENDIAN 1|/* #undef WORDS_BIGENDIAN */|' "$CONFIG_H"
+          sed -i 's|#define HAVE_FILE_LENGTH_I64 1|/* #undef HAVE_FILE_LENGTH_I64 */|' "$CONFIG_H"
+          sed -i '/^#define SIZEOF_SIZE_T/a\\n/* Frozen LowAlt Emscripten compatibility */\n#define HAVE_SSIZE_T 1' "$CONFIG_H"
+          sed -i 's|#define HDF5_HAS_COLL_METADATA_OPS 1|/* #undef HDF5_HAS_COLL_METADATA_OPS */|' "$CONFIG_H"
+          cp "$CONFIG_H" ../../evidence/netcdf-config-after.h
+          sha256sum ../../evidence/netcdf-config-before.h ../../evidence/netcdf-config-after.h > ../../evidence/netcdf-config-patch-sha256.txt
+
+          STAGE=netcdf-build
+          emmake make -j2 > ../../evidence/netcdf-build.txt 2>&1
+          emmake make install > ../../evidence/netcdf-install.txt 2>&1
+          popd >/dev/null
+          test -f "$PREFIX/lib/libnetcdf.a"
+          test -f "$PREFIX/include/netcdf.h"
+
+          STAGE=lib-output-freeze
+          sha256sum \
+            "$PREFIX/include/netcdf.h" \
+            "$PREFIX/include/hdf5.h" \
+            "$PREFIX/include/zlib.h" \
+            "$PREFIX/lib/libnetcdf.a" \
+            "$PREFIX/lib/libhdf5.a" \
+            "$PREFIX/lib/libhdf5_hl.a" \
+            "$PREFIX/lib/libz.a" \
+            > evidence/wasm-dependency-output-sha256.txt
+          wc -c \
+            "$PREFIX/lib/libnetcdf.a" \
+            "$PREFIX/lib/libhdf5.a" \
+            "$PREFIX/lib/libhdf5_hl.a" \
+            "$PREFIX/lib/libz.a" \
+            > evidence/wasm-dependency-output-size.txt
+
+          STAGE=libradtran-source
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/8894652347/zip" \
+            -o source-audit.zip
+          test "$(sha256sum source-audit.zip | awk '{print $1}')" = "db189ee5f145719ebf85c97e1c0b35eacb4963c2c19544df29f0a978b1dbd12b"
+          unzip -p source-audit.zip libRadtran-2.0.6.tar.gz > libRadtran-2.0.6.tar.gz
+          test "$(sha256sum libRadtran-2.0.6.tar.gz | awk '{print $1}')" = "64930cc40b6e4a37aa220520974d330fc1563796f466a649b2238131f2d69840"
+          gzip -dc libRadtran-2.0.6.tar.gz > source.tar
+          test "$(sha256sum source.tar | awk '{print $1}')" = "999e47f4af4b5df6f85a6887fc105fc8f6e1a7cee89a3124f69ac8d8912c8e85"
+          tar -xf source.tar
+          ROOT=libRadtran-2.0.6
+
+          cat > p-generated-abi.h <<'EOF'
+          #ifndef LOWALT_P_GENERATED_ABI_H
+          #define LOWALT_P_GENERATED_ABI_H 1
+          #define F77_FUNC(name,NAME) name ## _
+          #define F77_FUNC_(name,NAME) name ## _
+          #define HAVE_TIPA 0
+          #define HAVE_MYSTIC 1
+          #define HAVE_SOS 1
+          #define HAVE_BRDF 1
+          #define HAVE_NETCDF4 1
+          #endif
+          EOF
+          cp p-generated-abi.h evidence/p-generated-abi.h
+
+          STAGE=p-compile-probe
+          "$EMCC" -O0 -std=gnu11 -include "$(pwd)/p-generated-abi.h" -c "$ROOT/src/ancillary.c" \
+            -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$PREFIX/include" \
+            -o ancillary.o > evidence/ancillary.stdout.txt 2> evidence/ancillary.stderr.txt
+          "$EMCC" -O0 -std=gnu11 -include "$(pwd)/p-generated-abi.h" -c "$ROOT/libsrc_c/netCDF_functions.c" \
+            -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$PREFIX/include" \
+            -o netCDF_functions.o > evidence/netCDF_functions.stdout.txt 2> evidence/netCDF_functions.stderr.txt
+          sha256sum ancillary.o netCDF_functions.o > evidence/p-netcdf-objects-sha256.txt
+          wc -c ancillary.o netCDF_functions.o > evidence/p-netcdf-objects-size.txt
+
+          STAGE=netcdf-link-probe
+          cat > netcdf-link-probe.c <<'EOF'
+          #include "netCDF_functions.h"
+          int main(void) {
+            int ncid = -1;
+            if (0) return create_new_netcdf("never-executed.nc", &ncid);
+            return 0;
+          }
+          EOF
+          "$EMCC" -O0 netcdf-link-probe.c netCDF_functions.o \
+            -I"$ROOT/libsrc_c" -I"$PREFIX/include" \
+            "$PREFIX/lib/libnetcdf.a" "$PREFIX/lib/libhdf5_hl.a" "$PREFIX/lib/libhdf5.a" "$PREFIX/lib/libz.a" \
+            -sERROR_ON_UNDEFINED_SYMBOLS=1 -sSTANDALONE_WASM=1 -Wl,--no-entry \
+            -o netcdf-link-probe.wasm > evidence/netcdf-link.stdout.txt 2> evidence/netcdf-link.stderr.txt
+          sha256sum netcdf-link-probe.wasm > evidence/netcdf-link-probe-sha256.txt
+          wc -c netcdf-link-probe.wasm > evidence/netcdf-link-probe-size.txt
+
+          STAGE=receipt
+          printf 'status=PASS\nclassification=NETCDF4_WASM_EXTERNAL_SOURCE_BUILD_AND_P_COMPILE_CLOSURE_PASS\npredecessor_v8_run=35231975781\npredecessor_v8_artifact=10501242698\npredecessor_v8_digest=sha256:dae8275189179418bf1ab4ef2aabb55ca9b3185aeeaa2fad7c2ef2500c814b43\nrecipe_commit=%s\nrecipe_blob=%s\nzlib_commit=%s\nhdf5_commit=%s\nnetcdf_c_commit=%s\nHAVE_NETCDF4=1\nancillary_compile=PASS\nnetCDF_functions_compile=PASS\nnetcdf_static_link=PASS\nwasm_instantiated=false\nruntime_executed=false\nlt5_result=false\nc_executed=false\nd_executed=false\nb_selected=false\nb_resolved=false\nproduction_changed=false\n' \
+            "$RECIPE_COMMIT" "$RECIPE_BLOB" "$ZLIB_COMMIT" "$HDF5_COMMIT" "$NETCDF_COMMIT" > evidence/receipt.txt
+
+      - name: Upload immutable pre-result NetCDF4 build closure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-build-v9
+          path: work/evidence
+          if-no-files-found: error
+          retention-days: 90

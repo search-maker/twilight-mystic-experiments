@@ -1,0 +1,218 @@
+name: LowAlt LT5 P Provider Census V15
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-provider-census-v15-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-provider-census-v15.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  provider-census-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Reproduce exact V14 compile surface and freeze provider census without execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          V14_HEAD=c2c9ef7824492afdd1ad8c087b007491f956c77a
+          V14_WORKFLOW_BLOB=9b3f814606f8b626675341b267d31ab1c8c8714f
+          V14_ARTIFACT=10503744558
+          V14_DIGEST=sha256:d4fe37d99d41f365dd0b8addbcbf5f5e547c3d0f748d6315599992c7b3cf53c3
+          V14_UNDEFINED_SHA256=56fe6152937d4c080ab23fdfd53cda256ea2bf996e21953fa0cc57a6b859d71f
+          R31_ARTIFACT=10166620940
+          R31_DIGEST=sha256:d02da812d260024e358cc92b62d5cbdcae6d6f7455eb4767b44242cf186d7115
+          mkdir -p bootstrap work/evidence-v15
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-vroom-feature-v14.yml?ref=${V14_HEAD}" \
+            -o bootstrap/v14.yml
+          test "$(git hash-object bootstrap/v14.yml)" = "$V14_WORKFLOW_BLOB"
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result VROOM compile evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v14.yml > bootstrap/v14-run.sh
+          bash bootstrap/v14-run.sh
+
+          test "$(awk -F= '$1=="pass" {print $2}' work/evidence/p-source-matrix-v14-summary.txt)" = 21
+          test "$(awk -F= '$1=="fail" {print $2}' work/evidence/p-source-matrix-v14-summary.txt)" = 0
+          test "$(sha256sum work/evidence/p-core-vroom-undefined-symbols.txt | awk '{print $1}')" = "$V14_UNDEFINED_SHA256"
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${V14_ARTIFACT}/zip" \
+            -o work/v14-artifact.zip
+          test "sha256:$(sha256sum work/v14-artifact.zip | awk '{print $1}')" = "$V14_DIGEST"
+          unzip -p work/v14-artifact.zip work/evidence/p-core-vroom-undefined-symbols.txt > work/evidence-v15/v14-artifact-undefined-symbols.txt
+          cmp work/evidence/p-core-vroom-undefined-symbols.txt work/evidence-v15/v14-artifact-undefined-symbols.txt
+
+          # V14 already fetched and verified R31 into work/r31.zip; bind it again here.
+          test "sha256:$(sha256sum work/r31.zip | awk '{print $1}')" = "$R31_DIGEST"
+          unzip -p work/r31.zip runtime/nm-all.txt > work/evidence-v15/r31-nm-all.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          NM=/opt/emsdk/upstream/bin/llvm-nm
+          ROOT="$PWD/work/libRadtran-2.0.6"
+          PREFIX="$PWD/work/install"
+          test -d "$ROOT"
+          test -d "$PREFIX"
+          find "$PREFIX" -type f -name '*.a' -print | LC_ALL=C sort > work/evidence-v15/v10-dependency-archives.txt
+          : > work/evidence-v15/v10-dependency-defined-symbols.txt
+          while IFS= read -r archive; do
+            test -n "$archive"
+            "$NM" --defined-only "$archive" 2>/dev/null | sed "s#^#${archive}\t#" >> work/evidence-v15/v10-dependency-defined-symbols.txt || true
+          done < work/evidence-v15/v10-dependency-archives.txt
+
+          python3 - <<'PY'
+          import csv, hashlib, json, pathlib, re
+          root = pathlib.Path('work/libRadtran-2.0.6')
+          undef_path = pathlib.Path('work/evidence/p-core-vroom-undefined-symbols.txt')
+          nm_path = pathlib.Path('work/evidence-v15/r31-nm-all.txt')
+          dep_path = pathlib.Path('work/evidence-v15/v10-dependency-defined-symbols.txt')
+          out_dir = pathlib.Path('work/evidence-v15')
+
+          undef = set()
+          for line in undef_path.read_text(errors='replace').splitlines():
+              m = re.search(r'\bU\s+([^\s]+)\s*$', line)
+              if m:
+                  undef.add(m.group(1))
+          if len(undef) != 437:
+              raise SystemExit(f'expected 437 unique V14 unresolved symbols, got {len(undef)}')
+
+          native_defined, native_imported = set(), set()
+          for line in nm_path.read_text(errors='replace').splitlines():
+              m = re.search(r'(?:^|\s)([A-Za-z?])\s+([^\s]+)\s*$', line)
+              if not m:
+                  continue
+              typ, name = m.group(1), m.group(2)
+              if typ.upper() == 'U':
+                  native_imported.add(name)
+              else:
+                  native_defined.add(name)
+
+          dep_defs = {}
+          for line in dep_path.read_text(errors='replace').splitlines():
+              if '\t' not in line:
+                  continue
+              archive, rest = line.split('\t', 1)
+              m = re.search(r'(?:^|\s)([A-Za-z?])\s+([^\s]+)\s*$', rest)
+              if not m or m.group(1).upper() == 'U':
+                  continue
+              dep_defs.setdefault(m.group(2), set()).add(archive)
+
+          source_files = []
+          suffixes = {'.c','.h','.f','.for','.f77','.f90','.f95','.F','.F90','.inc'}
+          for p in root.rglob('*'):
+              if p.is_file() and p.suffix in suffixes:
+                  try:
+                      text = p.read_text(errors='replace')
+                  except Exception:
+                      continue
+                  source_files.append((p, text))
+
+          def variants(sym):
+              vals = {sym}
+              if sym.startswith('_'):
+                  vals.add(sym[1:])
+              if sym.endswith('_'):
+                  vals.add(sym[:-1])
+              if sym.startswith('_') and sym.endswith('_') and len(sym) > 2:
+                  vals.add(sym[1:-1])
+              return {v for v in vals if v}
+
+          rows = []
+          hard_orphans = []
+          source_unique = 0
+          source_any = 0
+          native_def_count = 0
+          native_imp_count = 0
+          dep_count = 0
+          for sym in sorted(undef):
+              vs = variants(sym)
+              ndef = next((v for v in vs if v in native_defined), '')
+              nimp = next((v for v in vs if v in native_imported), '')
+              deps = sorted({a for v in vs for a in dep_defs.get(v, set())})
+              candidates = []
+              patterns = [re.compile(r'(?i)(?<![A-Za-z0-9_])'+re.escape(v)+r'(?![A-Za-z0-9_])') for v in vs]
+              for p, text in source_files:
+                  if any(rx.search(text) for rx in patterns):
+                      candidates.append(str(p.relative_to(root)))
+              candidates = sorted(set(candidates))
+              if ndef: native_def_count += 1
+              if nimp: native_imp_count += 1
+              if deps: dep_count += 1
+              if candidates: source_any += 1
+              if len(candidates) == 1: source_unique += 1
+              if not ndef and not nimp and not deps and not candidates:
+                  hard_orphans.append(sym)
+              rows.append({
+                  'symbol': sym,
+                  'r31_native_defined_variant': ndef,
+                  'r31_native_imported_variant': nimp,
+                  'v10_dependency_archives': ';'.join(deps),
+                  'authoritative_source_occurrence_count': len(candidates),
+                  'authoritative_source_occurrences': ';'.join(candidates),
+              })
+
+          with (out_dir/'provider-census.tsv').open('w', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=list(rows[0]), delimiter='\t')
+              w.writeheader(); w.writerows(rows)
+          (out_dir/'hard-orphans.txt').write_text('\n'.join(hard_orphans)+('\n' if hard_orphans else ''))
+          summary = {
+              'schema': 1,
+              'purpose': 'LOWALT_LT5_P_PRE_RESULT_PROVIDER_CENSUS_V15',
+              'v14_unique_unresolved_symbols': len(undef),
+              'r31_native_defined_matches': native_def_count,
+              'r31_native_import_matches': native_imp_count,
+              'v10_dependency_archive_matches': dep_count,
+              'authoritative_source_occurrence_matches': source_any,
+              'authoritative_source_unique_occurrence_matches': source_unique,
+              'hard_orphan_count': len(hard_orphans),
+              'classification': 'P_PROVIDER_CENSUS_COMPLETE_NO_HARD_ORPHANS' if not hard_orphans else 'P_PROVIDER_CENSUS_HAS_HARD_ORPHANS',
+              'wasm_instantiated': False,
+              'runtime_executed': False,
+              'p_numeric_evaluation': False,
+              't_called': False,
+              'lt5_result': False,
+              'c_executed': False,
+              'd_executed': False,
+              'b_selected': False,
+              'b_resolved': False,
+              'production_changed': False,
+          }
+          (out_dir/'provider-census-summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True)+'\n')
+          PY
+
+          sha256sum work/evidence-v15/provider-census.tsv work/evidence-v15/provider-census-summary.json work/evidence-v15/hard-orphans.txt > work/evidence-v15/provider-census-sha256.txt
+          cat work/evidence-v15/provider-census-summary.json
+
+      - name: Upload immutable pre-result provider census
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-provider-census-v15
+          path: |
+            work/evidence-v15
+            work/evidence/p-source-matrix-v14-summary.txt
+            work/evidence/p-core-vroom-undefined-symbols.txt
+            work/evidence/v14-receipt.txt
+            bootstrap/v14-run.sh
+          if-no-files-found: error
+          retention-days: 90

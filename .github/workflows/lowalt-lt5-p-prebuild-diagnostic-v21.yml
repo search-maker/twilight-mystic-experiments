@@ -1,0 +1,221 @@
+name: LowAlt LT5 P Prebuild Diagnostic V21
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-prebuild-diagnostic-v21-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-prebuild-diagnostic-v21.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnostic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Diagnose exact V20 prebuild chain without V9 build execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+          : > evidence/v21-stages.txt
+
+          V20_HEAD=3dc27e8238f6097e2e6ce89dde96fc4e25abcb33
+          V20_BLOB=0942c8d1d28530a981d07f536960aefbef4543b0
+          V20_RUN=35266711965
+          V20_JOB=105355601892
+          V20_ARTIFACT=10516662938
+          V20_ARTIFACT_DIGEST=f8b1f732a054b55da34c9fb0debfe39f35034f258de7d90351b0cbf2b775c6e4
+          V20_AFTER_REPAIR_SHA256=cb989e3d640fb2d6d0c950da15cb09e3eb9b60d6c5165a6dda44444f1d8b47d2
+          V20_PREEXECUTION_RECEIPT_SHA256=a97129cf0937ca1f36839a630781fc51fd77ad6e3b016f6dadf4c324a6dc321f
+
+          write_receipt() {
+            first_false="$1"
+            detail="$2"
+            cat > evidence/v21-receipt.txt <<EOF
+          status=PASS_DIAGNOSTIC
+          classification=PRE_RESULT_V21_NAMED_PREBUILD_DIAGNOSTIC
+          predecessor_v20_head=${V20_HEAD}
+          predecessor_v20_run=${V20_RUN}
+          predecessor_v20_job=${V20_JOB}
+          predecessor_v20_artifact=${V20_ARTIFACT}
+          predecessor_v20_artifact_digest=sha256:${V20_ARTIFACT_DIGEST}
+          first_false_stage=${first_false}
+          detail=${detail}
+          v9_dependency_build_entered=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+            sha256sum evidence/v21-receipt.txt >> evidence/v21-sha256.txt
+          }
+
+          freeze_failure() {
+            stage="$1"
+            failfile="evidence/${stage}-failure.txt"
+            if test -f "$failfile"; then
+              src="$(sed -n 's/^source=//p' "$failfile" | head -n1)"
+              line="$(sed -n 's/^line=//p' "$failfile" | head -n1)"
+              if test -n "$src" && test -f "$src" && test -n "$line"; then
+                start=$(( line > 2 ? line - 2 : 1 ))
+                end=$(( line + 2 ))
+                {
+                  printf 'source=%s\nline=%s\n' "$src" "$line"
+                  sed -n "${start},${end}p" "$src"
+                } > "evidence/${stage}-source-excerpt.txt"
+                sha256sum "$src" "evidence/${stage}-source-excerpt.txt" >> evidence/v21-sha256.txt
+              fi
+            fi
+          }
+
+          run_diag() {
+            stage="$1"
+            script="$2"
+            failfile="evidence/${stage}-failure.txt"
+            set +e
+            DIAG_FAIL_FILE="$failfile" bash -c '
+              set -Eeuo pipefail
+              trap '\''rc=$?; trap - ERR; printf "rc=%s\nsource=%s\nline=%s\n" "$rc" "${BASH_SOURCE[0]}" "$LINENO" > "$DIAG_FAIL_FILE"; exit "$rc"'\'' ERR
+              source "$1"
+            ' bash "$script" >"evidence/${stage}.stdout" 2>"evidence/${stage}.stderr"
+            rc=$?
+            set -e
+            printf '%s_rc=%s\n' "$stage" "$rc" >> evidence/v21-stages.txt
+            return "$rc"
+          }
+
+          # Reproduce the exact V20 repaired V13 bytes but stop before V20 sourced V19 suffix.
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v20.yml?ref=${V20_HEAD}" \
+            -o bootstrap/v20.yml
+          test "$(git hash-object bootstrap/v20.yml)" = "$V20_BLOB"
+          sha256sum bootstrap/v20.yml > evidence/v21-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 V20 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v20.yml > bootstrap/v20-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v20-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT_V20'
+          from pathlib import Path
+          s = Path('bootstrap/v20-run.sh').read_text()
+          marker = 'source bootstrap/v19-suffix.sh\n'
+          assert s.count(marker) == 1
+          a, _ = s.split(marker, 1)
+          Path('bootstrap/v21-v20-prefix.sh').write_text(a)
+          PY_SPLIT_V20
+          bash bootstrap/v21-v20-prefix.sh
+          test "$(sha256sum bootstrap/v17-patched-v13.yml | awk '{print $1}')" = "$V20_AFTER_REPAIR_SHA256"
+          test "$(sha256sum evidence/v20-preexecution-receipt.txt | awk '{print $1}')" = "$V20_PREEXECUTION_RECEIPT_SHA256"
+          printf 'V20_REPAIRED_V13_REPRODUCED=PASS\n' >> evidence/v21-stages.txt
+          sha256sum bootstrap/v17-patched-v13.yml evidence/v20-preexecution-receipt.txt >> evidence/v21-sha256.txt
+
+          # V17 suffix static pre-inner chain only.
+          test -f bootstrap/v19-suffix.sh
+          python3 - <<'PY_SPLIT_V17'
+          from pathlib import Path
+          s = Path('bootstrap/v19-suffix.sh').read_text()
+          marker = 'bash bootstrap/v17-inner.sh\n'
+          assert s.count(marker) == 1
+          a, _ = s.split(marker, 1)
+          Path('bootstrap/v21-v17-pre-inner.sh').write_text(a)
+          PY_SPLIT_V17
+          if ! run_diag V17_PRE_INNER bootstrap/v21-v17-pre-inner.sh; then
+            freeze_failure V17_PRE_INNER
+            write_receipt V17_PRE_INNER "exact V17 suffix pre-inner chain failed before patched V13 execution"
+            exit 0
+          fi
+          printf 'V17_PRE_INNER=PASS\n' >> evidence/v21-stages.txt
+          test -f bootstrap/v17-inner.sh
+          sha256sum bootstrap/v21-v17-pre-inner.sh bootstrap/v17-inner.sh >> evidence/v21-sha256.txt
+
+          # V13/V17 patched workflow pre-inner chain only: fetch/hash V11, apply V13+V20
+          # source transformations, freeze cardinalities, extract patched V11 run; do not run it.
+          python3 - <<'PY_SPLIT_V13'
+          from pathlib import Path
+          s = Path('bootstrap/v17-inner.sh').read_text()
+          marker = 'bash bootstrap/v13-inner.sh\n'
+          assert s.count(marker) == 1
+          a, _ = s.split(marker, 1)
+          Path('bootstrap/v21-v13-pre-inner.sh').write_text(a)
+          PY_SPLIT_V13
+          if ! run_diag V13_PRE_INNER bootstrap/v21-v13-pre-inner.sh; then
+            freeze_failure V13_PRE_INNER
+            write_receipt V13_PRE_INNER "exact V13/V17 pre-inner chain failed before patched V11 execution"
+            exit 0
+          fi
+          printf 'V13_PRE_INNER=PASS\n' >> evidence/v21-stages.txt
+          test -f bootstrap/v13-patched-v11.yml
+          test -f bootstrap/v13-inner.sh
+          test "$(grep -c -- '-DHDF5_DIR=$PREFIX/cmake' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c 'EVIDENCE_DIR=' bootstrap/v13-patched-v11.yml)" = 1
+          test "$(grep -c -- '-DNETCDF_ENABLE_TESTS=OFF' bootstrap/v13-patched-v11.yml)" = 1
+          printf 'V13_POST_CARDINALITIES=PASS\n' >> evidence/v21-stages.txt
+          sha256sum bootstrap/v13-patched-v11.yml bootstrap/v13-inner.sh >> evidence/v21-sha256.txt
+          grep -n -F -- '-DNETCDF_ENABLE_TESTS=OFF' bootstrap/v13-patched-v11.yml > evidence/v21-netcdf-option-source-line.txt
+
+          # V11 prebuild chain only: freeze feedstock/tag/V9 identities and generate v11-run.sh;
+          # stop immediately before the first V9-derived dependency-build execution.
+          python3 - <<'PY_SPLIT_V11'
+          from pathlib import Path
+          s = Path('bootstrap/v13-inner.sh').read_text()
+          marker = 'bash bootstrap/v11-run.sh\n'
+          assert s.count(marker) == 1
+          a, _ = s.split(marker, 1)
+          Path('bootstrap/v21-v11-prebuild.sh').write_text(a)
+          PY_SPLIT_V11
+          if ! run_diag V11_PREBUILD bootstrap/v21-v11-prebuild.sh; then
+            freeze_failure V11_PREBUILD
+            write_receipt V11_PREBUILD "exact V11 prebuild chain failed before V9-derived build execution"
+            exit 0
+          fi
+          printf 'V11_PREBUILD=PASS\n' >> evidence/v21-stages.txt
+          test -f bootstrap/v11-run.sh
+          test "$(grep -c -- '-DNETCDF_ENABLE_TESTS=OFF' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c -- '-DBUILD_TESTING=OFF' bootstrap/v11-run.sh)" = 1
+          test "$(grep -c -- '-DENABLE_TESTS=OFF' bootstrap/v11-run.sh || true)" = 0
+          printf 'V11_RUN_FLAG_CARDINALITIES=PASS\n' >> evidence/v21-stages.txt
+          grep -n -E -- '-D(NETCDF_ENABLE_TESTS|BUILD_TESTING|ENABLE_TESTS)=OFF' bootstrap/v11-run.sh > evidence/v21-v11-run-test-flags.txt || true
+          sha256sum bootstrap/v21-v11-prebuild.sh bootstrap/v11-run.sh evidence/v21-v11-run-test-flags.txt >> evidence/v21-sha256.txt
+
+          write_receipt NONE_BEFORE_V9_BUILD "all named V20 prebuild stages pass; V9-derived dependency build deliberately not entered"
+
+      - name: Upload immutable pre-result V21 diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-prebuild-diagnostic-v21
+          path: |
+            evidence
+            bootstrap/v20.yml
+            bootstrap/v20-run.sh
+            bootstrap/v21-v20-prefix.sh
+            bootstrap/v19-suffix.sh
+            bootstrap/v21-v17-pre-inner.sh
+            bootstrap/v17-inner.sh
+            bootstrap/v21-v13-pre-inner.sh
+            bootstrap/v13-patched-v11.yml
+            bootstrap/v13-inner.sh
+            bootstrap/v21-v11-prebuild.sh
+            bootstrap/v11-run.sh
+          if-no-files-found: warn
+          retention-days: 90

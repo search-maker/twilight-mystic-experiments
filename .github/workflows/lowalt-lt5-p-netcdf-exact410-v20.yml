@@ -1,0 +1,174 @@
+name: LowAlt LT5 P NetCDF Exact410 V20
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v20-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v20.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Execute exact V19 candidate with one NetCDF 4.10 test-option repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+          V19_HEAD=a29ce4a9da0d735d60c5a4b347584df3175cc613
+          V19_BLOB=e894fee0faa9f25080f144571b219a74abd069ae
+          V19_RUN=35264984007
+          V19_JOB=105349784836
+          V19_ARTIFACT=10516650984
+          V19_ARTIFACT_DIGEST=67d6cf63f59e873de1b2118a2bdf00fc90c6f81de9a83f6a11d9c1c321217097
+          V19_AFTER_CARDINALITY_SHA256=d27b7e3f1b3d898bb55175dd65b191c2fe9bee470671df92b08fdebea78b4a57
+          V19_PREEXECUTION_RECEIPT_SHA256=2ee5f346b9e8217ddf5a1ca409b161403c45d3e81b7876845bf984223bf39af4
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v19.yml?ref=${V19_HEAD}" \
+            -o bootstrap/v19.yml
+          test "$(git hash-object bootstrap/v19.yml)" = "$V19_BLOB"
+          sha256sum bootstrap/v19.yml > evidence/v19-workflow-sha256.txt
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable pre-result exact410 V19 evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v19.yml > bootstrap/v19-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v19-run.sh)" = 1
+
+          python3 - <<'PY_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v19-run.sh').read_text()
+          marker = 'source bootstrap/v19-suffix.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v20-prefix.sh').write_text(a)
+          Path('bootstrap/v20-post-v19-source.sh').write_text(b)
+          PY_SPLIT
+          sha256sum bootstrap/v19-run.sh bootstrap/v20-prefix.sh bootstrap/v20-post-v19-source.sh > evidence/v20-split-sha256.txt
+
+          # Execute only V19's frozen PRE-RESULT preparation through the V18-authorized
+          # cardinality correction. This stops before the nested dependency build.
+          source bootstrap/v20-prefix.sh
+          test "$(sha256sum bootstrap/v17-patched-v13.yml | awk '{print $1}')" = "$V19_AFTER_CARDINALITY_SHA256"
+          test "$(sha256sum evidence/v19-preexecution-receipt.txt | awk '{print $1}')" = "$V19_PREEXECUTION_RECEIPT_SHA256"
+          grep -Fxq 'repair=V13_POST_EVIDENCE_DIR_LINE_CARDINALITY_EXPECTATION_2_TO_1_ONLY' evidence/v19-preexecution-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' evidence/v19-preexecution-receipt.txt
+          grep -Fxq 'runtime_executed=false' evidence/v19-preexecution-receipt.txt
+          cp bootstrap/v17-patched-v13.yml evidence/v20-before-test-option-repair.yml
+
+          # V19 proved NetCDF-C 4.10.0 configure succeeds but tests remain ON because the
+          # inherited ENABLE_TESTS name is obsolete. Insert exactly the authoritative
+          # NETCDF_ENABLE_TESTS=OFF cache flag into V11's 4.10.0 new_flags block.
+          # This modifies build-harness configuration only, not source/dependency bytes.
+          python3 - <<'PY_PATCH'
+          from pathlib import Path
+          p = Path('bootstrap/v17-patched-v13.yml')
+          s = p.read_text()
+          marker = '          sha256sum bootstrap/v13-patched-v11.yml > bootstrap/v13-patched-v11-sha256.txt\n'
+          assert s.count(marker) == 1
+          injection = """          python3 - <<'PY_V20_NETCDF_TESTS'\n          from pathlib import Path\n          p2 = Path('bootstrap/v13-patched-v11.yml')\n          t = p2.read_text()\n          start_marker = \"          new_flags = '''\"\n          end_marker = \"          assert s.count(old_flags) == 1\"\n          assert t.count(start_marker) == 1\n          start = t.index(start_marker)\n          end = t.index(end_marker, start)\n          segment = t[start:end]\n          assert segment.count('-DBUILD_TESTING=OFF') == 1\n          assert '-DNETCDF_ENABLE_TESTS=OFF' not in segment\n          lines = segment.splitlines(keepends=True)\n          matches = [i for i, line in enumerate(lines) if '-DBUILD_TESTING=OFF' in line]\n          assert len(matches) == 1\n          i = matches[0]\n          new_line = lines[i].replace('-DBUILD_TESTING=OFF', '-DNETCDF_ENABLE_TESTS=OFF')\n          assert new_line != lines[i]\n          lines.insert(i + 1, new_line)\n          new_segment = ''.join(lines)\n          assert new_segment.count('-DNETCDF_ENABLE_TESTS=OFF') == 1\n          t = t[:start] + new_segment + t[end:]\n          assert t.count('-DNETCDF_ENABLE_TESTS=OFF') == 1\n          p2.write_text(t)\n          PY_V20_NETCDF_TESTS\n\n"""
+          s = s.replace(marker, injection + marker)
+          assert s.count("PY_V20_NETCDF_TESTS") == 2
+          assert s.count("-DNETCDF_ENABLE_TESTS=OFF") >= 3
+          p.write_text(s)
+          PY_PATCH
+
+          cp bootstrap/v17-patched-v13.yml evidence/v20-after-test-option-repair.yml
+          diff -u evidence/v20-before-test-option-repair.yml evidence/v20-after-test-option-repair.yml > evidence/v20-test-option-only.diff || test "$?" = 1
+          test "$(grep -c '^@@' evidence/v20-test-option-only.diff)" = 1
+          grep -Fq "new_line = lines[i].replace('-DBUILD_TESTING=OFF', '-DNETCDF_ENABLE_TESTS=OFF')" evidence/v20-after-test-option-repair.yml
+          sha256sum evidence/v20-before-test-option-repair.yml evidence/v20-after-test-option-repair.yml evidence/v20-test-option-only.diff > evidence/v20-test-option-repair-sha256.txt
+
+          cat > evidence/v20-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_NETCDF410_TEST_OPTION_REPAIR_FROZEN
+          predecessor_v19_head=${V19_HEAD}
+          predecessor_v19_blob=${V19_BLOB}
+          predecessor_v19_run=${V19_RUN}
+          predecessor_v19_job=${V19_JOB}
+          predecessor_v19_artifact=${V19_ARTIFACT}
+          predecessor_v19_artifact_digest=sha256:${V19_ARTIFACT_DIGEST}
+          predecessor_v19_failure_stage=netcdf-build
+          predecessor_v19_link_undefined=listxattr,getxattr
+          repair=NETCDF_4_10_0_EXACT_OPTION_NETCDF_ENABLE_TESTS_OFF_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+          # Continue the exact V17/V19 compile-link-only candidate. It never instantiates
+          # the generated WASM and cannot produce LT5/P/T/C/D scientific results.
+          source bootstrap/v19-suffix.sh
+
+          test -f work/build/netcdf/CMakeCache.txt
+          grep -Eq '^NETCDF_ENABLE_TESTS:BOOL=OFF$' work/build/netcdf/CMakeCache.txt
+          grep -Eq '^Tests Enabled:[[:space:]]+OFF$' work/evidence/netcdf-configure.txt
+          test -f work/evidence/v11-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v11-receipt.txt
+          grep -Fxq 'classification=EXACT_BUILD1_NETCDF_4_10_0_WASM_P_COMPILE_CLOSURE_PASS' work/evidence/v11-receipt.txt
+          test -f work/evidence/v13-receipt.txt
+          grep -Fxq 'status=PASS' work/evidence/v13-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'runtime_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'lt5_result=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'c_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'd_executed=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_selected=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'b_resolved=false' work/evidence/v13-receipt.txt
+          grep -Fxq 'production_changed=false' work/evidence/v13-receipt.txt
+
+          cp evidence/v20-* work/evidence/
+          cat > work/evidence/v20-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_BUILD1_NETCDF_4_10_0_P_COMPILE_CLOSURE_PASS_AFTER_EXACT_TEST_OPTION_REPAIR
+          predecessor_v19_run=${V19_RUN}
+          repair=NETCDF_4_10_0_EXACT_OPTION_NETCDF_ENABLE_TESTS_OFF_ONLY
+          NETCDF_ENABLE_TESTS=OFF
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum work/evidence/v20-receipt.txt >> work/evidence/v20-test-option-repair-sha256.txt
+
+      - name: Upload immutable pre-result exact410 V20 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v20
+          path: |
+            work/evidence
+            evidence
+            bootstrap/v19-workflow-sha256.txt
+            bootstrap/v20-split-sha256.txt
+          if-no-files-found: warn
+          retention-days: 90

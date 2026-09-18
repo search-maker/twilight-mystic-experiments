@@ -1,0 +1,302 @@
+name: LowAlt LT5 P Worker Module Origin Forensics V57
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v57-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v57.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  origin-forensics-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Repair only V56 suffix-marker extracted-shell representation and execute
+        id: origin
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence/v57-wrapper fetched-v57/v56-artifact
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v56.yml?ref=15605ce97f249146f1a7b749fea280e82ac2eaaf" \
+            -o fetched-v57/v56-workflow-api.json
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/10546520381/zip" \
+            -o fetched-v57/v56-artifact.zip
+
+          python3 - <<'PY_V57'
+          import ast
+          import base64
+          import difflib
+          import hashlib
+          import json
+          import zipfile
+          from pathlib import Path
+
+          OUT = Path('evidence/v57-wrapper')
+          YAML_PREFIX = b'          '
+          V56_HEAD = '15605ce97f249146f1a7b749fea280e82ac2eaaf'
+          V56_WORKFLOW_BLOB = 'c402063d3ed9ee8d91872011025d60566d2b5d2b'
+          V56_ARTIFACT_SHA256 = '392bff9afaa0f53ceece7989ca4e66a18758e257ff31d8d8f1f1a90b8c091f90'
+          V56_ARTIFACT_SIZE = 37681
+          V55_RUN_ORIGINAL_SHA256 = '41b75835e3ad2cfb146e3283b6357bc69b473092209349ac8122de5b0ad0be06'
+          V55_RUN_ORIGINAL_SIZE = 8099
+          V55_RUN_PATCHED_V56_SHA256 = '3fe4696455c80d4fbf5c26e063a43936acdec89fe2325babf682747a41334d64'
+          V55_RUN_PATCHED_V56_SIZE = 8009
+          V56_REPRESENTATION_TABLE_SHA256 = '949c690fa765bcd1c11a291c5dd878f6d8541bb1b535483be6e574feb11e3479'
+          V56_NEEDLE_TABLE_SHA256 = '90c12bd318dc3c4beaf3341985c4fb6b8af4abc0b17a95b3e240c02bd942bc4f'
+          V56_HARNESS_DIFF_SHA256 = '81ce3f52e6f65cf1e55bbc24aa045c3ad6263e910f0cc5d04a97519d8302079a'
+
+          def sha256_bytes(data):
+              return hashlib.sha256(data).hexdigest()
+
+          api = json.loads(Path('fetched-v57/v56-workflow-api.json').read_text())
+          if api.get('sha') != V56_WORKFLOW_BLOB:
+              raise SystemExit(f'V57_BIND_FAIL V56 workflow blob {api.get("sha")}')
+          v56_source = base64.b64decode(api['content'])
+          git_blob = hashlib.sha1(b'blob ' + str(len(v56_source)).encode() + b'\0' + v56_source).hexdigest()
+          if git_blob != V56_WORKFLOW_BLOB:
+              raise SystemExit(f'V57_BIND_FAIL recomputed V56 workflow blob {git_blob}')
+          Path('fetched-v57/v56-workflow-source.yml').write_bytes(v56_source)
+
+          zip_bytes = Path('fetched-v57/v56-artifact.zip').read_bytes()
+          if len(zip_bytes) != V56_ARTIFACT_SIZE:
+              raise SystemExit(f'V57_BIND_FAIL V56 artifact size {len(zip_bytes)}')
+          if sha256_bytes(zip_bytes) != V56_ARTIFACT_SHA256:
+              raise SystemExit(f'V57_BIND_FAIL V56 artifact sha {sha256_bytes(zip_bytes)}')
+          with zipfile.ZipFile('fetched-v57/v56-artifact.zip') as zf:
+              zf.extractall('fetched-v57/v56-artifact')
+
+          artifact_root = Path('fetched-v57/v56-artifact')
+          accepted = {
+              'bootstrap/v55-run-original.sh': (V55_RUN_ORIGINAL_SHA256, V55_RUN_ORIGINAL_SIZE),
+              'bootstrap/v55-run-patched-v56.sh': (V55_RUN_PATCHED_V56_SHA256, V55_RUN_PATCHED_V56_SIZE),
+              'evidence/v56-wrapper/yaml-to-extracted-shell-representation.json': (V56_REPRESENTATION_TABLE_SHA256, None),
+              'evidence/v56-wrapper/needle-replacement-table.json': (V56_NEEDLE_TABLE_SHA256, None),
+              'evidence/v56-wrapper/v55-to-v56-harness-only.diff': (V56_HARNESS_DIFF_SHA256, None),
+          }
+          accepted_receipt = []
+          for rel, (expected_sha, expected_size) in accepted.items():
+              p = artifact_root / rel
+              if not p.is_file():
+                  raise SystemExit(f'V57_BIND_FAIL missing accepted V56 artifact file {rel}')
+              data = p.read_bytes()
+              actual_sha = sha256_bytes(data)
+              if actual_sha != expected_sha:
+                  raise SystemExit(f'V57_BIND_FAIL accepted V56 artifact sha {rel} {actual_sha}')
+              if expected_size is not None and len(data) != expected_size:
+                  raise SystemExit(f'V57_BIND_FAIL accepted V56 artifact size {rel} {len(data)}')
+              accepted_receipt.append({'path': rel, 'sha256': actual_sha, 'size': len(data)})
+          Path(OUT/'accepted-v56-evidence-bindings.json').write_text(json.dumps(accepted_receipt, sort_keys=True, indent=2)+'\n')
+
+          v55_original = (artifact_root/'bootstrap/v55-run-original.sh').read_bytes()
+          v55_patched = (artifact_root/'bootstrap/v55-run-patched-v56.sh').read_bytes()
+          Path('bootstrap/v55-run-original-v57-proof.sh').write_bytes(v55_original)
+          Path('bootstrap/v55-run-patched-v56-v57-proof.sh').write_bytes(v55_patched)
+
+          # Extract the exact executable V56 run block by the same deterministic
+          # 10-space YAML block-indentation removal used by V56.
+          lines = v56_source.splitlines(keepends=True)
+          run_mark = b'        run: |\n'
+          end_mark = b'      - name: Freeze V56 origin-forensics artifact\n'
+          starts = [i for i, line in enumerate(lines) if line == run_mark]
+          ends = [i for i, line in enumerate(lines) if line == end_mark]
+          if starts != [26] or len(ends) != 1 or ends[0] <= starts[0]:
+              raise SystemExit(f'V57_REPRESENTATION_FAIL run block anchors starts={starts} ends={ends}')
+          run_lines = lines[starts[0]+1:ends[0]]
+          extracted = []
+          for line in run_lines:
+              if line.startswith(YAML_PREFIX):
+                  extracted.append(line[len(YAML_PREFIX):])
+              elif line in (b'\n', b''):
+                  extracted.append(line)
+              else:
+                  raise SystemExit(f'V57_REPRESENTATION_FAIL unexpected V56 run indentation {line!r}')
+          v56_run = b''.join(extracted)
+          Path('bootstrap/v56-run-original.sh').write_bytes(v56_run)
+
+          # FIRST GATE: identify the single proven faulty outer marker assignment,
+          # freeze YAML-source and extracted-shell representations, and repair only
+          # the ten-space marker-value indentation.
+          phrase = b'Reproduce ONLY the exact source-defined V51 transport transform. No repair,'
+          candidate_lines = [line for line in v56_run.splitlines(keepends=True)
+                             if phrase in line and line.startswith(b'marker = b"')]
+          if len(candidate_lines) != 1:
+              raise SystemExit(f'V57_REPRESENTATION_FAIL suffix marker assignment candidates={len(candidate_lines)}')
+          old_line = candidate_lines[0]
+          if v56_run.count(old_line) != 1:
+              raise SystemExit(f'V57_REPRESENTATION_FAIL suffix marker extracted occurrence={v56_run.count(old_line)}')
+          yaml_line = YAML_PREFIX + old_line
+          if v56_source.count(yaml_line) != 1:
+              raise SystemExit(f'V57_REPRESENTATION_FAIL suffix marker YAML occurrence={v56_source.count(yaml_line)}')
+
+          old_ast = ast.parse(old_line.decode('utf-8'))
+          if len(old_ast.body) != 1 or not isinstance(old_ast.body[0], ast.Assign):
+              raise SystemExit('V57_REPRESENTATION_FAIL suffix marker old assignment parse')
+          old_marker = ast.literal_eval(old_ast.body[0].value)
+          if not isinstance(old_marker, bytes):
+              raise SystemExit('V57_REPRESENTATION_FAIL suffix marker old value type')
+          if not old_marker.startswith(YAML_PREFIX):
+              raise SystemExit('V57_REPRESENTATION_FAIL old marker lacks exact ten-space YAML prefix')
+          new_marker = old_marker[len(YAML_PREFIX):]
+          expected_marker_prefix = b"marker = b'# Reproduce ONLY the exact source-defined V51 transport transform. No repair,"
+          if not new_marker.startswith(expected_marker_prefix):
+              raise SystemExit(f'V57_REPRESENTATION_FAIL corrected marker content {new_marker!r}')
+
+          old_prefix = b'marker = b"' + YAML_PREFIX + b"marker = b'"
+          new_prefix = b'marker = b"marker = b\''
+          if not old_line.startswith(old_prefix):
+              raise SystemExit(f'V57_REPRESENTATION_FAIL old outer marker prefix {old_line!r}')
+          if v56_run.count(new_prefix) != 0:
+              raise SystemExit('V57_REPRESENTATION_FAIL corrected outer marker prefix already present')
+          new_line = new_prefix + old_line[len(old_prefix):]
+          new_ast = ast.parse(new_line.decode('utf-8'))
+          if len(new_ast.body) != 1 or not isinstance(new_ast.body[0], ast.Assign):
+              raise SystemExit('V57_REPRESENTATION_FAIL suffix marker new assignment parse')
+          parsed_new_marker = ast.literal_eval(new_ast.body[0].value)
+          if parsed_new_marker != new_marker:
+              raise SystemExit('V57_REPRESENTATION_FAIL corrected marker AST value mismatch')
+
+          counts = {
+              'v55_original_old_marker_count': v55_original.count(old_marker),
+              'v55_original_new_marker_count': v55_original.count(new_marker),
+              'v55_patched_v56_old_marker_count': v55_patched.count(old_marker),
+              'v55_patched_v56_new_marker_count': v55_patched.count(new_marker),
+          }
+          if counts != {
+              'v55_original_old_marker_count': 0,
+              'v55_original_new_marker_count': 1,
+              'v55_patched_v56_old_marker_count': 0,
+              'v55_patched_v56_new_marker_count': 1,
+          }:
+              raise SystemExit(f'V57_REPRESENTATION_FAIL frozen suffix-marker counts {counts}')
+
+          patched_v56 = v56_run.replace(old_line, new_line, 1)
+          if patched_v56 == v56_run or patched_v56.count(new_line) != 1 or patched_v56.count(old_line) != 0:
+              raise SystemExit('V57_REPRESENTATION_FAIL exact one-line replacement postcondition')
+          Path('bootstrap/v56-run-patched-v57.sh').write_bytes(patched_v56)
+
+          run_line_list = v56_run.splitlines(keepends=True)
+          line_index = run_line_list.index(old_line)
+          context = {
+              'schema': 1,
+              'scope': 'V56_TO_V57_SUFFIX_MARKER_EXTRACTED_SHELL_ASSERTION_ONLY',
+              'v56_head': V56_HEAD,
+              'v56_workflow_blob_sha1': V56_WORKFLOW_BLOB,
+              'v56_workflow_sha256': sha256_bytes(v56_source),
+              'v56_extracted_run_sha256': sha256_bytes(v56_run),
+              'v57_patched_run_sha256': sha256_bytes(patched_v56),
+              'yaml_block_indent_spaces': len(YAML_PREFIX),
+              'yaml_source_line_leading_spaces': len(yaml_line) - len(yaml_line.lstrip(b' ')),
+              'extracted_outer_assignment_leading_spaces': len(old_line) - len(old_line.lstrip(b' ')),
+              'old_marker_value_leading_spaces': len(old_marker) - len(old_marker.lstrip(b' ')),
+              'new_marker_value_leading_spaces': len(new_marker) - len(new_marker.lstrip(b' ')),
+              'deterministic_mapping': 'remove_exact_10_space_yaml_block_indent_from_marker_value_only',
+              'old_outer_assignment_b64': base64.b64encode(old_line).decode(),
+              'new_outer_assignment_b64': base64.b64encode(new_line).decode(),
+              'old_marker_b64': base64.b64encode(old_marker).decode(),
+              'new_marker_b64': base64.b64encode(new_marker).decode(),
+              'old_marker_sha256': sha256_bytes(old_marker),
+              'new_marker_sha256': sha256_bytes(new_marker),
+              'counts': counts,
+              'extracted_run_line_1_based': line_index + 1,
+              'context_previous_b64': base64.b64encode(run_line_list[line_index-1] if line_index else b'').decode(),
+              'context_current_b64': base64.b64encode(old_line).decode(),
+              'context_next_b64': base64.b64encode(run_line_list[line_index+1] if line_index+1 < len(run_line_list) else b'').decode(),
+              'accepted_nine_needle_representation_table_sha256': V56_REPRESENTATION_TABLE_SHA256,
+              'accepted_nine_needle_replacement_table_sha256': V56_NEEDLE_TABLE_SHA256,
+              'accepted_v55_to_v56_harness_diff_sha256': V56_HARNESS_DIFF_SHA256,
+              'authoritative_2_plus_2_update_changed': False,
+              'source_defined_transform_changed': False,
+              'embedded_semantic_script_changed': False,
+          }
+          Path(OUT/'suffix-marker-representation.json').write_text(json.dumps(context, sort_keys=True, indent=2)+'\n')
+          Path(OUT/'old-marker.bin').write_bytes(old_marker)
+          Path(OUT/'new-marker.bin').write_bytes(new_marker)
+          Path(OUT/'old-outer-assignment.bin').write_bytes(old_line)
+          Path(OUT/'new-outer-assignment.bin').write_bytes(new_line)
+
+          diff = ''.join(difflib.unified_diff(
+              v56_run.decode().splitlines(True),
+              patched_v56.decode().splitlines(True),
+              fromfile='v56-run-original.sh',
+              tofile='v56-run-patched-v57.sh',
+              n=2,
+          ))
+          Path(OUT/'v56-to-v57-harness-only.diff').write_text(diff)
+
+          # Exact no-unrelated-mutation proof: replacing the one frozen line is the
+          # complete patched child, and the already accepted V56 evidence is only read.
+          check = v56_run.replace(old_line, new_line, 1)
+          if check != patched_v56:
+              raise SystemExit('V57_REPRESENTATION_FAIL unrelated mutation')
+          manifest = {
+              'schema': 1,
+              'status': 'REPRESENTATION_GATE_PASS',
+              'scope': 'SUFFIX_MARKER_EXTRACTED_SHELL_INDENT_ASSERTION_ONLY',
+              'v56_extracted_run_sha256': sha256_bytes(v56_run),
+              'v57_patched_run_sha256': sha256_bytes(patched_v56),
+              'v56_to_v57_diff_sha256': sha256_bytes(diff.encode()),
+              'old_marker_sha256': sha256_bytes(old_marker),
+              'new_marker_sha256': sha256_bytes(new_marker),
+              'old_marker_counts_original_patched': [counts['v55_original_old_marker_count'], counts['v55_patched_v56_old_marker_count']],
+              'new_marker_counts_original_patched': [counts['v55_original_new_marker_count'], counts['v55_patched_v56_new_marker_count']],
+              'nine_needle_repair_preserved': True,
+              'authoritative_2_plus_2_update_preserved': True,
+              'source_defined_transform_preserved': True,
+          }
+          Path(OUT/'representation-gate-manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2)+'\n')
+          Path(OUT/'REPRESENTATION_GATE_PASS').write_text('representation_gate_pass=true\n')
+          PY_V57
+
+          test -f evidence/v57-wrapper/REPRESENTATION_GATE_PASS
+          bash -n bootstrap/v56-run-patched-v57.sh
+          set +e
+          bash bootstrap/v56-run-patched-v57.sh >evidence/v57-wrapper/patched-v56.stdout.txt 2>evidence/v57-wrapper/patched-v56.stderr.txt
+          V56_PATCHED_RC=$?
+          set -e
+          printf '%s\n' "$V56_PATCHED_RC" > evidence/v57-wrapper/patched-v56.exit-code.txt
+          exit "$V56_PATCHED_RC"
+
+      - name: Freeze V57 origin-forensics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v57
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            evidence/
+            fetched-v57/
+            fetched-v56/
+            fetched-v55/
+            bootstrap/v56-run-original.sh
+            bootstrap/v56-run-patched-v57.sh
+            bootstrap/v55-run-original-v57-proof.sh
+            bootstrap/v55-run-patched-v56-v57-proof.sh
+            bootstrap/v55-run-original.sh
+            bootstrap/v55-run-patched-v56.sh
+            bootstrap/v54-run-original-v56-proof.sh
+            bootstrap/v54-run-original.sh
+            bootstrap/v54-run-patched-v55.sh
+            bootstrap/v46-run-v51.sh
+            inputs/

@@ -1,0 +1,204 @@
+name: LowAlt LT5 P Core V45 Pre-result Link Frontier
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-core-v45-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-core-v45.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  freeze-p-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay V44, compile exact solve_rte core, and freeze strict unresolved link frontier
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence preserved/p-core
+
+          V44_HEAD=168d2331ad55d43b17a1bea7e6bb88adb1f38c07
+          V44_BLOB=d8b1b82df5ffc7aae8944fa717184b457049ee93
+          V44_RUN=35291409545
+          V44_JOB=105434851708
+          V44_ARTIFACT=10526451473
+          V44_ARTIFACT_DIGEST=af22692ac42c7225628bf0a843cb784949494e681d188a7611e196f6c46b74e9
+          CUTLINE_CHECKPOINT=5707930525
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-bytes-v44.yml?ref=${V44_HEAD}" \
+            -o bootstrap/v44.yml
+          test "$(git hash-object bootstrap/v44.yml)" = "$V44_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V44 PRE-RESULT P bytes$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v44.yml > bootstrap/v45-v44-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v45-v44-run.sh)" = 1
+          bash -n bootstrap/v45-v44-run.sh
+
+          cat > evidence/v45-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V45_EXACT_P_CORE_COMPILE_AND_STRICT_LINK_FRONTIER_FROZEN
+          predecessor_v44_head=${V44_HEAD}
+          predecessor_v44_blob=${V44_BLOB}
+          predecessor_v44_run=${V44_RUN}
+          predecessor_v44_job=${V44_JOB}
+          predecessor_v44_artifact=${V44_ARTIFACT}
+          predecessor_v44_artifact_digest=sha256:${V44_ARTIFACT_DIGEST}
+          p_cutline_checkpoint=${CUTLINE_CHECKPOINT}
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          worker_loadable_p_module=false
+          wasm_instantiated=false
+          p_numerical_evaluation=false
+          p_to_t_marshalling=false
+          t_called=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum bootstrap/v44.yml bootstrap/v45-v44-run.sh evidence/v45-preexecution-receipt.txt > evidence/v45-preexecution-sha256.txt
+
+          # Exact V44 replay produces the frozen source tree, generated ABI, P-facing
+          # objects and static dependency archives. It performs no module instantiation.
+          bash bootstrap/v45-v44-run.sh
+          grep -Fxq 'status=PASS' evidence/v44-receipt.txt
+          grep -Fxq 'classification=P_COMPILED_BYTES_AND_STATIC_LINK_INPUTS_PRESERVED_PRE_RESULT' evidence/v44-receipt.txt
+          grep -Fxq 'wasm_instantiated=false' evidence/v44-receipt.txt
+
+          source /opt/emsdk/emsdk_env.sh >/dev/null
+          EMCC="$(command -v emcc)"
+          OBJDUMP="$(command -v llvm-objdump)"
+          test -n "$EMCC"
+          test -n "$OBJDUMP"
+          test "$(sha256sum "$EMCC" | awk '{print $1}')" = "b0c9551f9155fa9c028efa24591acdfd30f02f32fb247cf9266f5f0f2ede7589"
+          "$EMCC" --version > evidence/v45-emcc-version.txt 2>&1
+          "$OBJDUMP" --version > evidence/v45-llvm-objdump-version.txt 2>&1
+          printf 'emcc=%s\nllvm_objdump=%s\n' "$EMCC" "$OBJDUMP" > evidence/v45-tool-paths.txt
+          sha256sum "$EMCC" "$OBJDUMP" > evidence/v45-tool-sha256.txt
+
+          ROOT=work/libRadtran-2.0.6
+          test -f "$ROOT/src/solve_rte.c"
+          test -f work/p-generated-abi.h
+          test "$(sha256sum work/p-generated-abi.h | awk '{print $1}')" = "c5d2236a8b5bb2447b96e4f1620cdb81d96f8f04ca87ce5f663ae4bae7b9922f"
+
+          # Recompile the source unit that owns setup_and_call_solver using the final
+          # V44 feature/NetCDF ABI. This is compile-only and executes no P code.
+          "$EMCC" -O0 -std=gnu11 -include "$(pwd)/work/p-generated-abi.h" \
+            -c "$ROOT/src/solve_rte.c" \
+            -I"$ROOT" -I"$ROOT/src" -I"$ROOT/src_c" -I"$ROOT/libsrc_c" -I"$ROOT/libsrc_f" -I"$(pwd)/work/install/include" \
+            -o preserved/p-core/solve_rte.o \
+            > evidence/v45-solve_rte.stdout.txt 2> evidence/v45-solve_rte.stderr.txt
+          test -s preserved/p-core/solve_rte.o
+          sha256sum "$ROOT/src/solve_rte.c" work/p-generated-abi.h preserved/p-core/solve_rte.o > evidence/v45-p-core-source-object-sha256.txt
+          wc -c preserved/p-core/solve_rte.o > evidence/v45-p-core-object-size.txt
+
+          # Static object evidence must bind the exact source-cutline owner to the
+          # already-frozen optical_properties provider and also show that the unsplit
+          # source unit still contains downstream T references. No code is run.
+          "$OBJDUMP" -t preserved/p-core/solve_rte.o > evidence/v45-solve_rte-symbols.txt
+          "$OBJDUMP" -t preserved/p-objects/ancillary.o > evidence/v45-ancillary-symbols.txt
+          grep -q 'setup_and_call_solver' evidence/v45-solve_rte-symbols.txt
+          grep -Eq '\*UND\*.*[[:space:]]optical_properties$' evidence/v45-solve_rte-symbols.txt
+          grep -Eq '[[:space:]]optical_properties$' evidence/v45-ancillary-symbols.txt
+          grep -Eq '\*UND\*.*[[:space:]]setout_$' evidence/v45-solve_rte-symbols.txt
+          grep -Eq '\*UND\*.*[[:space:]]sdisort_$' evidence/v45-solve_rte-symbols.txt
+          awk '/\*UND\*/ {print $NF}' evidence/v45-solve_rte-symbols.txt | LC_ALL=C sort -u > evidence/v45-solve_rte-undefined-symbols.txt
+          awk '/\*UND\*/ {print $NF}' evidence/v45-ancillary-symbols.txt | LC_ALL=C sort -u > evidence/v45-ancillary-undefined-symbols.txt
+          wc -l evidence/v45-solve_rte-undefined-symbols.txt evidence/v45-ancillary-undefined-symbols.txt > evidence/v45-undefined-symbol-counts.txt
+
+          # Strict static link probe: no --allow-undefined. A failure is expected at
+          # this PRE-RESULT stage and freezes the exact remaining source/link frontier.
+          # A surprising success is also recorded without instantiation, but is not B.
+          cat > evidence/v45-strict-link-command.txt <<'EOF'
+          emcc -O0 -Wl,--no-entry -sERROR_ON_UNDEFINED_SYMBOLS=1 -sFILESYSTEM=0 -o p-core-strict-probe.wasm solve_rte.o ancillary.o netCDF_functions.o libnetcdf.a libhdf5_hl.a libhdf5.a libz.a -lm
+          EOF
+          set +e
+          "$EMCC" -O0 -Wl,--no-entry -sERROR_ON_UNDEFINED_SYMBOLS=1 -sFILESYSTEM=0 \
+            -o preserved/p-core/p-core-strict-probe.wasm \
+            preserved/p-core/solve_rte.o \
+            preserved/p-objects/ancillary.o \
+            preserved/p-objects/netCDF_functions.o \
+            preserved/link-inputs/libnetcdf.a \
+            preserved/link-inputs/libhdf5_hl.a \
+            preserved/link-inputs/libhdf5.a \
+            preserved/link-inputs/libz.a \
+            -lm \
+            > evidence/v45-strict-link.stdout.txt 2> evidence/v45-strict-link.stderr.txt
+          LINK_RC=$?
+          set -e
+          printf 'strict_link_rc=%s\n' "$LINK_RC" > evidence/v45-strict-link-status.txt
+          if [ "$LINK_RC" -eq 0 ]; then
+            test -s preserved/p-core/p-core-strict-probe.wasm
+            sha256sum preserved/p-core/p-core-strict-probe.wasm > evidence/v45-strict-link-wasm-sha256.txt
+            printf 'strict_link_outcome=SUCCESS_NOT_INSTANTIATED_NOT_FINAL_P\n' >> evidence/v45-strict-link-status.txt
+          else
+            rm -f preserved/p-core/p-core-strict-probe.wasm
+            grep -Eo 'undefined symbol: [^ ]+' evidence/v45-strict-link.stderr.txt | sed 's/^undefined symbol: //' | LC_ALL=C sort -u > evidence/v45-strict-link-undefined-symbols.txt || true
+            test -s evidence/v45-strict-link-undefined-symbols.txt
+            printf 'strict_link_outcome=EXPECTED_UNRESOLVED_SOURCE_GRAPH_FRONTIER\n' >> evidence/v45-strict-link-status.txt
+            printf 'strict_link_undefined_unique=%s\n' "$(wc -l < evidence/v45-strict-link-undefined-symbols.txt | tr -d ' ')" >> evidence/v45-strict-link-status.txt
+          fi
+
+          sha256sum evidence/v45-solve_rte-symbols.txt evidence/v45-ancillary-symbols.txt evidence/v45-solve_rte-undefined-symbols.txt evidence/v45-ancillary-undefined-symbols.txt evidence/v45-strict-link-command.txt evidence/v45-strict-link-status.txt evidence/v45-strict-link.stdout.txt evidence/v45-strict-link.stderr.txt > evidence/v45-link-frontier-sha256.txt
+
+          cat > evidence/v45-receipt.txt <<EOF
+          status=PASS
+          classification=P_CUTLINE_OWNER_OBJECT_BYTES_AND_STRICT_LINK_FRONTIER_FROZEN_PRE_RESULT
+          predecessor_v44_head=${V44_HEAD}
+          predecessor_v44_run=${V44_RUN}
+          p_cutline_checkpoint=${CUTLINE_CHECKPOINT}
+          solve_rte_object_preserved=true
+          optical_properties_provider_object_preserved_by_v44=true
+          setup_and_call_solver_symbol_observed=true
+          optical_properties_reference_observed=true
+          downstream_setout_reference_observed=true
+          downstream_sdisort_reference_observed=true
+          strict_link_rc=${LINK_RC}
+          source_graph_frontier_frozen=true
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          worker_loadable_p_module=false
+          link_export_closure_complete=false
+          wasm_instantiated=false
+          p_numerical_evaluation=false
+          p_to_t_marshalling=false
+          t_called=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v45-receipt.txt >> evidence/v45-link-frontier-sha256.txt
+
+      - name: Upload immutable V45 PRE-RESULT P core/link frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-core-v45
+          path: |
+            evidence
+            preserved/p-core
+            bootstrap/v44.yml
+            bootstrap/v45-v44-run.sh
+          if-no-files-found: error
+          retention-days: 90

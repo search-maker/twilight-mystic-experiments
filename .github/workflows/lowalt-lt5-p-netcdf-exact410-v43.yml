@@ -1,0 +1,189 @@
+name: LowAlt LT5 P NetCDF Exact410 V43 NC_VERSION_PATCH Repair
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-netcdf-exact410-v43-20260917
+    paths:
+      - .github/workflows/lowalt-lt5-p-netcdf-exact410-v43.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Replay exact V42 and patch only PATCH postcondition
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence
+
+          V42_HEAD=eec4fc9a290e90dae58d2d9cb02e2b662f7b58c9
+          V42_BLOB=eaad8c9655b7de1c3a46ba1d0896e2cc600bf3d4
+          V42_RUN=35288976554
+          V42_JOB=105427464529
+          V42_ARTIFACT=10525547000
+          V42_ARTIFACT_DIGEST=25b61589182645b84681f9f5841d9270ee0b63cb2cb6e75ed4730597837694e8
+          V42_TOP_SHA256=aee609f383b020ae116877dcd36ce8b17941960a3049ef0e9c7314af6c96d5e9
+          V42_DIFF_SHA256=5f138da12088965a6cecbd8441d56df85175994b3eea5fa81ed5358feddc5cec
+          V19_SUFFIX_SHA256=a8347298d67efb6d7b4d769300df41fd5b87e6deeab87ae4a686c74a30999fb5
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-netcdf-exact410-v42.yml?ref=${V42_HEAD}" \
+            -o bootstrap/v42.yml
+          test "$(git hash-object bootstrap/v42.yml)" = "$V42_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V42 pre-result evidence$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v42.yml > bootstrap/v42-run.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v42-run.sh)" = 1
+          bash -n bootstrap/v42-run.sh
+
+          python3 - <<'PY_V43_SPLIT'
+          from pathlib import Path
+          s = Path('bootstrap/v42-run.sh').read_text()
+          marker = 'bash bootstrap/v42-top-run.sh\n'
+          assert s.count(marker) == 1
+          a, b = s.split(marker, 1)
+          Path('bootstrap/v43-v42-prefix.sh').write_text(a)
+          Path('bootstrap/v43-v42-tail.sh').write_text(b)
+          PY_V43_SPLIT
+          bash -n bootstrap/v43-v42-prefix.sh
+
+          # Reproduce V42 exactly up to, but not including, its failing child execution.
+          source bootstrap/v43-v42-prefix.sh
+          test -f bootstrap/v42-top-run.sh
+          test "$(sha256sum bootstrap/v42-top-run.sh | awk '{print $1}')" = "$V42_TOP_SHA256"
+          test "$(sha256sum evidence/v42-v41-minor-postcondition-only.diff | awk '{print $1}')" = "$V42_DIFF_SHA256"
+          cp bootstrap/v42-top-run.sh evidence/v43-v42-top-run-before.sh
+
+          # V42 gets through HDF5_DIR, MAJOR and MINOR, then stops on V19 line 36.
+          # Repair only that newly observed PATCH postcondition.
+          python3 - <<'PY_V43_REPAIR'
+          from pathlib import Path
+          from difflib import unified_diff
+          p = Path('bootstrap/v42-top-run.sh')
+          before = p.read_text()
+          anchor = "lines[lines.index(old_minor)] = new_minor\nafter = ''.join(lines)\n"
+          assert before.count(anchor) == 1
+          replacement = (
+              "lines[lines.index(old_minor)] = new_minor\n"
+              "old_patch = \"grep -Eq '^#define[[:space:]]+NC_VERSION_PATCH[[:space:]]+0$' work/install/include/netcdf_meta.h\\n\"\n"
+              "new_patch = \"grep -Fxq '#define NC_VERSION_PATCH 0 /*!< netcdf-c patch version. */' work/install/include/netcdf_meta.h\\n\"\n"
+              "assert lines.count(old_patch) == 1, old_patch\n"
+              "assert lines.count(new_patch) == 0, new_patch\n"
+              "lines[lines.index(old_patch)] = new_patch\n"
+              "after = ''.join(lines)\n"
+              "assert after.splitlines(keepends=True).count(old_patch) == 0\n"
+              "assert after.splitlines(keepends=True).count(new_patch) == 1\n"
+          )
+          after = before.replace(anchor, replacement, 1)
+
+          minus_old = "assert sum(1 for line in dl if line.startswith('-') and not line.startswith('---')) == 3\n"
+          plus_old = "assert sum(1 for line in dl if line.startswith('+') and not line.startswith('+++')) == 3\n"
+          assert after.count(minus_old) == 1
+          assert after.count(plus_old) == 1
+          after = after.replace(minus_old, minus_old.replace('== 3', '== 4'), 1)
+          after = after.replace(plus_old, plus_old.replace('== 3', '== 4'), 1)
+
+          old_label = "'repair=EXACT_V19_HDF5_DIR_AND_NC_VERSION_MAJOR_AND_MINOR_POSTCONDITIONS\\n'"
+          new_label = "'repair=EXACT_V19_HDF5_DIR_AND_NC_VERSION_MAJOR_MINOR_AND_PATCH_POSTCONDITIONS\\n'"
+          assert after.count(old_label) == 1
+          after = after.replace(old_label, new_label, 1)
+
+          old_count = "'changed_postconditions=3\\n'"
+          new_count = "'changed_postconditions=4\\n'"
+          assert after.count(old_count) == 1
+          after = after.replace(old_count, new_count, 1)
+
+          old_names = "fromfile='v19-suffix-before-v42-minor-postcondition', tofile='v19-suffix-after-v42-minor-postcondition'"
+          new_names = "fromfile='v19-suffix-before-v43-patch-postcondition', tofile='v19-suffix-after-v43-patch-postcondition'"
+          assert after.count(old_names) == 1
+          after = after.replace(old_names, new_names, 1)
+
+          d = ''.join(unified_diff(before.splitlines(True), after.splitlines(True), fromfile='v42-top-run-through-minor', tofile='v43-top-run-through-patch'))
+          assert d
+          Path('evidence/v43-v42-patch-postcondition-only.diff').write_text(d)
+          Path('bootstrap/v43-top-run.sh').write_text(after)
+          PY_V43_REPAIR
+
+          bash -n bootstrap/v43-top-run.sh
+          cp bootstrap/v43-top-run.sh evidence/v43-top-run-before-execution.sh
+          sha256sum bootstrap/v42.yml bootstrap/v42-run.sh bootstrap/v43-v42-prefix.sh evidence/v43-v42-top-run-before.sh evidence/v43-top-run-before-execution.sh evidence/v43-v42-patch-postcondition-only.diff > evidence/v43-sha256.txt
+
+          cat > evidence/v43-preexecution-receipt.txt <<EOF
+          status=PRE_RESULT_V43_EXACT_PATCH_POSTCONDITION_REPAIR_FROZEN
+          predecessor_v42_head=${V42_HEAD}
+          predecessor_v42_blob=${V42_BLOB}
+          predecessor_v42_run=${V42_RUN}
+          predecessor_v42_job=${V42_JOB}
+          predecessor_v42_artifact=${V42_ARTIFACT}
+          predecessor_v42_artifact_digest=sha256:${V42_ARTIFACT_DIGEST}
+          predecessor_v42_top_run_sha256=${V42_TOP_SHA256}
+          predecessor_v42_diff_sha256=${V42_DIFF_SHA256}
+          frozen_v19_suffix_sha256=${V19_SUFFIX_SHA256}
+          predecessor_v42_first_false=V19_NC_VERSION_PATCH_STALE_END_ANCHORED_POSTCONDITION
+          preserved_repairs=HDF5_DIR_UNINITIALIZED_AND_EXACT_NC_VERSION_MAJOR_MINOR
+          added_repair=EXACT_NC_VERSION_PATCH_SOURCE_DERIVED_LINE_ONLY
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+          sha256sum evidence/v43-preexecution-receipt.txt >> evidence/v43-sha256.txt
+
+          # PRE-RESULT compile/link diagnostic only. A later first-false remains terminal.
+          bash bootstrap/v43-top-run.sh
+
+          mkdir -p work/evidence
+          cp evidence/v43-* work/evidence/
+          cat > work/evidence/v43-receipt.txt <<EOF
+          status=PASS
+          classification=EXACT_P_COMPILE_CLOSURE_PASS_AFTER_V43_PATCH_POSTCONDITION_REPAIR
+          predecessor_v42_run=${V42_RUN}
+          candidate_semantics_changed=false
+          source_or_dependency_identity_changed=false
+          compiler_or_link_flags_changed=false
+          wasm_instantiated=false
+          runtime_executed=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF
+
+      - name: Upload immutable V43 pre-result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-netcdf-exact410-v43
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

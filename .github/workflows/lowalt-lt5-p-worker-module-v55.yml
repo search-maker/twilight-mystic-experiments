@@ -1,0 +1,224 @@
+name: LowAlt LT5 P Worker Module Origin Forensics V55
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v55-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v55.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  origin-forensics-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Patch only frozen V54 inventory assertion and execute
+        id: origin
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence/v55-wrapper fetched-v55
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v54.yml?ref=dbb6458baf2785ceac624daa0e1748970749abf9" \
+            -o fetched-v55/v54-workflow-api.json
+
+          python3 - <<'PY_PATCH'
+          import base64, difflib, hashlib, json
+          from pathlib import Path
+
+          api = json.loads(Path('fetched-v55/v54-workflow-api.json').read_text())
+          assert api['sha'] == '2f40250aaf9d3d63a9669480256f31bc4190795a'
+          source = base64.b64decode(api['content'])
+          git_blob = hashlib.sha1(b'blob ' + str(len(source)).encode() + b'\0' + source).hexdigest()
+          assert git_blob == '2f40250aaf9d3d63a9669480256f31bc4190795a'
+          Path('fetched-v55/v54-workflow-source.yml').write_bytes(source)
+
+          lines = source.splitlines(keepends=True)
+          run_mark = b'        run: |\n'
+          end_mark = b'      - name: Freeze V54 origin-forensics artifact\n'
+          starts = [i for i,x in enumerate(lines) if x == run_mark]
+          ends = [i for i,x in enumerate(lines) if x == end_mark]
+          assert starts == [26]
+          assert len(ends) == 1 and ends[0] > starts[0]
+          block = lines[starts[0]+1:ends[0]]
+          out = []
+          for line in block:
+              if line.startswith(b'          '):
+                  out.append(line[10:])
+              elif line in (b'\n', b''):
+                  out.append(line)
+              else:
+                  raise SystemExit(f'V55_PATCH_FAIL unexpected run-block indentation: {line!r}')
+          original = b''.join(out)
+          Path('bootstrap/v54-run-original.sh').write_bytes(original)
+
+          replacements = [
+              (b"              'intended_script_sha256_validator_lines_1_based': [328, 342, 350],\n",
+               b"              'intended_script_sha256_validator_lines_1_based': [328, 344],\n",
+               'declared_intended_inventory_3_to_2'),
+              (b"              'canonical_payload_diff_sha256_validator_lines_1_based': [333, 336],\n",
+               b"              'canonical_payload_diff_sha256_validator_lines_1_based': [333, 345],\n",
+               'declared_payload_diff_inventory_exact_lines'),
+              (b"              342: 'source_defined_validator_reference_or_receipt',\n",
+               b"              344: 'source_defined_validator_reference_or_receipt',\n",
+               'intended_receipt_context_line'),
+              (b"              350: 'source_defined_validator_reference_or_receipt',\n",
+               b'',
+               'remove_stale_intended_receipt_line'),
+              (b"              336: 'source_defined_payload_diff_validator_reference_or_receipt',\n",
+               b"              345: 'source_defined_payload_diff_validator_reference_or_receipt',\n",
+               'payload_diff_receipt_context_line'),
+          ]
+          patched = original
+          table = []
+          for old, new, purpose in replacements:
+              old_count = patched.count(old)
+              new_pre_count = patched.count(new) if new else 0
+              if old_count != 1 or new_pre_count != 0:
+                  raise SystemExit(f'V55_PATCH_FAIL replacement precondition {purpose} old={old_count} new_pre={new_pre_count}')
+              before_sha = hashlib.sha256(patched).hexdigest()
+              patched = patched.replace(old, new, 1)
+              table.append({
+                  'purpose': purpose,
+                  'old_utf8': old.decode(),
+                  'new_utf8': new.decode(),
+                  'before_script_sha256': before_sha,
+                  'after_script_sha256': hashlib.sha256(patched).hexdigest(),
+              })
+
+          Path('bootstrap/v54-run-patched-v55.sh').write_bytes(patched)
+          diff = ''.join(difflib.unified_diff(
+              original.decode().splitlines(True),
+              patched.decode().splitlines(True),
+              fromfile='v54-run-original.sh',
+              tofile='v54-run-patched-v55.sh',
+              n=2,
+          ))
+          Path('evidence/v55-wrapper/v54-to-v55-inventory-assertion-only.diff').write_text(diff)
+          Path('evidence/v55-wrapper/replacement-table.json').write_text(json.dumps(table, sort_keys=True, indent=2)+'\n')
+
+          marker = b'# Reproduce ONLY the exact source-defined V51 transport transform. No repair,\n'
+          assert original.count(marker) == 1 and patched.count(marker) == 1
+          assert original[original.index(marker):] == patched[patched.index(marker):]
+
+          intended = b'e4608a47964eba236a3681a056b2f4be8704c1ffa7e14c23857bdce323448ddb'
+          payload = b'de543b76e0444269d4a7dd9e150b762c030edcf734617f11c6ae4ce909b0658e'
+          assert source.count(intended) == 2
+          assert source.count(payload) == 2
+
+          manifest = {
+              'schema': 1,
+              'scope': 'V54_TO_V55_INVENTORY_ASSERTION_ONLY',
+              'v54_workflow_blob_sha1': git_blob,
+              'v54_workflow_sha256': hashlib.sha256(source).hexdigest(),
+              'v54_run_sha256': hashlib.sha256(original).hexdigest(),
+              'v55_patched_run_sha256': hashlib.sha256(patched).hexdigest(),
+              'diff_sha256': hashlib.sha256(diff.encode()).hexdigest(),
+              'replacement_count': len(table),
+              'source_defined_transform_suffix_byte_identical': True,
+              'semantic_script_transport_changed': False,
+              'target_sha_selection_semantics_changed': False,
+              'frozen_authoritative_v51_literal_inventory': {
+                  'intended_script_validator_lines_1_based': [328, 344],
+                  'payload_diff_validator_lines_1_based': [333, 345],
+              },
+          }
+          Path('evidence/v55-wrapper/patch-manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2)+'\n')
+          PY_PATCH
+
+          bash -n bootstrap/v54-run-patched-v55.sh
+          set +e
+          bash bootstrap/v54-run-patched-v55.sh >evidence/v55-wrapper/patched-v54.stdout.txt 2>evidence/v55-wrapper/patched-v54.stderr.txt
+          V54_PATCHED_RC=$?
+          set -e
+          printf '%s\n' "$V54_PATCHED_RC" > evidence/v55-wrapper/patched-v54.exit-code.txt
+
+          ORIGIN_PASS=false
+          if test -f evidence/v54-origin/source-transform-candidate-graph.json; then
+            python3 - <<'PY_CLASSIFY'
+          import hashlib, json
+          from pathlib import Path
+          graph = json.loads(Path('evidence/v54-origin/source-transform-candidate-graph.json').read_text())
+          inv = json.loads(Path('evidence/v54-origin/validator-occurrence-inventory.json').read_text())
+          assert inv['observed_inventory'] == {
+              'intended_script_sha256_validator_lines_1_based': [328, 344],
+              'canonical_payload_diff_sha256_validator_lines_1_based': [333, 345],
+          }
+          assert inv['declared_complete_inventory'] == inv['observed_inventory']
+          assert inv['all_occurrences_classified'] is True
+          assert inv['extra_or_unclassified_occurrences'] == []
+          assert inv['dynamic_validator_occurrence_generation_allowed'] is False
+          assert inv['count_alone_used_as_proof'] is False
+          receipt = {
+              'inventory_gate_pass': True,
+              'strict_origin_gate_pass': bool(graph['strict_origin_gate_pass']),
+              'complete_authoritative_candidate_count': graph['complete_authoritative_candidate_count'],
+              'candidate_sha256': graph['candidate_sha256'],
+              'candidate_target_match': graph['candidate_target_match'],
+              'forbidden_recovery_not_attempted': graph['forbidden_recovery_not_attempted'],
+              'no_semantic_reauthoring': graph['no_semantic_reauthoring'],
+          }
+          Path('evidence/v55-wrapper/origin-classification.json').write_text(json.dumps(receipt, sort_keys=True, indent=2)+'\n')
+          if graph['strict_origin_gate_pass']:
+              target = 'e4608a47964eba236a3681a056b2f4be8704c1ffa7e14c23857bdce323448ddb'
+              candidate = Path('evidence/v54-origin/source-defined-transform-output.sh').read_bytes()
+              assert hashlib.sha256(candidate).hexdigest() == target
+              assert graph['complete_authoritative_candidate_count'] == 1
+              assert graph['candidate_sha256'] == [target]
+              assert graph['candidate_target_match'] == [True]
+              Path('evidence/v55-wrapper/ORIGIN_PASS').write_text('exact_byte_origin_pass=true\n')
+          PY_CLASSIFY
+            if test -f evidence/v55-wrapper/ORIGIN_PASS; then
+              ORIGIN_PASS=true
+            fi
+          fi
+
+          if test "$ORIGIN_PASS" = true; then
+            cp evidence/v54-origin/source-defined-transform-output.sh bootstrap/v46-run-v51.sh
+            test "$(sha256sum bootstrap/v46-run-v51.sh | awk '{print $1}')" = e4608a47964eba236a3681a056b2f4be8704c1ffa7e14c23857bdce323448ddb
+            bash -n bootstrap/v46-run-v51.sh
+            set +e
+            bash bootstrap/v46-run-v51.sh >evidence/v55-wrapper/v51-successor.stdout.txt 2>evidence/v55-wrapper/v51-successor.stderr.txt
+            V51_SUCCESSOR_RC=$?
+            set -e
+            printf '%s\n' "$V51_SUCCESSOR_RC" > evidence/v55-wrapper/v51-successor.exit-code.txt
+            exit "$V51_SUCCESSOR_RC"
+          fi
+
+          exit "$V54_PATCHED_RC"
+
+      - name: Freeze V55 origin-forensics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v55
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            evidence/
+            fetched-v55/
+            bootstrap/v54-run-original.sh
+            bootstrap/v54-run-patched-v55.sh
+            bootstrap/v46-run-v51.sh
+            inputs/v50.zip
+            inputs/v50/bootstrap/v46-run-v50.sh
+            inputs/v51.zip
+            inputs/v51/bootstrap/v46-run-v50.sh
+            inputs/v51/bootstrap/v46-run-v51.sh
+            inputs/v52.zip
+            inputs/v52/transport-v51/
+            inputs/v52/evidence/v52-wrapper/transport-first-false.txt

@@ -1,0 +1,375 @@
+name: LowAlt LT5 P Worker Module Frozen V59 Recovery V63
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v63-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v63.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  frozen-v59-byte-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Deterministically recover frozen V59 table and manifest, then execute preserved PRE-RESULT chain
+        id: v59_recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p fetched-v63 artifacts-v63 bootstrap evidence/v63-v59-recovery
+
+          api_get() {
+            local url="$1" out="$2"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$url" -o "$out"
+          }
+
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/issues/comments/5732127187" fetched-v63/v59-checkpoint.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v59.yml?ref=46593d008ed9b2c737c5514bf42f36c4a4011ccc" fetched-v63/v59-workflow-contents.json
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/46593d008ed9b2c737c5514bf42f36c4a4011ccc/.github/workflows/lowalt-lt5-p-worker-module-v59.yml" \
+            -o fetched-v63/v59-workflow-raw.yml
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v58.yml?ref=b15b5d91c50d81c09f4a6f78d2359941662879a0" fetched-v63/v58-workflow-contents.json
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/b15b5d91c50d81c09f4a6f78d2359941662879a0/.github/workflows/lowalt-lt5-p-worker-module-v58.yml" \
+            -o fetched-v63/v58-workflow-raw.yml
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v60.yml?ref=f8a56a70470c608c87c7e40c3e5132df3601ed8e" fetched-v63/v60-workflow-contents.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v61.yml?ref=bab8d462280edc68195ae2e6a3970512cf6413a8" fetched-v63/v61-workflow-contents.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/runs/35348880635/artifacts?per_page=100" fetched-v63/v57-artifacts-api.json
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/10549070882/zip" \
+            -o artifacts-v63/v57-direct-transport.zip
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/10561781023" fetched-v63/v62-artifact-api.json
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/10561781023/zip" \
+            -o artifacts-v63/v62-evidence.zip
+
+          python3 - <<'PY_V63'
+          import base64
+          import difflib
+          import hashlib
+          import io
+          import json
+          import shutil
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          OUT = Path('evidence/v63-v59-recovery')
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          V59_CHECKPOINT = 5732127187
+          V59_BLOB = '3228ab81bd3f1983cce2afb4a167a4fa187d841f'
+          V58_BLOB = 'a88873140a276d8735a65f998d2d6b8ca97492d1'
+          V60_BLOB = 'bbe7edbedee434298cc60cf619f344fc05fe4a35'
+          V61_BLOB = '2bdff8b34c18ecade1b298dbff5e1d71ea33a2ee'
+          TABLE_TARGET = '631b52bb8bd4f4f3c3d7cdf0a4ad23dab558c7c27649bb746a064fe59ff36f80'
+          MANIFEST_TARGET = 'fe48c37dea56b3c5b03b99237d6ea52337b4f92aafeac389b597aea08ce62bf6'
+          V57_ID = 10549070882
+          V57_NAME = 'lowalt-lt5-p-worker-module-v57'
+          V57_SIZE = 166972
+          V57_SHA = '169118a67f933a54b91575881223760921d571acd59ed9a505d6037067575cdb'
+          V57_RUN = 35348880635
+          V57_HEAD = 'e75961ade4cd365b5bb7c269c9d0a80a370f325f'
+          V62_ARTIFACT_ID = 10561781023
+          V62_DIGEST = 'sha256:e418414af8cfd11b6dce15e32a19b8330643852d9ff147aca5283b13dcdc5584'
+          V62_SIZE = 2441545
+          V62_RUN = 35378819522
+          V62_HEAD = 'ef12e0d4d999c5817de63c416b8d5ff1fa1f7157'
+          V54_OLD_SHA = 'e827a23b4fb05924810748778384862c69931aeb88a57407fb1ae2692f70ef20'
+          V54_NEW_SHA = 'e8271687adef6755d904b3663263837506fbcf74b2906ae470850b8eb994cd4b'
+
+          def H(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def G(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+
+          def decode_contents(path, expected_blob):
+              obj = json.loads(Path(path).read_text())
+              if obj.get('sha') != expected_blob:
+                  raise SystemExit(f'V63_BIND_FAIL contents blob {path} {obj.get("sha")}')
+              data = base64.b64decode(obj['content'])
+              if G(data) != expected_blob:
+                  raise SystemExit(f'V63_BIND_FAIL recomputed blob {path} {G(data)}')
+              return data
+
+          cp = json.loads(Path('fetched-v63/v59-checkpoint.json').read_text())
+          body = cp.get('body', '')
+          required_checkpoint_literals = [
+              str(V59_CHECKPOINT),
+              TABLE_TARGET,
+              MANIFEST_TARGET,
+              'exactly `50` unique member names',
+              'all `11` required accepted V57 evidence members',
+              str(V57_ID),
+              V57_SHA,
+          ]
+          if cp.get('id') != V59_CHECKPOINT or cp.get('user', {}).get('login') != 'search-maker':
+              raise SystemExit('V63_BIND_FAIL V59 checkpoint identity')
+          if any(x not in body for x in required_checkpoint_literals[1:]):
+              raise SystemExit('V63_BIND_FAIL V59 checkpoint frozen contract literals')
+          Path(OUT/'accepted-v59-checkpoint-body.txt').write_text(body)
+
+          v59 = decode_contents('fetched-v63/v59-workflow-contents.json', V59_BLOB)
+          v58 = decode_contents('fetched-v63/v58-workflow-contents.json', V58_BLOB)
+          v60 = decode_contents('fetched-v63/v60-workflow-contents.json', V60_BLOB)
+          v61 = decode_contents('fetched-v63/v61-workflow-contents.json', V61_BLOB)
+          if Path('fetched-v63/v59-workflow-raw.yml').read_bytes() != v59:
+              raise SystemExit('V63_BIND_FAIL V59 authoritative representations disagree')
+          if Path('fetched-v63/v58-workflow-raw.yml').read_bytes() != v58:
+              raise SystemExit('V63_BIND_FAIL V58 authoritative representations disagree')
+          Path(OUT/'v59-workflow-source.yml').write_bytes(v59)
+          Path(OUT/'v58-workflow-source.yml').write_bytes(v58)
+
+          v62_meta = json.loads(Path('fetched-v63/v62-artifact-api.json').read_text())
+          for k, expected in [('id', V62_ARTIFACT_ID), ('digest', V62_DIGEST), ('size_in_bytes', V62_SIZE)]:
+              if v62_meta.get(k) != expected:
+                  raise SystemExit(f'V63_BIND_FAIL V62 artifact {k}={v62_meta.get(k)!r}')
+          if v62_meta.get('workflow_run', {}).get('id') != V62_RUN or v62_meta.get('workflow_run', {}).get('head_sha') != V62_HEAD or v62_meta.get('expired') is not False:
+              raise SystemExit('V63_BIND_FAIL V62 artifact workflow identity')
+          v62_zip = Path('artifacts-v63/v62-evidence.zip').read_bytes()
+          if len(v62_zip) != V62_SIZE or 'sha256:' + H(v62_zip) != V62_DIGEST:
+              raise SystemExit('V63_BIND_FAIL V62 artifact transport')
+
+          with zipfile.ZipFile(io.BytesIO(v62_zip)) as z62:
+              names62 = [i.filename for i in z62.infolist() if not i.is_dir()]
+              required_paths = [
+                  'evidence/v62-artifact-identity/required-v57-members.json',
+                  'evidence/v62-artifact-identity/DURABLE_REQUIRED_MEMBER_MATCH',
+                  'evidence/v62-artifact-identity/metadata-transport-member-comparison.json',
+                  'artifacts-v62/v59-current-transport.zip',
+              ]
+              for p in required_paths:
+                  if names62.count(p) != 1:
+                      raise SystemExit(f'V63_BIND_FAIL V62 member cardinality {p}={names62.count(p)}')
+              rows62 = json.loads(z62.read(required_paths[0]))
+              marker62 = z62.read(required_paths[1])
+              comparison62 = json.loads(z62.read(required_paths[2]))
+              current_v59 = z62.read(required_paths[3])
+          if marker62 != b'PASS 11/11 exact member bytes/SHA256; outer cause UNKNOWN\n':
+              raise SystemExit('V63_BIND_FAIL V62 durable marker bytes')
+          if not isinstance(rows62, list) or len(rows62) != 11 or not all(r.get('exact') is True for r in rows62):
+              raise SystemExit('V63_BIND_FAIL V62 required-member rows')
+          if comparison62.get('v57_transport', {}).get('member_count') != 50 or len(comparison62.get('required_members', [])) != 11:
+              raise SystemExit('V63_BIND_FAIL V62 50/11 contract')
+
+          with zipfile.ZipFile(io.BytesIO(current_v59)) as z59:
+              nested = 'fetched-v59/v57-artifact-transport.zip'
+              if [i.filename for i in z59.infolist() if not i.is_dir()].count(nested) != 1:
+                  raise SystemExit('V63_BIND_FAIL V59 nested V57 transport cardinality')
+              v57_from_v62 = z59.read(nested)
+          if len(v57_from_v62) != V57_SIZE or H(v57_from_v62) != V57_SHA:
+              raise SystemExit('V63_BIND_FAIL V62 nested V57 transport identity')
+          with zipfile.ZipFile(io.BytesIO(v57_from_v62)) as z57:
+              n57 = [i.filename for i in z57.infolist() if not i.is_dir()]
+              if len(n57) != 50 or len(set(n57)) != 50:
+                  raise SystemExit(f'V63_BIND_FAIL V57 50-member contract count={len(n57)} unique={len(set(n57))}')
+
+          v57_direct = Path('artifacts-v63/v57-direct-transport.zip').read_bytes()
+          if v57_direct != v57_from_v62 or len(v57_direct) != V57_SIZE or H(v57_direct) != V57_SHA:
+              raise SystemExit('V63_BIND_FAIL direct V57 transport differs from accepted V62 nested bytes')
+          v57_api = json.loads(Path('fetched-v63/v57-artifacts-api.json').read_text())
+          matches = [a for a in v57_api.get('artifacts', []) if a.get('id') == V57_ID]
+          if len(matches) != 1:
+              raise SystemExit(f'V63_BIND_FAIL V57 API cardinality {len(matches)}')
+          m = matches[0]
+          frozen_meta = {
+              'name': V57_NAME,
+              'size_in_bytes': V57_SIZE,
+              'digest': 'sha256:' + V57_SHA,
+              'expired': False,
+          }
+          for k, expected in frozen_meta.items():
+              if m.get(k) != expected:
+                  raise SystemExit(f'V63_BIND_FAIL V57 API {k}={m.get(k)!r}')
+          if m.get('workflow_run', {}).get('id') != V57_RUN or m.get('workflow_run', {}).get('head_sha') != V57_HEAD:
+              raise SystemExit('V63_BIND_FAIL V57 API workflow identity')
+
+          def extract_run(source):
+              lines = source.splitlines(keepends=True)
+              marker = b'        run: |\n'
+              try:
+                  start = lines.index(marker) + 1
+              except ValueError:
+                  raise SystemExit('V63_DERIVE_FAIL run marker absent')
+              out = []
+              mapping = []
+              for idx in range(start, len(lines)):
+                  line = lines[idx]
+                  if line.strip() and not line.startswith(b'          '):
+                      break
+                  if line.startswith(b'          '):
+                      out.append(line[10:]); removed = 10
+                  else:
+                      out.append(line); removed = 0
+                  mapping.append({'yaml_line_1_based': idx + 1, 'removed_prefix_spaces': removed})
+              return b''.join(out), mapping
+
+          v59_run, v59_run_map = extract_run(v59)
+          heredoc_start = b"python3 - <<'PY_V59'\n"
+          h0 = v59_run.find(heredoc_start)
+          if h0 < 0:
+              raise SystemExit('V63_DERIVE_FAIL PY_V59 start absent')
+          h0 += len(heredoc_start)
+          h1 = v59_run.find(b'\nPY_V59\n', h0)
+          if h1 < 0:
+              raise SystemExit('V63_DERIVE_FAIL PY_V59 end absent')
+          generator = v59_run[h0:h1+1]
+          Path(OUT/'source-defined-v59-generator.py').write_bytes(generator)
+
+          derived = []
+          for label in ('derive-a', 'derive-b'):
+              root = Path('evidence/v63-v59-recovery') / label
+              (root/'fetched-v59').mkdir(parents=True, exist_ok=True)
+              (root/'bootstrap').mkdir(parents=True, exist_ok=True)
+              (root/'evidence/v59-artifact-identity').mkdir(parents=True, exist_ok=True)
+              shutil.copyfile('fetched-v63/v58-workflow-contents.json', root/'fetched-v59/v58-workflow-api.json')
+              shutil.copyfile('fetched-v63/v57-artifacts-api.json', root/'fetched-v59/v57-artifacts-api.json')
+              (root/'fetched-v59/v57-artifact-transport.zip').write_bytes(v57_from_v62)
+              (root/'generator.py').write_bytes(generator)
+              proc = subprocess.run([sys.executable, 'generator.py'], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              (root/'generator.stdout').write_bytes(proc.stdout)
+              (root/'generator.stderr').write_bytes(proc.stderr)
+              (root/'generator.exit-code').write_text(str(proc.returncode) + '\n')
+              if proc.returncode != 0:
+                  raise SystemExit(f'V63_DERIVE_FAIL source-defined V59 generator {label} rc={proc.returncode}')
+              table = (root/'evidence/v59-artifact-identity/metadata-transport-member-identity-table.json').read_bytes()
+              manifest = (root/'evidence/v59-artifact-identity/artifact-identity-gate-manifest.json').read_bytes()
+              derived.append((table, manifest))
+
+          table_candidates = {x[0] for x in derived}
+          manifest_candidates = {x[1] for x in derived}
+          if len(table_candidates) != 1 or len(manifest_candidates) != 1:
+              raise SystemExit(f'V63_RECOVERY_FAIL non-unique deterministic candidates table={len(table_candidates)} manifest={len(manifest_candidates)}')
+          table = next(iter(table_candidates))
+          manifest = next(iter(manifest_candidates))
+          table_sha = H(table)
+          manifest_sha = H(manifest)
+          if table_sha != TABLE_TARGET or manifest_sha != MANIFEST_TARGET:
+              raise SystemExit(f'V63_RECOVERY_FAIL deterministic candidate hash mismatch table={table_sha} manifest={manifest_sha}')
+          Path(OUT/'recovered-metadata-transport-member-identity-table.json').write_bytes(table)
+          Path(OUT/'recovered-artifact-identity-gate-manifest.json').write_bytes(manifest)
+          Path(OUT/'FROZEN_V59_TABLE_MANIFEST_RECOVERY_PASS').write_text('PASS exact source-defined deterministic V59 table+manifest byte recovery\n')
+
+          provenance = {
+              'schema': 1,
+              'authority': 'Coordinator 5734537025',
+              'status': 'FROZEN_V59_TABLE_MANIFEST_RECOVERY_PASS',
+              'accepted_v59_checkpoint_id': V59_CHECKPOINT,
+              'accepted_v59_checkpoint_body_sha256': H(body.encode()),
+              'v59_workflow': {'blob_sha1': V59_BLOB, 'size': len(v59), 'sha256': H(v59), 'raw_byte_equal_contents': True},
+              'v58_workflow': {'blob_sha1': V58_BLOB, 'size': len(v58), 'sha256': H(v58), 'raw_byte_equal_contents': True},
+              'v62_artifact': {'id': V62_ARTIFACT_ID, 'digest': V62_DIGEST, 'size': V62_SIZE, 'head': V62_HEAD},
+              'v62_durable_member_contract': {'v57_member_count': 50, 'required_count': 11, 'all_required_exact': True},
+              'v57_transport': {'size': len(v57_from_v62), 'sha256': H(v57_from_v62), 'direct_current_byte_equal_v62_nested': True},
+              'v59_generator': {'size': len(generator), 'sha256': H(generator), 'extracted_from_exact_v59_run_block': True},
+              'derivation_runs': 2,
+              'unique_table_candidate_count': len(table_candidates),
+              'unique_manifest_candidate_count': len(manifest_candidates),
+              'table_candidate_size': len(table),
+              'table_candidate_sha256': table_sha,
+              'manifest_candidate_size': len(manifest),
+              'manifest_candidate_sha256': manifest_sha,
+              'target_sha_used_only_after_candidate_derivation': True,
+              'current_v59_same_path_files_used': False,
+              'manual_reauthoring_used': False,
+              'hash_guided_search_used': False,
+              'arbitrary_normalization_used': False,
+              'b_selected': False,
+              'b_resolved': False,
+              'result_boundary_unchanged': True,
+          }
+          Path(OUT/'recovery-provenance.json').write_text(json.dumps(provenance, indent=2, sort_keys=True) + '\n')
+          Path(OUT/'v59-run-extraction-map.json').write_text(json.dumps(v59_run_map, indent=2) + '\n')
+
+          # Continue the preserved chain unchanged by reapplying the exact V61-defined
+          # one-line V54 source-SHA predicate repair to the exact V60 extracted shell.
+          v60_run, v60_run_map = extract_run(v60)
+          if not v60_run.startswith(b'set -euo pipefail\n'):
+              raise SystemExit('V63_CHAIN_FAIL extracted V60 shell prefix')
+          old = ("          V54_SOURCE_SHA256 = '" + V54_OLD_SHA + "'\n").encode()
+          new = ("          V54_SOURCE_SHA256 = '" + V54_NEW_SHA + "'\n").encode()
+          if old not in v61 or new not in v61:
+              raise SystemExit('V63_CHAIN_FAIL exact V61 source-defined SHA repair literals absent')
+          if v60_run.count(old) != 1 or v60_run.count(new) != 0:
+              raise SystemExit(f'V63_CHAIN_FAIL V61 preserved patch precondition old={v60_run.count(old)} new={v60_run.count(new)}')
+          patched_v60 = v60_run.replace(old, new, 1)
+          diff = ''.join(difflib.unified_diff(
+              v60_run.decode().splitlines(True),
+              patched_v60.decode().splitlines(True),
+              fromfile='v60-run-original.sh',
+              tofile='v60-run-patched-v63-preserved-v61.sh',
+              n=3,
+          ))
+          payload = [x for x in diff.splitlines() if (x.startswith('+') and not x.startswith('+++')) or (x.startswith('-') and not x.startswith('---'))]
+          expected_payload = [
+              "-          V54_SOURCE_SHA256 = '" + V54_OLD_SHA + "'",
+              "+          V54_SOURCE_SHA256 = '" + V54_NEW_SHA + "'",
+          ]
+          if payload != expected_payload:
+              raise SystemExit(f'V63_CHAIN_FAIL preserved V61 patch diff payload {payload!r}')
+          Path('bootstrap/v60-run-original-v63.sh').write_bytes(v60_run)
+          Path('bootstrap/v60-run-patched-v63.sh').write_bytes(patched_v60)
+          Path(OUT/'v61-preserved-sha-predicate-patch.diff').write_text(diff)
+          Path(OUT/'v60-run-extraction-map.json').write_text(json.dumps(v60_run_map, indent=2) + '\n')
+          Path(OUT/'PREPARED_PRESERVED_CHAIN').write_text('PASS V61-preserved V54 SHA predicate patch prepared after V59 byte recovery\n')
+          print('FROZEN_V59_TABLE_MANIFEST_RECOVERY_PASS')
+          print('PREPARED_PRESERVED_CHAIN')
+          PY_V63
+
+          test -f evidence/v63-v59-recovery/FROZEN_V59_TABLE_MANIFEST_RECOVERY_PASS
+          test -f evidence/v63-v59-recovery/PREPARED_PRESERVED_CHAIN
+          bash -n bootstrap/v60-run-patched-v63.sh
+          set +e
+          bash bootstrap/v60-run-patched-v63.sh >evidence/v63-v59-recovery/preserved-chain.stdout 2>evidence/v63-v59-recovery/preserved-chain.stderr
+          CHILD_RC=$?
+          set -e
+          printf '%s\n' "$CHILD_RC" > evidence/v63-v59-recovery/preserved-chain.exit-code.txt
+          if [ "$CHILD_RC" -ne 0 ]; then
+            echo "V63_PRESERVED_CHAIN_FIRST_FALSE rc=${CHILD_RC}" >&2
+            tail -n 120 evidence/v63-v59-recovery/preserved-chain.stderr >&2 || true
+            exit "$CHILD_RC"
+          fi
+
+      - name: Freeze V63 PRE-RESULT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v63-evidence
+          path: |
+            evidence/
+            bootstrap/
+            fetched-v63/
+            artifacts-v63/
+            fetched-v61/
+            artifacts-v61/
+            fetched-v60/
+            fetched-v59/
+            fetched-v58/
+            fetched/
+            work/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 90

@@ -1,0 +1,282 @@
+name: LowAlt LT5 P Worker Module Origin Forensics V54
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v54-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v54.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  origin-forensics-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Freeze authoritative origin graph and fail closed if no exact candidate exists
+        id: origin
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          ROOT="$PWD"
+          mkdir -p evidence/v54-origin inputs/v50 inputs/v51 inputs/v52 fetched
+
+          fetch_artifact() {
+            local id="$1" out="$2" expected="$3"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/search-maker/twilight-mystic-experiments/actions/artifacts/${id}/zip" \
+              -o "$out"
+            test "$(sha256sum "$out" | awk '{print $1}')" = "$expected"
+          }
+
+          fetch_artifact 10534273752 inputs/v50.zip d5734b539cc3daa383987d579a5714022c305ff4b385ec422125ebfc4ab47b02
+          fetch_artifact 10536157133 inputs/v51.zip d18d90e09a69e3bebc74a9540fa425ad3ca7bc8c585d2341c2ba44b69349eaf0
+          fetch_artifact 10538100732 inputs/v52.zip 52bb4a375577af527e674ecc18ff1a276a06de87f57acca960eac8f18dd87c19
+          unzip -q inputs/v50.zip -d inputs/v50
+          unzip -q inputs/v51.zip -d inputs/v51
+          unzip -q inputs/v52.zip -d inputs/v52
+
+          test "$(sha256sum inputs/v50/bootstrap/v46-run-v50.sh | awk '{print $1}')" = ddfe1bfdc48e95887b3e87841a7d3139200032cda4e54907e04163f5dce86320
+          test "$(sha256sum inputs/v51/bootstrap/v46-run-v51.sh | awk '{print $1}')" = 1fa76dfc014d2f086ad4ab4ae1b646a4c90ec613b6b4f7c16ecea2ac534dfd55
+          test "$(sha256sum inputs/v52/transport-v51/v51-workflow-source.yml | awk '{print $1}')" = d9f58c9ce61aca76103ca3bcadf57c189f9bb86803057d2029a9fe1203e12a5c
+          test "$(sha256sum inputs/v52/transport-v51/v51-payload-as-executed.b64 | awk '{print $1}')" = 1694a7c51c267de925b3a580e7570e1346c2dcdbbce8a043cfed6bd95bd0072c
+          test "$(sha256sum inputs/v52/transport-v51/v51-payload-compact.bin | awk '{print $1}')" = 51c6ad567787702d09ae3476118fa1cbd3f4fd6c05bef2ae1b37325fd66aa870
+          test "$(sha256sum inputs/v52/evidence/v52-wrapper/transport-first-false.txt | awk '{print $1}')" = 9fe75b1824c5afedad4a330b5f5eadb9e0dfe03b96159e95efa77e52111c7183
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v51.yml?ref=6e9c7bc59ff5153422b989f2ee28a0403fa54d4c" \
+            -o fetched/v51-workflow-api.json
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/commits/6e9c7bc59ff5153422b989f2ee28a0403fa54d4c" \
+            -o fetched/v51-commit-api.json
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/commits/6e9c7bc59ff5153422b989f2ee28a0403fa54d4c/pulls" \
+            -o fetched/v51-associated-pulls.json
+
+          python3 - <<'PY_ORIGIN'
+          import base64, hashlib, json, os, subprocess
+          from pathlib import Path
+
+          OUT = Path('evidence/v54-origin')
+          TARGET = 'e4608a47964eba236a3681a056b2f4be8704c1ffa7e14c23857bdce323448ddb'
+          DIFF_TARGET = 'de543b76e0444269d4a7dd9e150b762c030edcf734617f11c6ae4ce909b0658e'
+          V51_BLOB = '5585f3ce09311ebb88de2a5231b813fbe8e63e03'
+
+          api = json.loads(Path('fetched/v51-workflow-api.json').read_text())
+          assert api['sha'] == V51_BLOB
+          workflow = base64.b64decode(api['content'])
+          Path('fetched/v51-workflow-source.yml').write_bytes(workflow)
+          assert hashlib.sha256(workflow).hexdigest() == 'd9f58c9ce61aca76103ca3bcadf57c189f9bb86803057d2029a9fe1203e12a5c'
+          git_blob = hashlib.sha1(b'blob '+str(len(workflow)).encode()+b'\0'+workflow).hexdigest()
+          assert git_blob == V51_BLOB
+          assert workflow == Path('inputs/v52/transport-v51/v51-workflow-source.yml').read_bytes()
+
+          commit = json.loads(Path('fetched/v51-commit-api.json').read_text())
+          pulls = json.loads(Path('fetched/v51-associated-pulls.json').read_text())
+          assert commit['sha'] == '6e9c7bc59ff5153422b989f2ee28a0403fa54d4c'
+          files = commit.get('files', [])
+          changed = [f.get('filename') for f in files]
+          if changed != ['.github/workflows/lowalt-lt5-p-worker-module-v51.yml']:
+              raise SystemExit('V54_ORIGIN_FAIL unexpected V51 version-controlled change surface')
+
+          lines = workflow.splitlines(keepends=True)
+          start_marker = b"          cat > bootstrap/v46-run-v51.sh.gz.b64 <<'EOF_V51_SCRIPT'\n"
+          end_marker = b'          EOF_V51_SCRIPT\n'
+          starts = [i for i,x in enumerate(lines) if x == start_marker]
+          ends = [i for i,x in enumerate(lines) if x == end_marker]
+          assert len(starts) == 1 and len(ends) == 1 and ends[0] > starts[0]
+          prefix = b'          '
+          block = lines[starts[0]+1:ends[0]]
+          assert block and all(x.startswith(prefix) for x in block)
+          transport = b''.join(x[len(prefix):] for x in block)
+          compact = transport.replace(b'\n', b'')
+          assert transport == Path('inputs/v52/transport-v51/v51-payload-as-executed.b64').read_bytes()
+          assert compact == Path('inputs/v52/transport-v51/v51-payload-compact.bin').read_bytes()
+
+          def inventory(token, identity):
+              token_b = token.encode()
+              records = []
+              for idx, line in enumerate(lines, start=1):
+                  n = line.count(token_b)
+                  for ordinal in range(n):
+                      records.append({
+                          'identity': identity,
+                          'line_number_1_based': idx,
+                          'occurrence_ordinal_within_line': ordinal + 1,
+                          'line_utf8': line.decode('utf-8').rstrip('\n'),
+                          'line_sha256': hashlib.sha256(line).hexdigest(),
+                          'previous_line_utf8': lines[idx-2].decode('utf-8').rstrip('\n') if idx > 1 else None,
+                          'next_line_utf8': lines[idx].decode('utf-8').rstrip('\n') if idx < len(lines) else None,
+                      })
+              return records
+
+          target_records = inventory(TARGET, 'intended_script_sha256_validator')
+          diff_records = inventory(DIFF_TARGET, 'canonical_payload_diff_sha256_validator')
+          declared = {
+              'intended_script_sha256_validator_lines_1_based': [328, 342, 350],
+              'canonical_payload_diff_sha256_validator_lines_1_based': [333, 336],
+          }
+          observed = {
+              'intended_script_sha256_validator_lines_1_based': [r['line_number_1_based'] for r in target_records],
+              'canonical_payload_diff_sha256_validator_lines_1_based': [r['line_number_1_based'] for r in diff_records],
+          }
+
+          purpose_by_line = {
+              328: 'source_defined_post_transform_exact_script_sha_validator',
+              342: 'source_defined_validator_reference_or_receipt',
+              350: 'source_defined_validator_reference_or_receipt',
+              333: 'source_defined_payload_diff_exact_sha_validator',
+              336: 'source_defined_payload_diff_validator_reference_or_receipt',
+          }
+          all_records = target_records + diff_records
+          for record in all_records:
+              record['purpose'] = purpose_by_line.get(record['line_number_1_based'])
+              record['classified'] = record['purpose'] is not None
+          inventory_obj = {
+              'schema': 1,
+              'scope': 'V54_VALIDATOR_OCCURRENCE_INVENTORY_ASSERTION_ONLY',
+              'v51_workflow_blob_sha1': git_blob,
+              'v51_workflow_sha256': hashlib.sha256(workflow).hexdigest(),
+              'declared_complete_inventory': declared,
+              'observed_inventory': observed,
+              'records': all_records,
+              'all_occurrences_classified': all(r['classified'] for r in all_records),
+              'extra_or_unclassified_occurrences': [r for r in all_records if not r['classified']],
+              'dynamic_validator_occurrence_generation_allowed': False,
+              'count_alone_used_as_proof': False,
+          }
+          Path(OUT/'validator-occurrence-inventory.json').write_text(json.dumps(inventory_obj, sort_keys=True, indent=2)+'\n')
+          Path(OUT/'v53-to-v54-assertion-repair-scope.txt').write_text(
+              'scope=validator_occurrence_inventory_assertion_only\n'
+              'v53_workflow_blob_sha1=6ce6205259fe7b6aaaba6b031a5ca0e5239a6a8d\n'
+              'v51_workflow_blob_sha1=5585f3ce09311ebb88de2a5231b813fbe8e63e03\n'
+              'transform_semantics_changed=false\n'
+              'candidate_derivation_semantics_changed=false\n'
+              'target_sha_selection_semantics_changed=false\n'
+          )
+          if observed != declared or not inventory_obj['all_occurrences_classified']:
+              Path(OUT/'origin-first-false.txt').write_text(
+                  'strict_origin_gate_entered=false\n'
+                  'validator_occurrence_inventory_pass=false\n'
+                  f'declared_inventory={json.dumps(declared,sort_keys=True)}\n'
+                  f'observed_inventory={json.dumps(observed,sort_keys=True)}\n'
+                  f'all_occurrences_classified={str(inventory_obj["all_occurrences_classified"]).lower()}\n'
+                  'reason=exact authoritative V51 workflow occurrence inventory diverges from the frozen V54 declared complete inventory or contains an unclassified occurrence\n'
+              )
+              raise SystemExit('V54_ORIGIN_FAIL validator occurrence inventory mismatch or unclassified occurrence')
+
+          # Reproduce ONLY the exact source-defined V51 transport transform. No repair,
+          # insertion, deletion, substitution, normalization, or target-hash-guided search.
+          Path(OUT/'payload-as-executed.b64').write_bytes(transport)
+          pipe = subprocess.run(
+              ['bash','-lc',
+               "set -o pipefail; base64 -d evidence/v54-origin/payload-as-executed.b64 2>evidence/v54-origin/base64.stderr.txt | gzip -dc 2>evidence/v54-origin/gzip.stderr.txt > evidence/v54-origin/source-defined-transform-output.sh"],
+              check=False)
+          transformed = Path(OUT/'source-defined-transform-output.sh').read_bytes()
+          partial = Path('inputs/v51/bootstrap/v46-run-v51.sh').read_bytes()
+          exact_partial_match = transformed == partial
+
+          candidates = []
+          if pipe.returncode == 0:
+              candidates.append(transformed)
+          candidate_hashes = [hashlib.sha256(x).hexdigest() for x in candidates]
+          target_matches = [h == TARGET for h in candidate_hashes]
+
+          graph = {
+            'v54_scope': 'AUTHORITATIVE_SCRIPT_ORIGIN_BYTE_EXACT_FORENSICS_ONLY',
+            'target_sha256_validator_only': TARGET,
+            'canonical_v50_to_intended_payload_diff_sha256_validator_only': DIFF_TARGET,
+            'nodes': {
+              'v50_artifact_zip': {'sha256':'d5734b539cc3daa383987d579a5714022c305ff4b385ec422125ebfc4ab47b02','size':Path('inputs/v50.zip').stat().st_size},
+              'v50_script': {'sha256':hashlib.sha256(Path('inputs/v50/bootstrap/v46-run-v50.sh').read_bytes()).hexdigest(),'size':Path('inputs/v50/bootstrap/v46-run-v50.sh').stat().st_size},
+              'v51_commit': {'sha':'6e9c7bc59ff5153422b989f2ee28a0403fa54d4c','changed_files':changed,'associated_pull_count':len(pulls)},
+              'v51_workflow': {'git_blob_sha1':git_blob,'sha256':hashlib.sha256(workflow).hexdigest(),'size':len(workflow)},
+              'v51_transport_as_executed': {'sha256':hashlib.sha256(transport).hexdigest(),'size':len(transport)},
+              'v51_transport_compact': {'sha256':hashlib.sha256(compact).hexdigest(),'size':len(compact),'mod4':len(compact)%4},
+              'v51_artifact_zip': {'sha256':'d18d90e09a69e3bebc74a9540fa425ad3ca7bc8c585d2341c2ba44b69349eaf0','size':Path('inputs/v51.zip').stat().st_size},
+              'v51_partial_script': {'sha256':hashlib.sha256(partial).hexdigest(),'size':len(partial)},
+              'v52_artifact_zip': {'sha256':'52bb4a375577af527e674ecc18ff1a276a06de87f57acca960eac8f18dd87c19','size':Path('inputs/v52.zip').stat().st_size},
+              'source_defined_transform_output': {'sha256':hashlib.sha256(transformed).hexdigest(),'size':len(transformed)},
+            },
+            'edges': [
+              {'from':'v51_workflow','to':'v51_transport_as_executed','transform':'unique heredoc extraction plus YAML run-block indentation removal encoded by workflow source'},
+              {'from':'v51_transport_as_executed','to':'source_defined_transform_output','transform':'exact V51 shell pipeline: base64 -d | gzip -dc','returncode':pipe.returncode},
+            ],
+            'source_defined_transform_matches_v51_partial_artifact': exact_partial_match,
+            'complete_authoritative_candidate_count': len(candidates),
+            'candidate_sha256': candidate_hashes,
+            'candidate_target_match': target_matches,
+            'origin_complete': False if len(candidates) != 1 else True,
+            'strict_origin_gate_pass': len(candidates) == 1 and target_matches == [True],
+            'forbidden_recovery_not_attempted': True,
+            'no_semantic_reauthoring': True,
+          }
+          Path(OUT/'source-transform-candidate-graph.json').write_text(json.dumps(graph,sort_keys=True,indent=2)+'\n')
+          Path(OUT/'version-controlled-origin-surface.json').write_text(json.dumps({
+              'commit_sha':commit['sha'],
+              'tree_sha':commit['commit']['tree']['sha'],
+              'parents':[p['sha'] for p in commit.get('parents',[])],
+              'changed_files':changed,
+              'associated_pulls':pulls,
+              'workflow_blob_sha1':git_blob,
+              'workflow_sha256':hashlib.sha256(workflow).hexdigest(),
+              'workflow_size':len(workflow),
+          },sort_keys=True,indent=2)+'\n')
+          Path(OUT/'origin-first-false.txt').write_text(
+              'strict_origin_gate_pass=false\n'
+              f'source_defined_transform_returncode={pipe.returncode}\n'
+              f'source_defined_transform_partial_sha256={hashlib.sha256(transformed).hexdigest()}\n'
+              f'source_defined_transform_partial_size={len(transformed)}\n'
+              f'exact_partial_artifact_match={str(exact_partial_match).lower()}\n'
+              f'complete_authoritative_candidate_count={len(candidates)}\n'
+              'reason=authoritative_version-controlled origin contains only a corrupted transport; exact source-defined transform yields no complete candidate and no independent complete preimage/diff object is present\n'
+          )
+          if not exact_partial_match:
+              raise SystemExit('V54_ORIGIN_FAIL exact source-defined transform does not reproduce frozen V51 partial evidence')
+          if graph['strict_origin_gate_pass']:
+              raise SystemExit('V54_ORIGIN_UNEXPECTED_PASS successor execution is intentionally not encoded in this forensics-only identity')
+          raise SystemExit('V54_ORIGIN_FAIL_CLOSED zero independently derivable complete byte candidates')
+          PY_ORIGIN
+
+      - name: Freeze V54 origin-forensics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v54
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            evidence/v54-origin/
+            fetched/v51-workflow-source.yml
+            fetched/v51-workflow-api.json
+            fetched/v51-commit-api.json
+            fetched/v51-associated-pulls.json
+            inputs/v50.zip
+            inputs/v50/bootstrap/v46-run-v50.sh
+            inputs/v51.zip
+            inputs/v51/bootstrap/v46-run-v50.sh
+            inputs/v51/bootstrap/v46-run-v51.sh
+            inputs/v52.zip
+            inputs/v52/transport-v51/
+            inputs/v52/evidence/v52-wrapper/transport-first-false.txt

@@ -1,0 +1,208 @@
+name: LowAlt LT5 P Worker Module Closure V49
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v49-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v49.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Repair only V48 unified-diff payload count and continue frozen closure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence/v49-wrapper
+
+          V48_HEAD=4d649d128a436ecde12ea297335711f7692c136d
+          V48_BLOB=c0afc53ccffb3e166050ffdf0e1432d75e2aaddb
+          V48_ORIGINAL_V46_RUN_SHA256=8207de7f4675c3531cc4bbe05cb619a9fb1f7d639640ec3123801d5b4e19b0a3
+          V48_REPAIRED_V46_RUN_SHA256=0fa06d2db9b9429e675fed5c4cc6f4a4f27432dce79c45ca1e6f9e74f61f6b4c
+          V48_INVENTORY_SHA256=1443e2d8e5c1809b8ec019c2a42b51d2ebf82fdefdb55e4bdd3105c019442d64
+          V48_REPLACEMENT_TABLE_SHA256=2b931e3be3fb728aa0f957231c9ea9ea1b6b9c49028faf0e356b8c27fa7bedff
+          V48_PATHNAME_DIFF_SHA256=ba09c64926b3d38200d3908eedb1383fae163ca1bd95c44d59d4d9e371d19eae
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v48.yml?ref=${V48_HEAD}" \
+            -o bootstrap/v48.yml
+          test "$(git hash-object bootstrap/v48.yml)" = "$V48_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V48 PRE-RESULT evidence and exact closure bytes$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v48.yml > bootstrap/v48-run-original.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v48-run-original.sh)" = 1
+          bash -n bootstrap/v48-run-original.sh
+
+          python3 - <<'PY_V49_ASSERTION'
+          import csv, hashlib
+          from pathlib import Path
+
+          src = Path('bootstrap/v48-run-original.sh')
+          dst = Path('bootstrap/v48-run-v49.sh')
+          text = src.read_text()
+          old = 'test "$(grep -Ec \'^[+-]\' evidence/v48-wrapper/pathname-only.diff)" = 10'
+          new = 'test "$(awk \'BEGIN{in_hunk=0;n=0} /^@@ /{in_hunk=1;next} in_hunk && /^[+-]/{n++} END{print n}\' evidence/v48-wrapper/pathname-only.diff)" = 10'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one frozen aggregate diff-count assertion, found {text.count(old)}')
+          if new in text:
+              raise SystemExit('corrected assertion already present before bounded repair')
+          before_lines = text.splitlines(True)
+          fixed = text.replace(old, new)
+          after_lines = fixed.splitlines(True)
+          if len(before_lines) != len(after_lines):
+              raise SystemExit('line cardinality changed during assertion-only repair')
+          changed = [i for i,(a,b) in enumerate(zip(before_lines, after_lines),1) if a != b]
+          if len(changed) != 1:
+              raise SystemExit(f'expected exactly one changed line, got {changed}')
+          lineno = changed[0]
+          if before_lines[lineno-1].rstrip('\n').strip() != old:
+              raise SystemExit('changed source line differs from exact frozen V48 assertion')
+          if after_lines[lineno-1].rstrip('\n').strip() != new:
+              raise SystemExit('replacement line differs from exact authorized payload-count proof')
+          dst.write_text(fixed)
+          Path('evidence/v49-wrapper/assertion-algorithm.txt').write_text(
+              'Count only +/- payload lines occurring after a unified-diff @@ hunk header; '
+              'standard ---/+++ file headers occur before the first hunk and are excluded.\n' + new + '\n')
+          with Path('evidence/v49-wrapper/replacement-table.tsv').open('w', newline='') as f:
+              w = csv.writer(f, delimiter='\t', lineterminator='\n')
+              w.writerow(['line_number','before','after'])
+              w.writerow([lineno, old, new])
+          Path('evidence/v49-wrapper/original-v48-run-sha256.txt').write_text(
+              hashlib.sha256(text.encode()).hexdigest()+'  bootstrap/v48-run-original.sh\n')
+          Path('evidence/v49-wrapper/repaired-v48-run-sha256.txt').write_text(
+              hashlib.sha256(fixed.encode()).hexdigest()+'  bootstrap/v48-run-v49.sh\n')
+          Path('evidence/v49-wrapper/changed-lines.txt').write_text(str(lineno)+'\n')
+          PY_V49_ASSERTION
+
+          bash -n bootstrap/v48-run-v49.sh
+          diff -u bootstrap/v48-run-original.sh bootstrap/v48-run-v49.sh > evidence/v49-wrapper/assertion-only.diff || true
+          test "$(grep -c '^-' evidence/v49-wrapper/assertion-only.diff)" = 2
+          test "$(grep -c '^+' evidence/v49-wrapper/assertion-only.diff)" = 2
+          sha256sum bootstrap/v48.yml bootstrap/v48-run-original.sh bootstrap/v48-run-v49.sh \
+            evidence/v49-wrapper/assertion-algorithm.txt evidence/v49-wrapper/replacement-table.tsv \
+            evidence/v49-wrapper/assertion-only.diff > evidence/v49-wrapper/preexecution-sha256.txt
+
+          cat > evidence/v49-wrapper/preexecution-receipt.txt <<EOF_V49_PRE
+          status=PRE_RESULT_V49_V48_DIFF_HEADER_PAYLOAD_COUNT_ASSERTION_ONLY_REPAIR_FROZEN
+          predecessor_v48_head=${V48_HEAD}
+          predecessor_v48_blob=${V48_BLOB}
+          changed_source_lines=1
+          five_reference_inventory_semantics_changed=false
+          five_reference_replacement_semantics_changed=false
+          v45_v46_source_object_toolchain_abi_link_semantics_changed=false
+          strict_undefined_symbol_policy_changed=false
+          guessed_stubs=false
+          semantic_substitution=false
+          broad_library_inclusion=false
+          wasm_instantiated=false
+          p_numerical_evaluated=false
+          raw_byte_p_to_t_marshalling=false
+          t_called=false
+          spectrum_401_evaluated=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF_V49_PRE
+
+          set +e
+          bash bootstrap/v48-run-v49.sh
+          V49_RC=$?
+          set -e
+          printf '%s\n' "$V49_RC" > evidence/v49-wrapper/v49.exit.txt
+
+          check_exact_sha() {
+            label="$1"; file="$2"; expected="$3"
+            if [ ! -f "$file" ]; then
+              printf '%s=MISSING expected=%s\n' "$label" "$expected" >> evidence/v49-wrapper/v48-frozen-byte-divergence.txt
+              return 1
+            fi
+            actual="$(sha256sum "$file" | awk '{print $1}')"
+            printf '%s=%s\n' "$label" "$actual" >> evidence/v49-wrapper/v48-frozen-byte-observed.txt
+            if [ "$actual" != "$expected" ]; then
+              printf '%s=SHA256_MISMATCH expected=%s actual=%s\n' "$label" "$expected" "$actual" >> evidence/v49-wrapper/v48-frozen-byte-divergence.txt
+              return 1
+            fi
+          }
+
+          BYTES_PASS=true
+          check_exact_sha v48_original_v46_run bootstrap/v46-run-original.sh "$V48_ORIGINAL_V46_RUN_SHA256" || BYTES_PASS=false
+          check_exact_sha v48_repaired_v46_run bootstrap/v46-run-v48.sh "$V48_REPAIRED_V46_RUN_SHA256" || BYTES_PASS=false
+          check_exact_sha v48_outer_reference_inventory evidence/v48-wrapper/outer-reference-inventory.tsv "$V48_INVENTORY_SHA256" || BYTES_PASS=false
+          check_exact_sha v48_replacement_table evidence/v48-wrapper/replacement-table.tsv "$V48_REPLACEMENT_TABLE_SHA256" || BYTES_PASS=false
+          check_exact_sha v48_pathname_only_diff evidence/v48-wrapper/pathname-only.diff "$V48_PATHNAME_DIFF_SHA256" || BYTES_PASS=false
+
+          V45_GATE_PASS=false
+          if [ -f evidence/v48-wrapper/v45-replay-exact-gate.txt ] && \
+             grep -Fxq 'PASS exact_v45_replay_reproduced_frozen_source_derived_linker_blocker' evidence/v48-wrapper/v45-replay-exact-gate.txt; then
+            V45_GATE_PASS=true
+          fi
+
+          if [ "$BYTES_PASS" != true ]; then
+            CLASS=V49_FROZEN_V48_FIVE_REFERENCE_BYTES_DIVERGED
+          elif [ "$V45_GATE_PASS" != true ]; then
+            CLASS=V49_V45_REPLAY_EXACT_GATE_FIRST_DIVERGENCE_FROZEN_BEFORE_DIAGNOSTIC
+          elif [ -f evidence/v46-receipt.txt ]; then
+            V46_CLASS="$(grep '^classification=' evidence/v46-receipt.txt | head -n1 | cut -d= -f2-)"
+            CLASS="V49_AFTER_EXACT_V45_REPLAY__${V46_CLASS}"
+          else
+            CLASS=V49_AFTER_EXACT_V45_REPLAY_NEXT_PRE_RESULT_FIRST_FALSE_FROZEN
+          fi
+
+          cat > evidence/v49-wrapper/final-receipt.txt <<EOF_V49_FINAL
+          status=$([ "$V49_RC" -eq 0 ] && echo PASS || echo FAIL)
+          classification=${CLASS}
+          corrected_v48_script_exit=${V49_RC}
+          frozen_v48_five_reference_bytes_passed=${BYTES_PASS}
+          v45_exact_replay_gate_passed=${V45_GATE_PASS}
+          changed_source_lines=1
+          strict_undefined_symbol_policy_changed=false
+          guessed_stubs=false
+          semantic_substitution=false
+          broad_library_inclusion=false
+          wasm_instantiated=false
+          p_numerical_evaluated=false
+          raw_byte_p_to_t_marshalling=false
+          t_called=false
+          spectrum_401_evaluated=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF_V49_FINAL
+          sha256sum evidence/v49-wrapper/* 2>/dev/null > evidence/v49-wrapper/final-sha256.txt || true
+          exit "$V49_RC"
+
+      - name: Upload immutable V49 PRE-RESULT evidence and exact closure bytes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v49
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,302 @@
+name: LowAlt LT5 P Worker Module V54 Line Identity V60
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v60-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v60.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  v54-line-identity-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Repair only stale V54 validator source-line identity assertions and execute
+        id: v54_line_identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence/v60-line-identity fetched-v60
+
+          for spec in \
+            "v59 46593d008ed9b2c737c5514bf42f36c4a4011ccc lowalt-lt5-p-worker-module-v59.yml" \
+            "v58 b15b5d91c50d81c09f4a6f78d2359941662879a0 lowalt-lt5-p-worker-module-v58.yml" \
+            "v54 dbb6458baf2785ceac624daa0e1748970749abf9 lowalt-lt5-p-worker-module-v54.yml"
+          do
+            set -- $spec
+            label="$1"; ref="$2"; file="$3"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/${file}?ref=${ref}" \
+              -o "fetched-v60/${label}-workflow-api.json"
+          done
+
+          python3 - <<'PY_V60'
+          import base64
+          import difflib
+          import hashlib
+          import json
+          from pathlib import Path
+
+          OUT = Path('evidence/v60-line-identity')
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          V59_WORKFLOW_BLOB = '3228ab81bd3f1983cce2afb4a167a4fa187d841f'
+          V58_WORKFLOW_BLOB = 'a88873140a276d8735a65f998d2d6b8ca97492d1'
+          V54_WORKFLOW_BLOB = '2f40250aaf9d3d63a9669480256f31bc4190795a'
+          V54_SOURCE_SHA256 = 'e827a23b4fb05924810748778384862c69931aeb88a57407fb1ae2692f70ef20'
+          INTENDED = b'e4608a47964eba236a3681a056b2f4be8704c1ffa7e14c23857bdce323448ddb'
+          PAYLOAD = b'de543b76e0444269d4a7dd9e150b762c030edcf734617f11c6ae4ce909b0658e'
+
+          def sha256(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def bind_source(label, expected_blob):
+              api = json.loads(Path(f'fetched-v60/{label}-workflow-api.json').read_text())
+              if api.get('sha') != expected_blob:
+                  raise SystemExit(f'V60_BIND_FAIL {label} workflow blob {api.get("sha")}')
+              source = base64.b64decode(api['content'])
+              git_blob = hashlib.sha1(b'blob ' + str(len(source)).encode() + b'\0' + source).hexdigest()
+              if git_blob != expected_blob:
+                  raise SystemExit(f'V60_BIND_FAIL {label} recomputed blob {git_blob}')
+              Path(f'fetched-v60/{label}-workflow-source.yml').write_bytes(source)
+              return source
+
+          v59_source = bind_source('v59', V59_WORKFLOW_BLOB)
+          v58_source = bind_source('v58', V58_WORKFLOW_BLOB)
+          v54_source = bind_source('v54', V54_WORKFLOW_BLOB)
+          if sha256(v54_source) != V54_SOURCE_SHA256:
+              raise SystemExit(f'V60_BIND_FAIL V54 source sha256 {sha256(v54_source)}')
+
+          def occurrences(source, token):
+              lines = source.splitlines(keepends=True)
+              out = []
+              for idx, line in enumerate(lines):
+                  if token in line:
+                      out.append({
+                          'line_1_based': idx + 1,
+                          'line_sha256': sha256(line),
+                          'line_b64': base64.b64encode(line).decode(),
+                          'previous_b64': base64.b64encode(lines[idx-1] if idx else b'').decode(),
+                          'next_b64': base64.b64encode(lines[idx+1] if idx + 1 < len(lines) else b'').decode(),
+                      })
+              return out
+
+          v54_intended = occurrences(v54_source, INTENDED)
+          v54_payload = occurrences(v54_source, PAYLOAD)
+          if [x['line_1_based'] for x in v54_intended] != [82]:
+              raise SystemExit(f'V60_LINE_IDENTITY_FAIL V54 intended lines {v54_intended}')
+          if [x['line_1_based'] for x in v54_payload] != [83]:
+              raise SystemExit(f'V60_LINE_IDENTITY_FAIL V54 payload lines {v54_payload}')
+
+          old_i = b"          if [x['line_1_based'] for x in v54_intended] != [136]:\n"
+          new_i = b"          if [x['line_1_based'] for x in v54_intended] != [82]:\n"
+          old_p = b"          if [x['line_1_based'] for x in v54_payload] != [267]:\n"
+          new_p = b"          if [x['line_1_based'] for x in v54_payload] != [83]:\n"
+          for old, new, label in ((old_i, new_i, 'intended'), (old_p, new_p, 'payload')):
+              if v58_source.count(old) != 1 or v58_source.count(new) != 0:
+                  raise SystemExit(f'V60_LINE_IDENTITY_FAIL V58 {label} predicate old={v58_source.count(old)} new={v58_source.count(new)}')
+
+          v58_patched = v58_source.replace(old_i, new_i, 1).replace(old_p, new_p, 1)
+          expected_v58 = v58_source.replace(old_i, new_i, 1).replace(old_p, new_p, 1)
+          if v58_patched != expected_v58:
+              raise SystemExit('V60_LINE_IDENTITY_FAIL unrelated V58 source mutation')
+
+          v58_diff = ''.join(difflib.unified_diff(
+              v58_source.decode().splitlines(True),
+              v58_patched.decode().splitlines(True),
+              fromfile='v58-workflow-exact.yml',
+              tofile='v58-workflow-v60-line-identity.yml',
+              n=3,
+          ))
+          v58_payload_lines = [line for line in v58_diff.splitlines() if (line.startswith('+') and not line.startswith('+++')) or (line.startswith('-') and not line.startswith('---'))]
+          expected_v58_payload = [
+              "-          if [x['line_1_based'] for x in v54_intended] != [136]:",
+              "-          if [x['line_1_based'] for x in v54_payload] != [267]:",
+              "+          if [x['line_1_based'] for x in v54_intended] != [82]:",
+              "+          if [x['line_1_based'] for x in v54_payload] != [83]:",
+          ]
+          if v58_payload_lines != expected_v58_payload:
+              raise SystemExit(f'V60_LINE_IDENTITY_FAIL unexpected V58 diff payload {v58_payload_lines!r}')
+          Path(OUT/'v58-source-line-identity-only.diff').write_text(v58_diff)
+          Path('fetched-v60/v58-workflow-v60-line-identity.yml').write_bytes(v58_patched)
+
+          preserved_v58_needles = [
+              b"          if [x['line_1_based'] for x in v51_intended] != [328, 344]:\n",
+              b"          if [x['line_1_based'] for x in v51_payload] != [333, 345]:\n",
+              b"          marker = b'# Reproduce ONLY the exact source-defined V51 transport transform. No repair,\\n'\n",
+              b"              b\"        'intended_script_validator_lines_1_based': [328, 344],\\n\"\n",
+              b"              b\"        'payload_diff_validator_lines_1_based': [333, 345],\\n\"\n",
+          ]
+          for needle in preserved_v58_needles:
+              if v58_source.count(needle) != v58_patched.count(needle):
+                  raise SystemExit(f'V60_LINE_IDENTITY_FAIL preserved V58 downstream needle changed {needle!r}')
+
+          lines = v59_source.splitlines(keepends=True)
+          run_marker = b'        run: |\n'
+          try:
+              start = lines.index(run_marker) + 1
+          except ValueError:
+              raise SystemExit('V60_PATCH_FAIL V59 run block marker absent')
+          extracted = []
+          source_line_map = []
+          for idx in range(start, len(lines)):
+              line = lines[idx]
+              if line.strip() and not line.startswith(b'          '):
+                  break
+              if line.startswith(b'          '):
+                  out_line = line[10:]
+                  removed = 10
+              else:
+                  out_line = line
+                  removed = 0
+              extracted.append(out_line)
+              source_line_map.append({'yaml_line_1_based': idx + 1, 'removed_prefix_spaces': removed})
+          original = b''.join(extracted)
+          if not original.startswith(b'set -euo pipefail\n'):
+              raise SystemExit('V60_PATCH_FAIL extracted V59 shell prefix')
+          Path('bootstrap/v59-run-original.sh').write_bytes(original)
+
+          old_block = (
+              b"v58_source = base64.b64decode(v58_api['content'])\n"
+              b"git_blob = hashlib.sha1(b'blob ' + str(len(v58_source)).encode() + b'\\0' + v58_source).hexdigest()\n"
+              b"if git_blob != V58_WORKFLOW_BLOB:\n"
+              b"    raise SystemExit(f'V59_BIND_FAIL V58 recomputed blob {git_blob}')\n"
+              b"Path('fetched-v59/v58-workflow-source.yml').write_bytes(v58_source)\n"
+          )
+          new_block = old_block + (
+              b"v60_old_i = b\"          if [x['line_1_based'] for x in v54_intended] != [136]:\\n\"\n"
+              b"v60_new_i = b\"          if [x['line_1_based'] for x in v54_intended] != [82]:\\n\"\n"
+              b"v60_old_p = b\"          if [x['line_1_based'] for x in v54_payload] != [267]:\\n\"\n"
+              b"v60_new_p = b\"          if [x['line_1_based'] for x in v54_payload] != [83]:\\n\"\n"
+              b"if v58_source.count(v60_old_i) != 1 or v58_source.count(v60_new_i) != 0:\n"
+              b"    raise SystemExit('V60_CHILD_PATCH_FAIL intended V54 line predicate')\n"
+              b"if v58_source.count(v60_old_p) != 1 or v58_source.count(v60_new_p) != 0:\n"
+              b"    raise SystemExit('V60_CHILD_PATCH_FAIL payload V54 line predicate')\n"
+              b"v58_source = v58_source.replace(v60_old_i, v60_new_i, 1).replace(v60_old_p, v60_new_p, 1)\n"
+              b"Path('fetched-v59/v58-workflow-source-v60-line-identity.yml').write_bytes(v58_source)\n"
+          )
+          if original.count(old_block) != 1 or original.count(new_block) != 0:
+              raise SystemExit(f'V60_PATCH_FAIL V59 injection precondition old={original.count(old_block)} new_pre={original.count(new_block)}')
+          patched = original.replace(old_block, new_block, 1)
+          expected = original.replace(old_block, new_block, 1)
+          if patched != expected:
+              raise SystemExit('V60_PATCH_FAIL unrelated V59 harness mutation')
+
+          preserved_v59_needles = [
+              b"if transport_size != V57_TRANSPORT_SIZE:\n",
+              b"if transport_sha != V57_TRANSPORT_SHA256:\n",
+              b"if duplicates:\n",
+              b"if not required_names.issubset(member_names):\n",
+              b"b\"assert source.count(intended) == 2\\n\",\n",
+              b"b\"assert source.count(payload) == 2\\n\",\n",
+              b"b\"# Reproduce ONLY the exact source-defined V51 transport transform. No repair,\\n\",\n",
+              b"b\"        'intended_script_validator_lines_1_based': [328, 344],\\n\",\n",
+              b"b\"        'payload_diff_validator_lines_1_based': [333, 345],\\n\",\n",
+          ]
+          for needle in preserved_v59_needles:
+              if original.count(needle) != patched.count(needle):
+                  raise SystemExit(f'V60_PATCH_FAIL preserved V59 needle changed {needle!r}')
+
+          harness_diff = ''.join(difflib.unified_diff(
+              original.decode().splitlines(True),
+              patched.decode().splitlines(True),
+              fromfile='v59-run-original.sh',
+              tofile='v59-run-patched-v60.sh',
+              n=3,
+          ))
+          harness_payload = [line for line in harness_diff.splitlines() if (line.startswith('+') and not line.startswith('+++')) or (line.startswith('-') and not line.startswith('---'))]
+          if any(line.startswith('-') for line in harness_payload):
+              raise SystemExit(f'V60_PATCH_FAIL unexpected deletion in harness diff {harness_payload!r}')
+          required_added_fragments = [
+              "v60_old_i = b\"          if [x['line_1_based'] for x in v54_intended] != [136]:\\n\"",
+              "v60_new_i = b\"          if [x['line_1_based'] for x in v54_intended] != [82]:\\n\"",
+              "v60_old_p = b\"          if [x['line_1_based'] for x in v54_payload] != [267]:\\n\"",
+              "v60_new_p = b\"          if [x['line_1_based'] for x in v54_payload] != [83]:\\n\"",
+          ]
+          for fragment in required_added_fragments:
+              if not any(fragment in line for line in harness_payload):
+                  raise SystemExit(f'V60_PATCH_FAIL missing harness diff fragment {fragment!r}')
+
+          Path('bootstrap/v59-run-patched-v60.sh').write_bytes(patched)
+          Path(OUT/'v59-to-v60-harness-only.diff').write_text(harness_diff)
+
+          line_identity = {
+              'schema': 1,
+              'status': 'V54_LINE_IDENTITY_GATE_PASS',
+              'v59_workflow': {'blob_sha1': V59_WORKFLOW_BLOB, 'sha256': sha256(v59_source), 'size': len(v59_source)},
+              'v58_workflow': {'blob_sha1': V58_WORKFLOW_BLOB, 'sha256': sha256(v58_source), 'size': len(v58_source)},
+              'v54_workflow': {
+                  'blob_sha1': V54_WORKFLOW_BLOB,
+                  'sha256': sha256(v54_source),
+                  'size': len(v54_source),
+                  'intended_occurrences': v54_intended,
+                  'payload_occurrences': v54_payload,
+              },
+              'old_new_predicates': [
+                  {'purpose': 'v54_intended_line_identity', 'old_b64': base64.b64encode(old_i).decode(), 'new_b64': base64.b64encode(new_i).decode()},
+                  {'purpose': 'v54_payload_line_identity', 'old_b64': base64.b64encode(old_p).decode(), 'new_b64': base64.b64encode(new_p).decode()},
+              ],
+              'v58_exact_sha256': sha256(v58_source),
+              'v58_patched_sha256': sha256(v58_patched),
+              'v58_line_identity_diff_sha256': sha256(v58_diff.encode()),
+              'v59_extracted_shell_sha256': sha256(original),
+              'v59_patched_shell_sha256': sha256(patched),
+              'v59_to_v60_harness_diff_sha256': sha256(harness_diff.encode()),
+              'yaml_run_block_extraction': {
+                  'marker_b64': base64.b64encode(run_marker).decode(),
+                  'source_first_body_line_1_based': start + 1,
+                  'source_last_body_line_1_based': start + len(extracted),
+                  'deterministic_yaml_block_indent_removed_spaces': 10,
+                  'line_map': source_line_map,
+              },
+              'v59_artifact_identity_gate_changed': False,
+              'v58_source_identity_count_repair_changed': False,
+              'accepted_suffix_marker_repair_changed': False,
+              'accepted_nine_needle_repair_changed': False,
+              'authoritative_v51_2_plus_2_gate_changed': False,
+              'source_defined_transform_changed': False,
+              'result_boundary_changed': False,
+          }
+          manifest_bytes = (json.dumps(line_identity, sort_keys=True, indent=2) + '\n').encode()
+          Path(OUT/'v54-line-identity-gate-manifest.json').write_bytes(manifest_bytes)
+          Path(OUT/'V54_LINE_IDENTITY_GATE_PASS').write_text('V54_LINE_IDENTITY_GATE_PASS\n')
+          PY_V60
+
+          test -f evidence/v60-line-identity/V54_LINE_IDENTITY_GATE_PASS
+          bash -n bootstrap/v59-run-patched-v60.sh
+          set +e
+          bash bootstrap/v59-run-patched-v60.sh >evidence/v60-line-identity/patched-v59.stdout.txt 2>evidence/v60-line-identity/patched-v59.stderr.txt
+          CHILD_RC=$?
+          set -e
+          printf '%s\n' "$CHILD_RC" > evidence/v60-line-identity/patched-v59.exit-code.txt
+          exit "$CHILD_RC"
+
+      - name: Freeze V60 PRE-RESULT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v60-evidence
+          path: |
+            bootstrap/
+            evidence/
+            fetched-v60/
+            fetched-v59/
+            fetched-v58/
+            fetched/
+            work/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,278 @@
+name: LowAlt LT5 P Worker Module Closure V48
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v48-20260918
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v48.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Bind all five V46 outer-wrapper references and continue frozen closure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p bootstrap evidence/v48-wrapper
+
+          V46_HEAD=0f49e9e8ddfdfec39c224b86fa615420ad84e9a0
+          V46_BLOB=18393075b4f0fde7eaaa966e686600bee429b567
+          V45_RECEIPT_SHA256=6c22914a6f18c606b22e84ead35619c3937bb1f5d1e7789c7aa666860d90f371
+          V45_LINK_STDERR_SHA256=f65d8cdb7545f1f4a460cfc1a08e9cdbacd981b339bbee5508e3c88832d02991
+          V45_LINK_STDOUT_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          V45_LINK_EXIT_SHA256=4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865
+          V45_INHERITED_RECEIPT_SHA256=daae684393217051439df0b8d3f542c88a412eeac45b437e9573a3df5d81a412
+          V45_INNER_RUN_SHA256=d76c53a0940dc7d778166a6466b069063f1e483140bfd5624f7a7a8d189bd710
+          V45_LLVM_NM_LOCATOR_SHA256=1dcc365566a266b07ebc662f0a8b99f27b9d3796bce16de405ea26b880c1f531
+          V45_LLVM_NM_VERSION_SHA256=8b4411918092993c628345549a73caaf34a62ebb0d55931d308d4f27f34fcd73
+
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v46.yml?ref=${V46_HEAD}" \
+            -o bootstrap/v46.yml
+          test "$(git hash-object bootstrap/v46.yml)" = "$V46_BLOB"
+
+          awk '
+            /^        run: \|$/ { capture=1; next }
+            capture && /^      - name: Upload immutable V46 PRE-RESULT evidence and exact closure bytes$/ { exit }
+            capture { sub(/^          /, ""); print }
+          ' bootstrap/v46.yml > bootstrap/v46-run-original.sh
+          test "$(grep -c '^set -euo pipefail$' bootstrap/v46-run-original.sh)" = 1
+          bash -n bootstrap/v46-run-original.sh
+
+          python3 - <<'PY_V48_BIND'
+          import csv, hashlib, json
+          from pathlib import Path
+
+          src = Path('bootstrap/v46-run-original.sh')
+          dst = Path('bootstrap/v46-run-v48.sh')
+          text = src.read_text()
+          lines = text.splitlines(True)
+          old = 'bootstrap/v45-run.sh'
+          new = 'bootstrap/v45-wrapper-run.sh'
+          expected = [
+              ("' bootstrap/v45.yml > bootstrap/v45-run.sh", 'extraction_output'),
+              ('test "$(grep -c \'^set -euo pipefail$\' bootstrap/v45-run.sh)" = 1', 'grep_set_euo_guard'),
+              ('bash -n bootstrap/v45-run.sh', 'bash_syntax_check'),
+              ('sha256sum bootstrap/v45.yml bootstrap/v45-run.sh > evidence/v46-predecessor-sha256.txt', 'predecessor_sha256_freeze'),
+              ('bash bootstrap/v45-run.sh', 'v45_replay_execution'),
+          ]
+
+          if text.count(old) != 5:
+              raise SystemExit(f'expected exactly five V46 outer-wrapper pathname references, found {text.count(old)}')
+          if new in text:
+              raise SystemExit('replacement pathname already present before bounded repair')
+
+          hits = []
+          for i, line in enumerate(lines, 1):
+              n = line.count(old)
+              if n:
+                  if n != 1:
+                      raise SystemExit(f'ambiguous multiple pathname occurrences on line {i}: {n}')
+                  hits.append((i, line.rstrip('\n')))
+          if len(hits) != 5:
+              raise SystemExit(f'expected five operational-reference lines, found {len(hits)}')
+
+          observed = [(line.strip(), None) for _, line in hits]
+          if [x[0] for x in observed] != [x[0] for x in expected]:
+              raise SystemExit('exact operational-reference source set/order differs from frozen five-reference contract')
+
+          inv = Path('evidence/v48-wrapper/outer-reference-inventory.tsv')
+          with inv.open('w', newline='') as f:
+              w = csv.writer(f, delimiter='\t', lineterminator='\n')
+              w.writerow(['ordinal','line_number','purpose','source_line_json','source_line_sha256'])
+              for ordinal, ((lineno, line), (_, purpose)) in enumerate(zip(hits, expected), 1):
+                  w.writerow([ordinal, lineno, purpose, json.dumps(line), hashlib.sha256((line+'\n').encode()).hexdigest()])
+
+          fixed = text.replace(old, new)
+          if fixed.count(old) != 0 or fixed.count(new) != 5:
+              raise SystemExit('bounded replacement did not produce exactly five repaired references')
+          fixed_lines = fixed.splitlines(True)
+          if len(fixed_lines) != len(lines):
+              raise SystemExit('line cardinality changed during pathname-only repair')
+
+          changed = []
+          hit_lines = {n for n, _ in hits}
+          for i, (before, after) in enumerate(zip(lines, fixed_lines), 1):
+              if before != after:
+                  changed.append(i)
+                  if i not in hit_lines:
+                      raise SystemExit(f'unrelated line changed: {i}')
+                  if after != before.replace(old, new):
+                      raise SystemExit(f'non-path mutation on repaired line: {i}')
+          if changed != [n for n, _ in hits]:
+              raise SystemExit('changed-line set differs from complete frozen operational-reference set')
+
+          dst.write_text(fixed)
+          with Path('evidence/v48-wrapper/replacement-table.tsv').open('w', newline='') as f:
+              w = csv.writer(f, delimiter='\t', lineterminator='\n')
+              w.writerow(['ordinal','line_number','purpose','before_json','after_json'])
+              for ordinal, ((lineno, before), (_, purpose)) in enumerate(zip(hits, expected), 1):
+                  after = fixed_lines[lineno-1].rstrip('\n')
+                  w.writerow([ordinal, lineno, purpose, json.dumps(before), json.dumps(after)])
+
+          Path('evidence/v48-wrapper/reference-count.txt').write_text('5\n')
+          Path('evidence/v48-wrapper/changed-lines.txt').write_text('\n'.join(map(str, changed))+'\n')
+          Path('evidence/v48-wrapper/original-sha256.txt').write_text(hashlib.sha256(text.encode()).hexdigest()+'  bootstrap/v46-run-original.sh\n')
+          Path('evidence/v48-wrapper/repaired-sha256.txt').write_text(hashlib.sha256(fixed.encode()).hexdigest()+'  bootstrap/v46-run-v48.sh\n')
+          PY_V48_BIND
+
+          bash -n bootstrap/v46-run-v48.sh
+          diff -u bootstrap/v46-run-original.sh bootstrap/v46-run-v48.sh > evidence/v48-wrapper/pathname-only.diff || true
+          test "$(grep -c '^-.*bootstrap/v45-run.sh' evidence/v48-wrapper/pathname-only.diff)" = 5
+          test "$(grep -c '^+.*bootstrap/v45-wrapper-run.sh' evidence/v48-wrapper/pathname-only.diff)" = 5
+          test "$(grep -Ec '^[+-]' evidence/v48-wrapper/pathname-only.diff)" = 10
+          sha256sum bootstrap/v46.yml bootstrap/v46-run-original.sh bootstrap/v46-run-v48.sh \
+            evidence/v48-wrapper/outer-reference-inventory.tsv evidence/v48-wrapper/replacement-table.tsv \
+            evidence/v48-wrapper/pathname-only.diff > evidence/v48-wrapper/preexecution-sha256.txt
+
+          cat > evidence/v48-wrapper/preexecution-receipt.txt <<EOF_V48_PRE
+          status=PRE_RESULT_V48_COMPLETE_FIVE_REFERENCE_OUTER_WRAPPER_REPAIR_FROZEN
+          predecessor_v46_head=${V46_HEAD}
+          predecessor_v46_blob=${V46_BLOB}
+          original_outer_path=bootstrap/v45-run.sh
+          repaired_outer_path=bootstrap/v45-wrapper-run.sh
+          exact_operational_reference_count=5
+          complete_operational_reference_inventory_frozen=true
+          unrelated_wrapper_mutation=false
+          inner_v45_path_and_bytes_preserved_by_predecessor_runtime=true
+          v45_v46_source_object_toolchain_abi_link_semantics_changed=false
+          strict_undefined_symbol_policy_changed=false
+          guessed_stubs=false
+          semantic_substitution=false
+          broad_library_inclusion=false
+          wasm_instantiated=false
+          p_numerical_evaluated=false
+          raw_byte_p_to_t_marshalling=false
+          t_called=false
+          spectrum_401_evaluated=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF_V48_PRE
+
+          v48_exact_v45_gate() {
+            if [[ "$BASH_COMMAND" == "source /opt/emsdk/emsdk_env.sh"* ]]; then
+              if [ -e evidence/v48-wrapper/v45-replay-gate-entered.txt ]; then
+                printf 'FAIL duplicate_v45_replay_gate_entry\n' > evidence/v48-wrapper/v45-replay-exact-gate.txt
+                exit 92
+              fi
+              printf 'command=%s\n' "$BASH_COMMAND" > evidence/v48-wrapper/v45-replay-gate-entered.txt
+              fail=0
+              check_sha() {
+                label="$1"; file="$2"; expected_sha="$3"
+                if [ ! -f "$file" ]; then
+                  printf '%s=MISSING\n' "$label" >> evidence/v48-wrapper/v45-replay-divergence.txt
+                  fail=1
+                  return
+                fi
+                actual_sha="$(sha256sum "$file" | awk '{print $1}')"
+                printf '%s=%s\n' "$label" "$actual_sha" >> evidence/v48-wrapper/v45-replay-observed-sha256.txt
+                if [ "$actual_sha" != "$expected_sha" ]; then
+                  printf '%s=SHA256_MISMATCH expected=%s actual=%s\n' "$label" "$expected_sha" "$actual_sha" >> evidence/v48-wrapper/v45-replay-divergence.txt
+                  fail=1
+                fi
+              }
+              check_sha receipt evidence/v45-receipt.txt "$V45_RECEIPT_SHA256"
+              check_sha link_stderr evidence/v45-link.stderr.txt "$V45_LINK_STDERR_SHA256"
+              check_sha link_stdout evidence/v45-link.stdout.txt "$V45_LINK_STDOUT_SHA256"
+              check_sha link_exit evidence/v45-link.exit.txt "$V45_LINK_EXIT_SHA256"
+              check_sha inherited_link_receipt evidence/v45-inherited-link-receipt.txt "$V45_INHERITED_RECEIPT_SHA256"
+              check_sha inner_v45_run bootstrap/v45-run.sh "$V45_INNER_RUN_SHA256"
+              check_sha llvm_nm_locator evidence/v45-llvm-nm-locator.txt "$V45_LLVM_NM_LOCATOR_SHA256"
+              check_sha llvm_nm_version evidence/v45-llvm-nm-version.txt "$V45_LLVM_NM_VERSION_SHA256"
+              if [ -f evidence/v45-receipt.txt ]; then
+                grep -Fxq 'status=FAIL' evidence/v45-receipt.txt || fail=1
+                grep -Fxq 'classification=V45_STRICT_WORKER_LOADABLE_P_MODULE_LINK_FIRST_FALSE_FROZEN_AFTER_LOCATOR_ONLY_REPAIR' evidence/v45-receipt.txt || fail=1
+              fi
+              if [ -f evidence/v45-link.exit.txt ]; then
+                grep -Fxq '1' evidence/v45-link.exit.txt || fail=1
+              fi
+              if [ "$fail" -ne 0 ]; then
+                printf 'FAIL exact_v45_replay_diverged_before_diagnostic\n' > evidence/v48-wrapper/v45-replay-exact-gate.txt
+                exit 93
+              fi
+              printf 'PASS exact_v45_replay_reproduced_frozen_source_derived_linker_blocker\n' > evidence/v48-wrapper/v45-replay-exact-gate.txt
+              sha256sum evidence/v48-wrapper/v45-replay-* > evidence/v48-wrapper/v45-replay-gate-sha256.txt
+            fi
+          }
+          trap v48_exact_v45_gate DEBUG
+
+          set +e
+          (
+            source bootstrap/v46-run-v48.sh
+          )
+          V48_RC=$?
+          set -e
+          trap - DEBUG
+          printf '%s\n' "$V48_RC" > evidence/v48-wrapper/v48.exit.txt
+
+          GATE_PASS=false
+          if [ -f evidence/v48-wrapper/v45-replay-exact-gate.txt ] && grep -Fxq 'PASS exact_v45_replay_reproduced_frozen_source_derived_linker_blocker' evidence/v48-wrapper/v45-replay-exact-gate.txt; then
+            GATE_PASS=true
+          fi
+
+          if [ "$GATE_PASS" != true ]; then
+            CLASS=V48_V45_REPLAY_EXACT_GATE_FIRST_DIVERGENCE_FROZEN_BEFORE_DIAGNOSTIC
+          elif [ -f evidence/v46-receipt.txt ]; then
+            V46_CLASS="$(grep '^classification=' evidence/v46-receipt.txt | head -n1 | cut -d= -f2-)"
+            CLASS="V48_AFTER_EXACT_V45_REPLAY__${V46_CLASS}"
+          else
+            CLASS=V48_AFTER_EXACT_V45_REPLAY_NEXT_PRE_RESULT_FIRST_FALSE_FROZEN
+          fi
+
+          cat > evidence/v48-wrapper/final-receipt.txt <<EOF_V48_FINAL
+          status=$([ "$V48_RC" -eq 0 ] && echo PASS || echo FAIL)
+          classification=${CLASS}
+          corrected_v46_script_exit=${V48_RC}
+          v45_exact_replay_gate_passed=${GATE_PASS}
+          exact_operational_reference_count=5
+          complete_operational_reference_inventory_frozen=true
+          unrelated_wrapper_mutation=false
+          strict_undefined_symbol_policy_changed=false
+          guessed_stubs=false
+          semantic_substitution=false
+          broad_library_inclusion=false
+          wasm_instantiated=false
+          p_numerical_evaluated=false
+          raw_byte_p_to_t_marshalling=false
+          t_called=false
+          spectrum_401_evaluated=false
+          lt5_result=false
+          c_executed=false
+          d_executed=false
+          b_selected=false
+          b_resolved=false
+          production_changed=false
+          EOF_V48_FINAL
+          sha256sum evidence/v48-wrapper/* 2>/dev/null > evidence/v48-wrapper/final-sha256.txt || true
+          exit "$V48_RC"
+
+      - name: Upload immutable V48 PRE-RESULT evidence and exact closure bytes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v48
+          path: |
+            evidence
+            work/evidence
+            bootstrap
+          if-no-files-found: warn
+          retention-days: 90

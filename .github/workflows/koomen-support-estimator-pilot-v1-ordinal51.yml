@@ -1,0 +1,252 @@
+name: Koomen support estimator pilot ordinal51
+run-name: Koomen estimator pilot Issue848 ordinal51 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [synchronize]
+    paths:
+      - 'experiments/koomen-support-estimator-pilot-v1/EXECUTE_ORDINAL51.txt'
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: koomen-support-estimator-pilot-v1-ordinal51
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/koomen-support-estimator-pilot-v1
+  MANIFEST: experiments/koomen-support-estimator-pilot-v1/manifest.json
+  RUNNER: experiments/koomen-support-estimator-pilot-v1/run_pilot.py
+  ANALYZER: experiments/koomen-support-estimator-pilot-v1/analyze.py
+  EXPECTED_BRANCH: science/koomen-support-estimator-pilot-v1-ordinal51
+  SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  ORD47_HEAD: 2426335c652adacf442122c3a1bcdf9489a10298
+  ORD50_HEAD: e45926988cb4178e5b1233cd8763a037be32f69b
+  ORD50_RUN: '33558028017'
+  ORD50_ANALYSIS_ARTIFACT: '9820942425'
+  ORD50_ANALYSIS_DIGEST: 'sha256:8d720cbc449106df62bf5c4645076e7dbc147fcbacfb193dde202090fbd05036'
+  CAMS_RUN_ID: '33039911540'
+  CAMS_ARTIFACT_NAME: taylor-cams-priorcycle-split-extinction532-v2
+  CAMS_PROFILE_SHA256: 6c3a3041b6718db415300323f23da0277752b6c9fc6c806e5eff7c493b060359
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      head: ${{ steps.guard.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - id: guard
+        name: Verify frozen numerical-pilot identity and governance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$PKG/EXECUTE_ORDINAL51.txt"
+          PARENT="$(git rev-parse HEAD^)"
+          test "$(cat "$PKG/EXECUTE_ORDINAL51.txt")" = "AUTHORIZED_EXECUTION_KEY=koomen-support-estimator-pilot-v1:scientific:51 PARENT=$PARENT"
+
+          gh api "repos/$GITHUB_REPOSITORY/issues/848/comments?per_page=100" --paginate --slurp > issue848-comments.json
+          python - "$PARENT" <<'PY'
+          import json,sys
+          parent=sys.argv[1]; pages=json.load(open('issue848-comments.json')); comments=[c for p in pages for c in p]
+          token=f'KOOMEN848_ORDINAL51_PREREGISTERED_HEAD={parent}'
+          hits=[c for c in comments if token in (c.get('body') or '')]
+          if len(hits)!=1: raise SystemExit(f'expected one preregistration for {parent}, got {len(hits)}')
+          print('PREREGISTRATION_PASS',hits[0]['id'])
+          PY
+
+          python -m json.tool "$MANIFEST" >/dev/null
+          python -m py_compile "$RUNNER" "$ANALYZER"
+          python - <<'PY'
+          import json
+          m=json.load(open('experiments/koomen-support-estimator-pilot-v1/manifest.json'))
+          assert m['executionKey']=='koomen-support-estimator-pilot-v1:scientific:51'
+          assert m['rows']==[18,22,27] and len(m['fixedDirections'])==5
+          assert m['methods']==['mc_vroom_off','mc_vroom_on'] and m['mcEscapeExplicitOnBothMethods'] is True
+          assert m['photonsPerDirectionPerCaseMethod']==200000
+          assert m['replicateSeedBases']==[1551000000,1552000000,1553000000,1554000000,1555000000,1556000000]
+          assert m['maximumSolverCalls']==360 and m['maximumConfiguredPhotonHistories']==72000000
+          assert m['analysis']['vroomEdgeDeltaSeMaxMag']==0.03
+          assert all(m['analysis'][k] is False for k in ('fitTaylor','fitAcceptance','fitFov','fitOffset','fitAtmosphere','fitAnyParameter'))
+          assert m['boundaries']['TaylorResidualUsed'] is False and m['boundaries']['productionAuthorized'] is False
+          print('FROZEN_PILOT_MANIFEST_PASS')
+          PY
+
+          git fetch --no-tags --depth=1 origin main
+          if git grep -n -E '(^|[^0-9])(1551000000|1552000000|1553000000|1554000000|1555000000|1556000000)([^0-9]|$)' origin/main -- .; then
+            echo 'candidate pilot seed base already present on main' >&2; exit 1
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" --paginate --slurp > issue60-comments.json
+          python - <<'PY'
+          import json,re
+          pages=json.load(open('issue60-comments.json')); comments=[c for p in pages for c in p]
+          active={}; pat=re.compile(r'(?:^|[|\s])(begin|beginComment|begin_comment)=([^\s|]+)')
+          for c in comments:
+              first=((c.get('body') or '').splitlines() or [''])[0].strip()
+              if first.startswith('WRITE_QUIET_BEGIN'): active[int(c['id'])]=first
+              elif first.startswith('WRITE_QUIET_END'):
+                  vals=[]
+                  for _,v in pat.findall(first):
+                      if not v.isdigit(): raise SystemExit(f'non-numeric END id {c["id"]}')
+                      vals.append(int(v))
+                  if vals:
+                      if len(set(vals))!=1: raise SystemExit(f'conflicting END ids {c["id"]}')
+                      active.pop(vals[0],None)
+          if active: raise SystemExit(f'unmatched WRITE_QUIET_BEGIN: {active}')
+          print('ISSUE60_FENCE_CLEAR',len(comments))
+          PY
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORD50_RUN" > ord50-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ORD50_ANALYSIS_ARTIFACT" > ord50-artifact.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('ord50-run.json')); a=json.load(open('ord50-artifact.json'))
+          assert r['head_sha']==os.environ['ORD50_HEAD'] and r['run_attempt']==1 and r['conclusion']=='success'
+          assert str(a['id'])==os.environ['ORD50_ANALYSIS_ARTIFACT'] and a['digest']==os.environ['ORD50_ANALYSIS_DIGEST'] and not a['expired']
+          print('ORDINAL50_IMMUTABLE_EVIDENCE_BOUND')
+          PY
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: koomen-estimator-pilot-preflight
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact runtime and source compatibility
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA" "$ORD47_HEAD"
+          mkdir -p frozen-source
+          git show "$SOURCE_SHA:experiments/mystic-batch-v1/runtime-lock.micromamba.json" > frozen-source/runtime-lock.json
+          git show "$SOURCE_SHA:experiments/mystic-batch-v1/runtime_probe.py" > frozen-source/runtime_probe.py
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$ORD47_HEAD:experiments/taylor-paired-profile-crn-v1/run_pair.py" > frozen-source/profile_runner.py
+          grep -q 'mc_vroom off' frozen-source/run_row.py
+          grep -q 'mc_vroom off' frozen-source/profile_runner.py
+          UVSPEC="$(command -v uvspec)"; DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"; ATM="$DATA_DIR/atmmod/afglus.dat"
+          python frozen-source/runtime_probe.py --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock frozen-source/runtime-lock.json --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koomen-estimator-pilot-ordinal51-preflight
+          path: |
+            runtime-report.json
+            issue60-comments.json
+            issue848-comments.json
+            ord50-run.json
+            ord50-artifact.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        row: [18,22,27]
+        replicate: [1,2,3,4,5,6]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - name: Materialize immutable source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA" "$ORD47_HEAD"
+          mkdir -p frozen-source
+          for f in run_row.py observations.csv sqm_response.csv; do git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/$f" > "frozen-source/$f"; done
+          git show "$ORD47_HEAD:experiments/taylor-paired-profile-crn-v1/run_pair.py" > frozen-source/profile_runner.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CAMS_ARTIFACT_NAME }}
+          path: cams
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.CAMS_RUN_ID }}
+      - name: Verify CAMS proxy
+        shell: bash
+        run: echo "$CAMS_PROFILE_SHA256  cams/profile.csv" | sha256sum -c -
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: koomen-estimator-pilot51
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Run fixed-direction off/on estimator pair
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$RUNNER" --row '${{ matrix.row }}' --replicate '${{ matrix.replicate }}' --manifest "$MANIFEST" --baseline-runner frozen-source/run_row.py --profile-runner frozen-source/profile_runner.py --observations frozen-source/observations.csv --response frozen-source/sqm_response.csv --cams-profile cams/profile.csv --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --output-dir "pilot-r${{ matrix.row }}-rep${{ matrix.replicate }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koomen-estimator-pilot-ordinal51-row${{ matrix.row }}-rep${{ matrix.replicate }}
+          path: pilot-r${{ matrix.row }}-rep${{ matrix.replicate }}/pilot-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+  analysis:
+    needs: cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: koomen-estimator-pilot-ordinal51-row*-rep*
+          path: all-results
+          merge-multiple: false
+      - name: Apply preregistered numerical eligibility gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$ANALYZER" --results-root all-results --output analysis
+          python - <<'PY'
+          import json
+          x=json.load(open('analysis/summary.json'))
+          assert x['classification'] in ('VROOM_NUMERICALLY_ELIGIBLE_FOR_FULL_SUPPORT_CONTINUATION','ESTIMATOR_PILOT_INELIGIBLE')
+          assert x['TaylorResidualUsed'] is False and x['historicalKoomenCorrectionComputed'] is False and x['productionAuthorized'] is False
+          print(json.dumps({'classification':x['classification'],'worst':x['worst']},indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koomen-estimator-pilot-ordinal51-analysis
+          path: analysis/
+          if-no-files-found: error
+          retention-days: 90

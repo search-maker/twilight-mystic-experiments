@@ -1,0 +1,179 @@
+name: LowAlt LT5 P Worker Module V91 Accepted Repair Composition V95
+
+on:
+  push:
+    branches: [review/lowalt-lt5-p-worker-module-v95-20260920]
+    paths: [.github/workflows/lowalt-lt5-p-worker-module-v95.yml]
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  v91-accepted-repair-composition:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Compose only accepted V91 harness repairs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p fetched-v95 artifacts-v95 bootstrap-v95 evidence/v95-v91-accepted-repair-composition
+          api_get(){ curl --fail --silent --show-error --location -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$1" -o "$2"; }
+          R=https://api.github.com/repos/search-maker/twilight-mystic-experiments
+          api_get "$R/issues/comments/5749370941" fetched-v95/coordinator.json
+          api_get "$R/contents/.github/workflows/lowalt-lt5-p-worker-module-v91.yml?ref=0ab2716f61c1bf3739025080cbf1f12917bf92cf" fetched-v95/v91-workflow.json
+          api_get "$R/contents/.github/workflows/lowalt-lt5-p-worker-module-v92.yml?ref=1b94ff8e8d9869c0b61d8ee491b185b13580a9f0" fetched-v95/v92-workflow.json
+          api_get "$R/contents/.github/workflows/lowalt-lt5-p-worker-module-v94.yml?ref=5ea63a6479fd75fcdff597fa3d6b84a10304c268" fetched-v95/v94-workflow.json
+          api_get "$R/actions/runs/35505960376" fetched-v95/v92-run.json
+          api_get "$R/actions/jobs/106065706465" fetched-v95/v92-job.json
+          api_get "$R/actions/artifacts/10603604184" fetched-v95/v92-artifact.json
+          curl --fail --silent --show-error --location -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$R/actions/artifacts/10603604184/zip" -o artifacts-v95/v92.zip
+          api_get "$R/actions/runs/35506408363" fetched-v95/v94-run.json
+          api_get "$R/actions/jobs/106066870950" fetched-v95/v94-job.json
+          api_get "$R/actions/artifacts/10603589944" fetched-v95/v94-artifact.json
+          curl --fail --silent --show-error --location -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$R/actions/artifacts/10603589944/zip" -o artifacts-v95/v94.zip
+          api_get "$R/branches/main" fetched-v95/main.json
+          api_get "$R/compare/6cd7c075766fe0c86bc7561ec205a3f9120fd1fb...${GITHUB_SHA}" fetched-v95/main-to-v95.json
+
+          python3 - <<'PY'
+          import base64,difflib,hashlib,io,json,zipfile
+          from pathlib import Path
+          O=Path('evidence/v95-v91-accepted-repair-composition'); O.mkdir(parents=True,exist_ok=True)
+          MAIN='6cd7c075766fe0c86bc7561ec205a3f9120fd1fb'; AUTH=5749370941
+          V91H='0ab2716f61c1bf3739025080cbf1f12917bf92cf'; V91B='0f9e76ed52345853b20d085109662cba4fbf7488'
+          V92H='1b94ff8e8d9869c0b61d8ee491b185b13580a9f0'; V92T='dbd170e3b549009199e7cf3290e71c214a5d62ef'; V92B='7a66d463a424665133fcc1f967909ea647d97135'
+          V92R=35505960376; V92J=106065706465; V92A=10603604184; V92AS='80442f5149f68d7f949dd0bc6190040862b30de2bb276c0b9c14a96d4d27c5b9'; V92AZ=6806670
+          V94H='5ea63a6479fd75fcdff597fa3d6b84a10304c268'; V94T='edc1d134f3c1284bed6381d3c78940ba8b0f9892'; V94B='ee1d9a690da87450a40a3fb48c1b18f87dd2299a'
+          V94R=35506408363; V94J=106066870950; V94A=10603589944; V94AS='edc468c7162213fa5efef3af53bf9a8ba53c56c4bf1f2540c39e28a9a8348498'; V94AZ=27247859
+          H=lambda b:hashlib.sha256(b).hexdigest()
+          G=lambda b:hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          def j(p): return json.loads(Path(p).read_text())
+          def body(p,i):
+              x=j(p)
+              if x.get('id')!=i or x.get('user',{}).get('login')!='search-maker': raise SystemExit('V95_BIND_FAIL comment '+str(i))
+              return x.get('body','')
+          def wf(p,b):
+              x=j(p); d=base64.b64decode(x['content'])
+              if x.get('sha')!=b or G(d)!=b: raise SystemExit('V95_BIND_FAIL workflow '+p)
+              return d
+          def runpart(d):
+              ls=d.splitlines(keepends=True); m=b'        run: |\n'
+              if ls.count(m)!=1: raise SystemExit('V95_BIND_FAIL run marker')
+              out=[]
+              for q in ls[ls.index(m)+1:]:
+                  if q.strip() and not q.startswith(b'          '): break
+                  out.append(q[10:] if q.startswith(b'          ') else q)
+              return b''.join(out)
+          def bind_run(prefix,h,t,r,jid,a,ash,az):
+              rr=j(f'fetched-v95/{prefix}-run.json'); jj=j(f'fetched-v95/{prefix}-job.json'); aa=j(f'fetched-v95/{prefix}-artifact.json')
+              if rr.get('id')!=r or rr.get('run_attempt')!=1 or rr.get('conclusion')!='failure' or rr.get('head_sha')!=h or rr.get('head_commit',{}).get('tree_id')!=t: raise SystemExit('V95_BIND_FAIL '+prefix+' run')
+              if jj.get('id')!=jid or jj.get('conclusion')!='failure': raise SystemExit('V95_BIND_FAIL '+prefix+' job')
+              if aa.get('id')!=a or aa.get('digest')!='sha256:'+ash or aa.get('size_in_bytes')!=az or aa.get('expired'): raise SystemExit('V95_BIND_FAIL '+prefix+' artifact')
+              z=Path(f'artifacts-v95/{prefix}.zip').read_bytes()
+              if len(z)!=az or H(z)!=ash: raise SystemExit('V95_BIND_FAIL '+prefix+' artifact transport')
+              return z
+
+          auth=body('fetched-v95/coordinator.json',AUTH)
+          for x in ['COORDINATOR::LOWALT_V95_V94_V91_ACCEPTED_REPAIR_COMPOSITION_SUCCESSOR_AUTHORIZED__SCIENCE_PRODUCTION_FALSE',
+                    'AUTHORIZED: exactly ONE fresh LowAlt PRE-RESULT V95 identity',
+                    'V95 may repair ONLY this accepted-repair composition omission',
+                    'V91_ACCEPTED_REPAIR_COMPOSITION_GATE_PASS',
+                    'No V96 absent later direct Coordinator transition.']:
+              if x not in auth: raise SystemExit('V95_BIND_FAIL authority '+x)
+
+          v91=wf('fetched-v95/v91-workflow.json',V91B)
+          v92=wf('fetched-v95/v92-workflow.json',V92B)
+          v94=wf('fetched-v95/v94-workflow.json',V94B)
+          z92=bind_run('v92',V92H,V92T,V92R,V92J,V92A,V92AS,V92AZ)
+          z94=bind_run('v94',V94H,V94T,V94R,V94J,V94A,V94AS,V94AZ)
+          with zipfile.ZipFile(io.BytesIO(z94)) as zz:
+              ns=[i.filename for i in zz.infolist() if not i.is_dir()]
+              gate='evidence/v94-v91-p2-literal-reuse-cardinality/V91_P2_LITERAL_REUSE_CARDINALITY_GATE_PASS'
+              if ns.count(gate)!=1: raise SystemExit('V95_BIND_FAIL V94 accepted gate receipt')
+          r91=runpart(v91); t91=r91.decode()
+          r92=runpart(v92).decode(); r94=runpart(v94).decode()
+
+          old_auth="""for x in ['AUTHORIZED: exactly ONE fresh LowAlt PRE-RESULT V91 identity',\"V91 may repair ONLY V90's current-Coordinator direct-literal requirement for inherited `CM`\",'V90_CURRENT_COORDINATOR_CM_VALUE_LOCUS_GATE_PASS',BEFORE,AFTER,DIFF,'No V92 absent later direct Coordinator transition']:\n    if auth.count(x)!=1: raise SystemExit('V91_BIND_FAIL authority '+x)\n"""
+          new_auth="""for x in ['AUTHORIZED: exactly ONE fresh LowAlt PRE-RESULT V91 identity',\"V91 may repair ONLY V90's current-Coordinator direct-literal requirement for inherited `CM`\",'V90_CURRENT_COORDINATOR_CM_VALUE_LOCUS_GATE_PASS',AFTER,DIFF,'No V92 absent later direct Coordinator transition']:\n    if auth.count(x)!=1: raise SystemExit('V91_BIND_FAIL authority '+x)\nif auth.count(BEFORE)!=2: raise SystemExit('V91_BIND_FAIL authority '+BEFORE)\n"""
+          old_pre="if text.count(old)!=1 or text.count(new)!=0 or text.count(p1)!=1 or text.count(p2)!=1:"
+          new_pre="if text.count(old)!=1 or text.count(new)!=0 or text.count(p1)!=1 or text.count(p2)!=2:"
+          old_post="if patched.count(old)!=0 or patched.count(new)!=1 or patched.count(p1)!=1 or patched.count(p2)!=1 or patched.replace(new,old,1)!=text:"
+          new_post="if patched.count(old)!=0 or patched.count(new)!=1 or patched.count(p1)!=1 or patched.count(p2)!=2 or patched.replace(new,old,1)!=text:"
+
+          for s in [old_auth,new_auth]:
+              if s not in r92: raise SystemExit('V95_BIND_FAIL V92 accepted repair source')
+          for s in [old_pre,new_pre,old_post,new_post]:
+              if s not in r94: raise SystemExit('V95_BIND_FAIL V94 accepted repair source')
+
+          if (t91.count(old_auth),t91.count(new_auth),t91.count(old_pre),t91.count(new_pre),t91.count(old_post),t91.count(new_post))!=(1,0,1,0,1,0):
+              raise SystemExit('V95_PATCH_FAIL raw cardinality '+repr((t91.count(old_auth),t91.count(new_auth),t91.count(old_pre),t91.count(new_pre),t91.count(old_post),t91.count(new_post))))
+          spans=[]
+          for s in [old_auth,old_pre,old_post]:
+              a=t91.index(s); spans.append((a,a+len(s)))
+          for i,(a,b) in enumerate(spans):
+              for c,d in spans[i+1:]:
+                  if not (b<=c or d<=a): raise SystemExit('V95_PATCH_FAIL edit overlap')
+
+          composed=t91.replace(old_auth,new_auth,1).replace(old_pre,new_pre,1).replace(old_post,new_post,1)
+          if (composed.count(old_auth),composed.count(new_auth),composed.count(old_pre),composed.count(new_pre),composed.count(old_post),composed.count(new_post))!=(0,1,0,1,0,1):
+              raise SystemExit('V95_PATCH_FAIL composed cardinality')
+          if composed.replace(new_auth,old_auth,1).replace(new_pre,old_pre,1).replace(new_post,old_post,1)!=t91:
+              raise SystemExit('V95_PATCH_FAIL inverse reconstruction')
+
+          diff=''.join(difflib.unified_diff(t91.splitlines(True),composed.splitlines(True),fromfile='v91-run.sh',tofile='v91-run-composed-v95.sh',n=3))
+          payload=[x for x in diff.splitlines() if (x.startswith('+') and not x.startswith('+++')) or (x.startswith('-') and not x.startswith('---'))]
+          expected=['-'+old_auth.splitlines()[0], '+'+new_auth.splitlines()[0], '+'+new_auth.splitlines()[2],
+                    '-'+old_pre, '+'+new_pre, '-'+old_post, '+'+new_post]
+          if payload!=expected: raise SystemExit('V95_PATCH_FAIL diff payload '+repr(payload))
+
+          main=j('fetched-v95/main.json')
+          if main.get('commit',{}).get('sha')!=MAIN: raise SystemExit('V95_BIND_FAIL main drift')
+          comp=j('fetched-v95/main-to-v95.json'); fs=comp.get('files') or []
+          if comp.get('base_commit',{}).get('sha')!=MAIN or len(fs)!=1 or fs[0].get('filename')!='.github/workflows/lowalt-lt5-p-worker-module-v95.yml' or fs[0].get('status')!='added':
+              raise SystemExit('V95_BIND_FAIL V95 branch scope')
+
+          Path('bootstrap-v95/v91-run-composed-v95.sh').write_text(composed)
+          Path(O/'v91-to-v95-accepted-repair-composition.diff').write_text(diff)
+          rec={'schema':1,'status':'V91_ACCEPTED_REPAIR_COMPOSITION_GATE_PASS','authority_comment':AUTH,
+               'v91_head':V91H,'v91_workflow_blob':V91B,
+               'v92_head':V92H,'v92_workflow_blob':V92B,'v92_run':V92R,'v92_job':V92J,'v92_artifact':V92A,'v92_artifact_sha256':V92AS,
+               'v94_head':V94H,'v94_workflow_blob':V94B,'v94_run':V94R,'v94_job':V94J,'v94_artifact':V94A,'v94_artifact_sha256':V94AS,
+               'before_run_sha256':H(r91),'after_run_sha256':H(composed.encode()),'diff_sha256':H(diff.encode()),'diff_payload':payload,
+               'edit_regions_disjoint':True,'scientific_script_mutation':False,'source_defined_transport_mutation':False,'b_selected':False,'b_resolved':False}
+          Path(O/'accepted-repair-composition-receipt.json').write_text(json.dumps(rec,indent=2,sort_keys=True)+'\n')
+          Path(O/'V91_ACCEPTED_REPAIR_COMPOSITION_GATE_PASS').write_text('PASS exact accepted V92 authority repair + V94 p2 repair composed on immutable V91\n')
+          PY
+
+          bash -n bootstrap-v95/v91-run-composed-v95.sh
+          echo V91_ACCEPTED_REPAIR_COMPOSITION_GATE_PASS
+          set +e
+          GITHUB_SHA=0ab2716f61c1bf3739025080cbf1f12917bf92cf bash bootstrap-v95/v91-run-composed-v95.sh >evidence/v95-v91-accepted-repair-composition/preserved-v91-child.stdout 2>evidence/v95-v91-accepted-repair-composition/preserved-v91-child.stderr
+          RC=$?
+          set -e
+          printf '%s\n' "$RC" > evidence/v95-v91-accepted-repair-composition/preserved-v91-child.exit-code.txt
+          if [ "$RC" -ne 0 ]; then
+            echo "V95_PRESERVED_V91_FIRST_FALSE rc=$RC" >&2
+            tail -n 6000 evidence/v95-v91-accepted-repair-composition/preserved-v91-child.stderr >&2 || true
+            exit "$RC"
+          fi
+          echo V95_PRESERVED_CHAIN_COMPLETED_PRE_RESULT
+
+      - name: Upload V95 frozen PRE-RESULT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v95-evidence
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            fetched-*/
+            artifacts-*/
+            bootstrap*/
+            evidence/

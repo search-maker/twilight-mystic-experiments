@@ -1,0 +1,246 @@
+name: LowAlt LT5 P Worker Module Preservation Scope V67
+
+on:
+  push:
+    branches:
+      - review/lowalt-lt5-p-worker-module-v67-20260919
+    paths:
+      - .github/workflows/lowalt-lt5-p-worker-module-v67.yml
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+jobs:
+  v66-preservation-scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    container:
+      image: ghcr.io/r-wasm/flang-wasm:v20.1.4@sha256:456f78d526b5582204d6b1da3ccbca2e5b6965d0ec5f528ff8891f496a08f6a5
+    steps:
+      - name: Repair only V66 preservation-guard owning-layer scope
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          mkdir -p fetched-v67 bootstrap evidence/v67-preservation-scope
+
+          api_get() {
+            local url="$1" out="$2"
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$url" -o "$out"
+          }
+
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/issues/comments/5737002205" fetched-v67/coordinator.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/issues/comments/5736851192" fetched-v67/v66-checkpoint.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v66.yml?ref=6658bc086a81fca549f448d1e990ae406742df18" fetched-v67/v66-workflow.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v65.yml?ref=eba5f9422ee947b89625a45a2538eea4ae61f705" fetched-v67/v65-workflow.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/contents/.github/workflows/lowalt-lt5-p-worker-module-v51.yml?ref=6e9c7bc59ff5153422b989f2ee28a0403fa54d4c" fetched-v67/v51-workflow.json
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/6658bc086a81fca549f448d1e990ae406742df18/.github/workflows/lowalt-lt5-p-worker-module-v66.yml" \
+            -o fetched-v67/v66-workflow-raw.yml
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/eba5f9422ee947b89625a45a2538eea4ae61f705/.github/workflows/lowalt-lt5-p-worker-module-v65.yml" \
+            -o fetched-v67/v65-workflow-raw.yml
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/search-maker/twilight-mystic-experiments/6e9c7bc59ff5153422b989f2ee28a0403fa54d4c/.github/workflows/lowalt-lt5-p-worker-module-v51.yml" \
+            -o fetched-v67/v51-workflow-raw.yml
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/branches/main" fetched-v67/main.json
+          api_get "https://api.github.com/repos/search-maker/twilight-mystic-experiments/compare/6cd7c075766fe0c86bc7561ec205a3f9120fd1fb...${GITHUB_SHA}" fetched-v67/main-to-v67.json
+
+          python3 - <<'PY_V67'
+          import base64
+          import difflib
+          import hashlib
+          import json
+          from pathlib import Path
+
+          OUT = Path('evidence/v67-preservation-scope')
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          MAIN = '6cd7c075766fe0c86bc7561ec205a3f9120fd1fb'
+          COORD = 5737002205
+          V66_CHECKPOINT = 5736851192
+          V66_HEAD = '6658bc086a81fca549f448d1e990ae406742df18'
+          V66_BLOB = '7dcb67e4a7d1d9de3bc31e0d0ab31e1f71c62d94'
+          V65_HEAD = 'eba5f9422ee947b89625a45a2538eea4ae61f705'
+          V65_BLOB = '976e37d56ecf75e7db0b9bedb35d9eac19c0b859'
+          V51_HEAD = '6e9c7bc59ff5153422b989f2ee28a0403fa54d4c'
+          V51_BLOB = '5585f3ce09311ebb88de2a5231b813fbe8e63e03'
+          TRANSPORT = b'base64 -d bootstrap/v46-run-v51.sh.gz.b64 | gzip -dc > bootstrap/v46-run-v51.sh\n'
+
+          def H(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def G(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+
+          def decode_contents(path, expected_blob):
+              obj = json.loads(Path(path).read_text())
+              if obj.get('sha') != expected_blob:
+                  raise SystemExit(f'V67_BIND_FAIL contents blob {path} {obj.get("sha")}')
+              data = base64.b64decode(obj['content'])
+              if G(data) != expected_blob:
+                  raise SystemExit(f'V67_BIND_FAIL recomputed blob {path} {G(data)}')
+              return data
+
+          def extract_run(source):
+              lines = source.splitlines(keepends=True)
+              marker = b'        run: |\n'
+              try:
+                  start = lines.index(marker) + 1
+              except ValueError:
+                  raise SystemExit('V67_BIND_FAIL run marker absent')
+              out=[]
+              for line in lines[start:]:
+                  if line.strip() and not line.startswith(b'          '):
+                      break
+                  out.append(line[10:] if line.startswith(b'          ') else line)
+              return b''.join(out)
+
+          coord = json.loads(Path('fetched-v67/coordinator.json').read_text())
+          cp66 = json.loads(Path('fetched-v67/v66-checkpoint.json').read_text())
+          if coord.get('id') != COORD or coord.get('user',{}).get('login') != 'search-maker':
+              raise SystemExit('V67_BIND_FAIL coordinator identity')
+          cbody = coord.get('body','')
+          required_coord = [
+              'Exactly ONE fresh LowAlt PRE-RESULT V67 identity is authorized',
+              'V67 may repair ONLY this preservation-guard scope defect',
+              'base64 -d | gzip -dc',
+              V66_HEAD,
+          ]
+          if any(x not in cbody for x in required_coord):
+              raise SystemExit('V67_BIND_FAIL coordinator literals')
+          if cp66.get('id') != V66_CHECKPOINT or cp66.get('user',{}).get('login') != 'search-maker':
+              raise SystemExit('V67_BIND_FAIL V66 checkpoint identity')
+          if 'wrapper-only preservation-guard scope' not in cp66.get('body',''):
+              raise SystemExit('V67_BIND_FAIL V66 first-false literal')
+
+          main = json.loads(Path('fetched-v67/main.json').read_text())
+          if main.get('commit',{}).get('sha') != MAIN:
+              raise SystemExit('V67_BIND_FAIL main drift')
+          comp = json.loads(Path('fetched-v67/main-to-v67.json').read_text())
+          files = comp.get('files') or []
+          expected_path = '.github/workflows/lowalt-lt5-p-worker-module-v67.yml'
+          if comp.get('base_commit',{}).get('sha') != MAIN or len(files) != 1 or files[0].get('filename') != expected_path or files[0].get('status') != 'added':
+              raise SystemExit('V67_BIND_FAIL branch is not harness-only single workflow addition')
+
+          v66 = decode_contents('fetched-v67/v66-workflow.json', V66_BLOB)
+          v65 = decode_contents('fetched-v67/v65-workflow.json', V65_BLOB)
+          v51 = decode_contents('fetched-v67/v51-workflow.json', V51_BLOB)
+          if v66 != Path('fetched-v67/v66-workflow-raw.yml').read_bytes():
+              raise SystemExit('V67_BIND_FAIL V66 representations disagree')
+          if v65 != Path('fetched-v67/v65-workflow-raw.yml').read_bytes():
+              raise SystemExit('V67_BIND_FAIL V65 representations disagree')
+          if v51 != Path('fetched-v67/v51-workflow-raw.yml').read_bytes():
+              raise SystemExit('V67_BIND_FAIL V51 representations disagree')
+
+          r66 = extract_run(v66)
+          r65 = extract_run(v65)
+          r51 = extract_run(v51)
+          Path(OUT/'v66-run-original.sh').write_bytes(r66)
+          Path(OUT/'v65-run-owner.sh').write_bytes(r65)
+          Path(OUT/'v51-run-owner.sh').write_bytes(r51)
+
+          wrapper_predicates = [
+              'successor_block=(',
+              'new_check=',
+              'V59_SOURCE_DEFINED_TABLE_SHA256',
+              'V59_SOURCE_DEFINED_MANIFEST_SHA256',
+          ]
+          ownership=[]
+          for p in wrapper_predicates:
+              b = p.encode()
+              c65 = r65.count(b)
+              c51 = r51.count(b)
+              if c65 < 1 or c51 != 0:
+                  raise SystemExit(f'V67_SCOPE_FAIL wrapper owner {p!r} v65={c65} v51={c51}')
+              ownership.append({'predicate':p,'owner':'V65_EXTRACTED_WRAPPER','owner_head':V65_HEAD,'occurrences':c65,'other_checked_layer':'V51_EXTRACTED_CHILD','other_occurrences':c51})
+
+          transport_count = r51.count(TRANSPORT)
+          wrapper_transport_exact = r65.count(TRANSPORT)
+          wrapper_shorthand = r65.count(b'base64 -d | gzip -dc')
+          if transport_count != 1 or wrapper_transport_exact != 0 or wrapper_shorthand != 0:
+              raise SystemExit(f'V67_SCOPE_FAIL transport owner v51={transport_count} v65_exact={wrapper_transport_exact} v65_shorthand={wrapper_shorthand}')
+          transport_line = r51.splitlines(keepends=True).index(TRANSPORT) + 1
+          ownership.append({
+              'predicate':'SOURCE_DEFINED_BASE64_GZIP_TRANSPORT',
+              'owner':'V51_EXTRACTED_CHILD',
+              'owner_head':V51_HEAD,
+              'owner_blob':V51_BLOB,
+              'owner_line_1_based':transport_line,
+              'exact_command':TRANSPORT.decode().rstrip('\n'),
+              'occurrences':1,
+              'V65_wrapper_exact_occurrences':0,
+              'V65_wrapper_shorthand_occurrences':0,
+          })
+          Path(OUT/'preservation-ownership-locus.json').write_text(json.dumps(ownership, indent=2, sort_keys=True)+'\n')
+
+          invalid_line = b"    'base64 -d | gzip -dc',\n"
+          if r66.count(invalid_line) != 1:
+              raise SystemExit(f'V67_PATCH_FAIL invalid-line count={r66.count(invalid_line)}')
+          patched = r66.replace(invalid_line, b'', 1)
+          diff=''.join(difflib.unified_diff(r66.decode().splitlines(True),patched.decode().splitlines(True),fromfile='v66-run-original.sh',tofile='v66-run-patched-v67.sh',n=3))
+          payload=[x for x in diff.splitlines() if (x.startswith('+') and not x.startswith('+++')) or (x.startswith('-') and not x.startswith('---'))]
+          expected=['-'+invalid_line.decode().rstrip('\n')]
+          if payload != expected:
+              raise SystemExit(f'V67_PATCH_FAIL unexpected payload {payload!r}')
+          if "if any(('V59_SOURCE_DEFINED_' in x or 'successor_block' in x or 'new_check=' in x or 'base64 -d | gzip -dc' in x) for x in payload):" not in patched.decode():
+              raise SystemExit('V67_PATCH_FAIL valid diff-payload preservation guard drifted')
+
+          Path('bootstrap/v66-run-patched-v67.sh').write_bytes(patched)
+          Path(OUT/'v66-to-v67-preservation-scope.diff').write_text(diff)
+          Path(OUT/'PRESERVATION_SCOPE_GATE_PASS').write_text('PASS: wrapper-owned predicates preserved; source-defined base64/gzip transport uniquely bound to V51 downstream owner\n')
+          Path(OUT/'scope-receipt.json').write_text(json.dumps({
+              'status':'PASS_PRE_RESULT_V67_PRESERVATION_SCOPE_ONLY',
+              'v66_run_sha256':H(r66),
+              'v67_patched_run_sha256':H(patched),
+              'diff_sha256':H(diff.encode()),
+              'ownership_table_sha256':H(Path(OUT/'preservation-ownership-locus.json').read_bytes()),
+              'scientific_script_mutation':False,
+              'source_defined_transport_mutation':False,
+              'historical_v59_checkpoint_mutation':False,
+              'b_selected':False,
+              'b_resolved':False,
+          }, indent=2, sort_keys=True)+'\n')
+          print('PRESERVATION_SCOPE_GATE_PASS')
+          print('V66_RUN_ORIGINAL_SHA256='+H(r66))
+          print('V66_RUN_PATCHED_V67_SHA256='+H(patched))
+          print('V66_TO_V67_DIFF_SHA256='+H(diff.encode()))
+          PY_V67
+
+          test -f evidence/v67-preservation-scope/PRESERVATION_SCOPE_GATE_PASS
+          bash -n bootstrap/v66-run-patched-v67.sh
+          set +e
+          GITHUB_SHA="6658bc086a81fca549f448d1e990ae406742df18" \
+            bash bootstrap/v66-run-patched-v67.sh \
+            >evidence/v67-preservation-scope/preserved-v66-child.stdout \
+            2>evidence/v67-preservation-scope/preserved-v66-child.stderr
+          CHILD_RC=$?
+          set -e
+          printf '%s\n' "$CHILD_RC" > evidence/v67-preservation-scope/preserved-v66-child.exit-code.txt
+          if [ "$CHILD_RC" -ne 0 ]; then
+            echo "V67_PRESERVED_V66_FIRST_FALSE rc=${CHILD_RC}" >&2
+            tail -n 240 evidence/v67-preservation-scope/preserved-v66-child.stderr >&2 || true
+            exit "$CHILD_RC"
+          fi
+
+      - name: Freeze V67 PRE-RESULT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowalt-lt5-p-worker-module-v67
+          path: |
+            fetched-v67
+            bootstrap
+            evidence
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

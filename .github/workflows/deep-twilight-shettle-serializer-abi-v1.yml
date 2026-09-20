@@ -1,0 +1,171 @@
+name: Deep twilight Shettle serializer ABI v1
+
+on:
+  pull_request:
+    paths:
+      - review/deep-twilight-shettle-serializer-abi-v1/**
+      - .github/workflows/deep-twilight-shettle-serializer-abi-v1.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  FROZEN_BASE: 9ae60a3283046fb977bfb2fb88b1c90ef583cc2d
+  EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+  EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+  EXPECTED_PACKAGE_JSON: rubin-libradtran-2.0.6-py312pl5321he9373c2_1.json
+
+jobs:
+  abi-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind zero-science inventory identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/deep-twilight-shettle-serializer-abi-v1
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$FROZEN_BASE"
+          mapfile -t changed < <(git diff --name-only "$FROZEN_BASE"...HEAD | sort)
+          printf '%s\n' "${changed[@]}"
+          expected=(
+            .github/workflows/deep-twilight-shettle-serializer-abi-v1.yml
+            review/deep-twilight-shettle-serializer-abi-v1/PROTOCOL.md
+          )
+          test "${#changed[@]}" = "${#expected[@]}"
+          for i in "${!expected[@]}"; do test "${changed[$i]}" = "${expected[$i]}"; done
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: deep-twilight-shettle-serializer-abi-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Verify exact installed runtime without executing uvspec
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python experiments/mystic-batch-v1/runtime_probe.py \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" \
+            --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json \
+            --skip-help \
+            --output evidence/runtime-report.json
+          python - <<'PY'
+          import json, os
+          x=json.load(open('evidence/runtime-report.json'))
+          if x['uvspecSha256'] != os.environ['EXPECTED_UVSPEC_SHA256']: raise SystemExit('uvspec SHA drift')
+          if x['libRadtranDataTreeSha256'] != os.environ['EXPECTED_BASE_DATA_SHA256']: raise SystemExit('data-tree drift')
+          if x['scientificSolverExecuted'] is not False or x['syntaxCheckExecuted'] is not False: raise SystemExit('runtime probe boundary crossed')
+          PY
+          pkg="$CONDA_PREFIX/conda-meta/$EXPECTED_PACKAGE_JSON"
+          test -f "$pkg"
+          cp "$pkg" evidence/conda-package.json
+
+      - name: Freeze installed header and library inventory
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          {
+            echo '# include/libRadtran files'
+            if [ -d "$CONDA_PREFIX/include/libRadtran" ]; then
+              find "$CONDA_PREFIX/include/libRadtran" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+            else
+              echo '__MISSING_INCLUDE_LIBRADTRAN__'
+            fi
+            echo '# top-level include candidates'
+            find "$CONDA_PREFIX/include" -maxdepth 1 -type f \( -iname '*uvspec*' -o -iname '*radtran*' -o -iname '*aerosol*' -o -iname '*opt*' \) -printf '%f\n' | LC_ALL=C sort || true
+          } > evidence/include-files.txt
+
+          {
+            echo '# libraries'
+            find "$CONDA_PREFIX/lib" -maxdepth 1 -type f -name 'libRadtran*' -printf '%f\n' | LC_ALL=C sort
+            echo '# hashes'
+            find "$CONDA_PREFIX/lib" -maxdepth 1 -type f -name 'libRadtran*' -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+            sha256sum "$(command -v uvspec)"
+          } > evidence/library-files-and-hashes.txt
+
+          test -f "$CONDA_PREFIX/lib/libRadtran_c.a"
+          test -f "$CONDA_PREFIX/lib/libRadtran_f.a"
+          ar t "$CONDA_PREFIX/lib/libRadtran_c.a" > evidence/libRadtran-c-members.txt
+          ar t "$CONDA_PREFIX/lib/libRadtran_f.a" > evidence/libRadtran-f-members.txt
+          nm -A -g --defined-only "$CONDA_PREFIX/lib/libRadtran_c.a" > evidence/libRadtran-c-global-defined-symbols.txt || true
+          nm -A -g --defined-only "$CONDA_PREFIX/lib/libRadtran_f.a" > evidence/libRadtran-f-global-defined-symbols.txt || true
+          if [ -f "$CONDA_PREFIX/lib/libRadtran.so" ]; then
+            nm -D -g --defined-only "$CONDA_PREFIX/lib/libRadtran.so" > evidence/libRadtran-so-global-defined-symbols.txt || true
+          else
+            echo '__MISSING_LIBRADTRAN_SO__' > evidence/libRadtran-so-global-defined-symbols.txt
+          fi
+          nm -g --defined-only "$(command -v uvspec)" > evidence/uvspec-global-defined-symbols.txt || true
+          readelf -Ws "$(command -v uvspec)" > evidence/uvspec-readelf-symbols.txt || true
+
+      - name: Apply preregistered vocabulary only
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          pattern='aerosol|optprop|optical|redistrib|setup_aer|uvspec|input_struct|output_struct'
+          {
+            echo '# header matches'
+            if [ -d "$CONDA_PREFIX/include/libRadtran" ]; then
+              grep -RInE "$pattern" "$CONDA_PREFIX/include/libRadtran" || true
+            fi
+            echo '# library symbol matches'
+            grep -Ei "$pattern" evidence/libRadtran-c-global-defined-symbols.txt evidence/libRadtran-f-global-defined-symbols.txt evidence/libRadtran-so-global-defined-symbols.txt || true
+            echo '# uvspec symbol matches'
+            grep -Ei "$pattern" evidence/uvspec-global-defined-symbols.txt evidence/uvspec-readelf-symbols.txt || true
+          } > evidence/preregistered-vocabulary-matches.txt
+
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          files = sorted(p for p in Path('evidence').iterdir() if p.is_file())
+          manifest = {
+            'schemaVersion': 1,
+            'stageId': 'deep-twilight-shettle-serializer-abi-v1',
+            'status': 'ABI_INVENTORY_CAPTURED_MANUAL_CLASSIFICATION_REQUIRED',
+            'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'bytes': p.stat().st_size} for p in files],
+            'uvspecExecuted': False,
+            'scientificRadiativeTransferSolved': False,
+            'mysticExecuted': False,
+            'eradiateExecuted': False,
+            'scientificOrdinalAllocated': False,
+            'deepRadianceOpened': False,
+            'levelBV1Changed': False,
+            'productionAuthorized': False,
+            'next': 'Classify external-helper plausibility from this frozen inventory only; do not compile or execute a serializer until its separate protocol is frozen.'
+          }
+          Path('evidence/inventory-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
+          PY
+
+      - name: Enforce no-execution claim boundary
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/inventory-manifest.json'))
+          for k in ('uvspecExecuted','scientificRadiativeTransferSolved','mysticExecuted','eradiateExecuted','scientificOrdinalAllocated','deepRadianceOpened','levelBV1Changed','productionAuthorized'):
+              if x.get(k) is not False: raise SystemExit(f'claim boundary crossed: {k}')
+          print(x['status'])
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: deep-twilight-shettle-serializer-abi-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

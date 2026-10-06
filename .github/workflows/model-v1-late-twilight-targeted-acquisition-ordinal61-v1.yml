@@ -1,0 +1,359 @@
+name: Model v1 late-twilight targeted acquisition ordinal61 v1
+run-name: Model v1 late-twilight targeted acquisition ordinal61 v1
+
+on:
+  push:
+    branches:
+      - 'dispatch/tier2-stage1-ordinal61-v3'
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: model-v1-late-targeted-ordinal61-v1
+  cancel-in-progress: false
+
+env:
+  SOURCE_HEAD: 78fb91f706bef7ffb3016968b1e4414d8452921d
+  DISPATCH_BRANCH: dispatch/tier2-stage1-ordinal61-v3
+  WORKFLOW_PATH: .github/workflows/model-v1-late-twilight-targeted-acquisition-ordinal61-v1.yml
+  MANIFEST: frozen/manifest.json
+  ADAPTER: frozen/targeted_adapter.py
+  SELECTION: frozen/selected-before-result.json
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      matrix: ${{ steps.freeze.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Install result-blind prefit dependency
+        run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - name: Exact one-shot identity and standing-authority guards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$DISPATCH_BRANCH"
+          test "$(git cat-file -p "$GITHUB_SHA" | grep -c '^parent ')" = 1
+          test "$(git rev-parse "$GITHUB_SHA^")" = "$SOURCE_HEAD"
+          mapfile -t CHANGED < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          test "${#CHANGED[@]}" = 1
+          test "${CHANGED[0]}" = "$WORKFLOW_PATH"
+          test "$(git rev-parse "$SOURCE_HEAD:review/full-spectrum-estimator-pilot-v2/full-spectrum-training-admission-complete-v1.json")" = c136f23f7df68b1481cb5ff939646198a3e336fe
+          test "$(git rev-parse "$SOURCE_HEAD:review/tier2-core-campaign-contract-v1/validate_tier2_core_campaign_contract_v1.py")" = 0b6aa0bf18b85ee270d2c6c459eb5779a0cfdb40
+          for s in 2261061001 2261061002 2261061003 2261061004; do
+            if git grep -F "$s" "$SOURCE_HEAD" -- . ':(exclude)review/model-v1-late-twilight-16deg-prefit-implementation-v1/*' >/dev/null 2>&1; then
+              echo "seed collision in source tree: $s"; exit 1
+            fi
+          done
+          gh api --paginate --slurp "repos/${{ github.repository }}/issues/60/comments?per_page=100" > issue-pages.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/branches?per_page=100" > branch-pages.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/actions/runs?per_page=100" > run-pages.json
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          comments=[x for page in json.loads(Path('issue-pages.json').read_text()) for x in page]
+          auth=[x for x in comments if int(x.get('id',0))==6024668760 and 'MODEL_V1_STANDING_AUTHORITY_2026_10_06' in str(x.get('body',''))]
+          assert len(auth)==1, 'standing authority missing'
+          body=str(auth[0]['body'])
+          for literal in ('sunDep=10.75deg','altitude=80deg','relativeAzimuth=0deg','elevation=1250m','AOD550=0.15','four independent 50M-photon blocks'):
+              assert literal in body, f'frozen design literal missing: {literal}'
+          assert not any(re.search(r'ordinal61|scientific ordinal.?61',str(x.get('body','')),re.I) for x in comments), 'ordinal61 already mentioned in durable issue state'
+          assert not any(re.search(r'226106100[1-4]',str(x.get('body',''))) for x in comments), 'seed already mentioned in durable issue state'
+          branches=[x for page in json.loads(Path('branch-pages.json').read_text()) for x in page]
+          hit=[x.get('name') for x in branches if 'ordinal61' in str(x.get('name','')).lower()]
+          assert hit==[os.environ['DISPATCH_BRANCH']], f'ordinal61 branch collision: {hit}'
+          runs=[x for page in json.loads(Path('run-pages.json').read_text()) for x in page.get('workflow_runs',[])]
+          prior=[x for x in runs if x.get('head_branch')==os.environ['DISPATCH_BRANCH'] and int(x.get('id',0))!=int(os.environ['GITHUB_RUN_ID'])]
+          assert not prior, f'prior run collision on one-shot branch: {[x.get("id") for x in prior]}'
+          PY
+      - id: freeze
+        name: Freeze targeted geometry, seeds, original-data model identity, and custom adapter before results
+        run: |
+          set -euo pipefail
+          mkdir -p frozen
+          cat > frozen/targeted_adapter.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+          import copy, hashlib, importlib.util, json
+          from pathlib import Path
+          from typing import Any
+
+          MANIFEST_ID='model-v1-late-twilight-targeted-acquisition-ordinal61-v1'
+          RUNTIME_KEYS=('uvspecSha256','uvspecHelpSha256','libRadtranDataTreeSha256','atmosphereSha256','runtimeLockRawSha256')
+          CROSS_REL=Path('experiments/mystic-batch-v1/cross_geometry_adapter.py')
+          ELEV_REL=Path('experiments/mystic-batch-v1/twilight_surrogate_tier1_execution_adapter.py')
+          GRID_REL=Path('review/full-spectrum-estimator-pilot-v2/wavelength-grid-1nm.dat')
+          class Refusal(RuntimeError): pass
+          def req(c,m):
+              if not c: raise Refusal(m)
+          def load(p):
+              x=json.loads(Path(p).read_text()); req(isinstance(x,dict),f'object required: {p}'); return x
+          def canon(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          def module(name,path):
+              req(Path(path).is_file(),f'reference missing: {path}')
+              s=importlib.util.spec_from_file_location(name,path); req(s is not None and s.loader is not None,'module load failure')
+              m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          def selfhash(m):
+              x=copy.deepcopy(m); x['manifestSha256']=None; return canon(x)
+          def validate_manifest(m):
+              req(m.get('manifestId')==MANIFEST_ID and m.get('status')=='FROZEN_BEFORE_RESULT_TARGETED_TRAINING_ACQUISITION','manifest identity drift')
+              req(m.get('trainingOnly') is True and m.get('protectedHoldout') is False,'training/holdout boundary drift')
+              req(m.get('geometryCount')==1 and m.get('caseCount')==4 and m.get('configuredPhotonHistories')==200_000_000,'targeted accounting drift')
+              req(m.get('manifestSha256')==selfhash(m),'manifest selfhash drift')
+              req(all(c.get('role')=='surrogate-training' and c.get('executionStage')=='TARGETED_TRAINING_ACQUISITION' and c.get('method')=='alis' for c in m.get('cases',[])),'case role drift')
+              req((m.get('closedBoundaries') or {}).get('protectedHoldoutOpeningAuthorized') is False,'protected boundary opened')
+          def validate_runtime(m,r):
+              req(r.get('schemaVersion')==1 and r.get('stageId')=='mystic-batch-v1' and r.get('scientificSolverExecuted') is False and r.get('syntaxCheckExecuted') is False,'runtime header drift')
+              want=m.get('runtimeIdentityRequired') or {}
+              for k in RUNTIME_KEYS: req(r.get(k)==want.get(k),f'runtime identity drift: {k}')
+          def resolve_case(m,case_id):
+              rows=[x for x in m['cases'] if x.get('caseId')==case_id]; req(len(rows)==1,'case not unique'); c=rows[0]
+              gs=[x for x in m['geometries'] if x.get('geometryId')==c.get('geometryId')]; req(len(gs)==1,'geometry not unique')
+              return c,gs[0]
+          def inputs(m,c,g):
+              f=m['frozenInputs']
+              out={'caseId':c['caseId'],'groupId':g['geometryId'],'method':'alis','block':c['block'],'seed':c['seed'],'photonHistories':c['photonHistories'],
+                   'sunDepressionDeg':g['sunDepressionDeg'],'targetAltitudeDeg':g['targetAltitudeDeg'],'relativeAzimuthDeg':g['relativeAzimuthDeg'],
+                   'observerElevationM':g['observerElevationM'],'aod550':g['aod550'],'albedo':f['albedo'],'wavelengthDomainNm':f['wavelengthDomainNm'],
+                   'diagnosticNodesNm':[500.0,550.0,600.0],'molecularAbsorption':f['molecularAbsorption'],'mcSpherical':f['mcSpherical'],
+                   'alisSpectralImportanceSamplingNm':c['alisSpectralImportanceSamplingNm'],'solarFlux':{'root':'libRadtranData','path':'solar_flux/atlas_plus_modtran'},
+                   'wavelengthGrid':{'root':'repository','path':GRID_REL.as_posix()},'atmosphere':{'root':'libRadtranData','path':'atmmod/afglus.dat'}}
+              req(10.5<out['sunDepressionDeg']<=16.0 and 5.0<=out['targetAltitudeDeg']<=80.0 and 0.0<=out['relativeAzimuthDeg']<=180.0 and 0.0<=out['observerElevationM']<=2500.0 and 0.05<=out['aod550']<=0.40,'physical input outside late-v1 box')
+              req(out['wavelengthDomainNm']==[380.0,780.0] and out['molecularAbsorption']=='crs' and out['mcSpherical']=='1D' and out['alisSpectralImportanceSamplingNm']==550.0,'numerical input drift')
+              return out
+          def render_case(manifest_path,runtime_report_path,case_id,data_dir,repository_root,case_dir):
+              m=load(manifest_path); r=load(runtime_report_path); validate_manifest(m); validate_runtime(m,r); c,g=resolve_case(m,case_id); x=inputs(m,c,g)
+              cross=module('target_cross',Path(repository_root)/CROSS_REL); elev=module('target_elev',Path(repository_root)/ELEV_REL)
+              rendered=cross.render_input(x,Path(data_dir).resolve(),Path(repository_root).resolve(),Path(case_dir).resolve())
+              text,site_km,grid=elev.apply_ground_site_atm_z_grid(rendered,x['observerElevationM'])
+              req('wavelength_grid_file ' not in text,'ALIS unexpectedly emitted wavelength grid file')
+              req(text.count('atm_z_grid ')==1 and text.count('zout 0.000000')==1,'elevated-site representation drift')
+              req('\naltitude ' not in '\n'+text and 'mc_elevation_file' not in text,'forbidden elevation shortcut emitted')
+              p={'schemaVersion':1,'stageId':'model-v1-late-targeted-prepared-v1','caseId':case_id,'geometryId':g['geometryId'],'block':c['block'],'role':c['role'],
+                 'seed':c['seed'],'photonHistories':c['photonHistories'],'alisSpectralImportanceSamplingNm':c['alisSpectralImportanceSamplingNm'],
+                 'executionManifestSha256':m['manifestSha256'],'inputResolvedSha256':hashlib.sha256(text.encode()).hexdigest(),
+                 'physicalInputCanonicalSha256':canon(x),'atmosphereGridKm':grid,'siteAltitudeKm':site_km,'zoutKmAboveLocalSurface':0.0,
+                 'observerElevationMechanism':'atm_z_grid','referenceCrossGeometryAdapterPath':CROSS_REL.as_posix(),
+                 'referenceTier1AltitudeAdapterPath':ELEV_REL.as_posix(),'inputs':x}
+              return text,p
+          def prepare_case(manifest_path,runtime_report_path,case_id,data_dir,repository_root,output_root):
+              case_dir=Path(output_root)/case_id; case_dir.mkdir(parents=True,exist_ok=False)
+              text,p=render_case(Path(manifest_path),Path(runtime_report_path),case_id,Path(data_dir),Path(repository_root),case_dir)
+              (case_dir/'input-resolved.txt').write_text(text,encoding='utf-8',newline='\n')
+              (case_dir/'runtime-report.json').write_bytes(Path(runtime_report_path).read_bytes())
+              (case_dir/'randomseed').write_text(f"{p['seed']}\n",encoding='utf-8')
+              (case_dir/'prepared.json').write_text(json.dumps(p,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n',encoding='utf-8')
+              return p
+          PY
+          python - <<'PY'
+          import copy, hashlib, importlib.util, json, os
+          from pathlib import Path
+          root=Path('.')
+          def load_module(name,path):
+              s=importlib.util.spec_from_file_location(name,path); assert s and s.loader
+              m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          pref=load_module('late_prefit',root/'review/model-v1-late-twilight-16deg-prefit-implementation-v1/late_twilight_prefit_v1.py')
+          rows,audit=pref.load_open_training(root)
+          maxloo,thr=pref.calibrate_ood_threshold(rows)
+          assert abs(maxloo-0.8563716730380819)<1e-15 and thr==0.6
+          geometry={'geometryId':'target-o61-g1','sunDepressionDeg':10.75,'targetAltitudeDeg':80.0,'relativeAzimuthDeg':0.0,'observerElevationM':1250.0,'aod550':0.15}
+          ok,dist,near=pref.support(geometry,rows,thr)
+          assert ok and dist < 0.6
+          selected={}
+          for ch in pref.CHANNELS:
+              s,_=pref.select_candidate(rows,ch)
+              assert s['familyId']=='ridge-cos-compact' and s['ready'] is True
+              selected[ch]=s
+          sel={'schemaVersion':1,'status':'FROZEN_BEFORE_TARGET_RESULT','sourceTrainingCount':11,'sourceAudit':audit,'oodMaxLoo':maxloo,'oodThreshold':thr,
+               'targetGeometrySupport':{'supported':ok,'nearestDistance':dist,'nearestGeometryIds':near},'selectedByChannel':selected,
+               'refitRule':'APPEND_TARGETED_ROW_AND_REFIT_COEFFICIENTS_ONLY_USING_EXACT_SAME_FAMILY_AND_RIDGE_NO_RESELECTION',
+               'uncertaintyRule':'RECOMPUTE_FIXED_CANDIDATE_BALANCED_OOF_RMS_ON_EXPANDED_TRAINING_SET_WITHOUT_MODEL_RESELECTION',
+               'seamRule':'RECOMPUTE_SUPPORT_WITH_FIXED_THRESHOLD_0P6_AND_SCORE_ALL_SUPPORTED_SEAM_POINTS_AT_ABS_LOG_DIFF_LE_0P24_PLUS_ENVELOPE_OVERLAP'}
+          Path('frozen/selected-before-result.json').write_text(json.dumps(sel,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          base=json.loads((root/'experiments/tier2-stage1-execution-v1/stage1-execution-manifest-v1.json').read_text())
+          seeds=[2261061001,2261061002,2261061003,2261061004]
+          cases=[{'ordinal':61,'caseId':f'target-o61-g1-b{i+1}','geometryId':'target-o61-g1','groupId':'target-o61-g1','role':'surrogate-training','block':i+1,
+                  'seed':seeds[i],'photonHistories':50_000_000,'method':'alis','alisSpectralImportanceSamplingNm':550.0,
+                  'executionStage':'TARGETED_TRAINING_ACQUISITION','expectedOutputGrid':{'startNm':380.0,'stopNm':780.0,'stepNm':0.05,'nodeCount':8001}} for i in range(4)]
+          m={'schemaVersion':1,'manifestId':'model-v1-late-twilight-targeted-acquisition-ordinal61-v1','status':'FROZEN_BEFORE_RESULT_TARGETED_TRAINING_ACQUISITION',
+             'executionKey':'model-v1-late-twilight-targeted-acquisition-ordinal61-v1:scientific:1','scientificExecution':True,'trainingOnly':True,'protectedHoldout':False,
+             'standingAuthorityCommentId':6024668760,'sourceClosureHead':os.environ['SOURCE_HEAD'],'scientificOrdinal':61,'geometryCount':1,'caseCount':4,
+             'configuredPhotonHistories':200_000_000,'geometries':[geometry],'cases':cases,'frozenInputs':base['frozenInputs'],
+             'runtimeIdentityRequired':base['runtimeIdentityRequired'],'runtimePackage':base['runtimePackage'],'artifactContract':base['artifactContract'],
+             'executionLimits':{'workflowAttemptExactly':1,'automaticRetryCountMaximum':0,'githubRerunAllowed':False,'resumeAllowed':False,
+                                'solverExecutionsPerCaseExactly':1,'syntaxChecksPerCaseExactly':1,'perCaseTimeoutSeconds':2700,'maxParallel':4},
+             'frozenSelectionBeforeResultSha256':hashlib.sha256(Path('frozen/selected-before-result.json').read_bytes()).hexdigest(),
+             'closedBoundaries':{'protectedHoldoutOpeningAuthorized':False,'modelFamilyReselectionAuthorized':False,'ridgeReselectionAuthorized':False,
+                                 'TaylorJerusalemTuningAuthorized':False,'productionPromotionAuthorizedByAcquisitionAlone':False,'sunDepressionGreaterThan16Authorized':False},
+             'successDoesNotAuthorizeProduction':True,'successDoesNotAuthorizeSupportExpansionWithoutFrozenGates':True,'manifestSha256':None}
+          x=copy.deepcopy(m); x['manifestSha256']=None
+          m['manifestSha256']=hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          Path('frozen/manifest.json').write_text(json.dumps(m,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          matrix={'include':[{'caseId':c['caseId'],'timeoutSeconds':2700} for c in cases]}
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
+          print(json.dumps({'manifestSha256':m['manifestSha256'],'targetDistance':dist,'selected':{k:{'familyId':v['familyId'],'basis':v['basis'],'ridge':v['ridge']} for k,v in selected.items()}},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-v1-late-o61-preflight-${{ github.sha }}
+          path: |
+            frozen/manifest.json
+            frozen/targeted_adapter.py
+            frozen/selected-before-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: model-v1-late-o61
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-v1-late-o61-preflight-${{ github.sha }}
+          path: frozen
+      - name: Re-prove exact runtime identity without solver execution
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/mystic-batch-v1/runtime_probe.py             --uvspec "$(command -v uvspec)"             --data-dir "$CONDA_PREFIX/share/libRadtran/data"             --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat"             --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json             --output case-runtime.json
+      - name: Execute exactly one syntax check and one MYSTIC solver invocation
+        shell: micromamba-shell {0}
+        run: |
+          python experiments/tier2-stage1-execution-v1/executor_v1.py             --manifest frozen/manifest.json             --runtime-report case-runtime.json             --adapter frozen/targeted_adapter.py             --case-id '${{ matrix.caseId }}'             --data-dir "$CONDA_PREFIX/share/libRadtran/data"             --repository-root .             --uvspec "$(command -v uvspec)"             --output-root case-output             --timeout-seconds '${{ matrix.timeoutSeconds }}'             --expected-dispatch-branch "$DISPATCH_BRANCH"             --allow-execution
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: model-v1-late-o61-case-${{ matrix.caseId }}
+          path: case-output/${{ matrix.caseId }}
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate_and_fixed_refit:
+    needs: [preflight, cases]
+    if: always() && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-v1-late-o61-preflight-${{ github.sha }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: model-v1-late-o61-case-*
+          path: case-artifacts
+          merge-multiple: false
+      - name: Independently reopen all four spectra, build targeted label, and refit coefficients only
+        run: |
+          set -euo pipefail
+          mkdir -p analysis-output
+          python - <<'PY'
+          import hashlib, importlib.util, json, math, statistics
+          from pathlib import Path
+          import numpy as np
+          def module(name,path):
+              s=importlib.util.spec_from_file_location(name,path); assert s and s.loader
+              m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          agg=module('tier2agg',Path('experiments/tier2-stage1-execution-v1/aggregate_v1.py'))
+          pref=module('latepref',Path('review/model-v1-late-twilight-16deg-prefit-implementation-v1/late_twilight_prefit_v1.py'))
+          manifest=json.loads(Path('frozen/manifest.json').read_text())
+          frozen=json.loads(Path('frozen/selected-before-result.json').read_text())
+          evidence=[]
+          for c in manifest['cases']:
+              matches=[]
+              for p in Path('case-artifacts').rglob('case-result.json'):
+                  x=json.loads(p.read_text())
+                  if x.get('caseId')==c['caseId']: matches.append((p.parent,x))
+              assert len(matches)==1, f'case artifact occurrence !=1: {c["caseId"]}'
+              d,res=matches[0]
+              assert res['status']=='COMPLETED' and res['protectedHoldoutValueExposed'] is False
+              assert (res['seed'],res['photonHistories'],res['block'])==(c['seed'],c['photonHistories'],c['block'])
+              wl,rad=agg.parse(d/'mc.rad.spc')
+              ch=agg.channels(wl,rad)
+              evidence.append({'caseId':c['caseId'],'block':c['block'],'seed':c['seed'],'channels':ch,
+                               'radianceSha256':hashlib.sha256((d/'mc.rad.spc').read_bytes()).hexdigest(),
+                               'stdRadianceSha256':hashlib.sha256((d/'mc.rad.std.spc').read_bytes()).hexdigest(),
+                               'rawAllZero':all(v==0.0 for v in rad)})
+          evidence.sort(key=lambda x:x['block'])
+          assert [x['block'] for x in evidence]==[1,2,3,4]
+          labels={}
+          for ch in pref.CHANNELS:
+              vals=[float(x['channels'][ch]) for x in evidence]
+              assert all(math.isfinite(v) and v>0 for v in vals), f'nonpositive targeted channel refused: {ch} {vals}'
+              mean=statistics.fmean(vals); sd=statistics.stdev(vals); sem=sd/2.0; rsem=sem/mean
+              ms=math.log1p(rsem); total=math.sqrt(ms*ms+pref.MODEL_DISCREPANCY_SIGMA_LOG**2)
+              labels[ch]={'values':vals,'mean':mean,'sampleSd':sd,'sem':sem,'relativeStandardError':rsem,
+                          'measurementSigmaLog':ms,'totalTrainingSigmaLog':total,'degreesOfFreedom':3}
+          rows,audit=pref.load_open_training(Path('.'))
+          g=manifest['geometries'][0]
+          target_channels={ch:pref.ChannelLabel(mean=labels[ch]['mean'],log_mean=math.log(labels[ch]['mean']),
+              measurement_sigma_log=labels[ch]['measurementSigmaLog'],total_training_sigma_log=labels[ch]['totalTrainingSigmaLog'],
+              degrees_of_freedom=3,relative_standard_error=labels[ch]['relativeStandardError']) for ch in pref.CHANNELS}
+          target=pref.TrainingRow('target-o61-g1',g,'TARGETED_FROZEN_ACQUISITION',target_channels)
+          expanded=[*rows,target]
+          fixed={}
+          for ch in pref.CHANNELS:
+              sel=frozen['selectedByChannel'][ch]
+              assert sel['familyId']=='ridge-cos-compact' and sel['ready'] is True
+              beta=pref.fit_selected_all_rows(expanded,ch,sel)
+              fam=next(x for x in pref.FAMILIES if x['familyId']==sel['familyId'])
+              diag=pref.evaluate_candidate(expanded,ch,fam,float(sel['ridge']))
+              fixed[ch]={'familyId':sel['familyId'],'basis':sel['basis'],'ridge':sel['ridge'],
+                         'coefficients':[float(x) for x in beta.tolist()],
+                         'fixedCandidateExpandedBalancedOofRmsLogResidual':diag['balancedOofRmsLogResidual'],
+                         'fixedCandidateExpandedImprovementFractionVsBaseline':diag['improvementFractionVsBaseline'],
+                         'modelSelectionReopened':False}
+          part=pref.seam_support_partition(expanded,0.6)
+          out={'schemaVersion':1,'status':'TARGETED_ACQUISITION_COMPLETE_FIXED_FAMILY_RIDGE_COEFFICIENT_REFIT_ONLY',
+               'scientificOrdinal':61,'manifestSha256':manifest['manifestSha256'],'sourceTrainingAudit':audit,
+               'caseEvidence':evidence,'targetedLabelByChannel':labels,'fixedRefitByChannel':fixed,
+               'expandedSeamSupport':{'supportedPointCount':len(part['supported']),'localOodPointCount':len(part['localOod']),'worst':part['worst']},
+               'nextGate':'EXACT_FROZEN_10P5_SEAM_CENTRAL_DIFF_LE_0P24_PLUS_ENVELOPE_OVERLAP_NO_RETUNING',
+               'protectedHoldoutOpened':False,'TaylorJerusalemTuning':False,'productionPromotionAuthorized':False}
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          out['resultSha256']=hashlib.sha256(raw).hexdigest()
+          Path('analysis-output/targeted-acquisition-fixed-refit.json').write_text(json.dumps(out,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          print(json.dumps({'status':out['status'],'resultSha256':out['resultSha256'],
+                            'support':out['expandedSeamSupport'],
+                            'labelRsem':{k:v['relativeStandardError'] for k,v in labels.items()}},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: model-v1-late-o61-analysis-${{ github.sha }}
+          path: analysis-output
+          if-no-files-found: warn
+          retention-days: 90

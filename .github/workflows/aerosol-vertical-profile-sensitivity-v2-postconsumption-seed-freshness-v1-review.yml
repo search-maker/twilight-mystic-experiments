@@ -1,0 +1,226 @@
+name: Review AVPS v2 postconsumption recovery1 seed freshness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/**
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-postconsumption-seed-freshness-v1-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BASE_MAIN: 6f0b3f3c73b23f84951bd7b6a2bad58d00854982
+      EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1
+      CONSUMED_RUN: '33236295233'
+      CONSUMED_PREFLIGHT_ARTIFACT: '9710095370'
+      CONSUMED_PREFLIGHT_DIGEST: sha256:64a00547a8d0be68322a58db239e9fbc57ad477938efd5d9254fa0098fe879f2
+      RESTORED_SUPPORT_BLOB: 095ff86f12a79dc312a51f734b0a03bd318f2337
+      NEW_SEED_CANONICAL: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
+      NEW_ROWS_CANONICAL: 8213e65782b62d0e1a0ea51d620016fdcaa24b348e726f5570c54f7f1155a895
+      OLD_SEED_CANONICAL: 02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact post-consumption recovery boundary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "${{ github.event.pull_request.base.sha }}" = "$BASE_MAIN"
+          test "${{ github.event.pull_request.draft }}" = true
+
+          git diff --name-only "$BASE_MAIN...$PR_HEAD" | sort > changed-paths.txt
+          python - <<'PY'
+          from pathlib import Path
+          expected={
+            '.github/workflows/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1-review.yml',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/PROTOCOL.md',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/repository_global_seed_scan.py',
+            'review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py',
+          }
+          got={x for x in Path('changed-paths.txt').read_text().splitlines() if x}
+          if got != expected:
+              raise SystemExit(f'exact four-file recovery review scope required; got {sorted(got)}')
+          PY
+
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-control-v1/rh_audit_dependency.py)" = "$RESTORED_SUPPORT_BLOB"
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-prereg/build_skeleton.py)" = b4a4ab6917ad28f08d4980194f7b68f3961d5d59
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py)" = c757507b05074340507df1ca6e76d35b44cf6090
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py)" = 3aa311db5c49c5dcf2bd12446f5e96b347080e96
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN" > consumed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CONSUMED_RUN/artifacts" > consumed-artifacts.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > issue60-comments.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('consumed-run.json'))
+          if r['id']!=int(os.environ['CONSUMED_RUN']) or r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='failure':
+              raise SystemExit('consumed ordinal-41 run identity/state drift')
+          if r.get('head_sha')!='3c93dce8b0a51b29cd1d3822c8ba3ed1c9ec3c62':
+              raise SystemExit('consumed ordinal-41 run head drift')
+          arts=json.load(open('consumed-artifacts.json'))['artifacts']
+          hit=[a for a in arts if a['id']==int(os.environ['CONSUMED_PREFLIGHT_ARTIFACT'])]
+          if len(hit)!=1 or hit[0].get('digest')!=os.environ['CONSUMED_PREFLIGHT_DIGEST'] or hit[0].get('expired'):
+              raise SystemExit('consumed ordinal-41 preflight artifact drift')
+          if len(arts)!=1 or str(arts[0].get('name'))!='avps-v2-preflight-ordinal-41':
+              raise SystemExit('ordinal-41 failed run unexpectedly has case/result artifacts')
+          comments=json.load(open('issue60-comments.json'))
+          consumed=[c for c in comments if str(c.get('body') or '').strip()=='ORDINAL41_AVPS_V2_DISPATCH_CONSUMED']
+          if len(consumed)!=1:
+              raise SystemExit(f'exactly one ordinal-41 consumed marker required; got {len(consumed)}')
+          PY
+
+          mkdir -p seed-evidence
+          git ls-files -z > seed-evidence/tracked-files.nul
+
+      - name: Build deterministic fresh recovery candidate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py \
+            review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/repository_global_seed_scan.py
+          python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('avps_v2_postconsumption_seed_ledger',p)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import recovery seed ledger')
+          m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; spec.loader.exec_module(m)
+          x=m.validate_ledger()
+          if x['candidateSeedCount']!=72 or len(set(x['candidateSeeds']))!=72: raise SystemExit('fresh recovery seed cardinality drift')
+          if x['candidateSeedCanonicalSha256']!=os.environ['NEW_SEED_CANONICAL']: raise SystemExit('fresh recovery seed canonical drift')
+          if x['candidateRowsCanonicalSha256']!=os.environ['NEW_ROWS_CANONICAL']: raise SystemExit('fresh recovery row canonical drift')
+          if x['consumedOrdinal41SeedCanonicalSha256']!=os.environ['OLD_SEED_CANONICAL']: raise SystemExit('consumed seed binding drift')
+          if x['overlapWithConsumedOrdinal41SeedCount']!=0: raise SystemExit('fresh candidate set reuses consumed ordinal-41 seed')
+          if x['candidateSeedsAppliedToCases'] or x['scientificOrdinalAllocated'] or x['authorizationCreated'] or x['solverExecutionAuthorized'] or x['resultOpeningAuthorized']:
+              raise SystemExit('candidate ledger crossed recovery-review boundary')
+          Path('seed-evidence/candidate-seed-ledger.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          Path('seed-evidence/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Scan exact tracked tree for fresh candidate literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list seed-evidence/tracked-files.nul \
+            --candidate-seed-ledger seed-evidence/candidate-seed-ledger.json \
+            --allow-self-ledger-json seed-evidence/empty-self-ledger-policy.json \
+            --output seed-evidence/tracked-seed-scan.json
+          python - <<'PY'
+          import json
+          x=json.load(open('seed-evidence/tracked-seed-scan.json'))
+          if x['candidateSeedCount']!=72 or x['trackedTreeExternalCollisionCount']!=0 or x['selfLedgerHitCount']!=0 or x['exactHeadTrackedTreeByteScanPassed'] is not True:
+              raise SystemExit('tracked-tree fresh recovery seed scan failed')
+          PY
+
+      - name: Two-pass repository-global fresh recovery seed scan
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger seed-evidence/candidate-seed-ledger.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode review-freeze \
+            --expected-branch-name "$EXPECTED_BRANCH" \
+            --expected-repo-head "$PR_HEAD" \
+            --output seed-evidence/repository-global-seed-scan.json
+
+      - name: Freeze recovery seed-freshness proof
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          t=json.load(open('seed-evidence/tracked-seed-scan.json'))
+          g=json.load(open('seed-evidence/repository-global-seed-scan.json'))
+          if g.get('auditMode')!='review-freeze': raise SystemExit('global scan mode drift')
+          if g.get('candidateSeedCount')!=72 or g.get('repositoryGlobalCollisionCount')!=0: raise SystemExit('repository-global fresh candidate collision')
+          if g.get('repositoryGlobalCollisionSurfaceScanPassed') is not True or g.get('repositoryGlobalDoubleEnumerationStable') is not True: raise SystemExit('repository-global scan/fence did not pass')
+          if g.get('auditedBranchHeadMatchesRepositoryHead') is not True: raise SystemExit('audited recovery branch head mismatch')
+          if g.get('repositoryHeadExpected')!=os.environ['PR_HEAD'] or g.get('auditedBranchHeadShaObserved')!=os.environ['PR_HEAD']: raise SystemExit('expected/observed recovery head drift')
+          if g.get('priorReviewProofArtifactCount')!=0 or g.get('reviewProofIdentityFresh') is not True: raise SystemExit('recovery proof artifact identity already existed')
+          if g.get('repositoryGlobalPostFenceCandidateSeedCollisionCount') not in (0,None): raise SystemExit('post-fence candidate collision')
+          out={
+            'schemaVersion':1,
+            'stageId':'aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-seed-freshness-review',
+            'status':'PASS_POSTCONSUMPTION_RECOVERY1_CANDIDATE_SEEDS_FRESH_NOT_ALLOCATED',
+            'auditedHead':os.environ['PR_HEAD'],
+            'consumedScientificOrdinal':41,
+            'consumedRunId':33236295233,
+            'candidateSeedCount':72,
+            'candidateSeedCanonicalSha256':os.environ['NEW_SEED_CANONICAL'],
+            'candidateRowsCanonicalSha256':os.environ['NEW_ROWS_CANONICAL'],
+            'consumedOrdinal41SeedCanonicalSha256':os.environ['OLD_SEED_CANONICAL'],
+            'overlapWithConsumedOrdinal41SeedCount':0,
+            'trackedTreeExternalCollisionCount':t.get('trackedTreeExternalCollisionCount'),
+            'repositoryGlobalCollisionCount':g.get('repositoryGlobalCollisionCount'),
+            'repositoryGlobalDoubleEnumerationStable':g.get('repositoryGlobalDoubleEnumerationStable'),
+            'repositoryGlobalStableContextSha256':g.get('repositoryGlobalStableContextSha256'),
+            'repositoryGlobalSnapshotFenceSha256':g.get('repositoryGlobalSnapshotFenceSha256'),
+            'repositoryGlobalPostFenceArrivalCounts':g.get('repositoryGlobalPostFenceArrivalCounts') or {},
+            'scientificOrdinalAllocated':False,
+            'authorizationCreated':False,
+            'dispatchCreated':False,
+            'candidateSeedsAppliedToCases':False,
+            'scientificExecutionAuthorized':False,
+            'solverExecutionAuthorized':False,
+            'resultOpeningAuthorized':False,
+            'levelBOpened':False,
+            'productionAuthorized':False,
+            'authorizationTimeRecheckRequired':True,
+            'nextOrdinalAssumed':False,
+          }
+          Path('seed-evidence/recovery-seed-freshness-proof.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vertical-profile-v2-postconsumption-recovery1-seed-freshness-proof
+          path: seed-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

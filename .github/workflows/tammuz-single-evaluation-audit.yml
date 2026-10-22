@@ -1,0 +1,75 @@
+name: Tammuz single-evaluation solver audit
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tammuz-single-evaluation-audit.yml'
+      - 'review/jerusalem-three-star-exact-events-v2/audit-tammuz-single-evaluation.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      APPLICATION_SHA: e2d5b761206b6223526f6f79fcb0af5f6de3ba06
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require read-only application credential
+        shell: bash
+        run: test -n "${STARSVISIBILITY_READ_TOKEN:-}" || exit 78
+      - name: Checkout exact merged starsvisibility main
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: app
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.node-version
+      - name: Build exact application
+        working-directory: app
+        shell: bash
+        env:
+          GITHUB_SHA: ${{ env.APPLICATION_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SHA"
+          npm ci
+          npm run build:pages
+          grep -q 'LEVEL-B-THREE-STAR-DIRECT-CATALOG-HANDOFF-V3' dist/work-in-progress/index.html
+          grep -q 'LEVEL-B-THREE-STAR-CATALOG-ONLY-WORKER-BYPASS-V1' dist/work-in-progress/index.html
+          grep -q "fieldFactor: 3.14" scientific-tools/visibility-v3/level-b-current-main-adapter.mjs
+      - name: Install Chromium
+        working-directory: app
+        shell: bash
+        run: npx playwright install --with-deps chromium
+      - name: Run single-evaluation audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp review/jerusalem-three-star-exact-events-v2/audit-tammuz-single-evaluation.mjs app/tammuz-single-eval.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory app/dist > "$RUNNER_TEMP/tammuz-single-eval-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:4173/work-in-progress/ >/dev/null && break; sleep 0.2; done
+          cd app
+          node tammuz-single-eval.mjs
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tammuz-single-evaluation-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/tammuz-single-evaluation-audit/summary.json

@@ -1,0 +1,85 @@
+name: POST_V1 low-alt libRadtran HTTP decoding provenance probe v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/postv1-lowalt-libradtran-http-decoding-probe-v1.yml"
+      - "tools/postv1_lowalt_libradtran_http_decoding_probe_v1.py"
+      - "tools/postv1_lowalt_libradtran_http_decoding_probe_v1/PROTOCOL.md"
+
+permissions:
+  contents: read
+
+jobs:
+  source-equivalence-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.4"
+      - name: Compile and deterministic local decoder contract
+        run: |
+          python -m py_compile tools/postv1_lowalt_libradtran_http_decoding_probe_v1.py
+          python - <<'PY'
+          import gzip
+          import hashlib
+          import importlib.util
+          import tempfile
+          from pathlib import Path
+
+          path = Path('tools/postv1_lowalt_libradtran_http_decoding_probe_v1.py')
+          spec = importlib.util.spec_from_file_location('probe', path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              source = root / 'wire.gz'
+              decoded = root / 'decoded.bin'
+              payload = b'postv1-lowalt-decoder-fixture\n' * 1000
+              source.write_bytes(gzip.compress(payload))
+              result = module.gzip_decode_file(source, decoded)
+              assert result['sha256'] == hashlib.sha256(payload).hexdigest()
+              decision = module.classify(
+                  {'sha256': 'not-expected'},
+                  {'sha256': module.EXPECTED_CONDA_SOURCE_SHA256},
+              )
+              assert decision['matchingRepresentation'] == 'http-content-decoded'
+          PY
+      - name: Probe literal HTTP wire and content-decoded representations
+        run: |
+          python tools/postv1_lowalt_libradtran_http_decoding_probe_v1.py \
+            --output-dir postv1-lowalt-libradtran-http-decoding-probe-v1 \
+            --preserve-match
+      - name: Enforce fail-closed POST_V1 boundary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('postv1-lowalt-libradtran-http-decoding-probe-v1/report.json')
+          assert path.is_file()
+          report = json.loads(path.read_text())
+          assert report['scientificExecution'] is False
+          assert report['solverExecutionCount'] == 0
+          assert report['protectedResultsOpened'] is False
+          assert report['identitySeedOrdinalAllocated'] is False
+          assert report['v1SeamChanged'] is False
+          assert report['v1FloorDegrees'] == 5.0
+          assert report['postV1Only'] is True
+          if report['status'] != 'REFUSED':
+              assert report['literalHttpRouteUsed'] is True
+              assert report['httpsSubstitutionPerformed'] is False
+              assert report['wire']['requestedUrl'] == 'http://www.libradtran.org/download/libRadtran-2.0.6.tar.gz'
+          PY
+      - name: Upload immutable probe evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postv1-lowalt-libradtran-http-decoding-probe-v1
+          path: postv1-lowalt-libradtran-http-decoding-probe-v1
+          if-no-files-found: error
+          retention-days: 90

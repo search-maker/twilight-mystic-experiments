@@ -1,0 +1,65 @@
+name: Taylor Ann Arbor HRRR smoke profile v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/**'
+      - '.github/workflows/taylor-ann-arbor-hrrr-smoke-profile-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retrieve:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'data/taylor-hrrr-smoke-profile-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install GRIB reader
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy requests pygrib
+
+      - name: Verify frozen contract and retrieve NOAA data
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/freeze.json')
+          d = json.loads(p.read_text())
+          assert d['status'] == 'FROZEN_BEFORE_DATA_RETRIEVAL'
+          assert d['site']['latitude_deg'] == 42.256
+          assert d['site']['longitude_deg'] == -83.709
+          assert d['valid_times_utc'] == [
+              '2025-08-08T00:00:00Z',
+              '2025-08-08T01:00:00Z',
+              '2025-08-08T02:00:00Z',
+          ]
+          print('freeze contract OK')
+          PY
+          python experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/extract_hrrr_profile.py
+
+      - name: Inventory output
+        if: always()
+        run: |
+          find experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/output -maxdepth 1 -type f -printf '%f %s bytes\n' | sort || true
+          cat experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/output/summary.md || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-ann-arbor-hrrr-smoke-profile-v1
+          path: experiments/taylor-ann-arbor-hrrr-smoke-profile-v1/output/
+          if-no-files-found: error
+          retention-days: 90

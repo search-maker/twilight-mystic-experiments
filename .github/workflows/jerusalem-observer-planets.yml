@@ -1,0 +1,206 @@
+name: Jerusalem expert observer and isolated planets 2026 QA
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  expert-star:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env:
+      TARGET_URL: https://starsvisibility.pages.dev/
+      QA_STAR_INDEX: ${{ matrix.index }}
+      QA_OBSERVER_MODE: expertKnownPosition
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Adapt harness for expert observer star shard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          p = Path('scripts/jerusalem-bright-stars-live-qa.mjs')
+          s = p.read_text()
+          s = s.replace(
+              "await page.waitForSelector('#annualYear', { timeout: 30_000 });",
+              "await page.waitForSelector('#annualYear', { state: 'attached', timeout: 30_000 });",
+              1,
+          )
+          replacements = {
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\"'": "'            if (magnitudeBasis !== \"known-exclusions\"'",
+              "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < threeStarMagnitudeThreshold - 1e-10)) return null;'": "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < magnitudeThreshold - 1e-10)) return null;'",
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\") {'": "'            if (magnitudeBasis !== \"known-exclusions\") {'",
+              "'                if (selectionMagnitude > threeStarMagnitudeThreshold + 1e-10) return null;'": "'                if (selectionMagnitude > magnitudeThreshold + 1e-10) return null;'",
+              "'              } else if (selectionMagnitude < threeStarMagnitudeThreshold - 1e-10) return null;'": "'              } else if (selectionMagnitude < magnitudeThreshold - 1e-10) return null;'",
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'QA source compatibility anchor missing: {old}')
+              s = s.replace(old, new, 1)
+
+          s = s.replace(
+              "const LOOKBACK_MINUTES = 360;",
+              "const LOOKBACK_MINUTES = 360;\nconst OBSERVER_MODE = process.env.QA_OBSERVER_MODE || 'ordinaryOrGuided';",
+              1,
+          )
+          s = s.replace(
+              "await page.evaluate(({ year, location, minAlt }) => {",
+              "await page.evaluate(({ year, location, minAlt, observerMode }) => {",
+              1,
+          )
+          s = s.replace(
+              "    setValue('observerMode', 'ordinaryOrGuided');",
+              "    setValue('observerMode', observerMode);",
+              1,
+          )
+          s = s.replace(
+              "  }, { year: YEAR, location: LOCATION, minAlt: MIN_ALT_DEG });",
+              "  }, { year: YEAR, location: LOCATION, minAlt: MIN_ALT_DEG, observerMode: OBSERVER_MODE });",
+              1,
+          )
+          s = s.replace(
+              "      observerMode: 'ordinaryOrGuided',",
+              "      observerMode: OBSERVER_MODE,",
+              1,
+          )
+
+          loop_old = "  const starResults = [];\n  for (let i = 0; i < stars.length; i += 1) {"
+          loop_new = "  const starResults = [];\n  const qaStarIndex = Number(process.env.QA_STAR_INDEX);\n  const qaIndexes = Number.isInteger(qaStarIndex) ? [qaStarIndex] : stars.map((_, i) => i);\n  for (const i of qaIndexes) {"
+          if loop_old not in s:
+              raise SystemExit('star loop anchor missing')
+          s = s.replace(loop_old, loop_new, 1)
+
+          p.write_text(s)
+          PY
+          node --check scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Run expert observer annual star shard
+        run: node scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Upload expert star result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-expert-star-${{ matrix.index }}
+          path: qa-artifacts/jerusalem-bright-stars-2026.json
+          if-no-files-found: warn
+
+  isolated-planet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        observer: [ordinaryOrGuided, expertKnownPosition]
+        planet: [Mercury, Venus, Mars, Jupiter, Saturn, Uranus]
+    env:
+      TARGET_URL: https://starsvisibility.pages.dev/
+      QA_STAR_INDEX: 0
+      QA_OBSERVER_MODE: ${{ matrix.observer }}
+      QA_PLANET_TARGET: ${{ matrix.planet }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Adapt harness for observer and one isolated planet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          p = Path('scripts/jerusalem-bright-stars-live-qa.mjs')
+          s = p.read_text()
+          s = s.replace(
+              "await page.waitForSelector('#annualYear', { timeout: 30_000 });",
+              "await page.waitForSelector('#annualYear', { state: 'attached', timeout: 30_000 });",
+              1,
+          )
+          replacements = {
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\"'": "'            if (magnitudeBasis !== \"known-exclusions\"'",
+              "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < threeStarMagnitudeThreshold - 1e-10)) return null;'": "'                && (!Number.isFinite(selectionMagnitude) || selectionMagnitude < magnitudeThreshold - 1e-10)) return null;'",
+              "'            if (threeStarMagnitudeBasis !== \"known-exclusions\") {'": "'            if (magnitudeBasis !== \"known-exclusions\") {'",
+              "'                if (selectionMagnitude > threeStarMagnitudeThreshold + 1e-10) return null;'": "'                if (selectionMagnitude > magnitudeThreshold + 1e-10) return null;'",
+              "'              } else if (selectionMagnitude < threeStarMagnitudeThreshold - 1e-10) return null;'": "'              } else if (selectionMagnitude < magnitudeThreshold - 1e-10) return null;'",
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'QA source compatibility anchor missing: {old}')
+              s = s.replace(old, new, 1)
+
+          s = s.replace(
+              "const LOOKBACK_MINUTES = 360;",
+              "const LOOKBACK_MINUTES = 360;\nconst OBSERVER_MODE = process.env.QA_OBSERVER_MODE || 'ordinaryOrGuided';",
+              1,
+          )
+          s = s.replace(
+              "await page.evaluate(({ year, location, minAlt }) => {",
+              "await page.evaluate(({ year, location, minAlt, observerMode }) => {",
+              1,
+          )
+          s = s.replace(
+              "    setValue('observerMode', 'ordinaryOrGuided');",
+              "    setValue('observerMode', observerMode);",
+              1,
+          )
+          s = s.replace(
+              "  }, { year: YEAR, location: LOCATION, minAlt: MIN_ALT_DEG });",
+              "  }, { year: YEAR, location: LOCATION, minAlt: MIN_ALT_DEG, observerMode: OBSERVER_MODE });",
+              1,
+          )
+          s = s.replace(
+              "      observerMode: 'ordinaryOrGuided',",
+              "      observerMode: OBSERVER_MODE,",
+              1,
+          )
+
+          loop_old = "  const starResults = [];\n  for (let i = 0; i < stars.length; i += 1) {"
+          loop_new = "  const starResults = [];\n  const qaStarIndex = Number(process.env.QA_STAR_INDEX);\n  const qaIndexes = Number.isInteger(qaStarIndex) ? [qaStarIndex] : stars.map((_, i) => i);\n  for (const i of qaIndexes) {"
+          if loop_old not in s:
+              raise SystemExit('star loop anchor missing')
+          s = s.replace(loop_old, loop_new, 1)
+
+          target = os.environ.get('QA_PLANET_TARGET', '').strip().lower()
+          planet_old = "      '              if (star.isPlanet) return includePlanets;',"
+          planet_new = f"      '              if (star.isPlanet) return includePlanets && String(star.name || \\\"\\\").toLowerCase().includes(\\\"{target}\\\");',"
+          if planet_old not in s:
+              raise SystemExit('planet isolation anchor missing')
+          s = s.replace(planet_old, planet_new, 1)
+          s = s.replace(
+              "    selectionRule: 'Ten brightest built-in catalog stars whose maximum geometric altitude at Jerusalem reaches the 3 degree calculator minimum.',",
+              "    isolatedPlanetTarget: process.env.QA_PLANET_TARGET || null,\n    selectionRule: 'Ten brightest built-in catalog stars whose maximum geometric altitude at Jerusalem reaches the 3 degree calculator minimum.',",
+              1,
+          )
+
+          p.write_text(s)
+          PY
+          node --check scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Run isolated planet annual calculation
+        run: node scripts/jerusalem-bright-stars-live-qa.mjs
+      - name: Upload isolated planet result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerusalem-${{ matrix.observer }}-${{ matrix.planet }}
+          path: qa-artifacts/jerusalem-bright-stars-2026.json
+          if-no-files-found: warn

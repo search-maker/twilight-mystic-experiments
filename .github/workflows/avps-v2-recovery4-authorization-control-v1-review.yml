@@ -1,0 +1,405 @@
+name: Review AVPS v2 recovery4 authorization control v1
+
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-v2-recovery4-authorization-control-v1-review.yml
+      - review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorize.py
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: avps-v2-recovery4-auth-control-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  protected-zero-runtime-authorization-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CONTROL_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1
+      FENCE_TOKEN: AVPS_V2_RECOVERY4_AUTHORIZATION_CONTROL_GLOBAL_SCAN_V1
+      BASE_MAIN: 79f66fcaac3c7dab9e882670ac50ea2601df892c
+      V4_PR: '765'
+      V4_HEAD: 37cf271a8be6c3e0810831fbe224d2ac00f5aacf
+      V4_RUN: '33357235094'
+      V4_ARTIFACT: '9745747903'
+      V4_ARTIFACT_NAME: avps-v2-recovery4-preauthorization-v4-proof
+      V4_DIGEST: sha256:80143a05b55e099919bcf541f5a1a09214931d8923dcb34507780b4196ea7258
+      V4_BEGIN_COMMENT: '5473721466'
+      V4_END_COMMENT: '5473855111'
+      V4_TRANSITION_COMMENT: '5473880087'
+      CONTROL_RUN: '33352358740'
+      CONTROL_ARTIFACT: '9744246112'
+      CONTROL_ARTIFACT_NAME: vertical-profile-v2-postconsumption-recovery4-seed-global-control-proof
+      CONTROL_DIGEST: sha256:581ada9f8056d1ee73bb9bc2d81e1abdb7a9bac391e7ad889490e80af5038e27
+      ORDINAL41_RUN: '33236295233'
+      ORDINAL42_RUN: '33259899524'
+      ORDINAL43_RUN: '33298433506'
+      ORDINAL44_RUN: '33334396129'
+      ORDINAL44_CONSUMED_COMMENT: '5471141364'
+      ORDINAL44_CONSUMED_BODY: ORDINAL44_AVPS_V2_POSTCONSUMPTION_RECOVERY3_DISPATCH_CONSUMED
+      SEEDS_SHA256: ddded6b2d170ca2fac8d498bdba2887446c16995df0880d948fb2be00870b3de
+      ROWS_SHA256: c439de417520b330c037e2628df02b6955f652563300aa5ef30477abf7661a98
+      SCANNER_BLOB: 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+      FRESHNESS_BLOB: 732f803b5261e7986582dd7e0d69a66f70432b1e
+      ORDINAL_BLOB: 7ca8efd17ae9e7ec2baa32fe935e5173ca6d173f
+      RECOVERY4_LEDGER_BLOB: 16af5c68ae7e3cfc0cfbef4c8e2022517bf2ae91
+      SCRATCH_DIR: avps-r4-auth-control-v1-scratch
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact control identity, predecessor evidence and active fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.action }}" = opened
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$CONTROL_BRANCH"
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test "$PR_BASE" = "$BASE_MAIN"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git rev-parse HEAD^)" = "$PR_BASE"
+          test "$(git rev-list --count "$PR_BASE"..HEAD)" = 1
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$PR_BASE"
+          test -z "$(command -v uvspec || true)"
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = "$SCANNER_BLOB"
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2-r8/execution-candidate/freshness.py)" = "$FRESHNESS_BLOB"
+          test "$(git rev-parse HEAD:experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py)" = "$ORDINAL_BLOB"
+          test "$(git rev-parse HEAD:review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-seed-global-control-v1/seed_ledger.py)" = "$RECOVERY4_LEDGER_BLOB"
+          git diff --name-only "$PR_BASE...$PR_HEAD" | sort > /tmp/changed.txt
+          cat > /tmp/expected.txt <<'PATHS'
+          .github/workflows/avps-v2-recovery4-authorization-control-v1-review.yml
+          review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorize.py
+          PATHS
+          sort -o /tmp/expected.txt /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          dirty="$(git status --porcelain --untracked-files=no)"
+          test -z "$dirty" || { printf '%s\n' "$dirty" >&2; echo 'tracked tree dirty at authorization-control start' >&2; exit 1; }
+
+          rm -rf "$SCRATCH_DIR"
+          mkdir -p "$SCRATCH_DIR/v4-proof" "$SCRATCH_DIR/control-proof"
+
+          api_get() {
+            local label="$1" endpoint="$2" out="$3"
+            local n
+            for n in 1 2 3; do
+              if gh api "$endpoint" > "$out"; then return 0; fi
+              echo "READ_RETRY::$label::attempt=$n" >&2
+              test "$n" -lt 3 || return 1
+              sleep $((n*5))
+            done
+          }
+          api_get current-pr "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" "$SCRATCH_DIR/current-pr.json"
+          api_get v4-pr "repos/$GITHUB_REPOSITORY/pulls/$V4_PR" "$SCRATCH_DIR/v4-pr.json"
+          api_get v4-run "repos/$GITHUB_REPOSITORY/actions/runs/$V4_RUN" "$SCRATCH_DIR/v4-run.json"
+          api_get v4-artifact "repos/$GITHUB_REPOSITORY/actions/artifacts/$V4_ARTIFACT" "$SCRATCH_DIR/v4-artifact.json"
+          api_get v4-transition "repos/$GITHUB_REPOSITORY/issues/comments/$V4_TRANSITION_COMMENT" "$SCRATCH_DIR/v4-transition.json"
+          api_get v4-end "repos/$GITHUB_REPOSITORY/issues/comments/$V4_END_COMMENT" "$SCRATCH_DIR/v4-end.json"
+          api_get control-run "repos/$GITHUB_REPOSITORY/actions/runs/$CONTROL_RUN" "$SCRATCH_DIR/control-run.json"
+          api_get control-artifact "repos/$GITHUB_REPOSITORY/actions/artifacts/$CONTROL_ARTIFACT" "$SCRATCH_DIR/control-artifact.json"
+          api_get ord41 "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL41_RUN" "$SCRATCH_DIR/ord41.json"
+          api_get ord42 "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL42_RUN" "$SCRATCH_DIR/ord42.json"
+          api_get ord43 "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL43_RUN" "$SCRATCH_DIR/ord43.json"
+          api_get ord44 "repos/$GITHUB_REPOSITORY/actions/runs/$ORDINAL44_RUN" "$SCRATCH_DIR/ord44.json"
+          api_get ord44-marker "repos/$GITHUB_REPOSITORY/issues/comments/$ORDINAL44_CONSUMED_COMMENT" "$SCRATCH_DIR/ord44-marker.json"
+
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=Path(os.environ['SCRATCH_DIR'])
+          cur=json.load(open(s/'current-pr.json'))
+          if cur.get('state')!='open' or cur.get('draft') is not True or cur.get('merged_at') is not None: raise SystemExit('control PR must remain Draft/open/unmerged')
+          if cur['head']['sha']!=os.environ['PR_HEAD'] or cur['base']['sha']!=os.environ['PR_BASE']: raise SystemExit('control PR identity drift')
+          vp=json.load(open(s/'v4-pr.json')); vr=json.load(open(s/'v4-run.json')); va=json.load(open(s/'v4-artifact.json'))
+          if vp['head']['sha']!=os.environ['V4_HEAD']: raise SystemExit('V4 head drift')
+          if vr['id']!=int(os.environ['V4_RUN']) or vr['head_sha']!=os.environ['V4_HEAD'] or vr['run_attempt']!=1 or vr['status']!='completed' or vr['conclusion']!='success': raise SystemExit('V4 run drift')
+          if va['id']!=int(os.environ['V4_ARTIFACT']) or va.get('name')!=os.environ['V4_ARTIFACT_NAME'] or va.get('digest')!=os.environ['V4_DIGEST'] or va.get('expired') is not False: raise SystemExit('V4 artifact drift')
+          tr=json.load(open(s/'v4-transition.json'))
+          if tr.get('id')!=int(os.environ['V4_TRANSITION_COMMENT']) or not str(tr.get('body') or '').startswith('AVPS_V2_RECOVERY4_PREAUTH_V4_TRANSITION_ELIGIBLE_NOT_ALLOCATED'): raise SystemExit('V4 transition drift')
+          end=json.load(open(s/'v4-end.json'))
+          if end.get('id')!=int(os.environ['V4_END_COMMENT']) or not str(end.get('body') or '').startswith('WRITE_QUIET_END | AVPS_V2_RECOVERY4_PREAUTH_GLOBAL_SCAN_V4'): raise SystemExit('V4 matching END drift')
+          cr=json.load(open(s/'control-run.json')); ca=json.load(open(s/'control-artifact.json'))
+          if cr['id']!=int(os.environ['CONTROL_RUN']) or cr['head_sha']!=os.environ['BASE_MAIN'] or cr['run_attempt']!=1 or cr['status']!='completed' or cr['conclusion']!='success': raise SystemExit('Recovery4 global-control run drift')
+          if ca['id']!=int(os.environ['CONTROL_ARTIFACT']) or ca.get('name')!=os.environ['CONTROL_ARTIFACT_NAME'] or ca.get('digest')!=os.environ['CONTROL_DIGEST'] or ca.get('expired') is not False: raise SystemExit('Recovery4 global-control artifact drift')
+          for path,label in (('ord41.json',41),('ord42.json',42),('ord43.json',43),('ord44.json',44)):
+              r=json.load(open(s/path))
+              if r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='failure': raise SystemExit(f'consumed ordinal {label} run drift')
+          marker=json.load(open(s/'ord44-marker.json'))
+          if marker.get('id')!=int(os.environ['ORDINAL44_CONSUMED_COMMENT']) or str(marker.get('body') or '').strip()!=os.environ['ORDINAL44_CONSUMED_BODY']: raise SystemExit('ordinal44 consumed marker drift')
+          PY
+
+          download_artifact() {
+            local label="$1" run="$2" name="$3" dest="$4"
+            local n
+            for n in 1 2 3; do
+              if gh run download "$run" -n "$name" -D "$dest"; then return 0; fi
+              echo "READ_RETRY::$label::attempt=$n" >&2
+              rm -rf "$dest"; mkdir -p "$dest"
+              test "$n" -lt 3 || return 1
+              sleep $((n*5))
+            done
+          }
+          download_artifact v4-proof "$V4_RUN" "$V4_ARTIFACT_NAME" "$SCRATCH_DIR/v4-proof"
+          download_artifact control-proof "$CONTROL_RUN" "$CONTROL_ARTIFACT_NAME" "$SCRATCH_DIR/control-proof"
+          test -s "$SCRATCH_DIR/v4-proof/preauthorization.json"
+          test -s "$SCRATCH_DIR/control-proof/candidate-seed-ledger.json"
+
+      - name: Validate immutable Recovery4 ledgers and proof boundaries
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python -m py_compile review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorize.py
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          s=Path(os.environ['SCRATCH_DIR'])
+          canon=lambda v: hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
+          ledger=json.load(open(s/'control-proof/candidate-seed-ledger.json'))
+          seeds=[int(x) for x in ledger.get('candidateSeeds',[])]
+          rows=ledger.get('candidateRows',[])
+          if len(seeds)!=72 or len(set(seeds))!=72 or len(rows)!=72: raise SystemExit('Recovery4 ledger cardinality/uniqueness drift')
+          if canon(seeds)!=os.environ['SEEDS_SHA256'] or canon(rows)!=os.environ['ROWS_SHA256']: raise SystemExit('Recovery4 candidate hash drift')
+          if ledger.get('candidateSeedCanonicalSha256')!=os.environ['SEEDS_SHA256'] or ledger.get('candidateRowsCanonicalSha256')!=os.environ['ROWS_SHA256']: raise SystemExit('Recovery4 ledger self-hash drift')
+          for k in ('overlapWithConsumedOrdinal41SeedCount','overlapWithConsumedOrdinal42SeedCount','overlapWithConsumedOrdinal43SeedCount','overlapWithConsumedOrdinal44SeedCount'):
+              if ledger.get(k)!=0: raise SystemExit('consumed seed overlap: '+k)
+          v4=json.load(open(s/'v4-proof/preauthorization.json'))
+          if v4.get('status')!='PASS_POSTCONSUMPTION_RECOVERY4_PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('V4 proof status drift')
+          if v4.get('candidateSeedCanonicalSha256')!=os.environ['SEEDS_SHA256'] or v4.get('candidateRowsCanonicalSha256')!=os.environ['ROWS_SHA256']: raise SystemExit('V4 proof seed identity drift')
+          if v4.get('nextAvailableScientificOrdinal')!=45 or v4.get('nextOrdinalHardCoded') is not False: raise SystemExit('V4 proof successor drift')
+          for k in ('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','candidateSeedsAppliedToCases','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized','scientificRuntimeSetupPerformed','taylorOrJerusalemUsed','levelBAuthorized','protectedHoldoutOpened','productionAuthorized','newMappingAuthorized'):
+              if v4.get(k) is not False: raise SystemExit('V4 proof crossed boundary: '+k)
+          given=v4.get('contentSha256'); tmp=dict(v4); tmp.pop('contentSha256',None)
+          if given!=canon(tmp): raise SystemExit('V4 proof content hash mismatch')
+          PY
+
+      - name: Require exact authorization-control WRITE_QUIET fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          for n in 1 2 3; do
+            if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > "$SCRATCH_DIR/issue60-pages.json"; then break; fi
+            echo "READ_RETRY::issue60-fence::attempt=$n" >&2
+            test "$n" -lt 3 || exit 1
+            sleep $((n*5))
+          done
+          python - <<'PY'
+          import json,os
+          rows=[r for page in json.load(open(os.path.join(os.environ['SCRATCH_DIR'],'issue60-pages.json'))) for r in page]
+          wanted=f"WRITE_QUIET_BEGIN | {os.environ['FENCE_TOKEN']} | branch={os.environ['CONTROL_BRANCH']} | head={os.environ['PR_HEAD']} | baseHead={os.environ['PR_BASE']}"
+          matches=[r for r in rows if str(r.get('body') or '').startswith(wanted)]
+          if len(matches)!=1: raise SystemExit(f'exact authorization-control WRITE_QUIET_BEGIN required once; found {len(matches)}')
+          begin=int(matches[0]['id'])
+          if any(str(r.get('body') or '').startswith(f"WRITE_QUIET_END | {os.environ['FENCE_TOKEN']}") for r in rows if int(r.get('id') or 0)>begin): raise SystemExit('control fence ended before protected scan')
+          bad=('NOT_ADMISSIBLE','DO NOT USE','FAIL-CLOSED')
+          later=[str(r.get('body') or '') for r in rows if int(r.get('id') or 0)>begin]
+          if any(('RECOVERY4' in body.upper()) and any(tok in body.upper() for tok in bad) for body in later): raise SystemExit('newer Recovery4 fail-closed classification during control fence')
+          PY
+
+      - name: Require repository-wide workflow quiescence and cooldown
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          settled=0
+          for n in $(seq 1 90); do
+            if gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" > "$SCRATCH_DIR/active.json" && gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=queued&per_page=100" > "$SCRATCH_DIR/queued.json"; then
+              if python - <<'PY'
+          import json,os,sys
+          current=int(os.environ['GITHUB_RUN_ID'])
+          s=os.environ['SCRATCH_DIR']
+          rows=json.load(open(s+'/active.json')).get('workflow_runs',[])+json.load(open(s+'/queued.json')).get('workflow_runs',[])
+          ext=[(r.get('id'),r.get('name'),r.get('status')) for r in rows if int(r.get('id') or 0)!=current]
+          if ext: print('repository workflows not quiescent:',ext); sys.exit(1)
+          PY
+              then settled=1; break; fi
+            else
+              echo "READ_RETRY::workflow-quiescence::attempt=$n" >&2
+            fi
+            sleep 10
+          done
+          test "$settled" = 1
+          sleep 45
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" > "$SCRATCH_DIR/active-after.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=queued&per_page=100" > "$SCRATCH_DIR/queued-after.json"
+          python - <<'PY'
+          import json,os
+          current=int(os.environ['GITHUB_RUN_ID']); s=os.environ['SCRATCH_DIR']
+          rows=json.load(open(s+'/active-after.json')).get('workflow_runs',[])+json.load(open(s+'/queued-after.json')).get('workflow_runs',[])
+          if [r for r in rows if int(r.get('id') or 0)!=current]: raise SystemExit('repository workflow churn resumed during control cooldown')
+          PY
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$PR_BASE"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+
+      - name: Fresh authorization-time repository-global seed and ordinal recheck
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          dirty="$(git status --porcelain --untracked-files=no)"
+          test -z "$dirty" || { printf '%s\n' "$dirty" >&2; echo 'tracked tree dirty before protected auth-control scan' >&2; exit 1; }
+          python - <<'PY'
+          import hashlib,importlib.util,json,os,re,subprocess,sys,time,urllib.error
+          from pathlib import Path
+          def load(name,path):
+              sp=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(sp); sys.modules[name]=m; sp.loader.exec_module(m); return m
+          transient=(urllib.error.URLError,TimeoutError,ConnectionError,json.JSONDecodeError)
+          def retry_read(label,fn):
+              for attempt in range(1,4):
+                  try: return fn()
+                  except transient as exc:
+                      print(f'READ_RETRY::{label}::attempt={attempt}::{type(exc).__name__}::{exc}',file=sys.stderr,flush=True)
+                      if attempt==3: raise
+                      time.sleep(attempt*3)
+          s=Path(os.environ['SCRATCH_DIR'])
+          ledger=json.load(open(s/'control-proof/candidate-seed-ledger.json'))
+          ordered=[int(x) for x in ledger['candidateSeeds']]; seeds=set(ordered)
+          pat=re.compile(rb'(?<![0-9_])[0-9_]{7,20}(?![0-9_])'); collisions=[]
+          for raw in subprocess.check_output(['git','ls-files','-z']).split(b'\0'):
+              if not raw: continue
+              p=Path(raw.decode())
+              try: data=p.read_bytes()
+              except OSError: continue
+              hits={int(t.replace(b'_',b'')) for t in pat.findall(data) if t.replace(b'_',b'').isdigit() and int(t.replace(b'_',b'')) in seeds}
+              if hits: collisions.append({'path':str(p),'seeds':sorted(hits)})
+          if collisions: raise SystemExit(f'tracked-tree seed collision: {collisions[:5]}')
+          scanner=load('r4_auth_scanner',Path('experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py'))
+          freshness=load('r4_auth_freshness',Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/freshness.py')); sys.modules['freshness']=freshness
+          ordinal=load('r4_auth_ordinal',Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py'))
+          context,stable_sha,fence,post=retry_read('collect_stable',lambda: scanner.collect_stable(os.environ['GITHUB_REPOSITORY'],60,os.environ['GITHUB_TOKEN'],int(os.environ['GITHUB_RUN_ID']),seeds,'authorization-recheck'))
+          seed_report=scanner.evaluate_context(context,seeds,int(os.environ['GITHUB_RUN_ID']),stable_double_enumeration_passed=True,stable_context_sha256_value=stable_sha,audit_mode='authorization-recheck',expected_branch_name=os.environ['CONTROL_BRANCH'],expected_repo_head=os.environ['PR_HEAD'],snapshot_fence=fence,post_fence_arrival_counts=post)
+          if seed_report.get('repositoryGlobalCollisionCount')!=0 or seed_report.get('repositoryGlobalDoubleEnumerationStable') is not True or seed_report.get('auditedBranchHeadMatchesRepositoryHead') is not True or seed_report.get('repositoryGlobalPostFenceCandidateSeedCollisionCount')!=0: raise SystemExit('authorization-time global seed recheck failed')
+          obs=ordinal.authoritative_global_ordinal_observations(context,current_run_id=int(os.environ['GITHUB_RUN_ID']))
+          consumed=sorted({int(r['ordinal']) for r in obs if r.get('reason')=='exact-consumed-marker'})
+          if any(x not in consumed for x in (41,42,43,44)): raise SystemExit(f'consumed ordinal evidence incomplete: {consumed}')
+          occupied=sorted({int(r['ordinal']) for r in obs})
+          if not occupied or max(occupied)!=44: raise SystemExit(f'live occupied ordinal surface changed: max={max(occupied) if occupied else None}')
+          next_ordinal=max(occupied)+1
+          if next_ordinal!=45: raise SystemExit(f'live successor is no longer ordinal45: {next_ordinal}')
+          stage='aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4'
+          auth=f'authorization/{stage}-ordinal-{next_ordinal}'; dispatch=f'dispatch/{stage}-ordinal-{next_ordinal}'
+          branches={str(r.get('name') or '') for r in context.get('branches',[])}
+          if auth in branches or dispatch in branches: raise SystemExit('ordinal45 authorization/dispatch branch already exists')
+          if any(str(r.get('body') or '').strip().upper().startswith('ORDINAL45_') for r in context.get('issue60Comments',[])): raise SystemExit('ordinal45 allocation/consumed marker already exists')
+          canon=lambda v: hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
+          report={'schemaVersion':1,'stageId':stage+'-authorization-control-v1','status':'PASS_POSTCONSUMPTION_RECOVERY4_AUTHORIZATION_CONTROL_SURFACE_CLEAN_NOT_ALLOCATED','auditedHead':os.environ['PR_HEAD'],'baseMain':os.environ['PR_BASE'],'consumedScientificOrdinalsRequired':[41,42,43,44],'consumedOrdinalsObserved':consumed,'occupiedScientificOrdinalsObserved':occupied,'occupiedMaxScientificOrdinal':max(occupied),'nextAvailableScientificOrdinal':next_ordinal,'authorizationBranch':auth,'dispatchBranch':dispatch,'candidateSeedCount':72,'candidateSeedCanonicalSha256':os.environ['SEEDS_SHA256'],'candidateRowsCanonicalSha256':os.environ['ROWS_SHA256'],'trackedTreeCollisionCount':0,'authorizationTimeSeedRecheck':seed_report,'ordinalObservationsCanonicalSha256':canon(obs),'scientificOrdinalAllocated':False,'authorizationCreated':False,'dispatchCreated':False,'candidateSeedsAppliedToCases':False,'scientificExecutionAuthorized':False,'solverExecutionAuthorized':False,'resultOpeningAuthorized':False,'scientificRuntimeSetupPerformed':False,'taylorOrJerusalemUsed':False,'levelBAuthorized':False,'protectedHoldoutOpened':False,'productionAuthorized':False,'newMappingAuthorized':False,'githubRerunAllowed':False,'separateAuthorizationReviewRequired':True,'nextOrdinalHardCoded':False}
+          report['contentSha256']=canon(report)
+          (s/'fresh-control-preauthorization.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          (s/'repository-global-seed-recheck.json').write_text(json.dumps(seed_report,indent=2,sort_keys=True)+'\n')
+          (s/'global-ordinal-observations.json').write_text(json.dumps(obs,indent=2,sort_keys=True)+'\n')
+          PY
+          dirty="$(git status --porcelain --untracked-files=no)"
+          test -z "$dirty" || { printf '%s\n' "$dirty" >&2; echo 'tracked tree changed during protected auth-control scan' >&2; exit 1; }
+
+      - name: Emit ordinal45 authorization proposal artifact only
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorize.py build \
+            --v4-report "$SCRATCH_DIR/v4-proof/preauthorization.json" \
+            --fresh-report "$SCRATCH_DIR/fresh-control-preauthorization.json" \
+            --expected-head "$PR_HEAD" --base-main "$PR_BASE" \
+            --authorization-output "$SCRATCH_DIR/authorization.proposed.json" \
+            --receipt-output "$SCRATCH_DIR/control-review-receipt.json"
+          python review/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4-authorization-control-v1/authorize.py verify \
+            --fresh-report "$SCRATCH_DIR/fresh-control-preauthorization.json" \
+            --authorization-output "$SCRATCH_DIR/authorization.proposed.json" \
+            --receipt-output "$SCRATCH_DIR/control-review-receipt.json"
+          python - <<'PY'
+          import json,os
+          r=json.load(open(os.path.join(os.environ['SCRATCH_DIR'],'control-review-receipt.json')))
+          if r.get('status')!='PASS_RECOVERY4_AUTHORIZATION_CONTROL_PROPOSAL_NOT_ALLOCATED_NOT_DISPATCHED': raise SystemExit('receipt status drift')
+          if r.get('scientificOrdinalProposed')!=45 or r.get('nextOrdinalHardCoded') is not False: raise SystemExit('proposal ordinal drift')
+          for k in ('scientificOrdinalAllocated','authorizationBranchCreated','dispatchCreated','scientificRuntimeSetupPerformed','solverExecutionPerformed','resultOpeningPerformed','levelBOpened','protectedHoldoutOpened','productionAuthorized','taylorOrJerusalemUsed','newMappingAuthorized'):
+              if r.get(k) is not False: raise SystemExit('control boundary crossed: '+k)
+          PY
+
+      - name: Final live fence, head, seed and ordinal proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,os,sys,time,urllib.error
+          from pathlib import Path
+          transient=(urllib.error.URLError,TimeoutError,ConnectionError,json.JSONDecodeError)
+          def retry(label,fn):
+              for n in range(1,4):
+                  try: return fn()
+                  except transient as e:
+                      print(f'READ_RETRY::{label}::attempt={n}::{type(e).__name__}::{e}',file=sys.stderr)
+                      if n==3: raise
+                      time.sleep(n*3)
+          def load(name,path):
+              sp=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(sp); sys.modules[name]=m; sp.loader.exec_module(m); return m
+          s=Path(os.environ['SCRATCH_DIR']); ledger=json.load(open(s/'control-proof/candidate-seed-ledger.json')); seeds={int(x) for x in ledger['candidateSeeds']}
+          scanner=load('r4_auth_final_scanner',Path('experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py'))
+          freshness=load('r4_auth_final_freshness',Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/freshness.py')); sys.modules['freshness']=freshness
+          ordinal=load('r4_auth_final_ordinal',Path('experiments/aerosol-family-challenge-v2-r8/execution-candidate/preauthorization_ordinal.py'))
+          context,stable_sha,fence,post=retry('final-collect-stable',lambda: scanner.collect_stable(os.environ['GITHUB_REPOSITORY'],60,os.environ['GITHUB_TOKEN'],int(os.environ['GITHUB_RUN_ID']),seeds,'authorization-recheck'))
+          seed_report=scanner.evaluate_context(context,seeds,int(os.environ['GITHUB_RUN_ID']),stable_double_enumeration_passed=True,stable_context_sha256_value=stable_sha,audit_mode='authorization-recheck',expected_branch_name=os.environ['CONTROL_BRANCH'],expected_repo_head=os.environ['PR_HEAD'],snapshot_fence=fence,post_fence_arrival_counts=post)
+          if seed_report.get('repositoryGlobalCollisionCount')!=0 or seed_report.get('repositoryGlobalPostFenceCandidateSeedCollisionCount')!=0: raise SystemExit('final seed collision arrived')
+          obs=ordinal.authoritative_global_ordinal_observations(context,current_run_id=int(os.environ['GITHUB_RUN_ID']))
+          occupied=sorted({int(r['ordinal']) for r in obs}); consumed=sorted({int(r['ordinal']) for r in obs if r.get('reason')=='exact-consumed-marker'})
+          if max(occupied)!=44 or any(x not in consumed for x in (41,42,43,44)): raise SystemExit('final ordinal surface drift')
+          stage='aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery4'; branches={str(r.get('name') or '') for r in context.get('branches',[])}
+          if f'authorization/{stage}-ordinal-45' in branches or f'dispatch/{stage}-ordinal-45' in branches: raise SystemExit('ordinal45 ref appeared during review')
+          if any(str(r.get('body') or '').strip().upper().startswith('ORDINAL45_') for r in context.get('issue60Comments',[])): raise SystemExit('ordinal45 marker appeared during review')
+          PY
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$PR_BASE"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          dirty="$(git status --porcelain --untracked-files=no)"
+          test -z "$dirty" || { printf '%s\n' "$dirty" >&2; echo 'tracked tree dirty at Recovery4 auth-control completion' >&2; exit 1; }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avps-v2-recovery4-authorization-control-v1-proof
+          path: avps-r4-auth-control-v1-scratch/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

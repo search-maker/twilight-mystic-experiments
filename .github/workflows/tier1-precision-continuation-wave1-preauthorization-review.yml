@@ -1,0 +1,101 @@
+name: Tier-1 wave-1 pre-authorization review contract
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/tier1-precision-continuation-wave1-v2/preauthorization_review.py'
+      - 'evidence/tier1-precision-continuation-wave1-v2/duplicate-search-snapshot.json'
+      - 'tests/test_tier1_precision_continuation_wave1_preauthorization.py'
+      - '.github/workflows/tier1-precision-continuation-wave1-preauthorization-review.yml'
+      - 'evidence/tier1-precision-continuation-wave1-v2/preregistration.json'
+      - 'experiments/tier1-precision-continuation-wave1-v2/authorization.template.json'
+
+permissions:
+  contents: read
+
+jobs:
+  review-only-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.4'
+      - name: Compile review-only generator and tests
+        run: |
+          python -m py_compile \
+            experiments/tier1-precision-continuation-wave1-v2/preauthorization_review.py \
+            tests/test_tier1_precision_continuation_wave1_preauthorization.py
+      - name: Run focused refusal contract
+        run: python -m unittest discover -s tests -p 'test_tier1_precision_continuation_wave1_preauthorization.py' -v
+      - name: Generate deterministic blocked review packet twice
+        run: |
+          set -euo pipefail
+          mkdir -p out/a out/b
+          args=(
+            --preregistration evidence/tier1-precision-continuation-wave1-v2/preregistration.json
+            --authorization-template experiments/tier1-precision-continuation-wave1-v2/authorization.template.json
+            --duplicate-snapshot evidence/tier1-precision-continuation-wave1-v2/duplicate-search-snapshot.json
+          )
+          python experiments/tier1-precision-continuation-wave1-v2/preauthorization_review.py "${args[@]}" --output out/a/preauthorization-review.json
+          python experiments/tier1-precision-continuation-wave1-v2/preauthorization_review.py "${args[@]}" --output out/b/preauthorization-review.json
+          cmp out/a/preauthorization-review.json out/b/preauthorization-review.json
+      - name: Prove the irreversible boundary remains closed
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          packet = json.loads(Path('out/a/preauthorization-review.json').read_text())
+          assert packet['status'] == 'BLOCKED_GLOBAL_ORDINAL_COLLISION_REVIEW_ONLY'
+          assert len(packet['wave1Seeds']) == 40
+          assert packet['candidateIdentity']['authorizationOrdinal'] == 3
+          assert packet['candidateIdentity']['status'] == 'UNALLOCATED_REVIEW_ONLY'
+          assert packet['candidateDecision']['allocated'] is False
+          assert packet['candidateDecision']['globalOrdinalCollisions']
+          authority = packet['authoritativeIdentity']
+          assert authority['authorizationOrdinal'] is None
+          assert authority['executionKey'] is None
+          assert authority['authorizationRef'] is None
+          assert authority['authorizationCommit'] is None
+          assert authority['enabled'] is False
+          assert authority['dispatch'] is False
+          assert authority['workflowDispatchEnabled'] is False
+          assert authority['solverExecutionAuthorized'] is False
+          workflow = Path('.github/workflows/tier1-precision-continuation-wave1-preauthorization-review.yml').read_text()
+          assert ('workflow_' + 'dispatch:') not in workflow
+          forbidden_solver = 'uv' + 'spec'
+          assert forbidden_solver not in workflow.lower()
+          PY
+      - name: Run full non-scientific suite
+        run: python -m unittest discover -s tests -v
+      - name: Build review artifact report
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          packet = Path('out/a/preauthorization-review.json')
+          snapshot = Path('evidence/tier1-precision-continuation-wave1-v2/duplicate-search-snapshot.json')
+          report = {
+              'schemaVersion': 1,
+              'headSha': '${{ github.event.pull_request.head.sha }}',
+              'runAttempt': '${{ github.run_attempt }}',
+              'eventName': '${{ github.event_name }}',
+              'packetSha256': hashlib.sha256(packet.read_bytes()).hexdigest(),
+              'snapshotSha256': hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+              'authorizationAllocated': False,
+              'dispatchEnabled': False,
+              'scientificExecution': False,
+          }
+          Path('out/a/preauthorization-review-report.json').write_text(
+              json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n'
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tier1-wave1-preauthorization-review-only
+          path: |
+            out/a/preauthorization-review.json
+            out/a/preauthorization-review-report.json
+            evidence/tier1-precision-continuation-wave1-v2/duplicate-search-snapshot.json
+          if-no-files-found: error
+          retention-days: 30

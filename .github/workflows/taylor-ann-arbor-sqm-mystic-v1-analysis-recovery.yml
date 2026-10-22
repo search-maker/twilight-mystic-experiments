@@ -1,0 +1,84 @@
+name: Taylor SQM MYSTIC v1 analysis recovery
+run-name: Taylor SQM MYSTIC v1 analysis recovery | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/taylor-ann-arbor-sqm-mystic-v1-analysis-recovery.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SCIENCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  SCIENCE_RUN: '33015974632'
+  PKG: experiments/taylor-ann-arbor-sqm-mystic-v1
+
+jobs:
+  analyze-frozen-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SCIENCE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install analysis-only dependencies
+        run: python -m pip install --disable-pip-version-check numpy==2.3.2 astropy==7.1.0 matplotlib==3.10.5
+      - name: Download immutable row artifacts from scientific run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-sqm-mystic-v1-row-*
+          path: all-row-artifacts
+          merge-multiple: false
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.SCIENCE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify exact 32-row artifact universe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find all-row-artifacts -name row-result.json | wc -l)" -eq 32
+          python - <<'PY'
+          import json, pathlib
+          rows=[]
+          for p in pathlib.Path('all-row-artifacts').rglob('row-result.json'):
+              x=json.loads(p.read_text())
+              assert x['status']=='COMPLETED'
+              assert x['stageId']=='taylor-ann-arbor-sqm-mystic-v1'
+              rows.append(x['row'])
+          assert sorted(rows)==list(range(1,33)), rows
+          print('IMMUTABLE SCIENCE ROW UNIVERSE PASS', len(rows))
+          PY
+      - name: Fetch pinned legacy CALSPEC Vega from current STScI CDBS host
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --output alpha_lyr_stis_011.fits https://ssb.stsci.edu/cdbs/calspec/alpha_lyr_stis_011.fits
+          echo '60aebf5c193223f69061cd176d6309730c3210051fffad0dd6ad44475199ceaa  alpha_lyr_stis_011.fits' | sha256sum -c -
+      - name: Analyze frozen evidence without solver execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v uvspec >/dev/null 2>&1; then echo 'REFUSE: analysis lane unexpectedly has uvspec' >&2; exit 90; fi
+          python "$PKG/analyze.py" \
+            --results-root all-row-artifacts \
+            --response "$PKG/sqm_response.csv" \
+            --vega alpha_lyr_stis_011.fits \
+            --output analysis-output
+          cat analysis-output/report.md
+      - name: Pin analysis provenance
+        run: |
+          printf 'science_sha=%s\nscience_run=%s\nanalysis_recovery_head=%s\n' "$SCIENCE_SHA" "$SCIENCE_RUN" "${{ github.event.pull_request.head.sha }}" > analysis-output/PROVENANCE.txt
+          sha256sum analysis-output/* > analysis-output/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-sqm-mystic-v1-analysis-recovery
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90

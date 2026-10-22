@@ -1,0 +1,105 @@
+name: Taylor HRRR aerosol tau syntax probe v3
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/workflows/taylor-hrrr-aerosol-file-syntax-v3.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    if: github.head_ref == 'review/taylor-hrrr-aerosol-file-syntax-v3'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Download immutable HRRR raw artifact from exact run
+        uses: actions/download-artifact@v4
+        with:
+          name: taylor-ann-arbor-hrrr-smoke-profile-v1
+          path: hrrr
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: 33031968397
+      - name: Verify frozen HRRR raw bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f hrrr/point_profile_raw.csv
+          echo '929e787c15f8d689bf63a732152eb552e621542325e4942d4d48bf91eb6d75a9  hrrr/point_profile_raw.csv' | sha256sum -c -
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: syntax-probe
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Probe 550-nm aerosol_file tau with site grid
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          DATA="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA/atmmod/afglus.dat"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          atm=Path(os.environ['CONDA_PREFIX'])/'share/libRadtran/data/atmmod/afglus.dat'
+          levels=[]
+          for line in atm.read_text().splitlines():
+              s=line.strip()
+              if s and not s.startswith('#'): levels.append(float(s.split()[0]))
+          tau={z:0.0 for z in levels}
+          for z,v in {0.0:.30,1.0:.25,2.0:.20,3.0:.15,4.0:.07,5.0:.03}.items(): tau[z]=v
+          Path('probe-tau.dat').write_text('# z(km) layer_tau\n'+'\n'.join(f'{z:.6f} {tau[z]:.12e}' for z in levels)+'\n')
+          above=sorted(z for z in levels if z>0.262)
+          Path('grid.txt').write_text('0.262000 '+' '.join(f'{z:.6f}' for z in above))
+          PY
+          GRID="$(cat grid.txt)"
+          cat > probe.inp <<EOF
+          data_files_path $DATA
+          atmosphere_file $ATM
+          source solar $DATA/solar_flux/atlas_plus_modtran
+          mol_abs_param crs
+          wavelength 550 550
+          day_of_year 220
+          sza 95.80759090
+          phi0 0
+          rte_solver mystic
+          mc_spherical 1D
+          mc_photons 50000
+          mc_vroom off
+          mc_randomseed 945025001
+          mc_basename $PWD/mc
+          mc_spectral_is 550
+          albedo 0.15
+          aerosol_default
+          aerosol_file tau $PWD/probe-tau.dat
+          aerosol_set_tau_at_wvl 550 0.31466667
+          pressure 1020.0917
+          atm_z_grid $GRID
+          zout 0
+          umu -1
+          phi 22.5
+          quiet
+          EOF
+          uvspec -c < probe.inp
+          sha256sum probe.inp probe-tau.dat > SHA256SUMS.txt
+          echo SYNTAX_PROBE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-hrrr-aerosol-file-syntax-v3
+          path: |
+            probe.inp
+            probe-tau.dat
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,129 @@
+name: Review OPAC explicit-species resolver path trace v1
+
+on:
+  pull_request:
+    paths:
+      - review/opac-species-resolver-path-trace-v1/**
+      - .github/recovery-templates/opac-species-resolver-path-trace-v1.yml
+      - .github/workflows/opac-species-resolver-path-trace-v1-review.yml
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      V2_HEAD: d90d3bca966d566d328fc1d91fb44f65c58d12b4
+      V2_BUILDER_BLOB: fd859415cd3f05367b1f121a3286588bb4eb1882
+      V4_HEAD: 7b2a2f7ae14a7777408ab36de65fcc4a91b4a8de
+      V4_EXTRACTOR_BLOB: c3a6bdf832dbb78da74e0157c0124b12c53c1c0e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Bind exact review-only identity
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-species-resolver-path-trace-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test ! -e .github/workflows/opac-species-resolver-path-trace-v1.yml
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" > pr.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None:
+              raise SystemExit('review PR must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('ref')!='review/opac-species-resolver-path-trace-v1' or (p.get('head') or {}).get('sha')!=os.environ['PR_HEAD']:
+              raise SystemExit('review head drift')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb':
+              raise SystemExit('review base drift')
+          PY
+      - name: Prove parser and tracer surface without libRadtran execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/opac-species-resolver-path-trace-v1/parse_trace.py review/opac-species-resolver-path-trace-v1/test_parse_trace.py
+          python review/opac-species-resolver-path-trace-v1/test_parse_trace.py
+          command -v strace
+          strace -e trace=file -o /tmp/strace-review-check.txt true
+          test -s /tmp/strace-review-check.txt
+      - name: Freeze external reviewed dependency identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$V2_HEAD" "$V4_HEAD"
+          test "$(git rev-parse "$V2_HEAD:review/opac-species-profile-transport-capability-v2/build_inputs.py")" = "$V2_BUILDER_BLOB"
+          test "$(git rev-parse "$V4_HEAD:review/opac-species-profile-transport-capability-v4/activation_support.py")" = "$V4_EXTRACTOR_BLOB"
+      - name: Prove diagnostic-only scope and inactive activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('review/opac-species-resolver-path-trace-v1/PROTOCOL.md').read_text()
+          s=Path('review/opac-species-resolver-path-trace-v1/parse_trace.py').read_text()
+          w=Path('.github/recovery-templates/opac-species-resolver-path-trace-v1.yml').read_text()
+          required_p=('NO SCIENTIFIC ORDINAL','strace','v2','v3','v4','Ordinal 41 remains unallocated','no alias')
+          missing=[x for x in required_p if x.lower() not in p.lower()]
+          if missing: raise SystemExit(f'protocol freeze missing: {missing}')
+          required_s=('TRACE_IDENTIFIED_CANDIDATE_OPTICAL_PROPERTY_LOOKUPS','candidateMissingPaths','scientificOrdinalAllocated','mysticExecuted','highProfileSolverExecuted')
+          missing=[x for x in required_s if x not in s]
+          if missing: raise SystemExit(f'parser freeze missing: {missing}')
+          required_w=('status/opac-species-resolver-path-trace-v1','REQUEST_ONE_SHOT_OPAC_SPECIES_RESOLVER_PATH_TRACE_V1','strace -f -yy -s 4096 -e trace=file','disort-low.inp','test ! -e "$DATA/aerosol/OPAC/optprop/INSO.nc"','test ! -e "$DATA/aerosol/OPAC/INSO.nc"')
+          missing=[x for x in required_w if x not in w]
+          if missing: raise SystemExit(f'workflow freeze missing: {missing}')
+          if 'workflow_dispatch:' in w: raise SystemExit('manual dispatch forbidden')
+          if 'mystic-low.inp' in w or 'disort-high.inp' in w or 'mystic-high.inp' in w:
+              raise SystemExit('forbidden solver execution surface leaked into trace workflow')
+          if 'aerosol/OPAC/INSO.nc" >' in w or 'write_bytes' in w:
+              raise SystemExit('alias-creation logic forbidden in path trace')
+          PY
+      - name: Freeze solver-free review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir review-receipt
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def blob(path):
+              b=Path(path).read_bytes(); return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          out={
+            'schemaVersion':1,
+            'stageId':'opac-species-resolver-path-trace-v1-review',
+            'status':'REVIEW_PASS_INACTIVE_TRACE_DIAGNOSTIC_NO_LIBRADTRAN_EXECUTION',
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'parserGitBlobSha1':blob('review/opac-species-resolver-path-trace-v1/parse_trace.py'),
+            'protocolGitBlobSha1':blob('review/opac-species-resolver-path-trace-v1/PROTOCOL.md'),
+            'inactiveWorkflowGitBlobSha1':blob('.github/recovery-templates/opac-species-resolver-path-trace-v1.yml'),
+            'v2BuilderGitBlobSha1':os.environ['V2_BUILDER_BLOB'],
+            'v4ExtractorGitBlobSha1':os.environ['V4_EXTRACTOR_BLOB'],
+            'libRadtranExecuted':False,
+            'scientificOrdinalAllocated':False,
+            'mysticExecuted':False,
+            'highProfileSolverExecuted':False,
+            'productionAuthorized':False,
+          }
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); out['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('review-receipt/review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-species-resolver-path-trace-v1-review
+          path: review-receipt/
+          if-no-files-found: error
+          compression-level: 0

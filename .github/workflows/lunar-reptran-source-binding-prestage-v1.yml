@@ -1,0 +1,116 @@
+name: Lunar REPTRAN source-binding prestage v1
+
+on:
+  push:
+    branches:
+      - review/lunar-reptran-source-binding-prestage-v1
+    paths:
+      - '.github/workflows/lunar-reptran-source-binding-prestage-v1.yml'
+      - 'review/lunar-reptran-source-binding-prestage-v1/**'
+  pull_request:
+    paths:
+      - '.github/workflows/lunar-reptran-source-binding-prestage-v1.yml'
+      - 'review/lunar-reptran-source-binding-prestage-v1/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lunar-reptran-source-binding-prestage-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  solver-free-review:
+    name: solver-free protected-lane review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Refuse runtime or shared-lane scope drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test -z "$(command -v uvspec || true)"
+          test "$(git merge-base HEAD 16292e6246d0c15f72bc5e09bee9f0a0ba330e3e)" = "16292e6246d0c15f72bc5e09bee9f0a0ba330e3e"
+          git diff --name-only 16292e6246d0c15f72bc5e09bee9f0a0ba330e3e...HEAD > /tmp/changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          changed = [line for line in Path('/tmp/changed.txt').read_text().splitlines() if line]
+          allowed_workflow = '.github/workflows/lunar-reptran-source-binding-prestage-v1.yml'
+          allowed_prefix = 'review/lunar-reptran-source-binding-prestage-v1/'
+          assert changed, 'empty prestage diff'
+          bad = [p for p in changed if p != allowed_workflow and not p.startswith(allowed_prefix)]
+          assert not bad, f'shared/core/Atmosphere path drift: {bad}'
+          PY
+          ! grep -R --line-number -E 'subprocess|os\.system|Popen\(|check_call\(|check_output\(' review/lunar-reptran-source-binding-prestage-v1
+
+      - name: Validate frozen contract and solver-free renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool review/lunar-reptran-source-binding-prestage-v1/prestage-contract.json >/dev/null
+          python review/lunar-reptran-source-binding-prestage-v1/test_lunar_mystic_input_reptran.py -v
+
+      - name: Enforce REPTRAN-only and non-authorizing boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = Path('review/lunar-reptran-source-binding-prestage-v1')
+          contract = json.loads((base / 'prestage-contract.json').read_text())
+          assert contract['dependencyChange']['requiredMolAbsParam'] == 'reptran'
+          assert contract['dependencyChange']['historicalCrsFallbackAllowed'] is False
+          assert contract['dependencyChange']['historicalCrsAdmissionObjectAllowed'] is False
+          assert contract['futureExecutionPrestage']['candidateExecutionIdAllocated'] is False
+          assert contract['futureExecutionPrestage']['candidateSeedUniverseCreated'] is False
+          assert contract['authority']['scientificSolverExecutionAuthorized'] is False
+          assert contract['authority']['protectedResultOpeningAuthorized'] is False
+          assert contract['authority']['writeQuietAuthorized'] is False
+          assert contract['authority']['dispatchAuthorized'] is False
+          module = (base / 'lunar_mystic_input_reptran.py').read_text()
+          assert 'CRS_SOURCE_BINDING_RESULT' not in module
+          assert 'PASS_CUSTOM_SOURCE_WITH_CRS_CONSUMED_EXACT_RUNTIME' not in module
+          assert 'mol_abs_param reptran' in module
+          assert 'historical CRS fallback is forbidden' in module
+          PY
+
+      - name: Emit zero-runtime receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > lunar-reptran-prestage-receipt.json <<EOF
+          {
+            "schemaVersion": 1,
+            "status": "PASS_LUNAR_REPTRAN_SOURCE_BINDING_PRESTAGE_V1_SOLVER_FREE",
+            "baseMain": "16292e6246d0c15f72bc5e09bee9f0a0ba330e3e",
+            "head": "$GITHUB_SHA",
+            "runAttempt": $GITHUB_RUN_ATTEMPT,
+            "uvspecPresent": false,
+            "solverExecuted": false,
+            "scientificSeedAllocated": false,
+            "exec004Allocated": false,
+            "writeQuietEntered": false,
+            "dispatchCreated": false,
+            "protectedResultOpened": false,
+            "productionAuthorized": false
+          }
+          EOF
+          python -m json.tool lunar-reptran-prestage-receipt.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunar-reptran-source-binding-prestage-v1
+          path: lunar-reptran-prestage-receipt.json
+          if-no-files-found: error
+          retention-days: 30

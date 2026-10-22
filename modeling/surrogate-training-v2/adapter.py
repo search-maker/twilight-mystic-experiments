@@ -4,9 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 STAGE_ID = "twilight-surrogate-tier-1-analysis-v1"
 DATASET_STATUS = "TIER_1_NUMERICAL_DATASET_COMPLETE"
@@ -14,6 +13,8 @@ EXPECTED_GEOMETRY_COUNT = 48
 TRAINING_ROLE = "surrogate-training"
 HOLDOUT_ROLE = "internal-holdout"
 ALLOWED_ROLES = {TRAINING_ROLE, HOLDOUT_ROLE}
+ELIGIBLE_CLASSIFICATIONS = {"PRECISION_TARGET_MET", "PRECISION_ACCEPTED"}
+ALLOWED_BLOCK_COUNTS = {2, 4, 6, 8}
 
 
 class DatasetRefusal(RuntimeError):
@@ -60,8 +61,7 @@ def finite_number(value: Any, label: str, *, positive: bool = False, nonnegative
     return number
 
 
-@dataclass(frozen=True)
-class PartitionedDataset:
+class PartitionedDataset(NamedTuple):
     source_dataset_hash: str
     exact_main_sha: str
     training: tuple[dict[str, Any], ...]
@@ -79,11 +79,25 @@ def _validate_record(record: dict[str, Any], expected_role_by_id: dict[str, str]
     role = record.get("role")
     if role not in ALLOWED_ROLES or expected_role_by_id.get(geometry_id) != role:
         raise DatasetRefusal(f"role changed or invalid for {geometry_id}")
-    if record.get("classification") == "ADAPTIVE_CONTINUATION_REQUIRED":
+    classification = record.get("classification")
+    if classification == "ADAPTIVE_CONTINUATION_REQUIRED":
         raise DatasetRefusal(f"adaptive continuation geometry forbidden: {geometry_id}")
+    if classification not in ELIGIBLE_CLASSIFICATIONS:
+        raise DatasetRefusal(f"ineligible precision classification: {geometry_id}")
+    statistics = record.get("statistics")
+    if not isinstance(statistics, dict):
+        raise DatasetRefusal(f"statistics missing for {geometry_id}")
+    block_count = statistics.get("blockCount", 2)
+    if block_count not in ALLOWED_BLOCK_COUNTS:
+        raise DatasetRefusal(f"block count is not an audited wave boundary: {geometry_id}")
     case_ids = record.get("caseIds")
-    if not isinstance(case_ids, list) or len(case_ids) != 2 or len(set(case_ids)) != 2 or any(not isinstance(item, str) or not item for item in case_ids):
-        raise DatasetRefusal(f"case IDs missing or duplicated for {geometry_id}")
+    if (
+        not isinstance(case_ids, list)
+        or len(case_ids) != block_count
+        or len(set(case_ids)) != block_count
+        or any(not isinstance(item, str) or not item for item in case_ids)
+    ):
+        raise DatasetRefusal(f"case IDs do not match audited block count for {geometry_id}")
     source_bindings = record.get("sourceBindings")
     if not isinstance(source_bindings, dict):
         raise DatasetRefusal(f"source bindings missing for {geometry_id}")
@@ -94,9 +108,6 @@ def _validate_record(record: dict[str, Any], expected_role_by_id: dict[str, str]
         raise DatasetRefusal(f"geometry missing for {geometry_id}")
     for key in ("sunDepressionDeg", "targetAltitudeDeg", "relativeAzimuthDeg", "observerElevationM", "aod550"):
         finite_number(geometry.get(key), f"{geometry_id}.{key}", nonnegative=True)
-    statistics = record.get("statistics")
-    if not isinstance(statistics, dict):
-        raise DatasetRefusal(f"statistics missing for {geometry_id}")
     finite_number(statistics.get("meanCdM2"), f"{geometry_id}.meanCdM2", positive=True)
     finite_number(statistics.get("sampleStdCdM2"), f"{geometry_id}.sampleStdCdM2", nonnegative=True)
     finite_number(statistics.get("relativeStandardErrorOfMean"), f"{geometry_id}.rsem", nonnegative=True)

@@ -1,0 +1,141 @@
+name: PGN Pandora209s2 public directory names review
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pgn-pandora209s2-public-directory-names-review.yml"
+      - "review/empirical-twilight-radiance-source-admission-v1/PGN_PANDORA209S2_PUBLIC_DIRECTORY_PRECONTRACT.review.json"
+
+permissions:
+  contents: read
+
+jobs:
+  names-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch exact static directory index and extract names only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import html.parser
+          import json
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+          from urllib.request import Request, urlopen
+
+          target = 'https://data.hetzner.pandonia-global-network.org/Izana/Pandora209s2/'
+          expected_host = 'data.hetzner.pandonia-global-network.org'
+
+          request = Request(
+              target,
+              headers={
+                  'Accept': 'text/html',
+                  'User-Agent': 'starsvisibility-blind-directory-metadata-v1',
+              },
+              method='GET',
+          )
+          with urlopen(request, timeout=30) as response:
+              final_url = response.geturl()
+              content_type = response.headers.get_content_type()
+              raw = response.read()
+
+          if final_url != target:
+              raise SystemExit(f'unexpected directory redirect: {final_url}')
+          parsed = urlparse(final_url)
+          if parsed.scheme != 'https' or parsed.netloc != expected_host:
+              raise SystemExit(f'unexpected directory host: {parsed.netloc}')
+          if content_type != 'text/html':
+              raise SystemExit(f'unexpected directory content type: {content_type}')
+
+          Path('pandora209s2_directory_index.html').write_bytes(raw)
+          raw_sha = hashlib.sha256(raw).hexdigest()
+
+          class LinkParser(html.parser.HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.links = []
+                  self._href = None
+                  self._text = []
+              def handle_starttag(self, tag, attrs):
+                  if tag.casefold() == 'a':
+                      self._href = dict(attrs).get('href')
+                      self._text = []
+              def handle_data(self, data):
+                  if self._href is not None:
+                      self._text.append(data)
+              def handle_endtag(self, tag):
+                  if tag.casefold() == 'a' and self._href is not None:
+                      href = self._href
+                      absolute = urljoin(target, href)
+                      self.links.append({
+                          'href': href,
+                          'displayText': ''.join(self._text).strip(),
+                          'absoluteUrl': absolute,
+                          'isParentNavigation': href in ('../', '..', '/') or absolute.rstrip('/') == 'https://data.hetzner.pandonia-global-network.org/Izana',
+                      })
+                      self._href = None
+                      self._text = []
+
+          parser = LinkParser()
+          parser.feed(raw.decode('utf-8', errors='replace'))
+
+          # Preserve every extracted anchor before interpretation. No child href is requested.
+          evidence = {
+              'requestUrl': target,
+              'finalUrl': final_url,
+              'contentType': content_type,
+              'rawDirectoryHtmlSha256': raw_sha,
+              'anchorCount': len(parser.links),
+              'anchors': parser.links,
+              'childHrefRequested': False,
+              'childFileOpened': False,
+              'metadataHeaderOpened': False,
+              'downloadPerformed': False,
+          }
+          Path('pandora209s2_directory_names.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          print('PGN_PANDORA209S2_DIRECTORY_NAMES_BEGIN')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          print('PGN_PANDORA209S2_DIRECTORY_NAMES_END')
+          PY
+
+          sha256sum pandora209s2_directory_names.json > pandora209s2_directory_names.sha256
+          cat pandora209s2_directory_names.sha256
+
+      - name: Prove no child link or file was opened
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = json.loads(Path('pandora209s2_directory_names.json').read_text())
+          assert evidence['childHrefRequested'] is False
+          assert evidence['childFileOpened'] is False
+          assert evidence['metadataHeaderOpened'] is False
+          assert evidence['downloadPerformed'] is False
+          print('static directory inspection remained names-only')
+          PY
+
+      - name: Upload immutable directory index evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandora209s2-public-directory-names-only
+          path: |
+            pandora209s2_directory_index.html
+            pandora209s2_directory_names.json
+            pandora209s2_directory_names.sha256
+          if-no-files-found: error
+          retention-days: 30

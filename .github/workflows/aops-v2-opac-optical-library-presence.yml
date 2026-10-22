@@ -1,0 +1,115 @@
+name: AOPS v2 OPAC optical-library presence
+run-name: Check exact runtime for OPAC species netCDF files without solver
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/aops-v2-opac-optical-library-presence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-opac-library:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: aops-v2-opac-library-presence
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Inspect complete installed libRadtran tree for OPAC species netCDF files
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          ROOT="$CONDA_PREFIX/share/libRadtran"
+          DATA="$ROOT/data"
+          test -d "$DATA"
+          export ROOT DATA
+          mkdir -p opac-library-presence
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path(os.environ['ROOT']).resolve()
+          data = Path(os.environ['DATA']).resolve()
+          species = [
+              'INSO','WASO','SOOT','SSAM','SSCM','MINM','MIAM','MICM','MITR','SUSO',
+              'MINM_SPHEROIDS','MIAM_SPHEROIDS','MICM_SPHEROIDS',
+          ]
+          files = [p for p in root.rglob('*') if p.is_file()]
+          nc_files = [p for p in files if p.suffix.lower() in ('.nc', '.cdf')]
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          found = {}
+          for name in species:
+              candidates = [
+                  p for p in files
+                  if p.name.lower() in {f'{name.lower()}.nc', f'{name.lower()}.cdf'}
+              ]
+              found[name] = [
+                  {
+                      'path': p.relative_to(root).as_posix(),
+                      'sizeBytes': p.stat().st_size,
+                      'sha256': sha256(p),
+                  }
+                  for p in sorted(candidates)
+              ]
+
+          all_present = all(len(found[name]) >= 1 for name in species[:10])
+          any_present = any(found[name] for name in species)
+          result = {
+              'schemaVersion': 1,
+              'stageId': 'aops-v2-opac-optical-library-presence',
+              'status': (
+                  'CORE_OPAC_SPECIES_NETCDF_LIBRARY_PRESENT'
+                  if all_present else
+                  'PARTIAL_OPAC_SPECIES_NETCDF_LIBRARY_PRESENT'
+                  if any_present else
+                  'EXPECTED_OPAC_SPECIES_NETCDF_LIBRARY_ABSENT'
+              ),
+              'runtimePackageSpec': 'rubin-libradtran=2.0.6=py312pl5321he9373c2_1',
+              'searchedRoot': str(root),
+              'expectedSpecies': species,
+              'speciesNetcdfMatches': found,
+              'allCoreTenSpeciesPresent': all_present,
+              'anyExpectedSpeciesPresent': any_present,
+              'installedNetcdfOrCdfFileCount': len(nc_files),
+              'installedNetcdfOrCdfPaths': sorted(p.relative_to(root).as_posix() for p in nc_files),
+              'scientificExecutionPerformed': False,
+              'solverExecutionPerformed': False,
+              'uvspecInvoked': False,
+              'scientificOrdinalAllocated': False,
+              'scientificSeedAllocated': False,
+          }
+          Path('opac-library-presence/opac-library-presence.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          print(json.dumps({
+              'status': result['status'],
+              'allCoreTenSpeciesPresent': all_present,
+              'anyExpectedSpeciesPresent': any_present,
+              'installedNetcdfOrCdfFileCount': len(nc_files),
+          }, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aops-v2-opac-optical-library-presence
+          path: opac-library-presence/opac-library-presence.json
+          if-no-files-found: error
+          retention-days: 90

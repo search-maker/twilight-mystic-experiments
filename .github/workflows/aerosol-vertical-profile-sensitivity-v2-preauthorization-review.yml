@@ -1,0 +1,288 @@
+name: Review AVPS v2 preauthorization and global ordinal surface
+
+on:
+  pull_request:
+    paths:
+      - review/aerosol-vertical-profile-sensitivity-v2-preauthorization/**
+      - .github/workflows/aerosol-vertical-profile-sensitivity-v2-preauthorization-review.yml
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  preauthorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BASE_MAIN: 99ade7798627e67921139697ba1a004fa8a304bb
+      PREREG_PR: '597'
+      PREREG_HEAD: 2bba54c6e78ed99d169887eef51d0c88d812b6f1
+      PREREG_RUN: '33193778176'
+      PREREG_CONTRACT_RUN: '33193778174'
+      PREREG_ARTIFACT: '9694863701'
+      PREREG_ARTIFACT_DIGEST: sha256:7de79aa4d8d9b51ad8ca4b1bdaceedae7ee5df17b3dd79c43c21cdaf9ae9a171
+      PREREG_SKELETON_CANONICAL: a8d2d8f59aec01d82d8d98672152d00c11261660b0a69a59e2716c2edabd2b02
+      SEED_PR: '598'
+      SEED_HEAD: 64e7d68bd876a99aa5af49d97bcb53718238b39b
+      SEED_RUN: '33194319669'
+      SEED_CONTRACT_RUN: '33194319698'
+      SEED_ARTIFACT: '9695260362'
+      SEED_ARTIFACT_DIGEST: sha256:fb4613d654121098c9d247d6ed8b0f0788b26a179b5ff103dc01ed7d50c9f0db
+      SEED_CANONICAL: 02f624d582e9b2caba6b920d65a5e8a8bc8fc1a2693623bc2f73abf5d3f706d2
+      ROW_CANONICAL: 41f70d6a0381db6b569d3f4e17d74bb38b05cf212c2f2e432455a502f73dc670
+      EXPECTED_BRANCH: review/aerosol-vertical-profile-sensitivity-v2-preauthorization
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact review identity and predecessor PASS evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PR_BRANCH" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          git fetch origin "$PREREG_HEAD" "$SEED_HEAD" main
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN"
+          git merge-base --is-ancestor "$SEED_HEAD" HEAD
+          git merge-base --is-ancestor "$PREREG_HEAD" "$SEED_HEAD"
+          test -z "$(git diff --name-only "$SEED_HEAD"..HEAD -- \
+            review/aerosol-vertical-profile-sensitivity-v2-prereg \
+            review/aerosol-vertical-profile-sensitivity-v2-seed-freshness \
+            .github/workflows/aerosol-vertical-profile-sensitivity-v2-prereg-review.yml \
+            .github/workflows/aerosol-vertical-profile-sensitivity-v2-seed-freshness-review.yml)"
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > current-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PREREG_PR" > prereg-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREREG_RUN" > prereg-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREREG_CONTRACT_RUN" > prereg-contract.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREREG_RUN/artifacts" > prereg-artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$SEED_PR" > seed-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SEED_RUN" > seed-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SEED_CONTRACT_RUN" > seed-contract.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SEED_RUN/artifacts" > seed-artifacts.json
+          python - <<'PY'
+          import json,os
+          cur=json.load(open('current-pr.json'))
+          if cur['state']!='open' or cur['draft'] is not True or cur['merged_at'] is not None or cur['head']['sha']!=os.environ['PR_HEAD'] or cur['base']['sha']!=os.environ['BASE_MAIN']:
+              raise SystemExit('current preauthorization PR must remain exact Draft/open/unmerged')
+          for prefix in ('PREREG','SEED'):
+              p=json.load(open(prefix.lower()+'-pr.json'))
+              r=json.load(open(prefix.lower()+'-run.json'))
+              c=json.load(open(prefix.lower()+'-contract.json'))
+              arts=json.load(open(prefix.lower()+'-artifacts.json'))['artifacts']
+              head=os.environ[prefix+'_HEAD']; run=int(os.environ[prefix+'_RUN']); contract=int(os.environ[prefix+'_CONTRACT_RUN'])
+              artifact=int(os.environ[prefix+'_ARTIFACT']); digest=os.environ[prefix+'_ARTIFACT_DIGEST']
+              if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=head or p['base']['sha']!=os.environ['BASE_MAIN']:
+                  raise SystemExit(prefix+' PR drift')
+              if r['id']!=run or r['head_sha']!=head or r['run_attempt']!=1 or r['conclusion']!='success':
+                  raise SystemExit(prefix+' dedicated review drift')
+              if c['id']!=contract or c['head_sha']!=head or c['run_attempt']!=1 or c['conclusion']!='success':
+                  raise SystemExit(prefix+' repository contract drift')
+              hit=[a for a in arts if a['id']==artifact]
+              if len(hit)!=1 or hit[0].get('digest')!=digest or hit[0].get('expired'):
+                  raise SystemExit(prefix+' artifact drift')
+          PY
+          mkdir -p preauthorization-evidence
+          git ls-files -z > preauthorization-evidence/tracked-files.nul
+
+      - name: Run solver-free code and fail-closed ordinal unit checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v uvspec || true)"
+          python -m py_compile \
+            review/aerosol-vertical-profile-sensitivity-v2-preauthorization/preauthorize.py \
+            review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py \
+            review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py \
+            review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/repository_global_seed_scan.py
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          p=Path('review/aerosol-vertical-profile-sensitivity-v2-preauthorization/preauthorize.py')
+          s=importlib.util.spec_from_file_location('preauth_unit',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          marker='\n'.join([
+            'AEROSOL-VERTICAL-PROFILE-V2-CANDIDATE-SEED-FRESHNESS-REVIEW',
+            f'audited_head={m.EXPECTED_SEED_REVIEW_HEAD}',f'run={m.EXPECTED_SEED_REVIEW_RUN}',
+            'attempt=1',f'status={m.EXPECTED_SEED_REVIEW_STATUS}',f'candidate_seed_count={m.EXPECTED_SEED_COUNT}',
+            f'candidate_seed_canonical_sha256={m.EXPECTED_SEED_CANONICAL}',f'candidate_rows_canonical_sha256={m.EXPECTED_ROWS_CANONICAL}',
+            'scientific_ordinal_allocated=false','candidate_seeds_applied=false','authorization_time_recheck_required=true'])
+          payload={k:[] for k in ('branches','runs','pulls','artifacts','issues','issueComments','pullReviewComments','commitComments','issue60Comments')}
+          payload['issue60Comments']=[{'id':1,'body':'ORDINAL40_AVPS_V1_DISPATCH_CONSUMED'},{'id':2,'body':marker}]
+          x=m.ordinal_surface(payload,None)
+          assert x['latestConsumedScientificOrdinal']==40 and x['globalOrdinalMaxObserved']==40 and x['nextAvailableScientificOrdinal']==41
+          payload['branches'].append({'name':'authorization/aerosol-vertical-profile-sensitivity-v2-ordinal-41','commit':{'sha':'a'*40}})
+          try: m.ordinal_surface(payload,None)
+          except m.Refusal: pass
+          else: raise AssertionError('ordinal-41 reservation must fail closed')
+          print('preauthorization fail-closed unit checks: PASS')
+          PY
+
+      - name: Rebuild exact artifact-only candidate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          path=Path('review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/seed_ledger.py')
+          spec=importlib.util.spec_from_file_location('avps_v2_preauth_seed_ledger',path)
+          if spec is None or spec.loader is None: raise SystemExit('cannot import v2 seed ledger')
+          mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)
+          ledger=mod.validate_ledger()
+          if ledger['candidateSeedCount']!=72 or len(set(ledger['candidateSeeds']))!=72: raise SystemExit('candidate seed cardinality/uniqueness drift')
+          if ledger['candidateSeedCanonicalSha256']!=os.environ['SEED_CANONICAL']: raise SystemExit('candidate seed canonical drift')
+          if ledger['candidateRowsCanonicalSha256']!=os.environ['ROW_CANONICAL']: raise SystemExit('candidate row canonical drift')
+          if not ledger['allCollisionCountersZero'] or ledger['candidateSeedsAppliedToCases'] or ledger['scientificOrdinalAllocated']:
+              raise SystemExit('candidate ledger boundary drift')
+          Path('preauthorization-evidence/candidate-seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          Path('preauthorization-evidence/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Repeat exact tracked-tree candidate-literal scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py \
+            --repo-root . \
+            --file-list preauthorization-evidence/tracked-files.nul \
+            --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json \
+            --allow-self-ledger-json preauthorization-evidence/empty-self-ledger-policy.json \
+            --output preauthorization-evidence/tracked-seed-scan.json
+          python - <<'PY'
+          import json
+          x=json.load(open('preauthorization-evidence/tracked-seed-scan.json'))
+          if x['candidateSeedCount']!=72 or x['trackedTreeExternalCollisionCount']!=0 or x['selfLedgerHitCount']!=0 or x['exactHeadTrackedTreeByteScanPassed'] is not True:
+              raise SystemExit('tracked-tree authorization-time seed scan failed')
+          PY
+
+      - name: Authorization-time two-pass repository-global seed recheck
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/repository_global_seed_scan.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --candidate-seed-ledger preauthorization-evidence/candidate-seed-ledger.json \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --audit-mode authorization-recheck \
+            --expected-branch-name "$EXPECTED_BRANCH" \
+            --expected-repo-head "$PR_HEAD" \
+            --output preauthorization-evidence/repository-global-seed-recheck.json
+
+      - name: Build fresh global-ordinal preauthorization report
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-preauthorization/preauthorize.py build \
+            --repository "$GITHUB_REPOSITORY" \
+            --seed-global-report preauthorization-evidence/repository-global-seed-recheck.json \
+            --expected-head "$PR_HEAD" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --output preauthorization-evidence/preauthorization.json \
+            --observations-output preauthorization-evidence/global-ordinal-observations.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('preauthorization-evidence/preauthorization.json'))
+          if p['status']!='PASS_V2_PREAUTHORIZATION_SURFACE_CLEAN_NOT_ALLOCATED': raise SystemExit('preauthorization not PASS')
+          if p['latestConsumedScientificOrdinal']!=40 or p['globalOrdinalMaxObserved']!=40 or p['nextAvailableScientificOrdinal']!=41: raise SystemExit('global ordinal proposal drift')
+          if p['candidateSeedCount']!=72 or p['candidateSeedCanonicalSha256']!=os.environ['SEED_CANONICAL'] or p['candidateRowsCanonicalSha256']!=os.environ['ROW_CANONICAL']: raise SystemExit('candidate seed identity drift')
+          forbidden=('scientificOrdinalAllocated','authorizationCreated','dispatchCreated','candidateSeedsAppliedToCases','scientificExecutionAuthorized','solverExecutionAuthorized','resultOpeningAuthorized','scientificRuntimeSetupPerformed','taylorOrJerusalemUsed','levelBAuthorized','productionAuthorized')
+          if any(p[k] is not False for k in forbidden): raise SystemExit('preauthorization crossed forbidden boundary')
+          PY
+
+      - name: Final ordinal observation recheck before evidence publication
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-preauthorization/preauthorize.py verify \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-head "$PR_HEAD" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --report preauthorization-evidence/preauthorization.json
+
+      - name: Upload preauthorization proof
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: vertical-profile-v2-preauthorization-proof
+          path: preauthorization-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Final recheck and publish terminal non-allocation checkpoint
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python review/aerosol-vertical-profile-sensitivity-v2-preauthorization/preauthorize.py verify \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-head "$PR_HEAD" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --report preauthorization-evidence/preauthorization.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/branches?per_page=100" > final-branches.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > final-issue60.json
+          python - <<'PY'
+          import json,os,re,urllib.request
+          p=json.load(open('preauthorization-evidence/preauthorization.json'))
+          branches=[row for page in json.load(open('final-branches.json')) for row in page]
+          names=[str(row.get('name') or '') for row in branches]
+          if p['authorizationBranch'] in names or p['dispatchBranch'] in names: raise SystemExit('proposed identity appeared after preauthorization audit')
+          comments=[row for page in json.load(open('final-issue60.json')) for row in page]
+          if any(str(row.get('body') or '').strip().upper().startswith('ORDINAL41_') for row in comments): raise SystemExit('ordinal-41 marker appeared after audit')
+          if sum(1 for row in comments if str(row.get('body') or '').startswith('AEROSOL-VERTICAL-PROFILE-V2-PREAUTHORIZATION\n')) != 0: raise SystemExit('preauthorization checkpoint identity already exists')
+          artifact_id=os.environ.get('ARTIFACT_ID','').strip(); digest=os.environ.get('ARTIFACT_DIGEST','').strip()
+          if not artifact_id.isdigit(): raise SystemExit('artifact id malformed')
+          digest=digest.removeprefix('sha256:')
+          if re.fullmatch(r'[0-9a-f]{64}',digest) is None: raise SystemExit('artifact digest malformed')
+          body='\n'.join([
+            'AEROSOL-VERTICAL-PROFILE-V2-PREAUTHORIZATION',
+            f'audited_head={p["auditedHead"]}',f'run={os.environ["GITHUB_RUN_ID"]}','attempt=1',
+            f'status={p["status"]}',f'latest_consumed={p["latestConsumedScientificOrdinal"]}',
+            f'next_if_separately_allocated={p["nextAvailableScientificOrdinal"]}',
+            f'global_ordinal_max_observed={p["globalOrdinalMaxObserved"]}',
+            f'candidate_seed_count={p["candidateSeedCount"]}',
+            f'candidate_seed_canonical_sha256={p["candidateSeedCanonicalSha256"]}',
+            f'candidate_rows_canonical_sha256={p["candidateRowsCanonicalSha256"]}',
+            f'ordinal_observations_sha256={p["ordinalObservationsCanonicalSha256"]}',
+            f'artifact_id={artifact_id}',f'artifact_digest=sha256:{digest}',f'report_sha256={p["contentSha256"]}',
+            'scientific_identity_allocated=false','authorization_created=false','dispatch_created=false',
+            'candidate_seeds_applied=false','scientific_runtime=false','solver_execution=false','results_opened=false'])
+          req=urllib.request.Request(
+            f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/issues/60/comments',
+            data=json.dumps({'body':body}).encode(),
+            headers={'Authorization':f'Bearer {os.environ["GITHUB_TOKEN"]}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=90) as response:
+            if response.status not in (200,201): raise SystemExit(f'Issue #60 checkpoint publish failed: {response.status}')
+          PY

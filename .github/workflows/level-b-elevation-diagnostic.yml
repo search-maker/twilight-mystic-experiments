@@ -1,0 +1,133 @@
+name: Level-B stellar interpolation axis diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-elevation-diagnostic.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-interpolation-axis-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APPLICATION_SHA: 37320f4806cc53c4886528a0260fd0331adfdf93
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Checkout public diagnostic source
+        uses: actions/checkout@v4
+        with:
+          path: bridge
+          persist-credentials: false
+
+      - name: Checkout exact private application commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ env.APPLICATION_SHA }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private commit and sanitize Git remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C private-app rev-parse HEAD)"
+          test "$actual" = "$APPLICATION_SHA"
+          git -C private-app remote remove origin || true
+
+      - name: Set up exact reviewed libRadtran environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: stellar-ref
+          create-args: >-
+            python=3.12
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          init-shell: bash
+          cache-environment: false
+
+      - name: Verify libRadtran and AFGLUS identity
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uvspec="$(command -v uvspec)"
+          test "$(sha256sum "$uvspec" | awk '{print $1}')" = "$EXPECTED_UVSPEC_SHA256"
+          data_dir="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data dir not found')
+          PY
+          )"
+          test "$(sha256sum "$data_dir/atmmod/afglus.dat" | awk '{print $1}')" = "$EXPECTED_AFGLUS_SHA256"
+          echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
+          echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
+
+      - name: Measure isolated altitude and AOD axes
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util, json, math, os, sys
+          from pathlib import Path
+
+          app=Path('private-app').resolve()
+          p=app/'scientific-tools/visibility-v3/stellar_transmission_libradtran_v3.py'
+          spec=importlib.util.spec_from_file_location('stellar_ref_axis_diag',p)
+          ref=importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          sys.modules['stellar_ref_axis_diag']=ref
+          spec.loader.exec_module(ref)
+
+          altitude_values=[5.0,6.25,7.5,8.75,10.0,12.5,15.0,17.5,20.0,25.0,30.0,37.5,45.0,52.5,60.0,65.0,70.0,75.0,80.0]
+          aod_values=[0.05,0.075,0.10,0.15,0.20,0.25,0.30,0.35,0.40]
+          fixed_elevation=1250.0
+          fixed_aod=0.20
+          fixed_altitude=30.0
+
+          def los_tau(rr):
+              return [-math.log(max(float(t),1e-300)) for t in rr['spectrum']['lineOfSightDirectTransmission']]
+
+          altitude_cases=[]
+          for altitude in altitude_values:
+              rr=ref.run_reference(target_altitude_deg=altitude,aod550=fixed_aod,observer_elevation_m=fixed_elevation)
+              altitude_cases.append({'targetAltitudeDeg':altitude,'lineOfSightOpticalDepth':los_tau(rr)})
+
+          aod_cases=[]
+          for aod in aod_values:
+              rr=ref.run_reference(target_altitude_deg=fixed_altitude,aod550=aod,observer_elevation_m=fixed_elevation)
+              aod_cases.append({'aod550':aod,'lineOfSightOpticalDepth':los_tau(rr)})
+
+          out={
+              'schemaVersion':1,
+              'applicationSha':os.environ['APPLICATION_SHA'],
+              'uvspecSha256':os.environ['EXPECTED_UVSPEC_SHA256'],
+              'afglusSha256':os.environ['EXPECTED_AFGLUS_SHA256'],
+              'wavelengthNm':list(range(380,781)),
+              'altitudeAxis':{'observerElevationM':fixed_elevation,'aod550':fixed_aod,'cases':altitude_cases},
+              'aodAxis':{'observerElevationM':fixed_elevation,'targetAltitudeDeg':fixed_altitude,'cases':aod_cases},
+          }
+          dest=Path(os.environ['RUNNER_TEMP'])/'stellar-interpolation-axis-diagnostic.json'
+          dest.write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'altitudeCaseCount':len(altitude_cases),'aodCaseCount':len(aod_cases),'output':str(dest)},sort_keys=True))
+          PY
+
+      - name: Upload diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-stellar-axis-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/stellar-interpolation-axis-diagnostic.json
+          if-no-files-found: error
+          retention-days: 30

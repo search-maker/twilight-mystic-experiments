@@ -1,0 +1,238 @@
+name: Level-B software public runner bridge v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_sha:
+        description: Exact 40-hex starsvisibility commit SHA
+        required: true
+        type: string
+      execution_phase:
+        description: Frozen execution phase
+        required: true
+        default: phase-a-0077
+        type: choice
+        options:
+          - phase-a-0077
+          - repository-qa
+      expected_protocol_sha256:
+        description: Expected 0077 protocol SHA-256 (optional outside phase A)
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/level-b-software-public-runner-bridge-v1.yml'
+      - 'tools/level_b_0077_reference_gate.py'
+      - 'tools/fetch_pickles_raw_sources.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level-b-software-public-runner-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DEFAULT_0077_SHA: 37320f4806cc53c4886528a0260fd0331adfdf93
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_AFGLUS_SHA256: dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5
+      STARSVISIBILITY_READ_TOKEN: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+    steps:
+      - name: Resolve immutable execution binding
+        id: bind
+        shell: bash
+        env:
+          DISPATCH_SHA: ${{ inputs.application_sha }}
+          DISPATCH_PHASE: ${{ inputs.execution_phase }}
+          DISPATCH_PROTOCOL: ${{ inputs.expected_protocol_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            app_sha="$DEFAULT_0077_SHA"
+            phase="phase-a-0077"
+            expected_protocol=""
+          else
+            app_sha="$DISPATCH_SHA"
+            phase="$DISPATCH_PHASE"
+            expected_protocol="$DISPATCH_PROTOCOL"
+          fi
+          printf '%s' "$app_sha" | grep -Eq '^[0-9a-f]{40}$'
+          case "$phase" in phase-a-0077|repository-qa) ;; *) exit 64 ;; esac
+          if [ -n "$expected_protocol" ]; then printf '%s' "$expected_protocol" | grep -Eq '^[0-9a-f]{64}$'; fi
+          if [ -z "${STARSVISIBILITY_READ_TOKEN:-}" ]; then
+            echo 'Required read-only secret STARSVISIBILITY_READ_TOKEN is unavailable.' >&2
+            exit 78
+          fi
+          echo "application_sha=$app_sha" >> "$GITHUB_OUTPUT"
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          echo "expected_protocol=$expected_protocol" >> "$GITHUB_OUTPUT"
+          echo "Exact private application SHA: $app_sha"
+          echo "Execution phase: $phase"
+
+      - name: Checkout public bridge source
+        uses: actions/checkout@v4
+        with:
+          path: bridge
+          persist-credentials: false
+
+      - name: Checkout exact private application commit
+        uses: actions/checkout@v4
+        with:
+          repository: search-maker/starsvisibility
+          ref: ${{ steps.bind.outputs.application_sha }}
+          token: ${{ secrets.STARSVISIBILITY_READ_TOKEN }}
+          path: private-app
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact private commit and sanitize Git remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C private-app rev-parse HEAD)"
+          test "$actual" = "${{ steps.bind.outputs.application_sha }}"
+          git -C private-app remote remove origin || true
+          echo "Verified exact private application SHA: $actual"
+
+      - name: Download frozen Pickles source material
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_service='https://vizier.cds.unistra.fr/viz-bin/asu-tsv'
+          mkdir -p "$RUNNER_TEMP/pickles98"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=J/PASP/110/863/synphot' \
+            --data-urlencode '-out=num,SpType,LogTe,file' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/pickles98/synphot.dat"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --get "$metadata_service" \
+            --data-urlencode '-source=VI/135/table6' \
+            --data-urlencode '-out=Lib,Type,Bmmag,Vcmag' \
+            --data-urlencode '-out.max=unlimited' \
+            --data-urlencode '-out.meta=hu' \
+            --output "$RUNNER_TEMP/table6.dat"
+
+          # Pre-residual amendment 2 binds STScI/MAST Reference Atlases
+          # pickles_uk_N to VizieR Pickles library number N for N=1..131.
+          python bridge/tools/fetch_pickles_raw_sources.py \
+            --synphot-tsv "$RUNNER_TEMP/pickles98/synphot.dat" \
+            --output-dir "$RUNNER_TEMP/pickles98"
+
+          sha256sum "$RUNNER_TEMP/pickles98/synphot.dat" "$RUNNER_TEMP/table6.dat"
+
+      - name: Set up exact reviewed libRadtran environment
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: stellar-ref
+          create-args: >-
+            python=3.12
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          init-shell: bash
+          cache-environment: false
+
+      - name: Verify libRadtran and AFGLUS identity
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          uvspec="$(command -v uvspec)"
+          test "$(sha256sum "$uvspec" | awk '{print $1}')" = "$EXPECTED_UVSPEC_SHA256"
+          data_dir="$(python - <<'PY'
+          from pathlib import Path
+          import shutil
+          u=Path(shutil.which('uvspec')).resolve()
+          for p in (u.parent.parent/'share'/'libRadtran'/'data', u.parent.parent/'data'):
+              if p.is_dir(): print(p); break
+          else: raise SystemExit('libRadtran data dir not found')
+          PY
+          )"
+          test "$(sha256sum "$data_dir/atmmod/afglus.dat" | awk '{print $1}')" = "$EXPECTED_AFGLUS_SHA256"
+          echo "LIBRADTRAN_DATA=$data_dir" >> "$GITHUB_ENV"
+          echo "UVSPEC=$uvspec" >> "$GITHUB_ENV"
+          echo "uvspec_sha256=$EXPECTED_UVSPEC_SHA256"
+          echo "afglus_sha256=$EXPECTED_AFGLUS_SHA256"
+
+      - name: Build empirical SED bundle and 250-spectrum runtime LUT
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        shell: micromamba-shell {0}
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          python scientific-tools/visibility-v3/build_pickles_sed_bundle.py \
+            --pickles-dir "$RUNNER_TEMP/pickles98" \
+            --libmags-table6 "$RUNNER_TEMP/table6.dat" \
+            --output "$RUNNER_TEMP/pickles-sed-1nm.json"
+          python scientific-tools/visibility-v3/build_stellar_transport_lut.py \
+            --output "$RUNNER_TEMP/stellar-transport-lut.json"
+          sha256sum "$RUNNER_TEMP/pickles-sed-1nm.json" "$RUNNER_TEMP/stellar-transport-lut.json"
+
+      - name: Execute frozen 432-case 0077 Johnson-V reference gate
+        if: steps.bind.outputs.phase == 'phase-a-0077'
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python bridge/tools/level_b_0077_reference_gate.py \
+            --app-dir private-app \
+            --sed-bundle "$RUNNER_TEMP/pickles-sed-1nm.json" \
+            --lut "$RUNNER_TEMP/stellar-transport-lut.json" \
+            --output "$RUNNER_TEMP/0077-reference-result.json"
+          actual_protocol="$(python -c 'import json,os; print(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"0077-reference-result.json")))["protocolSha256"])')"
+          expected="${{ steps.bind.outputs.expected_protocol }}"
+          if [ -n "$expected" ]; then test "$actual_protocol" = "$expected"; fi
+
+      - name: Run existing Level-B parity suite
+        if: steps.bind.outputs.phase == 'phase-a-0077' || steps.bind.outputs.phase == 'repository-qa'
+        shell: bash
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          npm run test:level-b-parity
+
+      - name: Run current-main/application integration suite when present
+        if: steps.bind.outputs.phase == 'repository-qa'
+        shell: bash
+        working-directory: private-app
+        run: |
+          set -euo pipefail
+          npm run test:level-b-current-main --if-present
+          npm run build:pages
+
+      - name: Write provenance-only bridge summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/public-summary"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'public-summary'/'bridge-summary.json'
+          d={'mysticState':'MYSTIC-STATE-0080','applicationSha':'${{ steps.bind.outputs.application_sha }}','phase':'${{ steps.bind.outputs.phase }}','githubRunId':'${{ github.run_id }}','githubRunAttempt':'${{ github.run_attempt }}'}
+          r=Path(os.environ['RUNNER_TEMP'])/'0077-reference-result.json'
+          if r.exists():
+              j=json.loads(r.read_text())
+              keys=('gate','caseCount','atmosphericCaseCount','templates','limits','statistics','pass','protocolSha256','hashes')
+              d['referenceGate']={k:j[k] for k in keys}
+              if 'interpolation' in j: d['referenceGate']['interpolation']=j['interpolation']
+          out.write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(out.read_text())
+          PY
+
+      - name: Upload public-safe results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: level-b-public-runner-summary-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/public-summary/bridge-summary.json
+            ${{ runner.temp }}/0077-reference-result.json

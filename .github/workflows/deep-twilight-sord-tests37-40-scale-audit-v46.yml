@@ -1,0 +1,198 @@
+name: Deep twilight SORD tests 37-40 scale audit v46
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/deep-twilight-sord-tests37-40-scale-audit-v46.yml"
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SORD_TESTS_GIT_BLOB: 58147ca8a8c7b208fd54abfc83cc44c4f62d12de
+  SORD_TESTS_URL: https://raw.githubusercontent.com/korkins/SORD_JQSRT_2017/master/TESTS.zip
+
+jobs:
+  zero_result_provenance_audit:
+    name: Zero-result provenance audit only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Record non-science contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'DEEP_TWILIGHT_SORD_V46=ZERO_RESULT_PROVENANCE_ONLY' \
+            'SOLVER_EXECUTION=false' \
+            'SCIENTIFIC_EXECUTION=false' \
+            'PROTECTED_RESULT_OPENING=false' \
+            'RNG_OR_SEED_USE=false' \
+            'NON_AUTHORIZING=true'
+
+      - name: Download and audit immutable public SORD benchmark bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v46-artifact/candidate_text
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import os
+          import pathlib
+          import re
+          import urllib.request
+          import zipfile
+
+          url = os.environ['SORD_TESTS_URL']
+          expected_blob = os.environ['EXPECTED_SORD_TESTS_GIT_BLOB']
+          zip_path = pathlib.Path('TESTS.zip')
+          artifact = pathlib.Path('v46-artifact')
+          candidate_dir = artifact / 'candidate_text'
+
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = response.read()
+          zip_path.write_bytes(data)
+
+          git_blob = hashlib.sha1(
+              b'blob ' + str(len(data)).encode('ascii') + b'\0' + data
+          ).hexdigest()
+          sha256 = hashlib.sha256(data).hexdigest()
+          if git_blob != expected_blob:
+              raise SystemExit(
+                  f'FAIL_CLOSED_GIT_BLOB_MISMATCH expected={expected_blob} actual={git_blob}'
+              )
+
+          filename_re = re.compile(
+              r'(?i)(?:^|[^0-9])(37|38|39|40)(?:[^0-9]|$)|mishchenko|benchmark'
+          )
+          keyword_re = re.compile(
+              r'(?i)(solar|irradian|flux|pi\b|reflect|radiance|stokes|normaliz|unit|toa|mishchenko|benchmark)'
+          )
+          text_extensions = {
+              '.txt', '.dat', '.inp', '.in', '.out', '.ref', '.cfg', '.conf', '.ini',
+              '.csv', '.tsv', '.md', '.rst', '.tex', '.f', '.f90', '.for', '.py', '.sh'
+          }
+          max_member_scan = 2_000_000
+          max_saved_candidate = 500_000
+          max_excerpt_lines = 120
+
+          report_lines = [
+              'DEEP_TWILIGHT_SORD_V46=ZERO_RESULT_PROVENANCE_ONLY',
+              'SOLVER_EXECUTION=false',
+              'SCIENTIFIC_EXECUTION=false',
+              'PROTECTED_RESULT_OPENING=false',
+              'RNG_OR_SEED_USE=false',
+              f'SOURCE_URL={url}',
+              f'ZIP_SIZE={len(data)}',
+              f'ZIP_SHA256={sha256}',
+              f'ZIP_GIT_BLOB_SHA1={git_blob}',
+              f'EXPECTED_GIT_BLOB_SHA1={expected_blob}',
+              'GIT_BLOB_VERIFIED=true',
+              '',
+              '=== ZIP MEMBERS ===',
+          ]
+          manifest_lines = ['path\tsize\tfilename_candidate\tkeyword_hits\tsaved_copy']
+          candidate_count = 0
+          scanned_text_count = 0
+
+          with zipfile.ZipFile(zip_path) as zf:
+              infos = sorted(zf.infolist(), key=lambda x: x.filename)
+              for info in infos:
+                  report_lines.append(f'{info.file_size:10d}\t{info.filename}')
+
+              report_lines.append('')
+              report_lines.append('=== TEST 37-40 / BENCHMARK CANDIDATES AND SCALE CONTEXTS ===')
+
+              for info in infos:
+                  if info.is_dir():
+                      continue
+                  name = info.filename
+                  path = pathlib.PurePosixPath(name)
+                  if '..' in path.parts or name.startswith('/'):
+                      raise SystemExit(f'FAIL_CLOSED_UNSAFE_ZIP_PATH {name!r}')
+
+                  filename_candidate = bool(filename_re.search(name))
+                  suffix = path.suffix.lower()
+                  scan_as_text = filename_candidate or suffix in text_extensions
+                  if not scan_as_text or info.file_size > max_member_scan:
+                      if filename_candidate:
+                          manifest_lines.append(
+                              f'{name}\t{info.file_size}\ttrue\tNOT_SCANNED_SIZE_OR_TYPE\tfalse'
+                          )
+                      continue
+
+                  raw = zf.read(info)
+                  if b'\x00' in raw[:4096] and suffix not in text_extensions:
+                      manifest_lines.append(
+                          f'{name}\t{info.file_size}\t{str(filename_candidate).lower()}\tBINARY\tfalse'
+                      )
+                      continue
+                  text = raw.decode('utf-8', errors='replace')
+                  scanned_text_count += 1
+                  hit_lines = []
+                  for lineno, line in enumerate(text.splitlines(), start=1):
+                      if keyword_re.search(line) or (filename_candidate and lineno <= 80):
+                          hit_lines.append((lineno, line.rstrip()))
+                          if len(hit_lines) >= max_excerpt_lines:
+                              break
+
+                  keyword_hits = sum(1 for line in text.splitlines() if keyword_re.search(line))
+                  saved_copy = False
+                  if filename_candidate and len(raw) <= max_saved_candidate:
+                      safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', name).strip('_')
+                      if not safe_name:
+                          safe_name = f'candidate_{candidate_count}'
+                      (candidate_dir / safe_name).write_text(text, encoding='utf-8')
+                      saved_copy = True
+                      candidate_count += 1
+
+                  if filename_candidate or keyword_hits:
+                      report_lines.append('')
+                      report_lines.append(
+                          f'--- {name} size={info.file_size} filename_candidate={filename_candidate} '
+                          f'keyword_hits={keyword_hits} saved_copy={saved_copy} ---'
+                      )
+                      for lineno, line in hit_lines:
+                          report_lines.append(f'{lineno}: {line}')
+
+                  manifest_lines.append(
+                      f'{name}\t{info.file_size}\t{str(filename_candidate).lower()}\t{keyword_hits}\t{str(saved_copy).lower()}'
+                  )
+
+          report_lines.extend([
+              '',
+              '=== AUDIT COUNTS ===',
+              f'SCANNED_TEXT_MEMBERS={scanned_text_count}',
+              f'SAVED_FILENAME_CANDIDATES={candidate_count}',
+              'NO_EXTRACTED_FILE_WAS_EXECUTED=true',
+              'NO_SOLVER_WAS_EXECUTED=true',
+          ])
+          (artifact / 'report.txt').write_text('\n'.join(report_lines) + '\n', encoding='utf-8')
+          (artifact / 'manifest.tsv').write_text('\n'.join(manifest_lines) + '\n', encoding='utf-8')
+          (artifact / 'source_identity.txt').write_text(
+              f'url={url}\nsize={len(data)}\nsha256={sha256}\ngit_blob_sha1={git_blob}\n',
+              encoding='utf-8',
+          )
+          print(f'VERIFIED_GIT_BLOB={git_blob}')
+          print(f'ZIP_SHA256={sha256}')
+          print(f'SCANNED_TEXT_MEMBERS={scanned_text_count}')
+          print(f'SAVED_FILENAME_CANDIDATES={candidate_count}')
+          PY
+
+      - name: Show bounded audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -n '1,80p' v46-artifact/source_identity.txt
+          grep -E '^(SCANNED_TEXT_MEMBERS|SAVED_FILENAME_CANDIDATES|NO_EXTRACTED_FILE_WAS_EXECUTED|NO_SOLVER_WAS_EXECUTED)=' v46-artifact/report.txt
+
+      - name: Upload immutable text audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-twilight-sord-tests37-40-scale-audit-v46
+          path: v46-artifact
+          if-no-files-found: error
+          retention-days: 90

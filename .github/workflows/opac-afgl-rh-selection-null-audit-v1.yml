@@ -1,0 +1,128 @@
+name: AFGL-US OPAC RH selection NULL-solver audit v1
+
+on:
+  pull_request:
+    paths:
+      - review/opac-afgl-rh-selection-null-audit-v1/**
+      - .github/workflows/opac-afgl-rh-selection-null-audit-v1.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      SOURCE_URL: https://www.libradtran.org/lib/exe/fetch.php?media=download%3Aoptprop_v2.1.tar.gz
+      EXPECTED_UVSPEC_SHA256: 2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3
+      EXPECTED_BASE_DATA_SHA256: ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7
+      SOURCE_AUDIT_PR: '593'
+      SOURCE_AUDIT_HEAD: 223b592208d3dda24217dabcfca9fd27333e4b84
+      GENERIC_RUN_ID: '33190220721'
+      GENERIC_ARTIFACT_ID: '9693427186'
+      GENERIC_ARTIFACT_DIGEST: sha256:ee80b71e8bdb0cd9aaacc29890162fb903f89f6ef6c5ace615094fe94ac60a36
+      EXACT_RUN_ID: '33190220896'
+      EXACT_ARTIFACT_ID: '9693440701'
+      EXACT_ARTIFACT_DIGEST: sha256:7d8fa290b74f4e15538cd6ff2609f5491caad63258d0aefb8be689f1ce5f8e33
+      SOURCE_CONTRACT_RUN_ID: '33190220864'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact review identity and #593 source evidence
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-afgl-rh-selection-null-audit-v1
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}" > pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$SOURCE_AUDIT_PR" > source-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GENERIC_RUN_ID" > generic-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GENERIC_RUN_ID/artifacts" > generic-artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXACT_RUN_ID" > exact-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXACT_RUN_ID/artifacts" > exact-artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_CONTRACT_RUN_ID" > source-contract.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None: raise SystemExit('audit PR must remain Draft/open/unmerged')
+          if p['head']['ref']!='review/opac-afgl-rh-selection-null-audit-v1' or p['head']['sha']!=os.environ['PR_HEAD']: raise SystemExit('audit head drift')
+          if p['base']['ref']!='main' or p['base']['sha']!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('audit base drift')
+          sp=json.load(open('source-pr.json'))
+          if sp['state']!='open' or sp['draft'] is not True or sp['merged_at'] is not None or sp['head']['sha']!=os.environ['SOURCE_AUDIT_HEAD']: raise SystemExit('#593 PR drift')
+          gr=json.load(open('generic-run.json')); ga=json.load(open('generic-artifacts.json'))['artifacts']
+          er=json.load(open('exact-run.json')); ea=json.load(open('exact-artifacts.json'))['artifacts']
+          cr=json.load(open('source-contract.json'))
+          if gr['id']!=int(os.environ['GENERIC_RUN_ID']) or gr['head_sha']!=os.environ['SOURCE_AUDIT_HEAD'] or gr['run_attempt']!=1 or gr['conclusion']!='success': raise SystemExit('#593 generic run drift')
+          if er['id']!=int(os.environ['EXACT_RUN_ID']) or er['head_sha']!=os.environ['SOURCE_AUDIT_HEAD'] or er['run_attempt']!=1 or er['conclusion']!='success': raise SystemExit('#593 exact run drift')
+          if cr['id']!=int(os.environ['SOURCE_CONTRACT_RUN_ID']) or cr['head_sha']!=os.environ['SOURCE_AUDIT_HEAD'] or cr['run_attempt']!=1 or cr['conclusion']!='success': raise SystemExit('#593 contract drift')
+          gm=[a for a in ga if a['id']==int(os.environ['GENERIC_ARTIFACT_ID'])]
+          em=[a for a in ea if a['id']==int(os.environ['EXACT_ARTIFACT_ID'])]
+          if len(gm)!=1 or gm[0].get('digest')!=os.environ['GENERIC_ARTIFACT_DIGEST'] or gm[0].get('expired'): raise SystemExit('#593 generic artifact drift')
+          if len(em)!=1 or em[0].get('digest')!=os.environ['EXACT_ARTIFACT_DIGEST'] or em[0].get('expired'): raise SystemExit('#593 exact artifact drift')
+          PY
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: opac-afgl-rh-null-audit-v1
+          create-args: -c conda-forge python=3.12.4 rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify and reconstruct locked runtime
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence runtime/share/libRadtran
+          python -m py_compile review/opac-afgl-rh-selection-null-audit-v1/audit.py
+          python experiments/mystic-batch-v1/runtime_probe.py --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" --atmosphere "$CONDA_PREFIX/share/libRadtran/data/atmmod/afglus.dat" --runtime-lock experiments/mystic-batch-v1/runtime-lock.micromamba.json --skip-help --output evidence/base-runtime.json
+          python - <<'PY'
+          import json,os
+          x=json.load(open('evidence/base-runtime.json'))
+          if x['uvspecSha256']!=os.environ['EXPECTED_UVSPEC_SHA256']: raise SystemExit('uvspec SHA drift')
+          if x['libRadtranDataTreeSha256']!=os.environ['EXPECTED_BASE_DATA_SHA256']: raise SystemExit('base data tree drift')
+          if x['scientificSolverExecuted'] is not False or x['syntaxCheckExecuted'] is not False: raise SystemExit('runtime probe boundary crossed')
+          PY
+          cp -a "$CONDA_PREFIX/share/libRadtran/data" runtime/share/libRadtran/data
+          curl -L --fail --retry 3 --retry-all-errors --max-time 2700 -o opac.tar.gz "$SOURCE_URL"
+          python review/opac-afgl-rh-selection-null-audit-v1/audit.py prepare --archive opac.tar.gz --runtime-root "$GITHUB_WORKSPACE/runtime" --repo-root "$GITHUB_WORKSPACE" --output audit-inputs > evidence/prepare.json
+          cp audit-inputs/input-manifest.json audit-inputs/*.inp evidence/
+          rm opac.tar.gz
+      - name: Prove NULL-only input surface and syntax
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          for f in audit-inputs/*.inp; do
+            grep -Fx 'rte_solver null' "$f"
+            ! grep -Eiq 'rte_solver[[:space:]]+(disort|mystic|montecarlo|twostr|sdisort|fdisort|sos)' "$f"
+            timeout 120 uvspec -c < "$f" > "evidence/$(basename "$f" .inp)-syntax.out" 2> "evidence/$(basename "$f" .inp)-syntax.err"
+          done
+      - name: Execute NULL-solver RH and verbose optical setup audit
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          timeout 180 uvspec < audit-inputs/rh-only.inp > evidence/rh-only.out 2> evidence/rh-only.err
+          timeout 180 uvspec < audit-inputs/continental-null-verbose.inp > evidence/continental-null.out 2> evidence/continental-null.verbose.err
+          test -s evidence/rh-only.out
+          test -s evidence/continental-null.out
+          test -s evidence/continental-null.verbose.err
+          python review/opac-afgl-rh-selection-null-audit-v1/audit.py freeze --evidence evidence --manifest audit-inputs/input-manifest.json > evidence/freeze.json
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/rh-selection-report.json'))
+          if x['status']!='PASS_RUNTIME_AFGL_RH_AND_NEAREST_OPAC_NODE_PROFILE_FROZEN': raise SystemExit('RH selection audit did not pass')
+          if x['rteSolver']!='null' or x['scientificRadiativeTransferSolved'] is not False or x['mysticExecuted'] is not False or x['scientificOrdinalAllocated'] is not False: raise SystemExit('NULL audit boundary crossed')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-afgl-rh-selection-null-audit-v1
+          path: evidence/
+          if-no-files-found: error
+          compression-level: 0

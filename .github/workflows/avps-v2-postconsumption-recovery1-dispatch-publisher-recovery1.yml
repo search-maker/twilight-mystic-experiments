@@ -1,0 +1,188 @@
+name: AVPS v2 dispatch publisher recovery1
+run-name: AVPS v2 postconsumption recovery1 ordinal 42 zero-runtime dispatch publisher recovery1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: avps-v2-postconsumption-recovery1-ordinal-42-dispatch-publisher-recovery1
+  cancel-in-progress: false
+
+env:
+  AUTH_BRANCH: authorization/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+  AUTH_HEAD: e627a689ada0493a8a5b9cdafc4aba0198fbabec
+  AUTH_PARENT: a68f603d6da21cd28ab8324da080cc8ad27f9094
+  AUTH_PR: '629'
+  AUTH_REVIEW_RUN: '33250602685'
+  AUTH_REVIEW_ARTIFACT: '9714316591'
+  AUTH_REVIEW_DIGEST: sha256:083d7127a1591810870875d1b6c15f795c1fee0996c1dadaec5838b785bce8c2
+  FAILED_PUBLISHER_RUN: '33257846884'
+  FAILED_PUBLISHER_JOB: '99114571607'
+  DISPATCH_BRANCH: dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42
+  EXECUTION_KEY: aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1:numerical:42
+  ALLOCATION_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_AUTHORIZATION_ALLOCATED_REVIEWED_NOT_DISPATCHED commit=e627a689ada0493a8a5b9cdafc4aba0198fbabec parent=a68f603d6da21cd28ab8324da080cc8ad27f9094 pr=629
+  CONSUMED_MARKER: ORDINAL42_AVPS_V2_POSTCONSUMPTION_RECOVERY1_DISPATCH_CONSUMED
+  CANDIDATE_SEED_SHA256: a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7
+  SCIENCE_WORKFLOW: avps-v2-postconsumption-recovery1-science.yml
+  SCIENCE_SHA256: 04a178e0cc777e0fc090c8bfc6175ad10b4bec56c6f12048428382ea36217878
+  SCIENCE_BLOB: 7af7f28269ad245b1b9218012707957b048a6875
+  FAILED_PUBLISHER_BLOB: 885abc21c86d3bb0c3777e63b6254520479db34f
+
+jobs:
+  publish-recovery1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Fresh zero-runtime recovery pre-dispatch fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(sha256sum .github/workflows/$SCIENCE_WORKFLOW | cut -d' ' -f1)" = "$SCIENCE_SHA256"
+          test "$(git hash-object .github/workflows/$SCIENCE_WORKFLOW)" = "$SCIENCE_BLOB"
+          test "$(git hash-object .github/workflows/avps-v2-postconsumption-recovery1-dispatch-publisher.yml)" = "$FAILED_PUBLISHER_BLOB"
+          mkdir -p dispatch-evidence
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" > dispatch-evidence/failed-publisher-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$FAILED_PUBLISHER_JOB" > dispatch-evidence/failed-publisher-job.json
+          python - <<'PY'
+          import json, os
+          r=json.load(open('dispatch-evidence/failed-publisher-run.json'))
+          if r['id']!=int(os.environ['FAILED_PUBLISHER_RUN']) or r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='failure': raise SystemExit('failed publisher provenance drift')
+          j=json.load(open('dispatch-evidence/failed-publisher-job.json'))
+          if j['id']!=int(os.environ['FAILED_PUBLISHER_JOB']) or j['run_attempt']!=1 or j['conclusion']!='failure': raise SystemExit('failed publisher job provenance drift')
+          steps={s['name']:s['conclusion'] for s in j.get('steps',[])}
+          required={'Fresh zero-runtime pre-dispatch fence':'failure','Create exact dispatch ref and consumed marker once':'skipped','Upload zero-runtime publisher evidence before science dispatch':'skipped','Explicitly dispatch exact science workflow from main':'skipped'}
+          for k,v in required.items():
+              if steps.get(k)!=v: raise SystemExit(f'failed publisher step provenance drift: {k}={steps.get(k)!r}')
+          PY
+
+          git fetch origin "refs/heads/$AUTH_BRANCH:refs/remotes/origin/$AUTH_BRANCH"
+          test "$(git rev-parse origin/$AUTH_BRANCH)" = "$AUTH_HEAD"
+          mapfile -t PARENTS < <(git cat-file -p "$AUTH_HEAD" | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$AUTH_PARENT"
+          if git ls-remote --exit-code --heads origin "$DISPATCH_BRANCH" >/dev/null 2>&1; then echo 'dispatch branch already exists' >&2; exit 1; fi
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$AUTH_PR" > dispatch-evidence/authorization-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$AUTH_REVIEW_RUN" > dispatch-evidence/authorization-review-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$AUTH_REVIEW_ARTIFACT" > dispatch-evidence/authorization-review-artifact.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > dispatch-evidence/issue60-pages.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/$SCIENCE_WORKFLOW/runs?event=workflow_dispatch&per_page=100" > dispatch-evidence/science-run-pages.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('dispatch-evidence/authorization-pr.json'))
+          if p['number']!=629 or p['state']!='open' or p['draft'] is not True or p['merged_at'] is not None or p['head']['sha']!=os.environ['AUTH_HEAD'] or p['base']['sha']!=os.environ['AUTH_PARENT']: raise SystemExit('authorization PR drift')
+          r=json.load(open('dispatch-evidence/authorization-review-run.json'))
+          if r['id']!=int(os.environ['AUTH_REVIEW_RUN']) or r['head_sha']!=os.environ['AUTH_HEAD'] or r['run_attempt']!=1 or r['conclusion']!='success': raise SystemExit('authorization review drift')
+          a=json.load(open('dispatch-evidence/authorization-review-artifact.json'))
+          if a['id']!=int(os.environ['AUTH_REVIEW_ARTIFACT']) or a.get('digest')!=os.environ['AUTH_REVIEW_DIGEST'] or a.get('expired'): raise SystemExit('authorization review artifact drift')
+          pages=json.load(open('dispatch-evidence/issue60-pages.json')); bodies=[str(c.get('body') or '').strip() for p in pages for c in p]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('allocation marker cardinality drift')
+          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=0: raise SystemExit('consumed marker already exists')
+          pages=json.load(open('dispatch-evidence/science-run-pages.json')); runs=[r for p in pages for r in p.get('workflow_runs',[])]
+          if runs: raise SystemExit(f'candidate science run already exists: {[r.get("id") for r in runs]}')
+          PY
+
+          # Recovery-specific repair: validate the immutable seed-ledger in its native
+          # authorization-tree path so its __file__-relative ROOT is the repository root.
+          git worktree add --detach dispatch-evidence/auth-worktree "$AUTH_HEAD"
+          native="dispatch-evidence/auth-worktree/review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py"
+          test "$(git -C dispatch-evidence/auth-worktree hash-object review/aerosol-vertical-profile-sensitivity-v2-postconsumption-seed-freshness-v1/seed_ledger.py)" = 491d1b6653bea0fcc5275269723a76aa1af52300
+          NATIVE_LEDGER="$native" python - <<'PY'
+          import importlib.util,json,os,sys
+          from pathlib import Path
+          p=Path(os.environ['NATIVE_LEDGER']).resolve()
+          s=importlib.util.spec_from_file_location('avps_v2_recovery_native_seed',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)
+          x=m.validate_ledger()
+          if x.get('candidateSeedCount')!=72 or x.get('candidateSeedCanonicalSha256')!='a514212990a94a39d577bd038b631a600e18e4c0f750f781bbd7c99b897228a7': raise SystemExit('candidate seed identity drift')
+          Path('dispatch-evidence/candidate-seed-ledger.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          Path('dispatch-evidence/empty-self-ledger-policy.json').write_text(json.dumps({'schemaVersion':2,'requiredTrackedSelfLedgerPaths':[],'futureEvidenceSelfLedgerPaths':[]},indent=2,sort_keys=True)+'\n')
+          PY
+          git ls-files -z > dispatch-evidence/tracked-files.nul
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/tracked_tree_seed_scan.py --repo-root . --file-list dispatch-evidence/tracked-files.nul --candidate-seed-ledger dispatch-evidence/candidate-seed-ledger.json --allow-self-ledger-json dispatch-evidence/empty-self-ledger-policy.json --output dispatch-evidence/tracked-seed-scan.json
+          python review/aerosol-vertical-profile-sensitivity-v2-seed-freshness/repository_global_seed_scan.py --repository "$GITHUB_REPOSITORY" --issue-number 60 --candidate-seed-ledger dispatch-evidence/candidate-seed-ledger.json --current-run-id "$GITHUB_RUN_ID" --audit-mode authorization-recheck --expected-branch-name main --expected-repo-head "$GITHUB_SHA" --output dispatch-evidence/repository-global-seed-scan.json
+          python - <<'PY'
+          import json
+          t=json.load(open('dispatch-evidence/tracked-seed-scan.json')); g=json.load(open('dispatch-evidence/repository-global-seed-scan.json'))
+          if t.get('trackedTreeExternalCollisionCount')!=0: raise SystemExit('tracked seed collision')
+          if g.get('repositoryGlobalCollisionCount',g.get('collisionCount'))!=0: raise SystemExit('repository-global seed collision')
+          PY
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/33251991703" > dispatch-evidence/implementation-review-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/9714641331" > dispatch-evidence/implementation-review-artifact.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('dispatch-evidence/implementation-review-run.json'))
+          if r['run_attempt']!=1 or r['status']!='completed' or r['conclusion']!='success' or r['head_sha']!='09844e194588d2453c0844a8993a27b4a05f8943': raise SystemExit('implementation review drift')
+          a=json.load(open('dispatch-evidence/implementation-review-artifact.json'))
+          if a['id']!=9714641331 or a.get('expired') or a.get('digest')!='sha256:ba6db0039825ef50812fdeb84aa2c86352a675ab09ea21b2b31cc658051b8158': raise SystemExit('implementation artifact drift')
+          PY
+
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'PRE_DISPATCH_RECOVERY1_FENCE_PASS_ZERO_RUNTIME','scientificOrdinal':42,'executionKey':os.environ['EXECUTION_KEY'],'authorizationHead':os.environ['AUTH_HEAD'],'authorizationParent':os.environ['AUTH_PARENT'],'authorizationPr':629,'failedPublisherRun':int(os.environ['FAILED_PUBLISHER_RUN']),'dispatchBranch':os.environ['DISPATCH_BRANCH'],'candidateSeedCanonicalSha256':os.environ['CANDIDATE_SEED_SHA256'],'nativeAuthorizationWorktreeSeedValidation':True,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,'dispatchCreated':False}
+          Path('dispatch-evidence/pre-dispatch-recovery1-fence.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Create exact dispatch ref and consumed marker once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$DISPATCH_BRANCH" -f sha="$AUTH_HEAD" > dispatch-evidence/ref-create.json
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DISPATCH_BRANCH" --jq .object.sha)" = "$AUTH_HEAD"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/60/comments" -f body="$CONSUMED_MARKER" > dispatch-evidence/consumed-comment.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/60/comments?per_page=100" > dispatch-evidence/post-comments-pages.json
+          python - <<'PY'
+          import json,os
+          pages=json.load(open('dispatch-evidence/post-comments-pages.json')); bodies=[str(c.get('body') or '').strip() for p in pages for c in p]
+          if sum(b==os.environ['ALLOCATION_MARKER'] for b in bodies)!=1: raise SystemExit('post-dispatch allocation cardinality drift')
+          if sum(b.startswith(os.environ['CONSUMED_MARKER']) for b in bodies)!=1: raise SystemExit('post-dispatch consumed cardinality drift')
+          PY
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out={'schemaVersion':1,'status':'DISPATCH_PUBLISHED_RECOVERY1_ZERO_RUNTIME','scientificOrdinal':42,'executionKey':os.environ['EXECUTION_KEY'],'authorizationHead':os.environ['AUTH_HEAD'],'dispatchBranch':os.environ['DISPATCH_BRANCH'],'dispatchBranchHeadSha':os.environ['AUTH_HEAD'],'workflowRunAttempt':1,'scientificRuntimeSetupPerformed':False,'scientificExecutionPerformed':False,'solverExecutionPerformed':False,'consumedMarkerPosted':True,'scienceDispatchRequested':False}
+          Path('dispatch-evidence/dispatch-publisher-recovery1.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload zero-runtime recovery publisher evidence before science dispatch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: avps-v2-postconsumption-recovery1-dispatch-publisher-recovery1-ordinal-42
+          path: dispatch-evidence/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Explicitly dispatch exact science workflow from main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PAYLOAD='{"ref":"main","inputs":{"dispatch_ref":"dispatch/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42"}}'
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$SCIENCE_WORKFLOW/dispatches" --input - <<< "$PAYLOAD"

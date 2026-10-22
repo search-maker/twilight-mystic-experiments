@@ -1,0 +1,82 @@
+name: AVPS v2 publisher postconsumption-recovery1 ordinal42 trigger bridge recovery1
+run-name: AVPS v2 postconsumption recovery1 ordinal 42 publisher trigger bridge recovery1
+
+on:
+  push:
+    branches:
+      - dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42-publisher-recovery1
+    paths:
+      - dispatch-triggers/avps-v2-postconsumption-recovery1-ordinal42-publisher-recovery1.txt
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: avps-v2-postconsumption-recovery1-ordinal-42-publisher-trigger-bridge-recovery1
+  cancel-in-progress: false
+
+env:
+  ACTIVATION_BRANCH: dispatch-trigger/aerosol-vertical-profile-sensitivity-v2-postconsumption-recovery1-ordinal-42-publisher-recovery1
+  ACTIVATION_MARKER: dispatch-triggers/avps-v2-postconsumption-recovery1-ordinal42-publisher-recovery1.txt
+  PUBLISHER_WORKFLOW: avps-v2-postconsumption-recovery1-dispatch-publisher-recovery1.yml
+  PUBLISHER_BLOB: 7ef29146680e45b6eba359054a032f7a461a712a
+  SCIENTIFIC_ORDINAL: '42'
+  FAILED_PUBLISHER_RUN: '33257846884'
+
+jobs:
+  trigger-recovery1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify one-use recovery1 activation identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$ACTIVATION_BRANCH"
+          test -f "$ACTIVATION_MARKER"
+          git fetch origin main
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          MAIN_SHA="$(git rev-parse origin/main)"
+          test "${PARENTS[0]}" = "$MAIN_SHA"
+          git diff --name-only HEAD^ HEAD | sort > activation-changed-paths.txt
+          test "$(wc -l < activation-changed-paths.txt | tr -d ' ')" = 1
+          test "$(cat activation-changed-paths.txt)" = "$ACTIVATION_MARKER"
+          test "$(git show origin/main:.github/workflows/$PUBLISHER_WORKFLOW | git hash-object --stdin)" = "$PUBLISHER_BLOB"
+          python - <<'PY'
+          import os,subprocess
+          from pathlib import Path
+          values={}
+          for line in Path(os.environ['ACTIVATION_MARKER']).read_text().splitlines():
+              if '=' not in line: raise SystemExit('invalid activation marker line')
+              k,v=line.split('=',1)
+              if k in values: raise SystemExit('duplicate activation marker key')
+              values[k]=v
+          main=subprocess.check_output(['git','rev-parse','origin/main'],text=True).strip()
+          required={'schema':'AVPS_V2_POSTCONSUMPTION_RECOVERY1_ORDINAL42_PUBLISHER_RECOVERY1_TRIGGER_V1','main':main,'publisher':os.environ['PUBLISHER_WORKFLOW'],'publisherBlob':os.environ['PUBLISHER_BLOB'],'scientificOrdinal':os.environ['SCIENTIFIC_ORDINAL'],'failedPublisherRun':os.environ['FAILED_PUBLISHER_RUN']}
+          if values!=required: raise SystemExit('activation marker mismatch')
+          PY
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/runs?event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id' > publisher-recovery1-run-ids.txt
+          test ! -s publisher-recovery1-run-ids.txt
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PUBLISHER_RUN" --jq '{id,run_attempt,status,conclusion}' > failed-publisher.json
+          test "$(jq -r .run_attempt failed-publisher.json)" = 1
+          test "$(jq -r .status failed-publisher.json)" = completed
+          test "$(jq -r .conclusion failed-publisher.json)" = failure
+
+      - name: Request only reviewed recovery1 publisher workflow on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLISHER_WORKFLOW/dispatches" -f ref=main

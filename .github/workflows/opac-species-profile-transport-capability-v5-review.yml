@@ -1,0 +1,178 @@
+name: Review OPAC species-profile transport capability v5
+
+on:
+  pull_request:
+    paths:
+      - review/opac-species-profile-transport-capability-v5/**
+      - .github/recovery-templates/opac-species-profile-transport-capability-v5.yml
+      - .github/workflows/opac-species-profile-transport-capability-v5-review.yml
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      TRACE_PR: '589'
+      TRACE_REVIEW_HEAD: d2f78f8be3fb94e4e64ce4c12901cb3f937ef0b6
+      TRACE_RUN_ID: '33185460954'
+      TRACE_RUN_HEAD: a266d1d3705c41519d3930206ca4f918db9cbb9e
+      TRACE_ARTIFACT_ID: '9691518729'
+      TRACE_ARTIFACT_DIGEST: sha256:07fb60de7bef96253eaf29cb9303a83bab7f3f1952431c73a26499357b4d572a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Bind exact review-only identity and successful trace evidence
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = review/opac-species-profile-transport-capability-v5
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test ! -e .github/workflows/opac-species-profile-transport-capability-v5.yml
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" > pr.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$TRACE_PR" > trace-pr.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TRACE_RUN_ID" > trace-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TRACE_RUN_ID/artifacts" > trace-artifacts.json
+          python - <<'PY'
+          import json,os
+          p=json.load(open('pr.json'))
+          if p.get('state')!='open' or p.get('draft') is not True or p.get('merged_at') is not None: raise SystemExit('v5 review PR must remain Draft/open/unmerged')
+          if (p.get('head') or {}).get('ref')!='review/opac-species-profile-transport-capability-v5' or (p.get('head') or {}).get('sha')!=os.environ['PR_HEAD']: raise SystemExit('v5 review head drift')
+          if (p.get('base') or {}).get('ref')!='main' or (p.get('base') or {}).get('sha')!='99ade7798627e67921139697ba1a004fa8a304bb': raise SystemExit('v5 review base drift')
+          tp=json.load(open('trace-pr.json')); tr=json.load(open('trace-run.json')); arts=json.load(open('trace-artifacts.json'))['artifacts']
+          if tp['state']!='open' or tp['draft'] is not True or tp['merged_at'] is not None or tp['head']['sha']!=os.environ['TRACE_REVIEW_HEAD']: raise SystemExit('trace PR drift')
+          if tr['id']!=int(os.environ['TRACE_RUN_ID']) or tr['head_sha']!=os.environ['TRACE_RUN_HEAD'] or tr['run_attempt']!=1 or tr['conclusion']!='success': raise SystemExit('trace run drift')
+          m=[a for a in arts if a['id']==int(os.environ['TRACE_ARTIFACT_ID'])]
+          if len(m)!=1 or m[0].get('digest')!=os.environ['TRACE_ARTIFACT_DIGEST'] or m[0].get('expired'): raise SystemExit('trace artifact drift')
+          PY
+      - name: Run solver-free v5 code tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile review/opac-species-profile-transport-capability-v5/build_inputs.py review/opac-species-profile-transport-capability-v5/activation_support.py
+          python - <<'PY'
+          import hashlib,importlib.util,json,tempfile
+          from pathlib import Path
+          root=Path('review/opac-species-profile-transport-capability-v5')
+          def load(name,path):
+              s=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          b=load('v5b',root/'build_inputs.py'); a=load('v5a',root/'activation_support.py')
+          assert b.STAGE_ID=='opac-species-profile-transport-capability-v5'
+          assert b.SPECIES=='INSO' and b.AOD550==0.10 and b.MYSTIC_SEED==730_194_613 and b.MYSTIC_PHOTONS==500_000
+          assert b.ALIAS_SOURCE_REL.as_posix()=='aerosol/OPAC/optprop/inso.mie.cdf'
+          assert b.ALIAS_TARGET_REL.as_posix()=='aerosol/OPAC/optprop/INSO'
+          assert b.FAILED_V3_ALIAS_REL.as_posix()=='aerosol/OPAC/optprop/INSO.nc'
+          assert b.FAILED_V4_ALIAS_REL.as_posix()=='aerosol/OPAC/INSO.nc'
+          heights=(20.0,12.0,8.0,4.0,2.0,1.0,0.0)
+          lo=b.synthetic_density_shape(heights,'low'); hi=b.synthetic_density_shape(heights,'high')
+          assert lo!=hi and lo[-1]>lo[2] and hi[2]>hi[-1]
+          with tempfile.TemporaryDirectory() as td:
+              data=Path(td)/'data'; src=data/b.ALIAS_SOURCE_REL; src.parent.mkdir(parents=True); payload=b'official-test-bytes'
+              src.write_bytes(payload); b.EXPECTED_SOURCE_SHA256=hashlib.sha256(payload).hexdigest()
+              alias=b.prepare_inso_alias(data); target=data/b.ALIAS_TARGET_REL
+              assert target.read_bytes()==payload and alias['byteIdentical'] is True
+              assert alias['aliasRelativePath']=='aerosol/OPAC/optprop/INSO'
+              assert not (data/b.FAILED_V3_ALIAS_REL).exists() and not (data/b.FAILED_V4_ALIAS_REL).exists()
+          with tempfile.TemporaryDirectory() as td:
+              d=Path(td); low=d/'low'; high=d/'high'
+              low.write_text('540 1\n541 2\n'); high.write_text('540 1.1\n541 2.2\n')
+              x=a.validate_output_pair(low,high,'TEST'); assert x['outputsDiffer'] and x['grid']==[540.0,541.0]
+              high.write_text('540 1\n542 2\n')
+              try: a.validate_output_pair(low,high,'TEST')
+              except RuntimeError as e: assert 'grid mismatch' in str(e)
+              else: raise AssertionError('grid mismatch should fail')
+          base={'uvspecSha256':a.EXPECTED_UVSPEC_SHA256,'libRadtranDataTreeSha256':a.EXPECTED_BASE_DATA_SHA256}
+          pre={'libRadtranDataTreeSha256':a.EXPECTED_STAGED_DATA_SHA256,'libRadtranDataFileCount':10,'libRadtranDataByteCount':100}
+          alias={'byteIdentical':True,'sourceSha256':a.EXPECTED_SOURCE_SHA256,'aliasSha256':a.EXPECTED_SOURCE_SHA256,'aliasRelativePath':a.EXPECTED_ALIAS_REL,'traceEvidenceRunId':a.TRACE_RUN_ID,'traceEvidenceArtifactId':a.TRACE_ARTIFACT_ID,'traceEvidenceArtifactDigest':a.TRACE_ARTIFACT_DIGEST,'byteCount':17}
+          post={'libRadtranDataTreeSha256':'post','libRadtranDataFileCount':11,'libRadtranDataByteCount':117}
+          assert a.validate_runtime_reports(base,pre,post,alias)['status']=='POST_TRACE_OBSERVED_ALIAS_RUNTIME_PROVENANCE_VALIDATED'
+          print('v5 solver-free code tests: PASS')
+          PY
+      - name: Prove v5 scope and inactive activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          b=Path('review/opac-species-profile-transport-capability-v5/build_inputs.py').read_text()
+          a=Path('review/opac-species-profile-transport-capability-v5/activation_support.py').read_text()
+          p=Path('review/opac-species-profile-transport-capability-v5/PROTOCOL.md').read_text()
+          w=Path('.github/recovery-templates/opac-species-profile-transport-capability-v5.yml').read_text()
+          required_b=(
+            'STAGE_ID = "opac-species-profile-transport-capability-v5"',
+            'ALIAS_TARGET_REL = Path("aerosol/OPAC/optprop/INSO")',
+            'FAILED_V3_ALIAS_REL = Path("aerosol/OPAC/optprop/INSO.nc")',
+            'FAILED_V4_ALIAS_REL = Path("aerosol/OPAC/INSO.nc")',
+            'BYTE_IDENTICAL_TRACE_OBSERVED_OPAC_ALIAS_CREATED',
+            'MYSTIC_PHOTONS = 500_000','MYSTIC_SEED = 730_194_613',
+            '"scientificOrdinalAllocated": False','"taylorOrJerusalemUsed": False','"productionAuthorized": False',
+          )
+          missing=[x for x in required_b if x not in b]
+          if missing: raise SystemExit(f'builder freeze missing: {missing}')
+          required_a=('EXPECTED_ALIAS_REL = "aerosol/OPAC/optprop/INSO"','TRACE_RUN_ID = 33185460954','validate_output_pair','PASS_TRACE_OBSERVED_ALIAS_REACHES_DISORT_AND_MYSTIC')
+          missing=[x for x in required_a if x not in a]
+          if missing: raise SystemExit(f'activation support freeze missing: {missing}')
+          required_p=('NO SCIENTIFIC ORDINAL','33185460954','9691518729','aerosol/OPAC/optprop/INSO','with no extension','Ordinal 41 remains unallocated')
+          missing=[x for x in required_p if x.lower() not in p.lower()]
+          if missing: raise SystemExit(f'protocol freeze missing: {missing}')
+          required_w=('status/opac-species-profile-transport-capability-v5','REQUEST_ONE_SHOT_OPAC_TRACE_OBSERVED_ALIAS_CAPABILITY_V5','33185460954','9691518729','cmp "$DATA/aerosol/OPAC/optprop/inso.mie.cdf" "$DATA/aerosol/OPAC/optprop/INSO"','validate_output_pair','PASS_TRACE_OBSERVED_ALIAS_REACHES_DISORT_AND_MYSTIC')
+          missing=[x for x in required_w if x not in w]
+          if missing: raise SystemExit(f'inactive workflow freeze missing: {missing}')
+          if 'workflow_dispatch:' in w: raise SystemExit('manual dispatch forbidden')
+          if 'aerosol_file tau' in b: raise SystemExit('competing aerosol_file tau leaked into builder')
+          if 'ALIAS_TARGET_REL = Path("aerosol/OPAC/optprop/INSO.nc")' in b or 'ALIAS_TARGET_REL = Path("aerosol/OPAC/INSO.nc")' in b: raise SystemExit('historical failed alias revived')
+          PY
+      - name: Freeze solver-free review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir review-receipt
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def blob(path):
+              b=Path(path).read_bytes(); return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+          out={
+            'schemaVersion':1,
+            'stageId':'opac-species-profile-transport-capability-v5-review',
+            'status':'REVIEW_PASS_TRACE_GROUNDED_ACTIVATION_INACTIVE_NO_LIBRADTRAN_EXECUTION',
+            'reviewHead':os.environ['PR_HEAD'],
+            'workflowRunId':int(os.environ['GITHUB_RUN_ID']),
+            'workflowRunAttempt':1,
+            'builderGitBlobSha1':blob('review/opac-species-profile-transport-capability-v5/build_inputs.py'),
+            'activationSupportGitBlobSha1':blob('review/opac-species-profile-transport-capability-v5/activation_support.py'),
+            'protocolGitBlobSha1':blob('review/opac-species-profile-transport-capability-v5/PROTOCOL.md'),
+            'inactiveWorkflowGitBlobSha1':blob('.github/recovery-templates/opac-species-profile-transport-capability-v5.yml'),
+            'traceRunId':int(os.environ['TRACE_RUN_ID']),
+            'traceArtifactId':int(os.environ['TRACE_ARTIFACT_ID']),
+            'traceArtifactDigest':os.environ['TRACE_ARTIFACT_DIGEST'],
+            'traceObservedAlias':'aerosol/OPAC/optprop/INSO',
+            'libRadtranExecuted':False,
+            'mysticExecuted':False,
+            'scientificOrdinalAllocated':False,
+            'taylorOrJerusalemUsed':False,
+            'productionAuthorized':False,
+            'activationAuthorizedByReview':False,
+          }
+          raw=json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); out['contentSha256']=hashlib.sha256(raw).hexdigest()
+          Path('review-receipt/review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opac-species-profile-transport-capability-v5-review
+          path: review-receipt/
+          if-no-files-found: error
+          compression-level: 0

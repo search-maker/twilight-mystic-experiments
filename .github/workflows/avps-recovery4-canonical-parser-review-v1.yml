@@ -1,0 +1,152 @@
+name: Review AVPS Recovery4 canonical parser repair v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - .github/workflows/avps-recovery4-canonical-parser-review-v1.yml
+      - .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+      - .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      - scripts/avps_write_quiet_parser_v1.py
+      - tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+      - tests/test_avps_recovery4_canonical_parser_reviewer_v1.py
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: avps-recovery4-canonical-parser-review-v1-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  zero-runtime-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SELF_PATH: .github/workflows/avps-recovery4-canonical-parser-review-v1.yml
+      INSTALL_TEST: tests/test_avps_recovery4_canonical_parser_reviewer_v1.py
+      SCIENCE_PATH: .github/workflows/avps-v2-postconsumption-recovery4-science.yml
+      PUBLISHER_PATH: .github/workflows/avps-v2-recovery4-ordinal45-final-dispatch-publisher-v3.yml
+      PARSER_PATH: scripts/avps_write_quiet_parser_v1.py
+      PARSER_TEST: tests/test_avps_recovery4_canonical_write_quiet_parser_v1.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Bind exact event head base and changed-path mode
+        shell: bash
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EVENT_BASE_REF" = main
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          test "$(git merge-base "$EVENT_BASE" HEAD)" = "$EVENT_BASE"
+          test -z "$(git rev-list --min-parents=2 "$EVENT_BASE"..HEAD)"
+          git diff --name-only "$EVENT_BASE"...HEAD | sort > changed.txt
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          changed=set(Path('changed.txt').read_text().splitlines())
+          self_path=os.environ['SELF_PATH']; install_test=os.environ['INSTALL_TEST']
+          science=os.environ['SCIENCE_PATH']; publisher=os.environ['PUBLISHER_PATH']
+          parser=os.environ['PARSER_PATH']; parser_test=os.environ['PARSER_TEST']
+          install={self_path,install_test}
+          phase_b_allowed={science,publisher,parser,parser_test}
+          phase_b_required={science,parser,parser_test}
+          if changed==install:
+              mode='INSTALLATION'
+          elif self_path not in changed and install_test not in changed and phase_b_required <= changed <= phase_b_allowed:
+              mode='PHASE_B'
+          else:
+              raise SystemExit('AVPS canonical parser reviewer refuses changed-path scope: '+repr(sorted(changed)))
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODE='+mode+'\n')
+          PY
+
+      - name: Bind Phase-B as a wholly fresh direct child
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t PARENTS < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          test "${#PARENTS[@]}" = 1
+          test "${PARENTS[0]}" = "$EVENT_BASE"
+
+      - name: Prove reviewer is read-only zero-runtime and non-authorizing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['SELF_PATH']).read_text()
+          on=p.split('\non:\n',1)[1].split('\npermissions:\n',1)[0]
+          if 'pull_request:' not in on or ('workflow_'+'dispatch:') in on: raise SystemExit('reviewer trigger drift')
+          perms=p.split('\npermissions:\n',1)[1].split('\nconcurrency:\n',1)[0]
+          if ': write' in perms: raise SystemExit('reviewer gained write permission')
+          required=(os.environ['SCIENCE_PATH'],os.environ['PUBLISHER_PATH'],os.environ['PARSER_PATH'],os.environ['PARSER_TEST'])
+          for x in required:
+              if x not in p: raise SystemExit('reviewer missing future repair surface: '+x)
+          forbidden=('gh workflow '+'run','gh api -X '+'POST','workflow_'+'dispatch:', 'command -v '+'uvspec','rte_solver '+'mystic','mc_'+'photons 20000000')
+          body=p.split('permissions:',1)[1]
+          for x in forbidden:
+              if x in body: raise SystemExit('reviewer contains forbidden execution token: '+x)
+          if "mode='INSTALLATION'" not in p or "mode='PHASE_B'" not in p: raise SystemExit('reviewer mode gate missing')
+          if "self_path not in changed" not in p or "install_test not in changed" not in p: raise SystemExit('reviewer could self-certify Phase-B')
+          PY
+
+      - name: Run installation contract only
+        if: env.MODE == 'INSTALLATION'
+        run: python "$INSTALL_TEST"
+
+      - name: Run actual canonical parser regression and workflow wiring checks
+        if: env.MODE == 'PHASE_B'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$PARSER_TEST"
+          python tests/test_avps_recovery4_ordinal45_write_quiet_parser_repair.py
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          parser=Path(os.environ['PARSER_PATH']).read_text()
+          science=Path(os.environ['SCIENCE_PATH']).read_text()
+          if 'def write_quiet_end_binding' not in parser or 'def record_write_quiet_end' not in parser or 'def is_write_quiet_begin' not in parser:
+              raise SystemExit('canonical parser API missing')
+          for x in ('subprocess','requests','urllib','uvspec','rte_solver','mc_photons'):
+              if x in parser: raise SystemExit('canonical parser contains runtime/network token: '+x)
+          if 'from scripts.avps_write_quiet_parser_v1 import' not in science:
+              raise SystemExit('science preflight does not consume canonical parser')
+          stale=("first.startswith('WRITE_QUIET_END')", "elif first.startswith('WRITE_QUIET_BEGIN'):")
+          for x in stale:
+              if x in science: raise SystemExit('stale first-line-only science parser remains: '+x)
+          PY
+
+      - name: Emit non-authorizing summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### AVPS Recovery4 canonical parser review v1'
+            echo "mode=${MODE:-UNBOUND}"
+            echo 'read-only / zero-runtime / result-blind'
+            echo 'no publisher invocation, WRITE_QUIET entry, dispatch, seed or ordinal allocation, solver, result opening, science authority, Taylor/Jerusalem use, or production is authorized by this review'
+            echo 'installation-mode execution is installation evidence only and MUST NOT be treated as independent acceptance of the reviewer being installed'
+          } >> "$GITHUB_STEP_SUMMARY"

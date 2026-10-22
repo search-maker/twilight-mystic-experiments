@@ -1,0 +1,227 @@
+name: Taylor HRRR vertical aerosol sensitivity v1
+run-name: Taylor HRRR vertical sensitivity v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-hrrr-vertical-sensitivity-v1/**'
+      - '.github/workflows/taylor-hrrr-vertical-sensitivity-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: taylor-hrrr-vertical-sensitivity-v1-scientific-1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/taylor-hrrr-vertical-sensitivity-v1
+  SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  HRRR_ARTIFACT_ID: '9630599968'
+  HRRR_ARTIFACT_DIGEST: 'sha256:afd3f5fbf3e20674a1c5432112ce36fcb7f6678690f9ea8cff5ef6bcca5d5c9c'
+  HRRR_PROFILE_SHA256: '6c48520804becaa1d36936b02090aa1d7002650a438648fab168873a6b64c37d'
+  BASELINE_ARTIFACT_ID: '9624747631'
+  BASELINE_ARTIFACT_DIGEST: 'sha256:242ad28f9a46fa2c90006ff728eeefb8e6c30b3ca583c4f044af4d48f8821dea'
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      head: ${{ steps.guard.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - id: guard
+        name: Verify one-shot frozen identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "science/taylor-hrrr-vertical-sensitivity-v1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json
+          m=json.load(open('experiments/taylor-hrrr-vertical-sensitivity-v1/manifest.json'))
+          assert m['executionKey']=='taylor-hrrr-vertical-sensitivity-v1:scientific:1'
+          assert m['frozenRows']==list(range(23,33))
+          assert m['wavelengthNm']==550.0
+          assert m['mystic']['photonsPerRayPerCondition']==50000
+          assert m['mystic']['maximumSolverCalls']==1280
+          assert m['mystic']['maximumPhotonHistories']==64000000
+          seeds=[]
+          for row in range(23,33):
+              seeds += [943000000+row*1000+i for i in range(1,65)]
+              seeds += [944000000+row*1000+i for i in range(1,65)]
+          assert len(seeds)==1280 and len(set(seeds))==1280
+          print('FROZEN DIAGNOSTIC CONTRACT PASS',len(seeds))
+          PY
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Materialize immutable Taylor v1 source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          mkdir -p frozen-source
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/observations.csv" > frozen-source/observations.csv
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+      - name: Download and verify immutable HRRR profile artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HRRR_ARTIFACT_ID" --jq .digest)"
+          test "$actual" = "$HRRR_ARTIFACT_DIGEST"
+          gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/actions/artifacts/$HRRR_ARTIFACT_ID/zip" > hrrr.zip
+          mkdir hrrr && unzip -q hrrr.zip -d hrrr
+          profile="$(find hrrr -type f -name ann_arbor_hrrr_smoke_vertical_profile_2025-08-08.csv -print -quit)"
+          test -n "$profile"
+          echo "$HRRR_PROFILE_SHA256  $profile" | sha256sum -c -
+          cp "$profile" hrrr-profile.csv
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-hrrr-vertical-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact reviewed MYSTIC runtime and syntax
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock "$RUNTIME_LOCK" --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['uvspecHelpSha256']=='868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          PY
+          python "$PKG/run_profile_row.py" --syntax-only --row 25 \
+            --baseline-runner frozen-source/run_row.py --observations frozen-source/observations.csv \
+            --response frozen-source/sqm_response.csv --hrrr-profile hrrr-profile.csv \
+            --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --output-dir syntax-probe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-hrrr-vertical-v1-preflight
+          path: |
+            runtime-report.json
+            syntax-probe
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        row: [23,24,25,26,27,28,29,30,31,32]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Materialize immutable source and HRRR inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          mkdir -p frozen-source
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/observations.csv" > frozen-source/observations.csv
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HRRR_ARTIFACT_ID" --jq .digest)"
+          test "$actual" = "$HRRR_ARTIFACT_DIGEST"
+          gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/actions/artifacts/$HRRR_ARTIFACT_ID/zip" > hrrr.zip
+          mkdir hrrr && unzip -q hrrr.zip -d hrrr
+          profile="$(find hrrr -type f -name ann_arbor_hrrr_smoke_vertical_profile_2025-08-08.csv -print -quit)"
+          echo "$HRRR_PROFILE_SHA256  $profile" | sha256sum -c -
+          cp "$profile" hrrr-profile.csv
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-hrrr-vertical-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Execute fixed 550-nm vertical-shape comparison
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/run_profile_row.py" --row "${{ matrix.row }}" \
+            --baseline-runner frozen-source/run_row.py --observations frozen-source/observations.csv \
+            --response frozen-source/sqm_response.csv --hrrr-profile hrrr-profile.csv \
+            --uvspec "$(command -v uvspec)" --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-dir "row-${{ matrix.row }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-hrrr-vertical-v1-row-${{ matrix.row }}
+          path: row-${{ matrix.row }}
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  analysis:
+    needs: [preflight,cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-hrrr-vertical-v1-row-*
+          path: all-row-artifacts
+          merge-multiple: false
+      - name: Download frozen Taylor broadband baseline analysis
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BASELINE_ARTIFACT_ID" --jq .digest)"
+          test "$actual" = "$BASELINE_ARTIFACT_DIGEST"
+          gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/actions/artifacts/$BASELINE_ARTIFACT_ID/zip" > baseline.zip
+          mkdir baseline && unzip -q baseline.zip -d baseline
+      - name: Analyze frozen vertical-shape effect
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze_profile.py" --results-root all-row-artifacts --baseline-root baseline --output analysis-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-hrrr-vertical-v1-analysis
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90

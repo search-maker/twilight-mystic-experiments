@@ -1,0 +1,225 @@
+name: Taylor CAMS vertical aerosol sensitivity v1
+run-name: Taylor CAMS vertical sensitivity v1 | ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - 'experiments/taylor-cams-vertical-sensitivity-v1/**'
+      - '.github/workflows/taylor-cams-vertical-sensitivity-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: taylor-cams-vertical-sensitivity-v1-scientific-1
+  cancel-in-progress: false
+
+env:
+  PKG: experiments/taylor-cams-vertical-sensitivity-v1
+  SOURCE_SHA: 7231bd873859cc8c36fe6749985e0ece193b5de7
+  HELPER_SHA: 3b32dfba4d861c0db8a4c2dac3e2d5c4ce73e359
+  CAMS_RUN_ID: '33039911540'
+  CAMS_ARTIFACT_NAME: taylor-cams-priorcycle-split-extinction532-v2
+  CAMS_PROFILE_SHA256: '6c3a3041b6718db415300323f23da0277752b6c9fc6c806e5eff7c493b060359'
+  BASELINE_RUN_ID: '33016529095'
+  BASELINE_ARTIFACT_NAME: taylor-sqm-mystic-v1-analysis-recovery
+  RUNTIME_LOCK: experiments/mystic-batch-v1/runtime-lock.micromamba.json
+  RUNTIME_PROBE: experiments/mystic-batch-v1/runtime_probe.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      head: ${{ steps.guard.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - id: guard
+        name: Verify frozen fresh identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_HEAD_REF" = "science/taylor-cams-vertical-sensitivity-v1"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python - <<'PY'
+          import json
+          m=json.load(open('experiments/taylor-cams-vertical-sensitivity-v1/manifest.json'))
+          assert m['executionKey']=='taylor-cams-vertical-sensitivity-v1:scientific:1'
+          assert m['frozenRows']==list(range(23,33))
+          assert m['cams']['retrievalRunId']==33039911540
+          assert m['cams']['artifactId']==9633502319
+          assert m['cams']['profileSha256']=='6c3a3041b6718db415300323f23da0277752b6c9fc6c806e5eff7c493b060359'
+          assert m['mystic']['photonsPerRayPerCondition']==50000
+          assert m['mystic']['maximumSolverCalls']==1280
+          seeds=[]
+          for row in range(23,33):
+              seeds += [953000000+row*1000+i for i in range(1,65)]
+              seeds += [954000000+row*1000+i for i in range(1,65)]
+          assert len(seeds)==1280 and len(set(seeds))==1280
+          assert min(seeds)>952000000
+          print('FRESH_CAMS_IDENTITY_PASS',len(seeds),min(seeds),max(seeds))
+          PY
+          python -m py_compile "$PKG/run_cams_row.py" "$PKG/analyze.py"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Download immutable CAMS profile artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CAMS_ARTIFACT_NAME }}
+          path: cams
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.CAMS_RUN_ID }}
+      - name: Verify CAMS profile bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f cams/profile.csv
+          echo "$CAMS_PROFILE_SHA256  cams/profile.csv" | sha256sum -c -
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-cams-vertical-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Verify exact reviewed MYSTIC runtime
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          UVSPEC="$(command -v uvspec)"
+          DATA_DIR="$CONDA_PREFIX/share/libRadtran/data"
+          ATM="$DATA_DIR/atmmod/afglus.dat"
+          python "$RUNTIME_PROBE" --uvspec "$UVSPEC" --data-dir "$DATA_DIR" --atmosphere "$ATM" --runtime-lock "$RUNTIME_LOCK" --output runtime-report.json
+          python - <<'PY'
+          import json
+          r=json.load(open('runtime-report.json'))
+          assert r['uvspecSha256']=='2b9c7a69e4dfe4e77ade97148b2499b0a2c205c8d8000d3516a29344cc9d2fc3'
+          assert r['uvspecHelpSha256']=='868aea5af762d968f6f62c4e1472916d25232ed9cab5be112d753b0823d20548'
+          assert r['libRadtranDataTreeSha256']=='ad30b49177e9c84e46497d69faf0c75e466996b0d0003f1de210289ae9f847d7'
+          assert r['atmosphereSha256']=='dab26290ed81c762ed0c607e5dc2d53393c1462a0c3a528bc5e3f5935191cfb5'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-vertical-v1-preflight
+          path: runtime-report.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cases:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        row: [23,24,25,26,27,28,29,30,31,32]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Materialize immutable source and successful 550-nm helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p frozen-source frozen-helper
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/run_row.py" > frozen-source/run_row.py
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/observations.csv" > frozen-source/observations.csv
+          git show "$SOURCE_SHA:experiments/taylor-ann-arbor-sqm-mystic-v1/sqm_response.csv" > frozen-source/sqm_response.csv
+          git fetch --no-tags --depth=1 origin "$HELPER_SHA"
+          git show "$HELPER_SHA:experiments/taylor-hrrr-vertical-sensitivity-v3/run_profile_row.py" > frozen-helper/run_profile_row.py
+          python -m py_compile frozen-helper/run_profile_row.py frozen-source/run_row.py
+      - name: Download immutable CAMS profile
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CAMS_ARTIFACT_NAME }}
+          path: cams
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.CAMS_RUN_ID }}
+      - name: Verify CAMS profile
+        shell: bash
+        run: echo "$CAMS_PROFILE_SHA256  cams/profile.csv" | sha256sum -c -
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: taylor-cams-vertical-v1
+          create-args: >-
+            -c conda-forge
+            python=3.12.4
+            numpy=2.3.2
+            rubin-libradtran=2.0.6=py312pl5321he9373c2_1
+          cache-environment: true
+          cache-downloads: true
+      - name: Execute frozen 550-nm default-vs-CAMS comparison
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          python "$PKG/run_cams_row.py" --row "${{ matrix.row }}" \
+            --helper-runner frozen-helper/run_profile_row.py \
+            --baseline-runner frozen-source/run_row.py \
+            --observations frozen-source/observations.csv \
+            --response frozen-source/sqm_response.csv \
+            --cams-profile cams/profile.csv \
+            --uvspec "$(command -v uvspec)" \
+            --data-dir "$CONDA_PREFIX/share/libRadtran/data" \
+            --output-dir "row-${{ matrix.row }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taylor-cams-vertical-v1-row-${{ matrix.row }}
+          path: row-${{ matrix.row }}
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  analysis:
+    needs: [preflight,cases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check numpy==2.3.2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: taylor-cams-vertical-v1-row-*
+          path: all-row-artifacts
+          merge-multiple: false
+      - name: Download frozen Taylor broadband baseline analysis
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BASELINE_ARTIFACT_NAME }}
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: search-maker/twilight-mystic-experiments
+          run-id: ${{ env.BASELINE_RUN_ID }}
+      - name: Analyze frozen CAMS vertical-shape effect
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$PKG/analyze.py" --results-root all-row-artifacts --baseline-root baseline --output analysis-output
+          cat analysis-output/report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-vertical-v1-analysis
+          path: analysis-output
+          if-no-files-found: error
+          retention-days: 90

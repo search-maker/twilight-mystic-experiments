@@ -1,0 +1,65 @@
+name: Taylor CAMS current-cycle AOD sanity v1
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  current-cycle-aod:
+    if: github.head_ref == 'review/taylor-cams-direct-extinction-retrieval-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ADS_API_KEY: ${{ secrets.ADS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install clients
+        run: python -m pip install --disable-pip-version-check 'cdsapi>=0.7.7' eccodes
+      - name: Retrieve and decode current-cycle AOD
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import cdsapi,csv,json,os,pathlib
+          from eccodes import codes_grib_new_from_file,codes_get,codes_get_array,codes_release
+          LAT=42.256; LON=-83.709; out=pathlib.Path('out')
+          req={'variable':['total_aerosol_optical_depth_532nm','total_aerosol_optical_depth_550nm'],'date':['2025-08-08/2025-08-08'],'time':['00:00'],'leadtime_hour':['0','3'],'type':['forecast'],'data_format':'grib','area':[42.4,-84.0,42.0,-83.6]}
+          (out/'request.json').write_text(json.dumps(req,indent=2,sort_keys=True)+'\n')
+          c=cdsapi.Client(url='https://ads.atmosphere.copernicus.eu/api',key=os.environ['ADS_API_KEY'],quiet=False,debug=False)
+          f=out/'aod.grib'; c.retrieve('cams-global-atmospheric-composition-forecasts',req,str(f))
+          rows=[]
+          with f.open('rb') as fh:
+              while True:
+                  g=codes_grib_new_from_file(fh)
+                  if g is None: break
+                  try:
+                      s=str(codes_get(g,'shortName')); n=str(codes_get(g,'name')); step=int(codes_get(g,'step'))
+                      lats=codes_get_array(g,'latitudes'); lons=codes_get_array(g,'longitudes'); vals=codes_get_array(g,'values')
+                      pts=[]
+                      for la,lo,v in zip(lats,lons,vals):
+                          lo=float(lo); lo=lo-360 if lo>180 else lo; pts.append((round(float(la),6),round(lo,6),float(v)))
+                      by={(y,x):v for y,x,v in pts}; ys=sorted({p[0] for p in pts}); xs=sorted({p[1] for p in pts})
+                      y0=max(y for y in ys if y<=LAT); y1=min(y for y in ys if y>=LAT); x0=max(x for x in xs if x<=LON); x1=min(x for x in xs if x>=LON)
+                      fy=0 if y1==y0 else (LAT-y0)/(y1-y0); fx=0 if x1==x0 else (LON-x0)/(x1-x0)
+                      v=(1-fy)*((1-fx)*by[(y0,x0)]+fx*by[(y0,x1)])+fy*((1-fx)*by[(y1,x0)]+fx*by[(y1,x1)])
+                      rows.append({'base':'2025-08-08T00Z','leadHour':step,'validHourUTC':step,'shortName':s,'name':n,'value':v})
+                  finally: codes_release(g)
+          rows.sort(key=lambda r:(r['leadHour'],r['shortName']))
+          with (out/'current_cycle_aod.csv').open('w',newline='') as q:
+              w=csv.DictWriter(q,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+          (out/'summary.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n'); print(json.dumps(rows,indent=2))
+          PY
+          sha256sum out/* > out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taylor-cams-currentcycle-aod-v1
+          path: out
+          if-no-files-found: error
+          retention-days: 90

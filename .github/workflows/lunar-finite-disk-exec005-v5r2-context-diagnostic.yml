@@ -1,0 +1,231 @@
+name: Lunar exec005 V5R2 non-science repository-context diagnostic
+
+on:
+  push:
+    branches:
+      - review/lunar-finite-disk-exec005-v5r2-diagnostic-v1
+    paths:
+      - 'tools/lunar_exec005_v5r2_context_diagnostic.py'
+      - '.github/workflows/lunar-finite-disk-exec005-v5r2-context-diagnostic.yml'
+  pull_request:
+    types: [opened]
+    branches:
+      - main
+    paths:
+      - 'tools/lunar_exec005_v5r2_context_diagnostic.py'
+      - '.github/workflows/lunar-finite-disk-exec005-v5r2-context-diagnostic.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: lunar-exec005-v5r2-diagnostic-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BASE: 5f3e3de7395ce20d79a210066d0836515d35996f
+  EXPECTED_MAIN: 5f3e3de7395ce20d79a210066d0836515d35996f
+  EXPECTED_BRANCH: review/lunar-finite-disk-exec005-v5r2-diagnostic-v1
+  MAIN_PUSH_CI_RUN: '34281609652'
+  SCANNER_BLOB: 4c6d704fa24228284780bcb1dd7c52537b4c5b0d
+  TRACKED_SCANNER_BLOB: 1c110d75b516cb7b9d50dc2674080f4a67e55d2a
+  CONTROLLING_TRANSITION: '5590748165'
+  FROZEN_V5R1_PR: '1002'
+  FROZEN_V5R1_HEAD: ccae998aaeb6aeed0116833058620fd7e539dc30
+  FROZEN_V5R1_RUN: '34263085298'
+  FROZEN_V5R1_JOB: '102185638768'
+  DIAGNOSTIC_TOOL: tools/lunar_exec005_v5r2_context_diagnostic.py
+  WORKFLOW_PATH: .github/workflows/lunar-finite-disk-exec005-v5r2-context-diagnostic.yml
+
+jobs:
+  generic-actual-byte-stress:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Validate fresh V5R2 diagnostic head and frozen boundaries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
+          test "$(git rev-list --count "$EXPECTED_BASE..HEAD")" = 1
+          test -z "$(git rev-list --merges "$EXPECTED_BASE..HEAD")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$EXPECTED_MAIN"
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > changed.txt
+          printf '%s\n' "$WORKFLOW_PATH" "$DIAGNOSTIC_TOOL" | sort > expected.txt
+          diff -u expected.txt changed.txt
+          test "$(git hash-object experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = "$SCANNER_BLOB"
+          test "$(git hash-object experiments/aerosol-family-challenge-v2/tracked_tree_seed_scan.py)" = "$TRACKED_SCANNER_BLOB"
+          test -z "$(command -v uvspec || true)"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MAIN_PUSH_CI_RUN" > main-ci.json
+          python - <<'PY'
+          import json, os
+          row=json.load(open('main-ci.json'))
+          assert row['id']==int(os.environ['MAIN_PUSH_CI_RUN'])
+          assert row['head_sha']==os.environ['EXPECTED_MAIN'] and row['event']=='push' and row['run_attempt']==1
+          assert row['status']=='completed' and row['conclusion']=='success'
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$FROZEN_V5R1_PR" --jq .head.sha | grep -Fx "$FROZEN_V5R1_HEAD"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FROZEN_V5R1_RUN" --jq '[.id,.run_attempt,.status,.conclusion]|@tsv' | grep -Fx $'34263085298\t1\tcompleted\tfailure'
+      - name: Clear stale diagnostic workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v5r2-diagnostic/stale
+          printf 'stale\n' > v5r2-diagnostic/stale/sentinel
+          rm -rf v5r2-diagnostic
+          mkdir -p v5r2-diagnostic
+          test ! -e v5r2-diagnostic/stale/sentinel
+      - name: EXACT_EXECUTABLE_STRESS_PASS on actual V5R2 diagnostic bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$DIAGNOSTIC_TOOL" --self-test | tee v5r2-diagnostic/self-test.json
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os
+          tool=Path(os.environ['DIAGNOSTIC_TOOL'])
+          wf=Path(os.environ['WORKFLOW_PATH'])
+          assert 'subprocess' not in tool.read_text()
+          assert 'candidateSeeds' not in tool.read_text()
+          receipt={
+            'schema':'LUNAR_EXEC005_V5R2_GENERIC_STRESS_V1',
+            'status':'PASS_V5R2_GENERIC_ACTUAL_BYTE_STRESS_NOT_AUTHORIZED',
+            'controllingTransition':os.environ['CONTROLLING_TRANSITION'],
+            'toolSha256':hashlib.sha256(tool.read_bytes()).hexdigest(),
+            'workflowSha256':hashlib.sha256(wf.read_bytes()).hexdigest(),
+            'scannerBlob':os.environ['SCANNER_BLOB'],
+            'trackedScannerBlob':os.environ['TRACKED_SCANNER_BLOB'],
+            'scienceAuthorized':False,
+            'protectedAttemptAuthorized':False,
+            'seedValuesPresent':False,
+            'solverRuntimePresent':False,
+          }
+          Path('v5r2-diagnostic/generic-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lunar-exec005-v5r2-generic-stress
+          path: v5r2-diagnostic
+          if-no-files-found: error
+
+  live-complete-repository-diagnostic:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Bind exact PR event and prior generic stress
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_HEAD_REF" = "$EXPECTED_BRANCH"
+          test "$PR_BASE" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
+          test "$(git rev-list --count "$EXPECTED_BASE..HEAD")" = 1
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$EXPECTED_MAIN"
+          test "$(git hash-object experiments/aerosol-family-challenge-v2/repository_global_seed_scan.py)" = "$SCANNER_BLOB"
+          test -z "$(command -v uvspec || true)"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$PR_HEAD&event=push&per_page=100" > exact-push-runs.json
+          python - <<'PY'
+          import json, os
+          rows=json.load(open('exact-push-runs.json'))['workflow_runs']
+          hits=[r for r in rows if r.get('path')==os.environ['WORKFLOW_PATH']]
+          assert len(hits)==1, [(r.get('id'),r.get('path'),r.get('status'),r.get('conclusion')) for r in hits]
+          r=hits[0]
+          assert r['run_attempt']==1 and r['status']=='completed' and r['conclusion']=='success', r
+          print('generic_run='+str(r['id']))
+          PY
+      - name: Wait for other exact-head Actions bookkeeping to settle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 30); do
+            active="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$PR_HEAD&per_page=100" --jq "[.workflow_runs[]|select(.id != $GITHUB_RUN_ID and (.status == \"queued\" or .status == \"in_progress\"))]|length")"
+            test "$active" = 0 && exit 0
+            sleep 10
+          done
+          echo 'other exact-head Actions did not settle' >&2
+          exit 1
+      - name: Run NON_AUTHORIZING ACTUAL complete-repository V5R2 diagnostic
+        id: live
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf v5r2-live
+          mkdir -p v5r2-live
+          python "$DIAGNOSTIC_TOOL" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 60 \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --output v5r2-live/repository-context-diagnostic.json
+      - name: Validate sanitized diagnostic artifact schema
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f v5r2-live/repository-context-diagnostic.json
+          python - <<'PY'
+          import json
+          row=json.load(open('v5r2-live/repository-context-diagnostic.json'))
+          assert row['schema']=='LUNAR_EXEC005_V5R2_REPOSITORY_CONTEXT_DIAGNOSTIC_V1'
+          assert row['batchCount']==3
+          assert row['scienceAuthorized'] is False
+          assert row['protectedAttemptAuthorized'] is False
+          assert row['seedValuesPresent'] is False
+          assert row['solverRuntimePresent'] is False
+          assert len(row['batches'])==3
+          for batch in row['batches']:
+            assert len(batch['stableContextSha256'])==64
+            for surface, items in batch['evidence']['rows'].items():
+              for item in items:
+                assert set(item)=={'id','sha256'} and len(item['sha256'])==64
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lunar-exec005-v5r2-context-diagnostic
+          path: v5r2-live/repository-context-diagnostic.json
+          if-no-files-found: error
+      - name: Preserve fail-closed live classification
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(python -c "import json; print(json.load(open('v5r2-live/repository-context-diagnostic.json'))['status'])")"
+          echo "diagnostic_status=$status"
+          test "$status" = PASS_V5R2_DIAGNOSTIC_STABLE_NOT_AUTHORIZED

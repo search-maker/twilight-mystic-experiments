@@ -1,0 +1,28 @@
+# Loss of the Night 2015 twilight campaign — original-source audit (2026-11-20)
+
+**Classification:** NEW original human-observer campaign locator, NOT retrieved original event records, NOT preregistered validation, ZERO admitted first-NO-to-first-YES intervals.
+
+## Verified original evidence
+
+1. Christopher Kyba, **7 August 2015**, original project announcement, [First community experiment!](https://lossofthenight.blogspot.com/2015/08/first-community-experiment.html). The call specified **7–14 August 2015**, repeated eight-star HUMAN observing sessions during twilight, after the first star appeared and before complete darkness, with quick decisions to reduce intra-session brightness drift. The announcement proves solicitation, **not completed or preserved raw sessions**.
+2. [Project's 18 November 2014 original report](https://lossofthenight.blogspot.com/2014/11/) describes per-named-star statuses: clearly seen, barely seen, seen with averted vision, not visible, and uncertain. These are **human-per-star** reports, distinct from an all-sky optical camera, but an eight-DIFFERENT-star session is NOT a same-star last-negative / first-positive onset bracket.
+3. [Project's 3 December 2015 original announcement](https://lossofthenight.blogspot.com/2015/12/putting-citizen-science-data-back-in.html) confirms historical individual-session display, not full original-event export/custody for the specific August campaign.
+4. [Current My Sky at Night help](https://www.myskyatnight.com/) explicitly says publicly mapped data OMIT observations with TWILIGHT, clouds or fog and rounds public coordinates to **0.001 degree** for privacy. Its current help also reports inability to access *new* observations. Therefore missing public map pins do NOT show that the original campaign had no twilight records. Public rounded coordinates are NOT exact observer positions.
+5. [Original app observation guide](https://lossofthenight.blogspot.com/2013/11/a-step-by-step-guide-to-using-loss-of.html) describes per-star visual response choices. Specific app version, stored clock provenance, repeat-target timing and orientation/adaptation require original raw metadata; none retrieved.
+
+## Provenance / ground-truth manifest — source state before viewing any event outcomes
+
+| Candidate | Original raw data | Reliable site/time | Star ID/magnitude | Solar/pointing | Weather/aerosol/skyglow | Adaptation/observer | Same-star last NO -> first YES | Admission |
+|---|---|---|---|---|---|---|---|---|
+| 2015-08-07..14 original human twilight campaign | NOT OBTAINED; checksum unknown | NOT VERIFIED | Potential by app design; original IDs NOT VERIFIED | Derivable only if raw site/time/target metadata recovered | NOT VERIFIED | NOT VERIFIED | NOT VERIFIED | SOURCE LOCATOR ONLY |
+| My Sky at Night public map | Original twilight records EXCLUDED by own help | Public coords rounded | Some public chart stars | Inadequate | Not matched | No verified protocol | NONE VALIDATED | REJECT as first-visibility ground truth |
+
+**Action for pre-existing authorized outreach owner, not an email already sent:** After review of existing correspondence for duplication/declines, ask original research custodian whether 7–14 August 2015 *First community experiment* raw records exist; permission/consent for privacy-preserving scientific use; event-level UTC and clock quality, observer/session pseudonyms, scientifically bounded site and version, precise target catalog star ID/magnitude/alt/az, per-target timestamped seen/not-seen/averted/unsure decisions and repeated same-target attempts, directional cloud/obstruction, sensor skyglow and AOD provenance, eye adaptation/screen conditions, and source checksums. Never post private observer or exact home-location identifiers in a public issue; no cost commitment.
+
+## Result-blind acceptance limits and next action
+
+No trial scoring until the Coordinator approves ONE normative V0/R1 protocol, chooses the admissible raw-source cohort without viewing outcomes, freezes exact **scientifically qualified** runnable predictor SHA/atmosphere/catalog sources and protected-case exclusions, predetermines time/site/error tolerances, scoring, thresholds, max sample/computation budget, stopping, and seals the predictions before original rows are opened. **This locator is NOT the preregistration or model SHA lock.**
+
+Require the same identified star's final NOT_SEEN check and subsequent first CONFIRMED_YES check with reliable times and sky/pointing conditions. If only different-star answers in a single session exist, classify as limiting-magnitude binary evidence, **not** first appearance. Do not substitute zenith SG_088 at 90 degrees for a target at <=80 degrees or human response. Exclude demo/uncertain/rounded-site-unbounded, cloud-obscured and previously calibrated/protected events from independent held-out first-sighting scoring. This 2015 cohort can at most be retrospective external validation with model locked before any event outcomes are accessed.
+
+**Measured today:** new original campaign and public access constraint verified; raw original observer outcome rows=0; qualified human onset brackets=0; predictive bias and uncertainty NOT COMPUTABLE. 2–10.5 degree domain remains conditional, (10.5,16] unsupported/null, >16 v1 OOD. No Taylor/Jerusalem/Ann Arbor protected data, no MYSTIC solver, no spent ordinal67 or frozen ordinal68, no emails, no paid actions.

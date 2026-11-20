@@ -1,0 +1,31 @@
+# Kejimkujik 2024 human visual log: original SITE 15 locator narrowed by a 2023 GPX-derived source (2026-11-20 EST)
+
+**Classification: NEW SECONDARY SITE-LOCATION EVIDENCE; NOT A FIRST-SIGHTING VALIDATION.** The observer's original first-noticed-star text was already inventoried in workboard #152 comment 7031033189; its observed star times must **not** be counted as newly found first-visibility brackets. This note only revises *candidate* location provenance and quantifies sensitivity of reported solar geometry. It does not open a protected Taylor/Jerusalem holdout, score a model, or run MYSTIC.
+
+## Custody and independent source crosscheck
+
+1. **Original observer-authored report:** [ScienceDownEast, General Session June 5–6, 2024](https://www.sciencedowneast.com/joomla4/index.php/observations/all-observations/general-session-june-5-6-2024), lines labelled *Location: Site 15 on Big Muise Island, Kejimkujik National Park, NS*, records time window 21:30–01:15 ADT, early checks labeled *Visual*, Arcturus at 21:45, Spica and Algieba at 21:55, Castor/Pollux at 22:15 and Regulus + five sickle stars at 22:39. Contains cloud and seeing/transparency descriptions, but **NO target-specific previous NOT_SEEN attempts**, no checked GPS/horizon bearing, no prelocked predictions or measured coincident AOD. Direct original HTML open/read PASS on 2026-11-20; original byte acquisition/SHA256 **NOT_ACQUIRED**. Several different instruments appear later in the session; do not assume all reported objects were unaided-eye.
+2. **Public national-park GPS provenance:** [Parks Canada Backcountry Guide](https://parks.canada.ca/pn-np/ns/kejimkujik/visit/cartes-maps/arriere-pays-back-country) explicitly offers GPS/GPX campsite tracks through the Friends of Keji; official backcountry maps identify site number 15. However the referred Friends of Keji download [Backcountry.htm](https://www.friendsofkeji.ns.ca/Backcountry.htm) returned HTTP 502 in this run: **the original GPX bytes, version, checksum and individual waypoint are NOT directly verified**.
+3. **Separate accessible derivative, independently read through GitHub connector**: third-party open-source *Keji Camper* [DATA.md](https://github.com/MaddDennison/keji-camper/blob/main/docs/DATA.md) attributes *src/data/sites.ts* coordinates to `Campsites_RoofedAccom_forweb.gpx`, a Friends of Keji GPX bundle attributed there to Parks Canada 2023 data; its [source file](https://github.com/MaddDennison/keji-camper/blob/main/src/data/sites.ts) carries Git blob **`9b49f81f1145c33471ed3e9c56a08efad25d19c1`** at the read ref. Exact source entry `id: '15'`, `name: 'Site 15 · mid-lake island'`, `lat: 44.38217`, `lng: -65.24302`, `lake: Kejimkujik Lake`. This is **a derivative/secondary transcribed waypoint**, not a primary GPX byte-for-byte verification and not proof of the observer's exact beach/eye position or 2024 site stability. The repository warns it is unofficial. No privately identifying observer location is published here; this is a public campsite waypoint.
+
+## Independent finite solar-depth recalculation (no fitted model)
+
+Algorithm: Python `pyswisseph` 2.10.03, `swe.calc_ut(jd,swe.SUN,swe.FLG_EQUATORIAL | swe.FLG_SWIEPH)`, `swe.azalt(jd,swe.EQU2HOR,(lon,lat,0),0,0,(RA,Dec,r))`; use geometric centre altitude (`azalt` index 1, no refraction), `solar_depression=-alt`; ADT UTC offset -03:00. Both waypoints have assumed height 0 m **for this sensitivity comparison only**. Exact true elevation and actual observer location remain unknown.
+
+| Visual time (2024 Jun 5 ADT) | Original-log target | UTC on Jun 6 | Prior illustrative 44.37000,-65.23000 | New SECONDARY Site 15 44.38217,-65.24302 | Difference new − old |
+|---|---|---|---:|---:|---:|
+| 21:45 | Arcturus seen | 00:45 | 6.960934° | **6.945899°** | −0.015035° |
+| 21:55 | Spica/Algieba seen | 00:55 | 8.278220° | **8.263095°** | −0.015125° |
+| 22:15 | Castor/Pollux already seen | 01:15 | 10.786551° | **10.771294°** | −0.015256° |
+| 22:39 | Regulus already seen | 01:39 | 13.552664° | **13.537344°** | −0.015320° |
+
+Great-circle distance between illustrative point and derivative campsite waypoint: **1.704 km** (sphere radius 6371 km). Numerical coordinate shift changes these *illustrative* depressions by only ~0.015°, **not enough to turn any already-visible report into a bracketed first sighting**. Declared precision reflects numerical output only, **NOT actual source-coordinate, eye-position or clock accuracy**. Do not silently promote these numbers to observer-exact ephemerides. No independent altitude/azimuth/cirrus/horizon co-registration was secured.
+
+## Admission decision and owner handoff
+
+- **PASS (limited):** original observer narrative identifies Site 15; an accessible third-party GPX-derived public campsite waypoint exists at (44.38217,-65.24302), and four solar re-geometries were executed.
+- **NOT VERIFIED:** original Friends of Keji/Parks Canada campsite 15 GPX waypoint byte identity; actual 2024 observer GNSS/height, exact visible treeline and directional radiance, coincident aerosol QC, adaptation history, earlier NOT_SEEN checks, consent to re-use private logs.
+- **FAIL for independent predictive timing:** zero new first-NO/first-YES human brackets; no physical model predictions, bias, timing error, or high-depth 10.5–16° certification. `SG_088` zenith radiance is irrelevant to human first-sighting or star-pointing verification.
+- **Next legitimate source test:** outreach owner/Coordinator, using the already existing *unsent* Judy Black draft rather than creating duplicates, should request the original date-specific notes of **negative visual checks**, exact 2024 spot/horizon and whether campsite GPX records can be supplied, plus the prospective weekday site and voluntary observer permissions. Independent researcher may then compare original GPX waypoint SHA-256 and any consented raw observations. No new draft sent here. StarsVisibility Draft PR #207 is not a scientifically locked or released predictor; freeze only after validated version and inputs are designated, before outcomes.
+
+**No model tuning, protected holdout opening, paid commitment, MYSTIC workflow execution or user-facing accuracy claim is authorized by this source admission.**

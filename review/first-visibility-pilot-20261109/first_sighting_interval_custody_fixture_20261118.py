@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""FVS V0 human first-star detection: result-blind interval-custody fixture.
+"""FVS V0.1 first-sighting scientific admission criteria repair (2026-11-20).
+
+Previous V0 SHA 2983306b9634278b0f3f66f9d5da52e62fb688ba stays immutable.
+Pre-enrollment only. Align with R1: >=2 preceding NOT_SEEN, <=150 s bracket,
+<=10 s clock bound, star altitude 20..80 deg, sun depression 3..16 deg.
 
 RESEARCH PREPARATION ONLY. No enrolled volunteers, original observations,
 authenticated atmosphere or certified model accuracy are bundled here.
@@ -78,7 +82,7 @@ def evaluate(b, raw_log_bytes):
         x.get("target_id")!=b.get("target_id") or x.get("detection") not in VALID or
         x.get("mode") not in ("naked_eye_direct","naked_eye_averted","unknown") or
         not isinstance(x.get("clock_error_bound_s"),(int,float)) or
-        not 0<=x["clock_error_bound_s"]<=5
+        not 0<=x["clock_error_bound_s"]<=10
         for x in checks
     ):
         reasons.append("WRONG_TARGET_OPTICS_OR_CLOCK")
@@ -112,12 +116,15 @@ def evaluate(b, raw_log_bytes):
            for x in checks):
         reasons.append("OBSTRUCTED_OR_MISSED_CHECK_IN_BRACKET")
         return out
+    if sum(x["detection"]=="NOT_SEEN" and time(x["timestamp_utc"])<time(first_yes["timestamp_utc"]) for x in checks)<2:
+        reasons.append("FEWER_THAN_TWO_PRIOR_NEGATIVE_CHECKS")
+        return out
     if second_yes is None:
         reasons.append("NO_UNINTERRUPTED_REPEAT_CONFIRMATION")
         return out
     width=(time(first_yes["timestamp_utc"])-time(last_no["timestamp_utc"])).total_seconds()
-    if not 0<width<=120:
-        reasons.append("BRACKET_OVER_120_SECONDS")
+    if not 0<width<=150:
+        reasons.append("BRACKET_OVER_150_SECONDS")
         return out
     conditions=b.get("conditions",[])
     if not any(c.get("session_token")==s.get("session_token") and c.get("cloud_near_target_oktas")==0 and
@@ -140,7 +147,7 @@ def evaluate(b, raw_log_bytes):
     alt=b.get("target_altitude_at_first_yes_deg")
     az=b.get("target_azimuth_at_first_yes_deg")
     if any(type(x) not in (int,float) for x in (dep,alt,az)) or not(
-        2<=dep<=16 and 5<=alt<=80 and 0<=az<=360
+        3<=dep<=16 and 20<=alt<=80 and 0<=az<=360
     ) or b.get("independently_recomputed_geometry") is not True:
         reasons.append("NO_INDEPENDENT_ALLOWED_SOLAR_AND_STAR_GEOMETRY")
         return out
@@ -167,7 +174,8 @@ def fake():
     z="a"*64
     rows=[{"session_token":"test_session","target_catalog":"HIP","target_id":91262,
            "timestamp_utc":t,"detection":d,"mode":"naked_eye_averted","clock_error_bound_s":2}
-        for t,d in [("2026-11-18T20:01:00Z","NOT_SEEN"),
+        for t,d in [("2026-11-18T20:00:20Z","NOT_SEEN"),
+                    ("2026-11-18T20:01:00Z","NOT_SEEN"),
                     ("2026-11-18T20:02:00Z","CONFIRMED"),
                     ("2026-11-18T20:02:20Z","CONFIRMED")]]
     return {"source_class":"PROSPECTIVE_UNAIDED_HUMAN","private_owner_custody_verified":True,
@@ -215,7 +223,7 @@ class OfflineTests(unittest.TestCase):
         self.assertIn("RAW_LOG_BYTES_HASH_NOT_VERIFIED",evaluate(fake(),b"WRONG")["reasons"])
     def test_no_prior_no(self):
         x=fake();x["checks"].pop(0)
-        self.assertIn("CENSORED_NO_LAST_NO_OR_FIRST_YES",evaluate(x,b"FAKE LOG")["reasons"])
+        self.assertIn("FEWER_THAN_TWO_PRIOR_NEGATIVE_CHECKS",evaluate(x,b"FAKE LOG")["reasons"])
     def test_cloud(self):
         x=fake();x["conditions"][0]["cloud_near_target_oktas"]=4
         self.assertIn("MISSING_DIRECTIONAL_CLOUD_AND_LIGHT_METADATA",evaluate(x,b"FAKE LOG")["reasons"])
@@ -230,6 +238,31 @@ class OfflineTests(unittest.TestCase):
         r=evaluate(x,b"FAKE LOG")
         self.assertEqual(r["status"],"OBSERVATION_BRACKET_ONLY_MODEL_UNSUPPORTED")
         self.assertIsNone(r["interval_distance_seconds"])
+    def test_minimum_two_prior_negative_checks(self):
+        x=fake()
+        self.assertEqual(evaluate(x,b"FAKE LOG")["status"],"SYNTACTIC_INTERVAL_DIAGNOSTIC_ONLY")
+        x["checks"].pop(0)
+        self.assertIn("FEWER_THAN_TWO_PRIOR_NEGATIVE_CHECKS",evaluate(x,b"FAKE LOG")["reasons"])
+    def test_clock_10_allowed_and_11_rejected(self):
+        x=fake()
+        for row in x["checks"]: row["clock_error_bound_s"]=10
+        self.assertEqual(evaluate(x,b"FAKE LOG")["status"],"SYNTACTIC_INTERVAL_DIAGNOSTIC_ONLY")
+        x["checks"][0]["clock_error_bound_s"]=11
+        self.assertIn("WRONG_TARGET_OPTICS_OR_CLOCK",evaluate(x,b"FAKE LOG")["reasons"])
+    def test_150_second_bracket_allowed_and_151_rejected(self):
+        x=fake()
+        x["session"]["session_start_utc"]="2026-11-18T19:58:00Z"
+        x["checks"][0]["timestamp_utc"]="2026-11-18T19:59:00Z"
+        x["checks"][1]["timestamp_utc"]="2026-11-18T19:59:30Z"
+        self.assertEqual(evaluate(x,b"FAKE LOG")["status"],"SYNTACTIC_INTERVAL_DIAGNOSTIC_ONLY")
+        x["checks"][1]["timestamp_utc"]="2026-11-18T19:59:29Z"
+        self.assertIn("BRACKET_OVER_150_SECONDS",evaluate(x,b"FAKE LOG")["reasons"])
+    def test_target_altitude_at_least_20_degrees(self):
+        x=fake()
+        x["target_altitude_at_first_yes_deg"]=19.99
+        self.assertIn("NO_INDEPENDENT_ALLOWED_SOLAR_AND_STAR_GEOMETRY",evaluate(x,b"FAKE LOG")["reasons"])
+        x["target_altitude_at_first_yes_deg"]=20
+        self.assertEqual(evaluate(x,b"FAKE LOG")["status"],"SYNTACTIC_INTERVAL_DIAGNOSTIC_ONLY")
     def test_nonoverlap_distance(self):
         x=fake();x["sealed_prediction_interval"]["lo_utc"]="2026-11-18T20:02:30Z"
         x["sealed_prediction_interval"]["hi_utc"]="2026-11-18T20:02:50Z"

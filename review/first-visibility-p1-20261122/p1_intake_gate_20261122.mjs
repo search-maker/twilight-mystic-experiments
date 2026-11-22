@@ -33,17 +33,18 @@ const assessLook = l => {
   if (!finite(l.star_alt_deg) || l.star_alt_deg < 20 || l.star_alt_deg > 80 ||
       !finite(l.star_az_deg) || l.star_az_deg < 0 || l.star_az_deg >= 360 ||
       !finite(l.sun_depth_deg) || l.sun_depth_deg < 2 || l.sun_depth_deg > 16) return 'GEOMETRY';
-  if (!finite(l.adapted_minutes) || !finite(l.screen_light_seconds_last_15m)) return 'ADAPTATION_METADATA';
+  if (!finite(l.adapted_minutes) || l.adapted_minutes < 0 || !finite(l.screen_light_seconds_last_15m) || l.screen_light_seconds_last_15m < 0) return 'ADAPTATION_METADATA';
   if (l.cloud_direction !== 'CLEAR') return 'DIRECTIONAL_CLOUD_OR_UNKNOWN';
   return null;
 };
 function candidate(r, attempts) {
   if (!r || !r.record_id || !r.attempt_id) return 'INVALID_RECORD_ID';
+  if (r.outcome_admission !== 'BRACKET_QUALIFIED') return 'PREDECLARED_REJECTION_OR_UNREVIEWED';
   if (!isSha(r.site_private_metadata_sha256) || !isSha(r.consent_receipt_private_sha256) || !isSha(r.source_log_sha256)) return 'PRIVATE_ORIGINAL_CUSTODY_MISSING';
   const a = attempts.get(r.attempt_id);
   if (!a || a.status !== 'COMPLETED' || a.site_id !== r.site_id || a.observer_id !== r.observer_id || a.night_local !== r.night_local || a.original_log_sha256 !== r.source_log_sha256) return 'ATTEMPT_OR_RAW_LOG_MISMATCH';
   if (!Number.isInteger(r.hip) || r.hip <= 0 || !finite(r.v_mag) || r.v_mag < -2 || r.v_mag > 5.5) return 'CATALOGUE';
-  if (!r.weather || !finite(r.weather.directional_horizon_alt_deg) || !Array.isArray(r.look_events) || r.look_events.length > MAX_LOOKS_PER_RECORD) return 'HORIZON_OR_LOOK_ARRAY';
+  if (!r.weather || !finite(r.weather.directional_horizon_alt_deg) || r.weather.directional_horizon_alt_deg < 0 || r.weather.directional_horizon_alt_deg > 90 || !Array.isArray(r.look_events) || r.look_events.length > MAX_LOOKS_PER_RECORD) return 'HORIZON_OR_LOOK_ARRAY';
   if (r.look_events.length < 4) return 'TOO_FEW_LOOKS';
   const ev = r.look_events;
   let previous = -Infinity;
@@ -67,8 +68,8 @@ function candidate(r, attempts) {
   const confirmation = ev.slice(first+1).find(l => l.status === 'DIRECT_SEEN');
   if (!confirmation || (utc(confirmation.timestamp.utc)-utc(ev[first].timestamp.utc)) > 120000 ||
       ev.slice(first+1,ev.indexOf(confirmation)).some(l => l.status !== 'DIRECT_SEEN')) return 'NO_DIRECT_CONFIRMATION';
-  if (r.skyglow?.status === 'MEASURED' && (!finite(r.skyglow.value) || !r.skyglow.units || !finite(r.skyglow.view_alt_deg) || !finite(r.skyglow.view_az_deg) || !finite(r.skyglow.fov_deg) || !isSha(r.skyglow.calibration_sha256))) return 'CLAIMED_SKYGLOW_NOT_DOCUMENTED';
-  if (r.aerosol?.qc === 'PASS' && (!finite(r.aerosol.aod550) || !Number.isFinite(utc(r.aerosol.utc)) || !isSha(r.aerosol.source_sha256))) return 'CLAIMED_AOD_PASS_NOT_DOCUMENTED';
+  if (r.skyglow?.status === 'MEASURED' && (!finite(r.skyglow.value) || !r.skyglow.units || !finite(r.skyglow.view_alt_deg) || !finite(r.skyglow.view_az_deg) || !finite(r.skyglow.fov_deg) || r.skyglow.fov_deg <= 0 || r.skyglow.view_alt_deg < 0 || r.skyglow.view_alt_deg > 90 || r.skyglow.view_az_deg < 0 || r.skyglow.view_az_deg >= 360 || !isSha(r.skyglow.calibration_sha256))) return 'CLAIMED_SKYGLOW_NOT_DOCUMENTED';
+  if (r.aerosol?.qc === 'PASS' && (!finite(r.aerosol.aod550) || r.aerosol.aod550 < 0 || !Number.isFinite(utc(r.aerosol.utc)) || !isSha(r.aerosol.source_sha256))) return 'CLAIMED_AOD_PASS_NOT_DOCUMENTED';
   return null;
 }
 function evaluate(m) {
@@ -94,7 +95,7 @@ function evaluate(m) {
   let candidateCount=0;
   for (const r of m.records) {
     if (seen.has(r.record_id)) throw Error('DUPLICATE_RECORD_ID'); seen.add(r.record_id);
-    const reason=candidate(r,attempts);
+    const reason=m.has_real_observer_data !== true ? 'NO_REAL_OBSERVER_DATA_DECLARED' : candidate(r,attempts);
     if (!reason) candidateCount++;
     else reasons[reason]=(reasons[reason]||0)+1;
   }
@@ -105,7 +106,7 @@ function evaluate(m) {
     physical_measurements_authentication:'NOT_EVALUATED; ZENITH PHOTOMETRY IS NOT HUMAN SEEING OR DIRECTIONAL SPECTRAL RADIANCE'};
 }
 function selfTest() {
-  const blank={protocol_id:'P1-FVS-20261122-R0',protocol_status:'REVIEW_DRAFT_NO_ENROLLMENT',model_sha:null,
+  const blank={protocol_id:'P1-FVS-20261122-R0',protocol_status:'REVIEW_DRAFT_NO_ENROLLMENT',model_sha:null,has_real_observer_data:false,
     source_manifest:{catalog_sha256:null,ephemeris_sha256:null,atmosphere_manifest_sha256:null,access_permission:'UNVERIFIED'},records:[],attempts:[]};
   const b=evaluate(blank);assert.equal(b.scientifically_admitted_brackets,0);assert.equal(b.possible_human_brackets_before_independent_review,0);
   const h='a'.repeat(64), sha='b'.repeat(40);
@@ -116,6 +117,13 @@ function selfTest() {
     look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(40,'DIRECT_SEEN'),look(50,'DIRECT_SEEN')],outcome_admission:'BRACKET_QUALIFIED'};
   const attempts=new Map([['A',{attempt_id:'A',status:'COMPLETED',site_id:'SITE',observer_id:'OBSERVER',night_local:'2026-11-24',original_log_sha256:h}]]);
   assert.equal(candidate(baseR,attempts),null);
+  assert.equal(candidate({...baseR,outcome_admission:'REJECT_CONSENT'},attempts),'PREDECLARED_REJECTION_OR_UNREVIEWED');
+  assert.equal(candidate({...baseR,outcome_admission:'UNREVIEWED'},attempts),'PREDECLARED_REJECTION_OR_UNREVIEWED');
+  assert.equal(candidate({...baseR,look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(40,'DIRECT_SEEN',{adapted_minutes:-1}),look(50,'DIRECT_SEEN')]},attempts),'ADAPTATION_METADATA');
+  assert.equal(candidate({...baseR,look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(40,'DIRECT_SEEN',{screen_light_seconds_last_15m:-1}),look(50,'DIRECT_SEEN')]},attempts),'ADAPTATION_METADATA');
+  assert.equal(candidate({...baseR,aerosol:{qc:'PASS',aod550:-0.1,utc:'2026-11-24T22:00:42Z',source_sha256:h}},attempts),'CLAIMED_AOD_PASS_NOT_DOCUMENTED');
+  assert.equal(candidate({...baseR,skyglow:{status:'MEASURED',value:1,units:'cd/m2',view_alt_deg:35,view_az_deg:130,fov_deg:-1,calibration_sha256:h}},attempts),'CLAIMED_SKYGLOW_NOT_DOCUMENTED');
+  assert.equal(candidate({...baseR,weather:{directional_horizon_alt_deg:-3}},attempts),'HORIZON_OR_LOOK_ARRAY');
   assert.equal(candidate({...baseR,look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(30,'POSSIBLE'),look(40,'DIRECT_SEEN'),look(50,'DIRECT_SEEN')]},attempts),'AMBIGUOUS_GAP');
   assert.equal(candidate({...baseR,look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(40,'DIRECT_SEEN'),look(50,'DIRECT_SEEN',{cloud_direction:'OPAQUE'})]},attempts),'DIRECTIONAL_CLOUD_OR_UNKNOWN');
   assert.equal(candidate({...baseR,look_events:[look(0,'NOT_SEEN'),look(20,'NOT_SEEN'),look(40,'DIRECT_SEEN'),look(50,'DIRECT_SEEN',{timestamp:{utc:'2026-11-24T22:00:50Z',uncertainty_seconds:10,sync_method:'SYNTHETIC'}})]},attempts),'CLOCK_OR_STATUS');
@@ -123,11 +131,14 @@ function selfTest() {
   assert.equal(candidate({...baseR,source_log_sha256:null},attempts),'PRIVATE_ORIGINAL_CUSTODY_MISSING');
   assert.equal(candidate({...baseR,skyglow:{status:'MEASURED',value:null,units:null}},attempts),'CLAIMED_SKYGLOW_NOT_DOCUMENTED');
   assert.equal(candidate({...baseR,aerosol:{qc:'PASS',aod550:null}},attempts),'CLAIMED_AOD_PASS_NOT_DOCUMENTED');
-  const q={...blank,protocol_status:'RAW_LOCKED_PENDING_UNBLIND',model_sha:sha,
+  const q={...blank,protocol_status:'RAW_LOCKED_PENDING_UNBLIND',model_sha:sha,has_real_observer_data:true,
     source_manifest:{catalog_sha256:h,ephemeris_sha256:h,atmosphere_manifest_sha256:h,access_permission:'PERMITTED'},records:[baseR],attempts:[...attempts.values()]};
   const out=evaluate(q);assert.equal(out.possible_human_brackets_before_independent_review,1);assert.equal(out.scientifically_admitted_brackets,0);
+  assert.equal(evaluate({...q,has_real_observer_data:false}).possible_human_brackets_before_independent_review,0);
+  const qMissingObserver={...q};delete qMissingObserver.has_real_observer_data;
+  assert.equal(evaluate(qMissingObserver).possible_human_brackets_before_independent_review,0);
   assert.equal(evaluate({manifest_version:'HUMAN-PUBLISHED-ANCHORS-20261122-R0',records:[{star_altitude_deg_article:13},{star_altitude_deg_article:12},{star_altitude_deg_article:28},{star_altitude_deg_article:null}]}).historic_low_altitude_rows,2);
-  console.log('SYNTHETIC_SELF_TEST 11/11 PASS; scientific evidence admitted: 0; model errors: NOT COMPUTED');
+  console.log('SYNTHETIC_SELF_TEST 20/20 PASS; scientific evidence admitted: 0; model errors: NOT COMPUTED');
 }
 if(process.argv[2]==='--self-test') selfTest();
 else if(process.argv.length===3) {const {data,sha256}=readBounded(process.argv[2]); console.log(JSON.stringify({input_sha256:sha256,...evaluate(data)},null,2));}

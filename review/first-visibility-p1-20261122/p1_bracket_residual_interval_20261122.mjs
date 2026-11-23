@@ -4,7 +4,14 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const clock = (s) => typeof s === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(s) ? Date.parse(s) : NaN;
+// UTC lexical form alone is insufficient: Date.parse normalizes impossible civil days.
+// Require a finite parsed instant whose UTC calendar seconds round-trip unchanged.
+const clock = (s) => {
+  if (typeof s !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(s)) return NaN;
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return NaN;
+  return new Date(t).toISOString().slice(0, 19) === s.slice(0, 19) ? t : NaN;
+};
 const refuse = (reason) => ({kind:'REFUSED', reason, scientific_admission:false, model_error:null});
 export function humanBracket(r) {
   if (r?.mode !== 'UNAIDED_HUMAN_DIRECT' || !Array.isArray(r.looks) || r.looks.length < 4 || r.looks.length > 300)

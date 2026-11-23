@@ -1,0 +1,28 @@
+# P1 prospective sky-geometry triage — 2026-11-23 EST (review-only; NOT a preregistered study)
+
+**Worker:** Twilight Scientific Validation. **Guard:** NY clock independently checked 2026-11-23 00:09 EST; Brooklyn diaspora Sunday-after-sunset 13 Kislev 5787, no Shabbat or Yom Tov. Re-read binding [#60](https://github.com/search-maker/twilight-mystic-experiments/issues/60) and [#152](https://github.com/search-maker/starsvisibility/issues/152) before work. No protected Taylor/Jerusalem, MYSTIC workflow/ordinal 67/68, model fit, denied Stage4 edit, direct outreach, paid work, merge or release.
+
+## New executed prospective GEOMETRY-only result (not a human detection or model accuracy result)
+
+A bounded **actually executed** Python 3 / pyswisseph **2.10.03** Moshier ephemeris probe for an **approximate, nonconsented Brooklyn reference point** 40.6782°N, −73.9442°E, 0 m produced the following deterministic finite grid, with sunrise/dusk confusion avoided by solving the evening unrefracted Sun-center altitude bracket:
+- **8 predetermined permitted weekdays:** 2026-12-07, 08, 09, 10, 13, 14, 15, 16 (no Fri/Sat); **3 solar depths:** 10.5°, 13.0°, 16.0°; **3 provisional targets:** θ Persei A (V~4.11; HIP 12777), ζ Persei (V~2.86; HIP not admitted), δ Persei (V~3.01; HIP not admitted).
+- J2000 RA/Dec used, in order: θ Per 02:44:11.98704/+49:13:42.4111; ζ Per 03:54:07.92143/+31:53:01.0869; δ Per 03:42:55.50426/+47:47:15.1746. Approximate astrometry from [SIMBAD θ Per](https://simbad.u-strasbg.fr/simbad/sim-id?Ident=Theta+Persei&protocol=html) and [ζ Per](https://en.wikipedia.org/wiki/Zeta_Persei)/[δ Per](https://en.wikipedia.org/wiki/Delta_Persei), **not an accepted original ESA HIP Johnson-V byte fixture**. IAU1976 mean-equator precession was applied; stellar proper motion was not. Strict source catalog custody remains NOT PASS (see existing [P1 HIP schema/source receipt](https://github.com/search-maker/twilight-mystic-experiments/blob/58e3e205a01ed63b40cfe1c05ac90ef9d26367c9/review/first-visibility-p1-20261122/P1_HIPPARCOS_JOHNSON_V_CATALOG_SOURCE_ADMISSION_20261122.md)).
+- **Predeclared geometry screen only:** target true altitude 20°–80°; Sun-target separation ≥58°; topocentric lunar *geometric* altitude < −1° at exact Sun depth. This rejects moon-present trial slots without claiming calibrated directional sky radiance, cloud/AOD, adaptation, actual obstruction, or human response.
+- **Computed 72 cells**, 72 passed target geometry, **42 rejected by Moon**, **30 provisional moon-below-horizon star-cells** remaining. They represent **10 time/depth sky instants at ONE approximate location across 4 dates** (Dec 7/8/9 plus one depth Dec 10), **not 30 independent empirical events/site-nights**. **0** first-NO→first-YES brackets, **0** consented sites, **0** model timing errors.
+- Example **Dec 7, 2026 22:38:44 UTC / 17:38:44 EST**, Sun depth 13.0000°: θ Per altitude **48.466°**, az **57.433°**; ζ Per altitude **29.684°**, az **71.729°**; δ Per altitude **38.734°**, az **55.650°**; Moon altitude **−25.754°**. Instrument/time precision in this computation is NOT human detection precision.
+
+### Exact execution custody and reproducibility
+
+Executed original local file **twice** with identical output using `python /mnt/data/p1_geometry_probe_20261123.py` (pyswisseph 2.10.03) and independently hashed artifacts in the ChatGPT conversation execution environment:
+- Python executable source SHA256 `cc93d93d9f13f04b7f1d543bc8e0195f741cdfd03134ee94bdf5730622520cb1`.
+- 73-line CSV (header + 72 rows) SHA256 `dd27840fb0cc440072c4fb81020b06859717572bcacb2266eed9162e2435cb86`.
+- Summary JSON SHA256 `af51ee44f10249195aaa7dfc220be73b84941c7652acfd10a8770c09efa2d77c`.
+These **source/output bytes exist in the active ChatGPT conversation container, NOT in this repository**. Do not claim Github file custody for the Python/CSV/JSON or a production CI pass. This Markdown is the additive durable handoff, and the executable can be attached via the conversation; the actual code is not embedded in this GitHub receipt.
+
+### Scientific decision / next action
+
+**Exploratory pilot geometry ONLY, scientific preregistration NO-GO.** Because all three provisional targets point to an eastern/northeastern sky sector (~55°–80°) this window alone **cannot** test solar-relative sky radiance across all azimuths or skyglow. The ≈4-night max independent cluster count also cannot meet the existing ≥30-cluster accuracy screen. Do not cherry-pick the 30 survivors as independent successful trials; all rejected cells/conditions must be preserved. Do not retrofit target selection after seeing eye outcomes.
+
+**Coordinator / science reviewer:** obtain original CDS Hipparcos catalog bytes + SHA, choose actual signed observer site and field horizon/consent, freeze allowed targets/dates/ephemeris/atmospheric sources/QC/error acceptance and a genuinely runnable qualified predictor SHA **before any participant results**; approve or reject this *prospective geometry-only* screen. **Outreach owner:** resolve existing user-action gate through normal authorized surface, obtain affirmative opt-in; do not bypass owner or falsely claim drafts were sent. If actual geometry differs, regenerate and lock a new prospective plan BEFORE outcomes.
+
+**Scientific support unchanged:** conditional 2°–10.5° does not assert minute-accuracy; (10.5°,16°] unvalidated / null in published v1; >16° OOD. No MYSTIC dispatched.

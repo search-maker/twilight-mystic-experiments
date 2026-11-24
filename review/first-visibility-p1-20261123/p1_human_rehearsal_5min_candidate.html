@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>P1 five-minute indoor rehearsal — NOT sky observations</title>
+<style>body{font:18px system-ui,sans-serif;background:#111;color:#eee;max-width:780px;margin:2rem auto;padding:0 1rem}button,input,select{font:inherit;margin:.3rem;padding:.55rem}button:disabled{opacity:.5}#cue{font-size:2rem;font-weight:bold;margin:1rem 0}#clock{font-variant-numeric:tabular-nums}small{color:#bbb}label{display:block;margin:.6rem 0}</style>
+<h1>Five-minute indoor rehearsal</h1>
+<p>Candidate only. No sky, no stars, no predictions. This tests the burden of repeated manual timing, not eyesight. Use only after an authorized owner obtains adult opt-in. Use an arbitrary study ID, no name or contact details. No data are transmitted.</p>
+<label>Study ID <input id="id" maxlength="40" autocomplete="off"></label>
+<label><input type="checkbox" id="opt"> I voluntarily agree to this indoor timing exercise; I can stop at any time.</label>
+<label>Independent clock error bound in seconds (blank if unknown; do not guess) <input id="bound" type="number" min="0" step="0.1" max="60"></label>
+<p>Start once. After five seconds, 12 slots begin every 25 seconds. At LOOK press <b>S</b>, look at a neutral indoor object for about 10 seconds, and press <b>E</b> to end. On slots marked PRACTICE POSITIVE, also press <b>P</b> once during that look. This is a scripted response, never a real sighting. On missed or interrupted slots do not backfill. Press <b>I</b> for interruption. You can also use buttons.</p>
+<button id="start">Start 12-slot rehearsal</button><button id="abort" disabled>Stop early</button>
+<div id="clock" aria-live="off">Not started</div><div id="cue" aria-live="polite"></div>
+<div><button id="s" disabled>S — start look</button><button id="p" disabled>P — practice positive</button><button id="e" disabled>E — end look</button><button id="i" disabled>I — interruption</button></div>
+<p id="feedback"></p>
+<label>Perceived burden (0 easy, 10 very difficult) <select id="burden"><option value="">Not answered</option></select></label>
+<button id="export" disabled>Save raw JSON log locally</button>
+<pre id="summary"></pre>
+<small>Browser time is not a certified UTC reference. The monotonic clock detects timing deviations and wall-clock jumps; it cannot prove absolute UTC. This log is not the stellar observation schema, does not authorize field enrollment, and must never be ingested as a star event.</small>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+for(let i=0;i<=10;i++)$("burden").add(new Option(String(i),String(i)));
+const N=12, PERIOD=25000, DWELL=10000, POS=new Set([4,5]);
+let run=null, t0=0, w0=0, active=false, ticker=null, lastCue="";
+function stamp(){const m=performance.now(),w=Date.now();return {utc:new Date(w).toISOString(),monotonic_ms:m-t0,wall_minus_monotonic_ms:w-w0-(m-t0)}}
+function slotAt(t){return Math.floor(t/PERIOD)}
+function log(kind,extra={}){if(!run)return;run.actions.push({kind,...stamp(),...extra});}
+function controls(on){for(const id of ["s","p","e","i","abort"])$(id).disabled=!on;}
+function handle(kind){if(!active)return;const at=stamp(),k=slotAt(at.monotonic_ms);if(k>=N){finish("COMPLETE");return}
+ const slot=run.slots[k];let accepted=false,reason="";
+ if(!slot)reason="BEFORE_GRID";
+ else if(kind==="interrupt"){slot.interruptions++;accepted=true}
+ else if(kind==="start"){if(slot.start)reason="DUPLICATE";else{slot.start=at;accepted=true}}
+ else if(kind==="positive"){if(!slot.start||slot.end||slot.positive)reason="OUTSIDE_ACTIVE_LOOK_OR_DUPLICATE";else{slot.positive=at;accepted=true}}
+ else if(kind==="end"){if(!slot.start||slot.end)reason="NO_ACTIVE_LOOK_OR_DUPLICATE";else{slot.end=at;accepted=true}}
+ run.actions.push({kind,...at,slot:k,accepted,reason});$("feedback").textContent=accepted?kind+" recorded":kind+" not assigned: "+reason;
+}
+function tick(){if(!active)return;const t=performance.now()-t0,k=slotAt(t);if(k>=N){finish("COMPLETE");return}
+ const phase=k<0?"Get ready":(t-k*PERIOD<DWELL?"LOOK":"REST");
+ const cue=k<0?phase:"Slot "+(k+1)+" / "+N+" — "+phase+(POS.has(k)?" — PRACTICE POSITIVE":" — PRACTICE NO");
+ if(cue!==lastCue){lastCue=cue;$("cue").textContent=cue;log("CUE_RENDERED",{slot:k,cue});}
+ $("clock").textContent=(k<0?"Starts in "+Math.ceil(-t/1000)+" s":Math.floor(t/1000)+" / 300 s");
+}
+function calculate(){return run.slots.map((s,k)=>{const delay=s.start?s.start.monotonic_ms-k*PERIOD:null,dwell=s.start&&s.end?s.end.monotonic_ms-s.start.monotonic_ms:null;
+ const positiveCorrect=POS.has(k)?!!s.positive:!s.positive;
+ const valid=delay!==null&&Math.abs(delay)<=2000&&dwell!==null&&dwell>=8000&&dwell<=12000&&positiveCorrect&&s.interruptions===0;
+ return {slot:k,planned_action:POS.has(k)?"PRACTICE_POSITIVE":"PRACTICE_NO",start_deviation_ms:delay,dwell_ms:dwell,positive_correct:positiveCorrect,interruption_count:s.interruptions,valid_timing_and_action:valid};})}
+function finish(reason){if(!active)return;log("FINISH",{reason});active=false;clearInterval(ticker);controls(false);run.termination=reason;run.summary=calculate();run.valid_count=run.summary.filter(x=>x.valid_timing_and_action).length;run.clock_jump_max_abs_ms=Math.max(0,...run.actions.map(x=>Math.abs(x.wall_minus_monotonic_ms)));$("cue").textContent="Finished — save the log";$("summary").textContent=run.valid_count+" / 12 slots met timing/action checks. This is procedural only; no model error or human visual threshold measured."; $("export").disabled=false;}
+$("start").onclick=()=>{if(run)return;const id=$("id").value.trim(),b=$("bound").value;if(!$("opt").checked||!id||!/^[-_A-Za-z0-9]{1,40}$/.test(id)){alert("Enter a study ID and opt in, or stop.");return}
+ if(b!==""&&(!Number.isFinite(Number(b))||Number(b)<0||Number(b)>60)){alert("Invalid clock bound; leave blank if unknown.");return}
+ t0=performance.now()+5000;w0=Date.now()+5000;run={schema:"P1_HUMAN_INDOOR_REHEARSAL_CANDIDATE_V1",study_id:id,local_opt_in:true,field_approved:false,scientific_predictor_sha:null,model_error_seconds:null,absolute_clock_bound_s:b===""?null:Number(b),grid_origin_device_utc:new Date(w0).toISOString(),planned_slots:N,period_ms:PERIOD,practice_positive_slots_zero_based:[4,5],termination:null,actions:[],slots:Array.from({length:N},(_,slot)=>({slot,start:null,end:null,positive:null,interruptions:0}))};
+ for(const x of ["start","id","opt","bound"])$(x).disabled=true;active=true;controls(true);log("START");ticker=setInterval(tick,50);tick();};
+$("abort").onclick=()=>finish("ABORTED");
+for(const [id,kind] of [["s","start"],["p","positive"],["e","end"],["i","interrupt"]])$(id).onclick=()=>handle(kind);
+document.addEventListener("keydown",e=>{const kind={s:"start",p:"positive",e:"end",i:"interrupt"}[e.key.toLowerCase()];if(active&&kind&&!e.repeat){e.preventDefault();handle(kind)}});
+function interrupted(reason){if(!active)return;const k=slotAt(performance.now()-t0);if(run.slots[k])run.slots[k].interruptions++;log("ENVIRONMENT_INTERRUPTION",{reason,slot:k});}
+window.addEventListener("blur",()=>interrupted("WINDOW_BLUR"));document.addEventListener("visibilitychange",()=>{if(document.hidden)interrupted("PAGE_HIDDEN")});
+$("export").onclick=()=>{const raw={...run,burden_0_to_10:$("burden").value===""?null:Number($("burden").value),exported_device_utc:new Date().toISOString()};const blob=new Blob([JSON.stringify(raw,null,2)+"\n"],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="P1-indoor-rehearsal-"+run.study_id+".json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+</script></html>
